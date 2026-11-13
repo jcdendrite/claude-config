@@ -57,6 +57,7 @@ PRODUCTION_MODULES = (
     "routing_guard.py",
     "read_cost.py",
     "read_scope.py",
+    "ledger_rounds.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -124,6 +125,7 @@ TEST_FILES = (
     "test_transcript_cache_rebuild.py",
     "test_transcript_review_cost_by_size.py",
     "test_transcript_review_cost_by_size_aggregates.py",
+    "test_transcript_ledger_rounds.py",
     "test_transcript_pricing.py",
     "test_transcript_redaction.py",
     "test_transcript_render.py",

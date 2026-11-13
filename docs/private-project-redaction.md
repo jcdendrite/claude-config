@@ -121,11 +121,11 @@ re-run and check.
   worked in, so every figure is per-account and per-project, even on this
   repository's own account. It is built for private delivery to the owner
   of the projects that account works on.
-- `transcript-analysis.py review-cost-by-size --this-repo`, run from
-  this repository's checkout, refuses `--projects` and a top-level
-  `--config-dir` and reads the active config directory alone. A new
-  figure from it still takes the check under "New figures against the
-  grandfathered set" below. Its `--all-accounts` output is never
+- `transcript-analysis.py review-cost-by-size --this-repo` is not a
+  publication instrument. It reads pr-cost ledger rows, which do not
+  record the project scope their rounds were read from, so it refuses
+  no wider corpus. Route a figure from it to "The owner can authorize
+  one figure, case by case" below. Its `--all-accounts` output is never
   proposed for publication — see the next section.
 - `transcript-analysis.py read-cost --this-repo`, run from this
   repository's checkout, refuses `--projects` and a top-level

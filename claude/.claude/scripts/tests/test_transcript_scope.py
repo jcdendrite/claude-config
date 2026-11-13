@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from transcript_analysis import buckets, corpus, cost, scope, skill_invocation
 
-from .conftest import _asst, _cost_args, _priced, _worktree_porcelain, _write_cost_root, _write_jsonl
+from .conftest import _asst, _cost_args, _option_help, _priced, _worktree_porcelain, _write_cost_root, _write_jsonl
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
@@ -898,3 +898,17 @@ class TestRootCountDescDirectUnit:
         roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
         assert scope._root_count_desc(roots) == "2 roots"
         assert "transcript-config-dirs" not in scope._root_count_desc(roots)
+
+
+class TestAddProjectScopeArgsThisRepoHelp:
+    def test_a_caller_that_omits_this_repo_help_keeps_the_shared_worktree_wording(self):
+        parser = argparse.ArgumentParser()
+        scope._add_project_scope_args(parser)
+        assert _option_help(parser, "--this-repo") == (
+            "Scope to this repo's own worktrees only (see docs/transcript-analysis.md)."
+        )
+
+    def test_this_repo_help_keyword_replaces_the_shared_wording(self):
+        parser = argparse.ArgumentParser()
+        scope._add_project_scope_args(parser, this_repo_help="Select a caller-specific scope.")
+        assert _option_help(parser, "--this-repo") == "Select a caller-specific scope."

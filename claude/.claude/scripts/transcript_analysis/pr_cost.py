@@ -12,7 +12,6 @@ import copy
 import fcntl
 import fnmatch
 import json
-import os
 import re
 import subprocess
 import sys
@@ -706,7 +705,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             file=sys.stderr,
         )
         sys.exit(2)
-    if all_accounts and len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+    if all_accounts and len(roots) > 1 and pr_cost_ledger.pr_cost_ledger_path_overridden():
         # A single forced path would commingle every account's rows into one
         # file, defeating the per-account separation the sentinel gate below
         # depends on.
@@ -781,15 +780,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             file=sys.stderr,
         )
 
-        try:
-            ledger_path = pr_cost_ledger._pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError:
-            # Not str(exc): pr_cost_ledger._pr_cost_ledger_path's own message embeds
-            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
-            # engagement path. Same discipline as pr-cost-export's identical
-            # catch.
-            print(f"pr-cost: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
-            sys.exit(1)
+        ledger_path = pr_cost_ledger._pr_cost_ledger_path_or_exit("pr-cost", ordinal, account_config_dir)
 
         if not record:
             existing_rows: list[dict] = []

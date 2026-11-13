@@ -1,8 +1,8 @@
 """The review-cost-by-size command: cmd_review_cost_by_size and its helpers -- how
-code-review round count and round cost vary with merged-PR size, joined to each PR by exact
-head-branch name -- plus its subparser registration.
+code-review round count and round cost vary with merged-PR size, read from the pr-cost
+ledger's review_rounds cells -- plus its subparser registration.
 
-Imports gh_cli, render, review_rounds, and scope by module (attribute access, not by
+Imports gh_cli, ledger_rounds, pr_cost_ledger, render, and scope by module (attribute access, not by
 name) -- see scope.py's own top-of-file comment for why.
 """
 from __future__ import annotations
@@ -11,12 +11,10 @@ import argparse
 import math
 import statistics
 import sys
-from collections import Counter
 from collections.abc import Sequence
-from pathlib import Path
 from typing import NamedTuple
 
-from transcript_analysis import gh_cli, render, review_rounds, scope
+from transcript_analysis import gh_cli, ledger_rounds, pr_cost_ledger, render, scope
 
 _SIZED_REVIEW_SKILL = "code-review"
 
@@ -39,6 +37,23 @@ _MEASURE_LABELS: dict[str, str] = {
 
 _NOT_AVAILABLE = "n/a"
 
+_SCOPE_UNVERIFIED_NOTICE = (
+    "Scope unverified -- a pr-cost ledger row does not record which project directories its --record run read, so a"
+    " PR's rounds can include another repository's session on a same-named branch; see docs/transcript-analysis.md"
+    " § \"review-cost-by-size\"."
+)
+_NO_PR_REPORTED_MESSAGE = (
+    "No PR reported. This report reads only rows that pr-cost --record captured, which needs the pr_cost_recording"
+    " config key, and a row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
+    " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
+    " permanently understates the PR's row and the PR stays excluded. The ledger diagnostics below count the PRs"
+    " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
+)
+_NO_PR_RECORDED_MESSAGE = (
+    "No PR reported. The ledger read above has no row for this repository. Run pr-cost --record to capture merged PRs"
+    " past the as-of window; it needs the pr_cost_recording config key (see docs/pr-cost.md § \"Data\")."
+)
+
 _PRIVATE_VIEW_BANNER = (
     "DO NOT PUBLISH — --all-accounts reads every declared account, so this output is a private view for the"
     " owner; see docs/private-project-redaction.md § \"A wider corpus goes to the owner, never into a public"
@@ -47,7 +62,7 @@ _PRIVATE_VIEW_BANNER = (
 
 
 class _PrRecord(NamedTuple):
-    """One merged PR with at least one in-scope code-review round."""
+    """One recorded PR with at least one code-review round before merge."""
 
     number: int
     lines: int
@@ -64,88 +79,6 @@ class _PrRecord(NamedTuple):
     @property
     def mean_dollars(self) -> float:
         return self.total_dollars / self.round_count
-
-
-class _JoinCounts(NamedTuple):
-    merged_pr_count: int
-    unmatched_branch_count: int
-    ambiguous_branch_count: int
-    unpriced_turns: int
-    dangling_dispatches: int
-    invalid_usage_records: int
-
-
-def _scan_code_review_rounds(
-    args: argparse.Namespace, roots: Sequence[Path], scan_gaps: Counter[str],
-) -> tuple[list[dict], str]:
-    """Every code-review round across `roots`, with the scope label the resolver returned.
-
-    Passes resolved_roots=None so a branch's rounds from every root merge under one (None, branch) key,
-    and scope._root_index_for_path is never reached. The iterator keeps include_subagents=False, which
-    compute_review_round_costs requires: subagent records merged into a session would be priced a second
-    time into that session's last round window.
-    """
-    session_iter, scope_label = scope._resolve_project_scope(
-        args, "review-cost-by-size", roots=roots, scan_gaps=scan_gaps,
-    )
-    data = review_rounds.compute_review_round_costs(
-        session_iter, skill_filter={_SIZED_REVIEW_SKILL}, resolved_roots=None,
-    )
-    return data["rounds"], scope_label
-
-
-def _join_rounds_to_prs(rounds: Sequence[dict], merged_prs: Sequence[dict]) -> tuple[list[_PrRecord], _JoinCounts]:
-    """Join rounds to merged PRs by exact head-branch name.
-
-    A branch with no merged PR, or one that never joins (a default-branch candidate or a branch no PR can
-    be opened from), counts as unmatched. A branch matching more than one merged PR counts as ambiguous
-    and is excluded. Unpriced turns, dangling dispatches and malformed-usage turns are summed over joined
-    rounds only.
-    """
-    prs_by_head_branch: dict[str, list[dict]] = {}
-    for pr in merged_prs:
-        prs_by_head_branch.setdefault(pr["headRefName"], []).append(pr)
-
-    rounds_by_branch: dict[str, list[dict]] = {}
-    for round_entry in rounds:
-        rounds_by_branch.setdefault(round_entry["branch_key"][1], []).append(round_entry)
-
-    records: list[_PrRecord] = []
-    unmatched_branch_count = 0
-    ambiguous_branch_count = 0
-    unpriced_turns = 0
-    dangling_dispatches = 0
-    invalid_usage_records = 0
-    for branch, branch_rounds in rounds_by_branch.items():
-        if branch in scope._DEFAULT_BRANCH_CANDIDATES or scope._names_no_pr_branch(branch):
-            unmatched_branch_count += 1
-            continue
-        matches = prs_by_head_branch.get(branch, [])
-        if not matches:
-            unmatched_branch_count += 1
-            continue
-        if len(matches) > 1:
-            ambiguous_branch_count += 1
-            continue
-        pr = matches[0]
-        ordered_rounds = sorted(branch_rounds, key=lambda round_entry: round_entry["sort_key"])
-        records.append(_PrRecord(
-            number=pr["number"],
-            lines=pr["additions"] + pr["deletions"],
-            round_dollars=tuple(entry["main_dollars"] + entry["agent_dollars"] for entry in ordered_rounds),
-        ))
-        unpriced_turns += sum(entry["unpriced_turns"] for entry in ordered_rounds)
-        dangling_dispatches += sum(entry["dangling"] for entry in ordered_rounds)
-        invalid_usage_records += sum(entry["invalid_usage_records"] for entry in ordered_rounds)
-
-    return records, _JoinCounts(
-        merged_pr_count=len(merged_prs),
-        unmatched_branch_count=unmatched_branch_count,
-        ambiguous_branch_count=ambiguous_branch_count,
-        unpriced_turns=unpriced_turns,
-        dangling_dispatches=dangling_dispatches,
-        invalid_usage_records=invalid_usage_records,
-    )
 
 
 def _spearman_rho(xs: Sequence[float], ys: Sequence[float]) -> float | None:
@@ -244,9 +177,13 @@ def _fmt_measure(measure: str, value: float | None) -> str:
     return f"{value:.1f}" if measure == _ROUND_COUNT else render._fmt_usd(value)
 
 
-def _scope_header(scope_label: str, all_accounts: bool) -> str:
-    account_scope = "every declared account" if all_accounts else "active account only"
-    return f"REVIEW COST BY SIZE SOURCES ({scope_label}; {account_scope})"
+def _scope_header(all_accounts: bool, ledger_path_overridden: bool) -> str:
+    """The override label names neither the variable's value nor a path, because one file may hold several accounts."""
+    if ledger_path_overridden:
+        account_scope = "PR_COST_LEDGER_PATH file, account scope unverified"
+    else:
+        account_scope = "every declared account" if all_accounts else "active account only"
+    return f"REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; {account_scope})"
 
 
 def _bucket_label(lower: int, upper: int | None) -> str:
@@ -277,26 +214,44 @@ def _print_aggregates(aggregates: dict) -> None:
     )
 
 
-def _print_join_diagnostics(joined_pr_count: int, counts: _JoinCounts, scan_gap_count: int) -> None:
-    print("\nJoin diagnostics")
-    print(f"  Merged PRs listed: {counts.merged_pr_count}")
-    if counts.merged_pr_count >= gh_cli._PR_COST_GH_PR_LIST_LIMIT:
+class _ReportedRoundSums(NamedTuple):
+    unpriced_turns: int
+    dangling_dispatches: int
+    invalid_usage_records: int
+
+
+def _sum_reported_round_fields(ledger_prs: Sequence[ledger_rounds.LedgerPr]) -> _ReportedRoundSums:
+    """Unpriced turns, dangling dispatches and malformed-usage turns, summed over the code-review rounds before merge of
+    `ledger_prs`."""
+    rounds = [each for pr in ledger_prs for each in pr.rounds_by_skill.get(_SIZED_REVIEW_SKILL, [])]
+    return _ReportedRoundSums(
+        unpriced_turns=sum(each["unpriced_turns"] for each in rounds),
+        dangling_dispatches=sum(each["dangling"] for each in rounds),
+        invalid_usage_records=sum(each["invalid_usage_records"] for each in rounds),
+    )
+
+
+def _print_ledger_diagnostics(
+    ledger_read: ledger_rounds.LedgerRead, reported_prs: Sequence[ledger_rounds.LedgerPr],
+) -> None:
+    sums = _sum_reported_round_fields(reported_prs)
+    print("\nLedger diagnostics")
+    print(f"  PRs with a current row for this repository: {ledger_read.pr_count}")
+    print(f"  PRs reported: {len(reported_prs)}")
+    for reason in ledger_rounds.EXCLUSION_REASONS:
+        print(f"  PRs excluded, {reason}: {ledger_read.excluded[reason]}")
+    print(f"  PRs with no code-review round before merge: {len(ledger_read.prs) - len(reported_prs)}")
+    print(
+        "  Code-review rounds removed as opened at or after merge:"
+        f" {ledger_read.after_merge_rounds.get(_SIZED_REVIEW_SKILL, 0)}"
+    )
+    print(f"  Unpriced turns inside reported rounds: {sums.unpriced_turns}")
+    print(f"  Dangling dispatches inside reported rounds: {sums.dangling_dispatches}")
+    if sums.invalid_usage_records:
         print(
-            f"  Note: the merged-PR list reached the gh pr list limit ({gh_cli._PR_COST_GH_PR_LIST_LIMIT});"
-            " older merged PRs may count as unmatched branches, and a branch name reused by a PR beyond the limit"
-            " can join the wrong PR."
-        )
-    print(f"  PRs joined: {joined_pr_count}")
-    print(f"  Unmatched branches: {counts.unmatched_branch_count}")
-    print(f"  Ambiguous branches (excluded): {counts.ambiguous_branch_count}")
-    print(f"  Unpriced turns inside joined rounds: {counts.unpriced_turns}")
-    print(f"  Dangling dispatches inside joined rounds: {counts.dangling_dispatches}")
-    if counts.invalid_usage_records:
-        print(
-            f"  MALFORMED USAGE — {counts.invalid_usage_records:,} usage-bearing turns inside joined rounds had"
+            f"  MALFORMED USAGE — {sums.invalid_usage_records:,} usage-bearing turns inside reported rounds had"
             " non-numeric or negative token fields and were excluded from this report's dollars"
         )
-    print(f"  Unreadable sources skipped: {scan_gap_count}")
 
 
 def _print_pr_rows(records: Sequence[_PrRecord]) -> None:
@@ -309,10 +264,14 @@ def _print_pr_rows(records: Sequence[_PrRecord]) -> None:
         )
 
 
-def cmd_review_cost_by_size(args: argparse.Namespace) -> None:
-    """How code-review round count and round cost vary with merged-PR size.
+def _record_from_ledger_pr(pr: ledger_rounds.LedgerPr) -> _PrRecord:
+    return _PrRecord(number=pr.number, lines=pr.lines, round_dollars=tuple(pr.usd_by_skill[_SIZED_REVIEW_SKILL]))
 
-    See docs/transcript-analysis.md's `review-cost-by-size` section for the flags, join rules, aggregates and
+
+def cmd_review_cost_by_size(args: argparse.Namespace) -> None:
+    """How code-review round count and round cost vary with recorded-PR size.
+
+    See docs/transcript-analysis.md's `review-cost-by-size` section for the flags, row-selection rules, aggregates and
     publication scope.
     """
     this_repo = bool(getattr(args, "this_repo", False))
@@ -338,25 +297,16 @@ def cmd_review_cost_by_size(args: argparse.Namespace) -> None:
             sys.exit(2)
 
     corpus_host, corpus_repo = gh_cli._git_remote_origin_host_and_owner_repo(subcommand="review-cost-by-size")
-    if not gh_cli._gh_auth_preflight_ok(corpus_host):
-        print(
-            "review-cost-by-size: gh auth status failed (or gh is unavailable) -- run `gh auth login`",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    redact_ordinals = scope._redaction_ordinals(roots)
-    pinned_repo, _repo_map = gh_cli._resolve_pinned_gh_repo(
-        corpus_host, corpus_repo, ordinal=redact_ordinals[roots[0].resolve()],
-    )
-    merged_prs = gh_cli._gh_discover_merged_prs(corpus_host, pinned_repo)
+    ledger_read = ledger_rounds.read_ledger_prs(roots, corpus_host, corpus_repo, subcommand="review-cost-by-size")
+    reported_prs = [pr for pr in ledger_read.prs if pr.usd_by_skill.get(_SIZED_REVIEW_SKILL)]
+    records = [_record_from_ledger_pr(pr) for pr in reported_prs]
 
-    scan_gaps: Counter[str] = Counter()
-    rounds, scope_label = _scan_code_review_rounds(args, roots, scan_gaps)
-    records, join_counts = _join_rounds_to_prs(rounds, merged_prs)
-
-    print(_scope_header(scope_label, all_accounts))
+    print(_scope_header(all_accounts, pr_cost_ledger.pr_cost_ledger_path_overridden()))
+    print(_SCOPE_UNVERIFIED_NOTICE)
+    if not records:
+        print(_NO_PR_RECORDED_MESSAGE if ledger_read.pr_count == 0 else _NO_PR_REPORTED_MESSAGE)
     _print_aggregates(_compute_aggregates(records))
-    _print_join_diagnostics(len(records), join_counts, sum(scan_gaps.values()))
+    _print_ledger_diagnostics(ledger_read, reported_prs)
     _print_pr_rows(records)
 
 
@@ -367,16 +317,23 @@ def _add_review_cost_by_size_subparser(subparsers: argparse._SubParsersAction) -
     p_review_cost_by_size = subparsers.add_parser(
         "review-cost-by-size",
         help=(
-            "How code-review round count and round cost vary with merged-PR size: per-PR rows plus rank"
+            "How code-review round count and round cost vary with recorded-PR size: per-PR rows plus rank"
             " correlations, log-log elasticities, size-bucket medians, and a within-PR round-cost trend."
-            " Requires --this-repo and gh."
+            " Requires --this-repo and a pr-cost ledger; makes no gh call."
         ),
     )
-    scope._add_project_scope_args(p_review_cost_by_size)
+    scope._add_project_scope_args(
+        p_review_cost_by_size,
+        this_repo_help=(
+            "Select the pr-cost ledger rows recorded for this checkout's origin repository"
+            " (see docs/transcript-analysis.md)."
+        ),
+    )
     p_review_cost_by_size.add_argument(
         "--all-accounts", action="store_true",
         help=(
-            "Read every declared account as one merged scan instead of the active account alone."
+            "Read every declared account's pr-cost ledger instead of the active account's alone. A PR with"
+            " more than one row that carries a review_rounds cell is excluded and counted, not summed."
             " A private view: prints DO NOT PUBLISH, and its output is never proposed for publication."
         ),
     )

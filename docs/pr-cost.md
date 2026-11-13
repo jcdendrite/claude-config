@@ -24,7 +24,7 @@ Columns, in ledger order (`_PR_COST_LEDGER_COLUMNS` in `claude/.claude/scripts/t
 | `turn_count`, `session_count` | Priced-turn count and distinct session count attributed to this branch. Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks in [`docs/transcript-analysis.md`](transcript-analysis.md); see "Pre-branch and subagent attribution" below for how that moves a row's figures. |
 | `opus_dollars`, `opus_dollar_share_pct` | Opus-family spend, in dollars and as a share of this row's total. |
 | `sum_context_at_turn`, `mean_context_at_turn` | The additive sum and its derived mean — kept alongside each other so a cross-PR rollup can be computed as a true average, not an average of per-row averages. |
-| `additions`, `deletions`, `changed_files` | From `gh pr view`'s size fields. |
+| `additions`, `deletions`, `changed_files` | From the bulk `gh pr list` discovery call's size fields. |
 | `commit_count`, `review_comment_count` | Pre-squash commit count and review-comment count from `gh pr view`. |
 | `distinct_top_level_dirs`, `distinct_file_extensions` | Mechanical review-surface proxies over the PR's changed-file list. |
 | `tests_changed` | Whether any changed file matches the built-in test-file heuristic (ecosystem-generic: a `tests/` path segment, a `test_`/`_test.py` Python name, or a `.test.`/`.spec.` JS/TS suffix). |
@@ -66,7 +66,7 @@ A later column follows the same shape: freeze the outgoing header and document t
 
 ### The `review_rounds` cell
 
-- **Recorded only.** No report reads the cell yet: read mode and `review-cost-by-size` do not print it. It is reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON.
+- **Readers.** `review-cost-by-size` reads the cell. Read mode does not print it. It is also reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON.
 - **Shape.** `{"rule": int, "rounds": {skill: [round, ...]}}`, in the same canonical encoding as `model_breakdown`. `rounds` has one key per review skill the writer tracked (`code-review`, `plan-review`, `ready-for-review`), and each list holds that skill's rounds in round order.
 - **Absence.** An empty cell means not captured, which covers:
   - a row recorded before the column existed
@@ -199,7 +199,7 @@ After an exit 1 for a `review_rounds` check failure:
   - A third refusal, `the ledger on disk changed during this run and no longer parses: <reason>`, means something else edited the ledger into an unparseable state mid-run. A rerun stops at the ordinary parse error instead. Repair the file per that error (see "Data" for the two exempt edits), and do not report it as a defect.
   - Two more refusals share the prefix and also leave the ledger unchanged: `write verification mismatch` (the staged file did not read back identical to what was written) and `column '<name>' contains a tab or newline -- refusing to write a corrupt row`. Neither is expected in practice; report a repeat as for the first refusal.
 - **Older checkouts.** An upgraded ledger cannot be read by older checkouts, and there is no supported downgrade.
-  - Symptom: they print `missing or mismatched pr-cost ledger header row` on read mode, `--record`, and export, and write nothing.
+  - Symptom: they print `missing or mismatched pr-cost ledger header row` on read mode, `--record`, export, and `review-cost-by-size`, and write nothing.
   - Recovery: update every checkout that shares the ledger, with `git pull` for a stow clone or a rebase or merge for a worktree on an older base. The ledger is intact; do not delete or recreate it.
   - Cost of delay: a checkout that cannot record loses each uncaptured PR once its transcripts age out.
   - Off switch: `pr_cost_recording` is for a defect in a current checkout that writes wrong data. Turn it off until a fix lands; read mode still parses the ledger. A refused write needs no off switch, because it already leaves the ledger unchanged: rerun.
@@ -221,10 +221,10 @@ After an exit 1 for a `review_rounds` check failure:
 `status` is a fixed enum, deliberately carrying no embedded `gh` diagnostic text — any error detail goes to stderr, never into a ledger cell:
 
 - `ok` — enrichment (`gh pr view`) succeeded.
-- `degraded_rate_limit` — the per-PR enrichment call exhausted its retry budget on a rate-limit response; the row's `additions`/`deletions`/`changed_files`/`commit_count`/`review_comment_count` and mechanical proxies are absent or zero-valued. Recapture later with `--force --pr N`, within the limits in "The re-record contract" below.
+- `degraded_rate_limit` — the per-PR enrichment call exhausted its retry budget on a rate-limit response; the row's `commit_count`, `review_comment_count` and mechanical proxies are zero-valued, while its `additions`, `deletions` and `changed_files` come from the bulk discovery call and stay accurate. Recapture later with `--force --pr N`, within the limits in "The re-record contract" below.
 - `degraded_network` — the same, for a non-rate-limit transient failure (including an auth-shaped failure surfacing mid-run, once no other row is at risk). Same recapture path and limits.
 
-A degraded row's dollar/token figures are still trustworthy (those come from the local corpus pass, not `gh`); only the `gh`-sourced columns are incomplete.
+A degraded row's dollar/token figures are still trustworthy (those come from the local corpus pass, not `gh`); only the enrichment-sourced columns are incomplete.
 
 `status` does not cover the `model_breakdown` or `review_rounds` cells; a failed write-time check on either is described under "Write-time check failures".
 
@@ -445,7 +445,7 @@ The two JSON columns differ on purpose: `review_rounds` is vocabulary-filtered, 
 Export rows are subject to CLAUDE.md's publication-boundary rule (see "Also redact structural fingerprints and provenance") — an export row, or any per-row figure derived from one, is not publishable. The one exception is an aggregate of PR counts, token counts, cost, and models used, reported in one bucket. Even that publishes only with the owner's per-figure yes under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". That section also holds the composition check and the bars that stay in force alongside an authorization. A per-model or per-variant split of an aggregate is its own figure and is asked about separately, because associating a set of PRs with a model or variant is non-neutral. Sending the raw row-level file to anyone at all is a decision of the same class as publishing an aggregate: it must be made deliberately, not fall out as a side effect of an analysis session.
 
 A figure derived from `review_rounds` (a round count, a per-round dollar or token value, an after-merge share) is outside the aggregate exception above, which covers only PR counts, token counts, cost, and models used in one bucket. Send such a figure to the owner privately. It publishes only in one of two cases:
-- It is computed over "this repository's own corpus on a single account" (CLAUDE.md's wording), per `docs/private-project-redaction.md` § "Publishing a tooling measurement". No export figure meets this, because an export carries other repositories' rows.
+- It is computed over "this repository's own corpus on a single account" (CLAUDE.md's wording), per `docs/private-project-redaction.md` § "Publishing a tooling measurement". No export figure meets this, because an export carries other repositories' rows. Neither does a figure read from any ledger row that records no capture scope, `review-cost-by-size`'s included, because that row's rounds can include another repository's session on a same-named branch.
 - The owner authorizes that specific figure under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case", with the bars listed there still applying.
 
 **Rate stamps still apply.** See "Comparing rows across rate stamps" above for when two rows' dollars are comparable at all — this export's whole reason to exist is that comparison, and it governs here exactly as stated there. A pooled or combined total spanning the attribution cutover carries a comparability label too; see "Comparing dollars across the cutover" above, whose comparability bullet the rate-stamp rule alone does not satisfy. Likewise, `opus_dollar_share_pct` must be recomputed from a summed numerator and denominator across whatever rows are being aggregated, never row-averaged — the same caution `mean_context_at_turn` already carries elsewhere in this doc.
@@ -456,7 +456,7 @@ A PR merged on the same day a cost-affecting change deployed needs manual resolu
 
 **`corpus_override=1` flags a root set built without this workstation's real declared-roots file.** It's set by `_config_dir.py`'s `declared_roots_file_is_overridden()` — see that function's own docstring for exactly which env vars and conditions trigger it. This includes both a synthetic test fixture and a genuine real single-account run with no cross-account declaration (`CLAUDE_CONFIG_DIR` set, `~/.claude/transcript-config-dirs` absent) — treat both as unverified provenance, not necessarily fabricated data. See `docs/transcript-analysis.md`'s "Testing against a synthetic corpus" section for the recipe and why it's the safe way to smoke-test this or any other subcommand. Unlike the real-export sign-off exception (see the aggregate exception above), an export carrying `corpus_override=1` must never be published in any form, even in that same aggregate shape — its provenance is unverified, so no aggregate derived from it can honestly represent confirmed real spend.
 
-**A degraded row silently drops out of a `gh`-sourced aggregate.** `status != "ok"` rows carry missing-not-zero `gh` columns (see "Row status" above) and must be filtered before any size/rework aggregation, same as elsewhere in this doc. Under this export's grain, however, a key whose *latest* capture is degraded contributes no row at all to a `gh`-sourced aggregate, not merely an excluded one. An earlier complete capture, if one exists, is recoverable only from the source account's own ledger. The export's collapse step always takes the latest capture by `captured_at` and never prefers an older `ok` row, since inverting an operator's own explicit correction would be worse.
+**A degraded row silently drops out of an enrichment-sourced aggregate.** `status != "ok"` rows carry missing-not-zero enrichment-sourced columns (`commit_count`, `review_comment_count` and the mechanical proxies; see "Row status" above), which must be filtered before any rework aggregation, same as elsewhere in this doc. `additions`, `deletions` and `changed_files` come from the bulk discovery call and are exempt, so a size aggregation over them needs no such filter. Under this export's grain, however, a key whose *latest* capture is degraded contributes no row at all to an enrichment-sourced aggregate, not merely an excluded one. An earlier complete capture, if one exists, is recoverable only from the source account's own ledger. The export's collapse step always takes the latest capture by `captured_at` and never prefers an older `ok` row, since inverting an operator's own explicit correction would be worse.
 
 **The legacy-header `host` backfill carries through unchanged.** A ledger row parsed under the pre-host-column header (see "Schema" above) has its `host` backfilled to `github.com` before this export ever sees it — a validated historical fact (every such row predates GHE support), not a guess, so it tokenizes identically to a row that recorded `github.com` explicitly rather than reading as lower-confidence. The provenance line's `legacy_header_accounts` counts pre-host-header ledgers only; a ledger under the pre-`model_breakdown` header does not count.
 
@@ -503,7 +503,7 @@ Three kinds of column or row stay out of the fingerprint:
 
 - `review_comment_count`, because review comments can still arrive after merge.
 - `plan_file_added` and `risk_surface_flag`, because both depend on that run's own `--plan-file-glob`/`--risk-surface-glob` values, which can differ between captures.
-- A degraded row (`status` other than `ok`), which never matches this way because its zeroed `gh`-sourced columns would otherwise collide with any other degraded row's zeros.
+- A degraded row (`status` other than `ok`), which never matches this way because its zeroed enrichment-sourced columns (`commit_count`, `review_comment_count` and the mechanical proxies) would otherwise collide with any other degraded row's zeros. Its `additions`, `deletions` and `changed_files` come from the bulk discovery call and are exempt.
 
 Count a matched PR once, and sum its dollar and token columns across every matching row. A fingerprint shared by more than one row within a single group is a collision, and every row carrying it is excluded from merging rather than guessed at. A fingerprint merges across groups when every group holding it holds it exactly once. When that holds, every row carrying it unions into one PR, however many groups are involved. The fingerprint is not unique, so the layer-1+2 PR count is an estimate that can be off in either direction: a false cross-group merge lowers it, an unmatched duplicate raises it. It never exceeds the layer-1 count.
 

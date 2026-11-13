@@ -438,71 +438,6 @@ class TestPrCostExportReviewRounds:
         assert _DROPPED_LINE_PREFIX not in captured.out
 
 
-class TestCollapsePrCostRowsToCurrent:
-    """_collapse_pr_cost_rows_to_current, exercised directly."""
-
-    def test_later_captured_at_wins_and_superseded_row_is_absent(self):
-        older = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
-        newer = _sample_pr_cost_row(additions=2, captured_at="2026-01-02T00:00:00Z", supersedes="2026-01-01T00:00:00Z")
-        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([older, newer])
-        assert len(collapsed) == 1
-        row, correction_count = collapsed[0]
-        assert row["additions"] == 2
-        assert correction_count == 1
-
-    def test_collapse_compares_full_precision_captured_at_before_any_truncation(self):
-        """Guards the collapse-before-truncation ordering requirement:
-        collapse must run before merged_at/captured_at are truncated to a
-        date. Two same-key rows share a calendar day but differ by seconds;
-        the row appended FIRST is the chronologically later one by
-        full-precision captured_at. If collapse instead compared truncated
-        dates (both equal) and fell back to append order, it would wrongly
-        pick the second (older) row.
-        """
-        newer_appended_first = _sample_pr_cost_row(additions=10, captured_at="2026-01-01T09:00:10Z")
-        older_appended_second = _sample_pr_cost_row(additions=20, captured_at="2026-01-01T09:00:05Z")
-        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([newer_appended_first, older_appended_second])
-        assert len(collapsed) == 1
-        row, _correction_count = collapsed[0]
-        assert row["additions"] == 10
-
-    def test_correction_count_reflects_prior_capture_count(self):
-        rows = [
-            _sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z"),
-            _sample_pr_cost_row(captured_at="2026-01-02T00:00:00Z"),
-            _sample_pr_cost_row(captured_at="2026-01-03T00:00:00Z"),
-        ]
-        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current(rows)
-        assert len(collapsed) == 1
-        _row, correction_count = collapsed[0]
-        assert correction_count == 2
-
-    def test_uncorrected_row_has_zero_correction_count(self):
-        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([_sample_pr_cost_row()])
-        _row, correction_count = collapsed[0]
-        assert correction_count == 0
-
-    def test_two_rows_differing_only_by_machine_both_survive(self):
-        """machine is part of the collapse key, so two machines' rows for
-        the same PR are two distinct keys, not a correction pair."""
-        rows = [_sample_pr_cost_row(machine="ci1"), _sample_pr_cost_row(machine="ci2")]
-        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current(rows)
-        assert len(collapsed) == 2
-        assert {row["machine"] for row, _cc in collapsed} == {"ci1", "ci2"}
-
-    def test_newer_degraded_row_wins_over_an_older_ok_row(self):
-        """docs/pr-cost.md's documented invariant: collapse never prefers an
-        older ok row over a newer, still-current correction, even when that
-        correction is itself degraded -- inverting an operator's own
-        explicit correction would be worse."""
-        older_ok = _sample_pr_cost_row(status="ok", captured_at="2026-01-01T00:00:00Z")
-        newer_degraded = _sample_pr_cost_row(status="degraded_network", captured_at="2026-01-02T00:00:00Z")
-        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([older_ok, newer_degraded])
-        assert len(collapsed) == 1
-        row, _correction_count = collapsed[0]
-        assert row["status"] == "degraded_network"
-
-
 class TestPrCostExportCollapseAndTieBreakIntegration:
     def test_three_rows_two_sharing_an_identical_captured_at_last_appended_wins(
         self, tmp_path, fake_projects, monkeypatch,
@@ -528,6 +463,28 @@ class TestPrCostExportCollapseAndTieBreakIntegration:
         exported = _parse_pr_cost_export_row(rows[0])
         assert exported["additions"] == "3"
         assert exported["correction_count"] == "2"
+
+    def test_two_same_day_rows_seconds_apart_with_the_newer_appended_first_export_the_newer_values(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """The collapse compares full-precision captured_at, so it must run before the export truncates the
+        timestamp to a date: truncated, the two rows tie and the last-appended (older) row would win."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        newer_appended_first = _sample_pr_cost_row(additions=10, captured_at="2026-01-01T09:00:10Z")
+        older_appended_second = _sample_pr_cost_row(additions=20, captured_at="2026-01-01T09:00:05Z")
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [newer_appended_first, older_appended_second])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        rows = out_path.read_text().splitlines()[2:]
+        assert len(rows) == 1
+        exported = _parse_pr_cost_export_row(rows[0])
+        assert exported["additions"] == "10"
+        assert exported["correction_count"] == "1"
 
 
 class TestPrCostExportTimestamps:
@@ -608,13 +565,21 @@ class TestPrCostExportRefusals:
         assert str(roots[0]) not in err
         assert str(roots[1]) not in err
 
+    def test_an_empty_pr_cost_ledger_path_counts_as_unset_with_two_roots(self, tmp_path, monkeypatch):
+        _two_declared_roots(tmp_path, monkeypatch)
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert out_path.exists()
+
     def test_relative_pr_cost_ledger_path_exits_1_naming_account_with_no_raw_value(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
-        """_pr_cost_export_rows's own account-level `except ValueError` around
-        _pr_cost_ledger_path -- that raising function has no dedicated unit
-        test of its own anywhere, so this test exercises this catch-and-
-        report branch's exit code and account attribution directly."""
+        """pr-cost-export reaches the ledger path through _pr_cost_ledger_path_or_exit, so a relative
+        PR_COST_LEDGER_PATH exits 1 with the fixed account-1 line and never echoes the raw value."""
         _enable_pr_cost(tmp_path)
         monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
@@ -626,7 +591,7 @@ class TestPrCostExportRefusals:
         assert exc_info.value.code == 1
         assert not out_path.exists()
         err = capsys.readouterr().err
-        assert "account-1" in err
+        assert "pr-cost-export: account-1: PR_COST_LEDGER_PATH must be an absolute path" in err.splitlines()
         assert "relative/pr-cost-ledger.tsv" not in err
 
     def test_malformed_ledger_exits_1_naming_account_with_no_path_or_raw_value_and_no_partial_file(

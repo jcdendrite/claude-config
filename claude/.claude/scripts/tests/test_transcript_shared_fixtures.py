@@ -1,9 +1,50 @@
 """Tests of conftest's shared fixtures and helpers. This file deliberately loads no transcript-analysis.py shim,
 so a fixture that comes to depend on the shim fails here first."""
+import argparse
+import os
+
 import pytest
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, scope
 
-from .conftest import _table_cols
+from .conftest import _option_help, _pin_transcript_corpus_lookups, _table_cols
+
+_LEDGER_PATH_SENTINEL = "/zz-ledger-path-sentinel/pr-cost-ledger.tsv"
+
+
+def test_pin_transcript_corpus_lookups_unsets_the_ledger_path_and_pins_both_corpus_variables(tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_COST_LEDGER_PATH", _LEDGER_PATH_SENTINEL)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "unpinned")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", "unpinned")
+
+    _pin_transcript_corpus_lookups(tmp_path, monkeypatch)
+
+    assert "PR_COST_LEDGER_PATH" not in os.environ
+    assert os.environ["CLAUDE_CONFIG_DIR"] == str(tmp_path / "isolated-claude-config")
+    assert os.environ["TRANSCRIPT_CONFIG_DIRS_FILE"] == str(tmp_path / "nonexistent-transcript-config-dirs")
+
+
+def test_option_help_returns_the_whole_help_string_however_long_it_is():
+    long_help = "A help string " + "that runs well past any terminal width " * 8
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--long-option", help=long_help)
+    parser.add_argument("--other-option", help="Another help string.")
+
+    assert _option_help(parser, "--long-option") == long_help
+    assert _option_help(parser, "--other-option") == "Another help string."
+
+
+class TestAutouseIsolationAppliesTheCorpusPin:
+    """Wires _isolate_transcript_corpus_lookups to the pin helper. The class-scoped fixture sets the variable before
+    the function-scoped autouse fixture runs, so only that fixture's own call can remove it."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _ledger_path_set_before_autouse_isolation(self):
+        with pytest.MonkeyPatch.context() as class_scoped_monkeypatch:
+            class_scoped_monkeypatch.setenv("PR_COST_LEDGER_PATH", _LEDGER_PATH_SENTINEL)
+            yield
+
+    def test_ledger_path_is_unset_in_the_test_body(self):
+        assert "PR_COST_LEDGER_PATH" not in os.environ
 
 
 def test_fake_projects_patches_every_config_dir_binding_without_a_shim(fake_projects, tmp_path):

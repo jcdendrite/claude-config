@@ -1245,6 +1245,16 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
         }
 
+    def test_pr_cost_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_transcript_review_cost_by_size.py (SCRIPTS_TESTS_DIR) reads
+        docs/pr-cost.md's content by path, in addition to the docs/ blanket's
+        HOOKS_TESTS_DIR and SKILLS_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["docs/pr-cost.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
+
     def test_transcript_analysis_architecture_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
         """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
         reads this exact file's content by path to pin its module list, in
@@ -2169,6 +2179,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
     _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
     _mod.PRIVATE_PROJECT_REDACTION_DOC_MD,
+    _mod.PR_COST_DOC_MD,
     _mod.GLOBAL_CLAUDE_MD,
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,

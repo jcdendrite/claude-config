@@ -1396,6 +1396,115 @@ class TestLatestPrCostRowTieBreakLastWins:
         assert result["additions"] == 2
 
 
+class TestPrCostLedgerPathOverridden:
+    def test_a_non_empty_value_counts_as_set(self, monkeypatch):
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "zz-any-value")
+        assert pr_cost_ledger.pr_cost_ledger_path_overridden() is True
+
+    def test_an_empty_value_counts_as_unset(self, monkeypatch):
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "")
+        assert pr_cost_ledger.pr_cost_ledger_path_overridden() is False
+
+    def test_an_absent_variable_counts_as_unset(self, monkeypatch):
+        monkeypatch.delenv("PR_COST_LEDGER_PATH", raising=False)
+        assert pr_cost_ledger.pr_cost_ledger_path_overridden() is False
+
+    def test_the_resolved_path_ignores_an_empty_value(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "")
+        assert pr_cost_ledger._pr_cost_ledger_path(config_dir_override=tmp_path) == tmp_path / "pr-cost-ledger.tsv"
+
+
+class TestPrCostLedgerPathOrExit:
+    """_pr_cost_ledger_path_or_exit, the one place a relative PR_COST_LEDGER_PATH becomes an exit 1 for every ledger reader."""
+
+    @pytest.mark.parametrize(("subcommand", "ordinal"), [("pr-cost", 1), ("pr-cost-export", 2)])
+    def test_relative_override_exits_1_with_the_fixed_account_message_and_no_raw_value(
+        self, tmp_path, monkeypatch, capsys, subcommand, ordinal,
+    ):
+        raw_value = "zz-relative/pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", raw_value)
+
+        with pytest.raises(SystemExit) as exc_info:
+            pr_cost_ledger._pr_cost_ledger_path_or_exit(subcommand, ordinal, tmp_path)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.err == f"{subcommand}: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path\n"
+        assert raw_value not in captured.out + captured.err
+        assert exc_info.value.__context__ is None
+
+    def test_absolute_override_is_returned_as_is(self, tmp_path, monkeypatch):
+        override_path = tmp_path / "elsewhere" / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(override_path))
+
+        assert pr_cost_ledger._pr_cost_ledger_path_or_exit("pr-cost", 1, tmp_path) == override_path
+
+    def test_unset_variable_resolves_to_the_ledger_beside_the_config_dir_override(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PR_COST_LEDGER_PATH", raising=False)
+
+        assert pr_cost_ledger._pr_cost_ledger_path_or_exit("pr-cost", 1, tmp_path) == tmp_path / "pr-cost-ledger.tsv"
+
+
+class TestCollapsePrCostRowsToCurrent:
+    """_collapse_pr_cost_rows_to_current, exercised directly."""
+
+    def test_later_captured_at_wins_and_superseded_row_is_absent(self):
+        older = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
+        newer = _sample_pr_cost_row(additions=2, captured_at="2026-01-02T00:00:00Z", supersedes="2026-01-01T00:00:00Z")
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current([older, newer])
+        assert len(collapsed) == 1
+        row, correction_count = collapsed[0]
+        assert row["additions"] == 2
+        assert correction_count == 1
+
+    def test_collapse_compares_full_precision_captured_at_before_any_truncation(self):
+        """Two same-key rows share a calendar day and differ by seconds, and the row appended first is the
+        chronologically later one. The collapse keeps that row, so it orders by full-precision captured_at, not by
+        calendar day or append order."""
+        newer_appended_first = _sample_pr_cost_row(additions=10, captured_at="2026-01-01T09:00:10Z")
+        older_appended_second = _sample_pr_cost_row(additions=20, captured_at="2026-01-01T09:00:05Z")
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current([newer_appended_first, older_appended_second])
+        assert len(collapsed) == 1
+        row, _correction_count = collapsed[0]
+        assert row["additions"] == 10
+
+    def test_correction_count_reflects_prior_capture_count(self):
+        rows = [
+            _sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z"),
+            _sample_pr_cost_row(captured_at="2026-01-02T00:00:00Z"),
+            _sample_pr_cost_row(captured_at="2026-01-03T00:00:00Z"),
+        ]
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current(rows)
+        assert len(collapsed) == 1
+        _row, correction_count = collapsed[0]
+        assert correction_count == 2
+
+    def test_uncorrected_row_has_zero_correction_count(self):
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current([_sample_pr_cost_row()])
+        _row, correction_count = collapsed[0]
+        assert correction_count == 0
+
+    def test_two_rows_differing_only_by_machine_both_survive(self):
+        """machine is part of the collapse key, so two machines' rows for
+        the same PR are two distinct keys, not a correction pair."""
+        rows = [_sample_pr_cost_row(machine="ci1"), _sample_pr_cost_row(machine="ci2")]
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current(rows)
+        assert len(collapsed) == 2
+        assert {row["machine"] for row, _cc in collapsed} == {"ci1", "ci2"}
+
+    def test_newer_degraded_row_wins_over_an_older_ok_row(self):
+        """docs/pr-cost.md's documented invariant: collapse never prefers an
+        older ok row over a newer, still-current correction, even when that
+        correction is itself degraded -- inverting an operator's own
+        explicit correction would be worse."""
+        older_ok = _sample_pr_cost_row(status="ok", captured_at="2026-01-01T00:00:00Z")
+        newer_degraded = _sample_pr_cost_row(status="degraded_network", captured_at="2026-01-02T00:00:00Z")
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current([older_ok, newer_degraded])
+        assert len(collapsed) == 1
+        row, _correction_count = collapsed[0]
+        assert row["status"] == "degraded_network"
+
+
 class TestFormatPrCostLedgerRowColumnsParameterRegression:
     def test_default_columns_rendering_is_unchanged(self):
         """Golden literal captured from _format_pr_cost_ledger_row(_sample_pr_cost_row())

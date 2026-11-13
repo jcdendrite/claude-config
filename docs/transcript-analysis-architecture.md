@@ -251,7 +251,7 @@ when absent and passed through `scope._attribute_carried_branch`, and every reco
 window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
 main-thread round-opening record never needs. `REVIEW_SKILLS`, `REVIEW_ROUND_RULE`, `compute_review_round_costs`, `compute_review_round_counts`, `detect_round_windows`,
 `spawn_round_skill`, and `round_opened_by_spawn` are the public names here. `compute_review_round_costs`
-is read by `review_cost_by_size.py` and `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
+is read by `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
 miner's round filter and `routing_guard.py`'s per-round `spawn_open` flag are its consumers).
@@ -274,13 +274,11 @@ window's own `open_idx`/`skill`. `review_trace.py` and `routing_guard.py` are fu
 ### `review_cost_by_size.py`
 
 The review-cost-by-size command: `cmd_review_cost_by_size`, its `_add_review_cost_by_size_subparser`
-registration, and every helper used only by it. It prices `code-review` rounds with
-`review_rounds.compute_review_round_costs`, joins each branch to its merged PR by exact `headRefName`,
-and prints aggregates, join diagnostics and per-PR rows. Imports `gh_cli`, `render`, `review_rounds`, and
-`scope` all by module (attribute access). `cli.py` reads `_add_review_cost_by_size_subparser` bare. The
-module reads `scope._DEFAULT_BRANCH_CANDIDATES` and `scope._names_no_pr_branch` to keep default-branch and
-no-PR branches from joining. The scan, the join and the aggregation are separate functions so tests can
-feed each one literals.
+registration, and every helper used only by it. It reads each kept PR's `code-review` rounds from
+`ledger_rounds.read_ledger_prs`, which re-prices them, and prints aggregates, ledger diagnostics and per-PR
+rows. Imports `gh_cli`, `ledger_rounds`, `pr_cost_ledger`, `render`, and `scope` all by module (attribute access).
+`cli.py` reads `_add_review_cost_by_size_subparser` bare. The `gh_cli` import reaches only the origin-remote lookup. The
+aggregation and the diagnostics are separate functions so tests can feed each one literals.
 
 ### `author_outcome.py`
 
@@ -394,8 +392,7 @@ status enum a single source of truth rather than a duplicated pair of strings. `
 `workstream_cost.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
 by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
-discipline. `review_cost_by_size.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
-`_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_PR_COST_GH_PR_LIST_LIMIT` the same way.
+discipline. `review_cost_by_size.py` reads `_git_remote_origin_host_and_owner_repo` the same way.
 
 The period-cost command shares four pieces of this module:
 
@@ -422,6 +419,9 @@ resolution, canonical parser and formatter, append-only upsert, crash-safe write
 `--record` lock. Imports `ledger_common` by module, for `_ledger_path_is_git_tracked` and the
 machine-identity primitives its own writers call before recording. Binds `config_dir` by name from
 `_config_dir`, the same pattern `ledger_common.py` uses, for its own `_pr_cost_ledger_path`.
+`pr_cost_ledger_path_overridden` is the one rule that a non-empty `PR_COST_LEDGER_PATH` counts as set,
+`_pr_cost_ledger_path_or_exit` is the one exit for a relative override, and
+`_collapse_pr_cost_rows_to_current` is the one current-row collapse.
 
 ### `pr_cost.py`
 
@@ -441,6 +441,18 @@ collapsing every declared account's pr-cost ledger to current rows, redacting th
 one TSV. Makes no gh call and scans no transcript corpus. Imports `ledger_common`, `pr_cost_ledger`,
 `pricing`, `redaction`, `review_rounds`, and `scope` all by module. `_add_pr_cost_export_subparser` is the one name `build_parser()` reaches
 bare.
+
+### `ledger_rounds.py`
+
+The reader for the pr-cost ledger's `review_rounds` cells: `read_ledger_prs` reads each account's ledger and
+`select_ledger_prs` applies the selection policy to parsed rows, so the policy is testable without a ledger file.
+Makes no gh call and scans no transcript corpus. Imports `pr_cost_ledger`, `pricing`, `review_rounds`, and
+`scope` all by module. The `pr_cost_ledger` import reaches the ledger parser and its error type, and the shared
+collapse, path-exit and override helpers that the `pr_cost_ledger.py` section above names. The `pricing` import reaches
+`_reprice_token_splits`, which prices a round's stored token splits at the current rate table. The `scope` import
+reaches `_redaction_ordinals`, so an error names an account by an `account-N` ordinal. The ordinals match
+`pr-cost-export`'s only when both commands resolve the same root set (`--all-accounts`); default mode passes a one-root
+list, so it always reports `account-1`.
 
 ### `cache_rebuild_rules.py`
 

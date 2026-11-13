@@ -1,47 +1,144 @@
-"""Tests for review_cost_by_size.py's PR join, code-review round scan, command, and CLI wiring."""
-import os
+"""Tests for transcript_analysis/review_cost_by_size.py (review-cost-by-size).
+
+Aggregates are tested over literal records. The command is tested over pr-cost ledger files, with `subprocess.run`
+faked so that any `gh` call, and any git call beyond the origin lookup, shows in the recorded argv.
+"""
+import argparse
+import math
 import re
 import subprocess
-import time
-from collections import Counter
 from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
-from transcript_analysis import cli, gh_cli, review_cost_by_size, scope
+from transcript_analysis import ledger_rounds, pr_cost_ledger, review_cost_by_size, review_rounds, scope
 
-from ._pr_cost_helpers import _fake_pr_cost_subprocess_run, _merged_pr, _round_dict
-from .conftest import (
-    _agent_use,
-    _priced,
-    _skill_block,
-    _two_declared_roots,
-    _user_msg,
-    _write_jsonl,
-    _write_subagent_dispatch,
+from ._pr_cost_helpers import (
+    _LEDGER_DIR_MARKER,
+    _REPRICED_ROUND_MODEL,
+    _fake_pr_cost_subprocess_run,
+    _ledger_pr_row,
+    _review_rounds_cell,
+    _round_with_priced_splits,
 )
+from .conftest import _option_help, _priced, _skill_block, _two_declared_roots, _user_msg, _write_jsonl
 
 # Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees this read.
 _PRIVATE_PROJECT_REDACTION_DOC = REPO_ROOT / "docs" / "private-project-redaction.md"
 _TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
+_PR_COST_DOC = REPO_ROOT / "docs" / "pr-cost.md"
 
-_PROJECT_SLUG = "-home-user-testrepo"
-_HEADER_ACTIVE_ACCOUNT = "REVIEW COST BY SIZE SOURCES (this repo (1 project dirs); active account only)"
-_HEADER_EVERY_ACCOUNT = "REVIEW COST BY SIZE SOURCES (this repo (1 project dirs); every declared account)"
-# A claude-sonnet-5 turn of 100_000 input tokens prices at this many dollars.
-_ROUND_OPENING_TURN_DOLLARS = 0.20
-# A head name carrying a line break and an ANSI escape, as a hostile gh response could supply.
-_HOSTILE_HEAD_BRANCH = "feat-t1\nforged-report-line\x1b[31m"
-# Every head name `_two_root_corpus` feeds through `gh pr list` or writes to a transcript, plus the parts of the
-# hostile one that would forge or recolor a report line on their own.
-_TWO_ROOT_CORPUS_WITHHELD = (
-    "feat-a", "feat-b", "feat-t1", "feat-t2", "feat-no-sessions", "zz-unmerged-sentinel",
-    _HOSTILE_HEAD_BRANCH, "forged-report-line", "\x1b",
+_HEADER_ACTIVE_ACCOUNT = (
+    "REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)"
 )
-# The origin identity the success runs feed through `gh` and the project slug. Each test adds the tmp path, and
-# the two-root tests add `_account_directory_names(roots)`.
-_REPORT_IDENTITY_WITHHELD = ("sentinel-org", "sentinel-repo", _PROJECT_SLUG)
-_SENTINEL_ORIGIN_REPO = "sentinel-org/sentinel-repo"
+_HEADER_EVERY_ACCOUNT = (
+    "REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; every declared account)"
+)
+_NOTICE_TEXT = (
+    "Scope unverified -- a pr-cost ledger row does not record which project directories its --record run read, so a"
+    " PR's rounds can include another repository's session on a same-named branch; see docs/transcript-analysis.md"
+    " § \"review-cost-by-size\"."
+)
+_HEADER_LEDGER_PATH_OVERRIDE = (
+    "REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; PR_COST_LEDGER_PATH file,"
+    " account scope unverified)"
+)
+_NO_PR_REPORTED_TEXT = (
+    "No PR reported. This report reads only rows that pr-cost --record captured, which needs the pr_cost_recording"
+    " config key, and a row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
+    " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
+    " permanently understates the PR's row and the PR stays excluded. The ledger diagnostics below count the PRs"
+    " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
+)
+_NO_PR_RECORDED_TEXT = (
+    "No PR reported. The ledger read above has no row for this repository. Run pr-cost --record to capture merged PRs"
+    " past the as-of window; it needs the pr_cost_recording config key (see docs/pr-cost.md § \"Data\")."
+)
+_ORIGIN_LOOKUP_ONLY = [["git", "remote", "get-url", "origin"]]
+
+# The origin identity every ledger row and the faked `git remote get-url origin` carry. Each part is its own sentinel.
+_ORIGIN_HOST = "sentinel-host.example"
+_ORIGIN_OWNER = "sentinel-org"
+_ORIGIN_REPO_NAME = "sentinel-repo"
+_ORIGIN_REPO = f"{_ORIGIN_OWNER}/{_ORIGIN_REPO_NAME}"
+# A row for another repository on the origin host, and a row for the origin repository's slug on another host.
+_OTHER_HOST = "zz-other-host.example"
+_OTHER_OWNER = "zz-other-org"
+_OTHER_REPO_NAME = "zz-other-repo"
+_ESC = "\x1b"
+# Distinctive sentinels that satisfy the ledger's key grammar and cannot collide with report text.
+_UNPRICED_MODEL_SENTINEL = "zzunpricedmodelsentinel"
+_UNKNOWN_SKILL_SENTINEL = "zzunknownskillsentinel"
+_UNKNOWN_ROUND_KEY_SENTINEL = "zzunknownroundkeysentinel"
+_OVERRIDE_BASENAME = "zzoverridesentinel.tsv"
+
+
+def _branch_token(pr_number: int) -> str:
+    return f"zzbranchtoken{pr_number}"
+
+
+def _head_branch(pr_number: int) -> str:
+    """A head name carrying an ANSI escape, as a hostile ledger could supply. It holds no tab, newline or carriage
+    return, which the ledger writer refuses."""
+    return f"{_ESC}[31m{_branch_token(pr_number)}"
+
+
+def _machine_label(pr_number: int) -> str:
+    return f"zqm{pr_number}"
+
+
+def _second_machine_label(pr_number: int) -> str:
+    return f"zqn{pr_number}"
+
+
+def _row_components(*pr_numbers: int) -> tuple[str, ...]:
+    """The branch token and both machine labels of each seeded PR, none of which a report may print."""
+    return tuple(
+        component for pr_number in pr_numbers
+        for component in (_branch_token(pr_number), _machine_label(pr_number), _second_machine_label(pr_number))
+    )
+
+
+def _ledger_round(*, main_input: int = 100_000, agent_input: int = 50_000, **overrides) -> dict:
+    """A priceable round whose main and agent splits differ and whose stored micro-dollars differ from their price.
+
+    The defaults price at $0.20 for 100_000 main input tokens and $0.10 for 50_000 agent input tokens, while the
+    stored micro-dollars sum to 16.
+    """
+    return _round_with_priced_splits(
+        {"standard": {"input": main_input}}, {"standard": {"input": agent_input}},
+        **{
+            "main_usd_micros": 7, "agent_usd_micros": 9,
+            "unpriced_turns": 0, "dangling": 0, "invalid_usage_records": 0, "after_merge": 0,
+            **overrides,
+        },
+    )
+
+
+def _optional_code_review_cell(code_review: list[dict] | None, **other_skills: list[dict]) -> dict:
+    """A cell whose code-review list is `code_review`, or with no code-review key at all when None."""
+    return _review_rounds_cell(
+        {"code-review": code_review, **other_skills} if code_review is not None else dict(other_skills)
+    )
+
+
+def _origin_ledger_row(pr_number: int, *, cell: dict | None, machine: str | None = None, **overrides) -> dict:
+    return _ledger_pr_row(pr_number, machine=machine or _machine_label(pr_number), cell=cell, **{
+        "host": _ORIGIN_HOST, "repo": _ORIGIN_REPO, "head_branch": _head_branch(pr_number),
+        "additions": 3, "deletions": 2, **overrides,
+    })
+
+
+def _kept_row(pr_number: int, round_count: int = 1, **overrides) -> dict:
+    cell = _optional_code_review_cell([_ledger_round() for _ in range(round_count)])
+    return _origin_ledger_row(pr_number, cell=cell, **overrides)
+
+
+def _write_account_ledger(account_dir: Path, rows: list[dict]) -> None:
+    """Write `rows` to the ledger the command reads for the account whose `projects` directory is under `account_dir`."""
+    pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._pr_cost_ledger_path(config_dir_override=account_dir), rows,
+    )
 
 
 def _account_directory_names(roots: list[Path]) -> tuple[str, ...]:
@@ -52,52 +149,66 @@ def _account_directory_names(roots: list[Path]) -> tuple[str, ...]:
 
 
 def _review_cost_by_size_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    all_accounts: bool = False,
-    this_repo_slugs: list[str] | None = None,
+    *, projects: str = "*", this_repo: bool = False, all_accounts: bool = False,
 ) -> object:
-    """this_repo_slugs, when given, pre-seeds args._this_repo_slugs -- the cache
-    _resolve_project_scope reads first -- so a direct cmd call under --this-repo never shells out to git."""
-    attrs = {"projects": projects, "this_repo": this_repo, "all_accounts": all_accounts, "config_dir": None}
-    if this_repo_slugs is not None:
-        attrs["_this_repo_slugs"] = this_repo_slugs
-    return type("A", (), attrs)()
+    return type("A", (), {
+        "projects": projects, "this_repo": this_repo, "all_accounts": all_accounts, "config_dir": None,
+    })()
 
 
-def _merged_pr_sized(number: int, branch: str, *, additions: int, deletions: int) -> dict:
-    """A merged-PR dict with explicit, unequal additions and deletions, since a line total of
-    additions + deletions cannot tell the two apart when they are equal."""
-    return {**_merged_pr(number, branch), "additions": additions, "deletions": deletions}
+def _review_cost_by_size_args_scoped_to_seeded_session(fake_projects: Path) -> object:
+    """Args whose project scope already resolves to `fake_projects`, so a regression that reads transcripts finds the
+    seeded session and fails on its figures rather than on the faked subprocess's refusal of the slug lookup."""
+    args = _review_cost_by_size_args(this_repo=True)
+    args._this_repo_slugs = [fake_projects.name]
+    return args
 
 
 def _write_code_review_session(session_path, branch: str, round_count: int) -> None:
-    """One session of `round_count` code-review rounds on `branch`, each priced at
-    _ROUND_OPENING_TURN_DOLLARS and closed by a fresh user prompt."""
+    """One transcript session of `round_count` code-review rounds on `branch`, each priced at $0.20 and closed by a
+    fresh user prompt. The command ignores transcripts, so a figure from this session in a report is a defect."""
     records = []
     for round_index in range(round_count):
         minute = 2 * round_index
         records.append(_priced(
-            "claude-sonnet-5", input=100_000, branch=branch, ts=f"2026-08-01T10:{minute:02d}:00.000Z",
+            _REPRICED_ROUND_MODEL, input=100_000, branch=branch, ts=f"2026-08-01T10:{minute:02d}:00.000Z",
             content=[_skill_block(f"skill-{round_index}", "code-review")],
         ))
         records.append(_user_msg("thanks", branch=branch, ts=f"2026-08-01T10:{minute + 1:02d}:00.000Z"))
     _write_jsonl(session_path, records)
 
 
-def _run_cmd(monkeypatch, capsys, args, *, merged_prs=(), call_log=None, **fake_kwargs):
+def _run_cmd(monkeypatch, capsys, args, *, call_log=None):
     monkeypatch.setattr(
-        subprocess, "run",
-        _fake_pr_cost_subprocess_run(merged_prs=list(merged_prs), call_log=call_log, **fake_kwargs),
+        subprocess, "run", _fake_pr_cost_subprocess_run(host=_ORIGIN_HOST, repo=_ORIGIN_REPO, call_log=call_log),
     )
     review_cost_by_size.cmd_review_cost_by_size(args)
     return capsys.readouterr()
 
 
+def _run_report(monkeypatch, capsys, args) -> tuple[str, str]:
+    """Run the command to a printed report, and assert it made no call beyond the origin lookup."""
+    call_log: list[list[str]] = []
+    out, err = _run_cmd(monkeypatch, capsys, args, call_log=call_log)
+    assert call_log == _ORIGIN_LOOKUP_ONLY
+    return out, err
+
+
 def _printed_pr_numbers(stdout: str) -> list[int]:
     _, _, rows_section = stdout.partition("Per-PR rows")
     return [int(match.group(1)) for match in re.finditer(r"^\s+(\d+)\s+[\d,]+\s+\d+\s", rows_section, re.MULTILINE)]
+
+
+def _count_line(out: str, label: str) -> int:
+    """The count on the `  <label>: <n>` line of the diagnostics block."""
+    matches = re.findall(rf"^  {re.escape(label)}: ([\d,]+)$", out, re.MULTILINE)
+    assert len(matches) == 1, f"expected one {label!r} line, found {matches}"
+    return int(matches[0].replace(",", ""))
+
+
+def _assert_withheld(out: str, err: str, *components: str) -> None:
+    for component in components:
+        assert component not in out + err, f"{component!r} reached the report"
 
 
 # The first alternative matches the digits that belong to a label: a size bucket's edges and the trend's rounds floor.
@@ -126,285 +237,116 @@ def _label_lines_with_figures_masked(report_lines: list[str]) -> list[str]:
     ]
 
 
-class TestJoinRoundsToPrs:
-    def test_every_join_outcome(self):
-        rounds = [
-            # Arrive out of sort_key order: sorted order is the second, third, first.
-            _round_dict(
-                branch="feat-joined", main_dollars=1.0, agent_dollars=0.5, sort_ts=3.0,
-                unpriced_turns=1, dangling=0, invalid_usage_records=31,
-            ),
-            _round_dict(
-                branch="feat-joined", main_dollars=2.0, agent_dollars=0.25, sort_ts=1.0,
-                unpriced_turns=2, dangling=1, invalid_usage_records=37,
-            ),
-            _round_dict(
-                branch="feat-joined", main_dollars=4.0, agent_dollars=0.0, sort_ts=2.0,
-                unpriced_turns=0, dangling=3, invalid_usage_records=41,
-            ),
-            _round_dict(
-                branch="feat-unmerged", main_dollars=9.0, sort_ts=1.0,
-                unpriced_turns=5, dangling=7, invalid_usage_records=43,
-            ),
-            _round_dict(
-                branch="feat-reused", main_dollars=1.0, sort_ts=1.0,
-                unpriced_turns=11, dangling=13, invalid_usage_records=47,
-            ),
-            _round_dict(
-                branch="main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=17, dangling=19, invalid_usage_records=53),
-            _round_dict(
-                branch="worktree-agent-abc", main_dollars=1.0, sort_ts=1.0,
-                unpriced_turns=23, dangling=29, invalid_usage_records=59,
-            ),
+class TestPrintPrRows:
+    def test_rows_sort_by_lines_ascending_then_pr_number_ascending(self, capsys):
+        records = [
+            review_cost_by_size._PrRecord(number=number, lines=lines, round_dollars=(0.1,))
+            for number, lines in ((98, 5), (97, 5), (60, 9), (99, 2))
         ]
-        merged_prs = [
-            _merged_pr_sized(101, "feat-joined", additions=100, deletions=49),
-            _merged_pr_sized(201, "feat-reused", additions=1, deletions=2),
-            _merged_pr_sized(202, "feat-reused", additions=3, deletions=4),
-            _merged_pr_sized(301, "feat-no-rounds", additions=5, deletions=6),
-            _merged_pr_sized(401, "main", additions=7, deletions=8),
-            _merged_pr_sized(402, "worktree-agent-abc", additions=9, deletions=10),
-            # A second PR per never-join branch makes the never-join check observable ahead of the ambiguity check.
-            _merged_pr_sized(403, "main", additions=11, deletions=12),
-            _merged_pr_sized(404, "worktree-agent-abc", additions=13, deletions=14),
-        ]
-        records, counts = review_cost_by_size._join_rounds_to_prs(rounds, merged_prs)
-
-        assert len(records) == 1
-        record = records[0]
-        assert (record.number, record.lines) == (101, 149)
-        assert record.round_dollars == (2.25, 4.0, 1.5)
-        assert record.round_count == 3
-        assert record.total_dollars == pytest.approx(7.75)
-        assert record.mean_dollars == pytest.approx(7.75 / 3)
-        assert counts == review_cost_by_size._JoinCounts(
-            merged_pr_count=8,
-            unmatched_branch_count=3,  # feat-unmerged, main, worktree-agent-abc
-            ambiguous_branch_count=1,  # feat-reused
-            unpriced_turns=3,
-            dangling_dispatches=4,
-            invalid_usage_records=109,  # 31 + 37 + 41, joined rounds only
-        )
-
-    def test_a_multi_round_unmatched_or_ambiguous_branch_counts_once_and_adds_no_unpriced_or_dangling(self):
-        rounds = [
-            _round_dict(
-                branch="feat-joined", main_dollars=1.0, sort_ts=1.0,
-                unpriced_turns=1, dangling=2, invalid_usage_records=73,
-            ),
-            _round_dict(
-                branch="feat-unmerged", main_dollars=1.0, sort_ts=1.0,
-                unpriced_turns=5, dangling=13, invalid_usage_records=79,
-            ),
-            _round_dict(
-                branch="feat-unmerged", main_dollars=1.0, sort_ts=2.0,
-                unpriced_turns=7, dangling=17, invalid_usage_records=83,
-            ),
-            _round_dict(
-                branch="feat-unmerged", main_dollars=1.0, sort_ts=3.0,
-                unpriced_turns=11, dangling=19, invalid_usage_records=89,
-            ),
-            _round_dict(
-                branch="feat-reused", main_dollars=1.0, sort_ts=1.0,
-                unpriced_turns=23, dangling=31, invalid_usage_records=97,
-            ),
-            _round_dict(
-                branch="feat-reused", main_dollars=1.0, sort_ts=2.0,
-                unpriced_turns=29, dangling=37, invalid_usage_records=101,
-            ),
-            _round_dict(
-                branch="main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=41, dangling=43, invalid_usage_records=103),
-            _round_dict(
-                branch="main", main_dollars=1.0, sort_ts=2.0, unpriced_turns=47, dangling=53, invalid_usage_records=107),
-            _round_dict(
-                branch="worktree-agent-abc", main_dollars=1.0, sort_ts=1.0,
-                unpriced_turns=59, dangling=61, invalid_usage_records=109,
-            ),
-            _round_dict(
-                branch="worktree-agent-abc", main_dollars=1.0, sort_ts=2.0,
-                unpriced_turns=67, dangling=71, invalid_usage_records=113,
-            ),
-        ]
-        merged_prs = [
-            _merged_pr_sized(101, "feat-joined", additions=1, deletions=1),
-            _merged_pr_sized(201, "feat-reused", additions=1, deletions=1),
-            _merged_pr_sized(202, "feat-reused", additions=1, deletions=1),
-        ]
-        records, counts = review_cost_by_size._join_rounds_to_prs(rounds, merged_prs)
-
-        assert [record.number for record in records] == [101]
-        assert counts == review_cost_by_size._JoinCounts(
-            merged_pr_count=3,
-            unmatched_branch_count=3,  # feat-unmerged, main, worktree-agent-abc
-            ambiguous_branch_count=1,
-            unpriced_turns=1,
-            dangling_dispatches=2,
-            invalid_usage_records=73,
-        )
-
-    def test_a_branch_joins_only_the_pr_whose_head_name_equals_it_exactly(self):
-        """Merged PRs headed `feat-2`, `feat/x` and `Feat` share a prefix, a path segment or a case-fold
-        with the round branch `feat`, and none of them joins it. The round branch `feat-2-fix` extends the
-        head `feat-2` and does not join it either."""
-        records, counts = review_cost_by_size._join_rounds_to_prs(
-            [
-                _round_dict(
-                    branch="feat", main_dollars=1.0, sort_ts=1.0),
-                _round_dict(
-                    branch="feat-2-fix", main_dollars=1.0, sort_ts=2.0),
-            ],
-            [
-                _merged_pr_sized(1, "feat-2", additions=1, deletions=1),
-                _merged_pr_sized(2, "feat/x", additions=1, deletions=1),
-                _merged_pr_sized(3, "Feat", additions=1, deletions=1),
-            ],
-        )
-        assert records == []
-        assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (2, 0)
-
-    @pytest.mark.parametrize("default_branch", ["main", "master", "develop"])
-    def test_a_default_branch_round_stays_unmatched_beside_a_merged_pr_headed_by_that_name(self, default_branch):
-        records, counts = review_cost_by_size._join_rounds_to_prs(
-            [_round_dict(branch=default_branch, main_dollars=1.0, sort_ts=1.0)],
-            [_merged_pr_sized(1, default_branch, additions=1, deletions=1)],
-        )
-        assert records == []
-        assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (1, 0)
-
-    def test_a_detached_head_round_stays_unmatched_beside_a_merged_pr_headed_head(self):
-        records, counts = review_cost_by_size._join_rounds_to_prs(
-            [_round_dict(branch=scope._DETACHED_HEAD_BRANCH, main_dollars=1.0, sort_ts=1.0)],
-            [_merged_pr_sized(1, scope._DETACHED_HEAD_BRANCH, additions=1, deletions=1)],
-        )
-        assert records == []
-        assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (1, 0)
-
-    def test_branchless_rounds_never_join_and_count_as_one_unmatched_branch(self):
-        """A round with no attributable gitBranch carries the empty string, so rounds from separate sessions
-        share one unmatched branch."""
-        rounds = [
-            _round_dict(
-                branch="", main_dollars=1.0, sort_ts=1.0, unpriced_turns=3, dangling=5, invalid_usage_records=19),
-            _round_dict(
-                branch="", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=11, invalid_usage_records=23),
-            _round_dict(
-                branch="", main_dollars=1.0, sort_ts=3.0, unpriced_turns=13, dangling=17, invalid_usage_records=29),
-        ]
-        records, counts = review_cost_by_size._join_rounds_to_prs(
-            rounds, [_merged_pr_sized(101, "feat-other", additions=1, deletions=1)],
-        )
-        assert records == []
-        assert counts == review_cost_by_size._JoinCounts(
-            merged_pr_count=1, unmatched_branch_count=1, ambiguous_branch_count=0, unpriced_turns=0,
-            dangling_dispatches=0, invalid_usage_records=0,
-        )
-
-    @pytest.mark.parametrize("missing_field", ["additions", "deletions", "number", "headRefName"])
-    def test_a_malformed_merged_pr_stops_the_join_instead_of_defaulting_to_zero_lines(self, missing_field):
-        merged_pr = _merged_pr_sized(101, "feat-joined", additions=100, deletions=49)
-        del merged_pr[missing_field]
-        with pytest.raises(KeyError, match=missing_field):
-            review_cost_by_size._join_rounds_to_prs(
-                [_round_dict(branch="feat-joined", main_dollars=1.0, sort_ts=1.0)], [merged_pr],
-            )
+        review_cost_by_size._print_pr_rows(records)
+        assert _printed_pr_numbers(capsys.readouterr().out) == [99, 97, 98, 60]
 
 
-class TestScanCodeReviewRounds:
-    @staticmethod
-    def _joined_record(rounds):
-        records, _ = review_cost_by_size._join_rounds_to_prs(
-            rounds, [_merged_pr_sized(7, "feat", additions=3, deletions=2)],
-        )
-        assert len(records) == 1
-        return records[0]
-
-    def test_rounds_sum_across_roots_when_one_roots_project_dir_is_a_symlink_outside_every_root(
-        self, tmp_path, monkeypatch,
-    ):
-        """Two rounds in root A and three in root B join one PR with five. B's slug-named project directory
-        resolves outside both roots, which scope._root_index_for_path would abort on if the scan passed
-        resolved roots."""
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        project_in_root_a = roots[0] / _PROJECT_SLUG
-        project_in_root_a.mkdir()
-        _write_code_review_session(project_in_root_a / "sess-a.jsonl", "feat", 2)
-        external = tmp_path / "external"
-        external.mkdir()
-        _write_code_review_session(external / "sess-b.jsonl", "feat", 3)
-        (roots[1] / _PROJECT_SLUG).symlink_to(external)
-
-        rounds, _scope_label = review_cost_by_size._scan_code_review_rounds(
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]), roots, Counter(),
-        )
-
-        assert self._joined_record(rounds).round_count == 5
-
-    def test_project_dir_aliased_across_roots_is_read_once(self, tmp_path, monkeypatch):
-        """B's slug-named directory is a symlink to A's, so the PR's round count equals A's alone."""
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        project_in_root_a = roots[0] / _PROJECT_SLUG
-        project_in_root_a.mkdir()
-        _write_code_review_session(project_in_root_a / "sess-a.jsonl", "feat", 2)
-        (roots[1] / _PROJECT_SLUG).symlink_to(project_in_root_a)
-
-        rounds, _scope_label = review_cost_by_size._scan_code_review_rounds(
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]), roots, Counter(),
-        )
-
-        assert self._joined_record(rounds).round_count == 2
-
-    def test_rounds_opened_after_a_prs_merge_still_count_toward_it(self, fake_projects):
-        """The session's rounds open on 2026-08-01, seven months after the PR's explicit mergedAt."""
-        _write_code_review_session(fake_projects / "sess-after-merge.jsonl", "feat", 2)
-        rounds, _scope_label = review_cost_by_size._scan_code_review_rounds(
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            [fake_projects.parent], Counter(),
-        )
-
-        records, _counts = review_cost_by_size._join_rounds_to_prs(
-            rounds, [{**_merged_pr_sized(7, "feat", additions=3, deletions=2), "mergedAt": "2026-01-01T00:00:00Z"}],
-        )
-
-        assert [(record.number, record.round_count) for record in records] == [(7, 2)]
-
-    def test_dispatch_dollars_count_once_and_only_code_review_rounds_count(self, fake_projects):
-        """The code-review round dispatches a subagent and sits alone in its session file, so it is that
-        session's last round window, where merged subagent records would be priced a second time. Its
-        dollars are the opening turn plus the dispatch's own $1.00, once. The plan-review and
-        ready-for-review rounds in a second session file never count."""
-        _write_jsonl(fake_projects / "sess-code-review.jsonl", [
-            _priced(  # opening turn: $0.20, also spawns dispatch a1
-                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
-            ),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, "sess-code-review", "agent-1", "a1",
-            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:30.000Z")],  # $1.00
-        )
-        _write_jsonl(fake_projects / "sess-other-reviews.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T11:00:00.000Z",
-                content=[_skill_block("p1", "plan-review")],
-            ),
-            _user_msg("next", branch="feat", ts="2026-08-01T11:01:00.000Z"),
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T11:02:00.000Z",
-                content=[_skill_block("r1", "ready-for-review")],
-            ),
-        ])
-
-        rounds, _scope_label = review_cost_by_size._scan_code_review_rounds(
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            [fake_projects.parent], Counter(),
-        )
-
-        record = self._joined_record(rounds)
-        assert record.round_count == 1
-        assert record.total_dollars == pytest.approx(_ROUND_OPENING_TURN_DOLLARS + 1.00)
+# The PRs excluded for each reason. The counts differ, so a count printed under another reason's label fails.
+_EXCLUDED_PR_NUMBERS: dict[str, tuple[int, ...]] = {
+    ledger_rounds.EXCLUDED_NO_CELL: (21,),
+    ledger_rounds.EXCLUDED_MULTI_ROW: (22, 23),
+    ledger_rounds.EXCLUDED_JOIN_CONFIDENCE_LOW: (24, 25, 26),
+    ledger_rounds.EXCLUDED_RULE: (27, 28, 29, 30),
+    ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND: (32, 33, 34, 35, 36),
+}
+_EXCLUDED_PR_COUNT = sum(len(numbers) for numbers in _EXCLUDED_PR_NUMBERS.values())
+_NON_ORIGIN_PR_NUMBERS = (89, 90)
+_ACTIVE_ACCOUNT_PR_NUMBERS = (11, 12, *(number for numbers in _EXCLUDED_PR_NUMBERS.values() for number in numbers))
 
 
-class TestCmdReviewCostBySize:
+def _excluded_cell(review_round: dict) -> dict:
+    """A cell holding an after-merge round and then `review_round`, so an exclusion decided at `review_round` must not
+    count the after-merge round ahead of it."""
+    return _optional_code_review_cell([_ledger_round(after_merge=1), review_round])
+
+
+def _excluded_rows() -> list[dict]:
+    """The rows of `_EXCLUDED_PR_NUMBERS`, each carrying its own seeded `machine` and `head_branch`."""
+    unpriced_round = _ledger_round(main_tokens={_UNPRICED_MODEL_SENTINEL: {"standard": {"input": 1}}})
+    rows = [_origin_ledger_row(number, cell=None) for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_NO_CELL]]
+    for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_MULTI_ROW]:
+        rows.append(_origin_ledger_row(number, cell=_excluded_cell(_ledger_round()), machine=_machine_label(number)))
+        rows.append(_origin_ledger_row(number, cell=_excluded_cell(_ledger_round()), machine=_second_machine_label(number)))
+    for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_JOIN_CONFIDENCE_LOW]:
+        rows.append(_origin_ledger_row(
+            number, cell=_excluded_cell(_ledger_round()), join_confidence=pr_cost_ledger._PR_COST_JOIN_CONFIDENCE_LOW,
+        ))
+    for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_RULE]:
+        rows.append(_origin_ledger_row(
+            number, cell={**_excluded_cell(_ledger_round()), "rule": review_rounds.REVIEW_ROUND_RULE + 1},
+        ))
+    for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND]:
+        rows.append(_origin_ledger_row(number, cell=_excluded_cell(unpriced_round)))
+    return rows
+
+
+def _non_origin_rows() -> list[dict]:
+    """A kept-looking PR on the origin host for another repository, and one for the origin repository's slug on
+    another host. Neither is read, counted or named by a report."""
+    return [
+        _origin_ledger_row(_NON_ORIGIN_PR_NUMBERS[0], cell=_optional_code_review_cell([_ledger_round()]), host=_OTHER_HOST),
+        _origin_ledger_row(
+            _NON_ORIGIN_PR_NUMBERS[1], cell=_optional_code_review_cell([_ledger_round()]),
+            repo=f"{_OTHER_OWNER}/{_OTHER_REPO_NAME}",
+        ),
+    ]
+
+
+def _non_origin_components() -> tuple[str, ...]:
+    return _OTHER_HOST, _OTHER_OWNER, _OTHER_REPO_NAME, *_row_components(*_NON_ORIGIN_PR_NUMBERS)
+
+
+def _active_account_rows() -> list[dict]:
+    """PRs 11 and 12 are kept, the PRs of `_EXCLUDED_PR_NUMBERS` are excluded, and the PRs of `_non_origin_rows`
+    belong to another repository and another host. PR 11 also holds an after-merge code-review round and an
+    after-merge plan-review round."""
+    return [
+        _origin_ledger_row(11, additions=100, deletions=49, cell=_optional_code_review_cell(
+            [_ledger_round(), _ledger_round(), _ledger_round(after_merge=1)],
+            **{"plan-review": [_ledger_round(), _ledger_round(after_merge=1)]},
+        )),
+        _origin_ledger_row(12, additions=7, deletions=0, cell=_optional_code_review_cell(
+            [_ledger_round(**{_UNKNOWN_ROUND_KEY_SENTINEL: 5})], **{_UNKNOWN_SKILL_SENTINEL: [_ledger_round()]},
+        )),
+        *_excluded_rows(),
+        *_non_origin_rows(),
+    ]
+
+
+def _success_run_withheld(tmp_path: Path) -> tuple[str, ...]:
+    return (
+        _ESC, _ORIGIN_HOST, _ORIGIN_OWNER, _ORIGIN_REPO_NAME, _LEDGER_DIR_MARKER, str(tmp_path),
+        _UNPRICED_MODEL_SENTINEL, _UNKNOWN_SKILL_SENTINEL, _UNKNOWN_ROUND_KEY_SENTINEL,
+        *_row_components(*_ACTIVE_ACCOUNT_PR_NUMBERS, 31, 41, 42), *_non_origin_components(),
+    )
+
+
+def _assert_exclusion_counts_are_zero(out: str) -> None:
+    for reason in ledger_rounds.EXCLUSION_REASONS:
+        assert _count_line(out, f"PRs excluded, {reason}") == 0
+
+
+def _assert_exclusion_counts(out: str) -> None:
+    for reason, numbers in _EXCLUDED_PR_NUMBERS.items():
+        assert _count_line(out, f"PRs excluded, {reason}") == len(numbers)
+
+
+def _round_scaled(main_input: int) -> dict:
+    """A round whose agent split is half its main split."""
+    return _ledger_round(main_input=main_input, agent_input=main_input // 2)
+
+
+def _diagnostics_block(out: str) -> list[str]:
+    return out.split("\nLedger diagnostics\n")[1].split("\n\n")[0].splitlines()
+
+
+class TestCmdRefusalsAndFailures:
     @pytest.mark.parametrize(
         "args_kwargs",
         [
@@ -414,7 +356,7 @@ class TestCmdReviewCostBySize:
             pytest.param({"this_repo": True, "projects": "x"}, id="projects-with-this-repo"),
         ],
     )
-    def test_refuses_without_this_repo_before_any_gh_call(self, monkeypatch, capsys, args_kwargs):
+    def test_refuses_without_this_repo_before_any_subprocess_call(self, monkeypatch, capsys, args_kwargs):
         call_log: list[list[str]] = []
         with pytest.raises(SystemExit) as exc_info:
             _run_cmd(monkeypatch, capsys, _review_cost_by_size_args(**args_kwargs), call_log=call_log)
@@ -429,255 +371,51 @@ class TestCmdReviewCostBySize:
         monkeypatch.setattr(scope, "config_dir", unresolvable_config_dir)
         call_log: list[list[str]] = []
         with pytest.raises(SystemExit) as exc_info:
-            _run_cmd(
-                monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-                call_log=call_log,
-            )
+            _run_cmd(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True), call_log=call_log)
         assert exc_info.value.code == 2
         assert call_log == []
         assert "review-cost-by-size: no HOME" in capsys.readouterr().err
 
-    @staticmethod
-    def _two_root_corpus(tmp_path, monkeypatch) -> tuple[list[dict], list[Path]]:
-        """Active root: feat-a (2 rounds), the size-tied PRs _HOSTILE_HEAD_BRANCH and feat-t2 (1 round each) and an
-        unmerged sentinel branch. Declared root: feat-b (3 rounds). Returns the merged-PR list and the two roots. The tied
-        PRs' session files sort opposite to their PR numbers (sess-t1 holds PR 31, sess-t2 holds PR 30), so
-        their records arrive out of PR-number order."""
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        active_project = roots[0] / _PROJECT_SLUG
-        active_project.mkdir()
-        _write_code_review_session(active_project / "sess-a.jsonl", "feat-a", 2)
-        _write_code_review_session(active_project / "sess-t1.jsonl", _HOSTILE_HEAD_BRANCH, 1)
-        _write_code_review_session(active_project / "sess-t2.jsonl", "feat-t2", 1)
-        _write_code_review_session(active_project / "sess-sentinel.jsonl", "zz-unmerged-sentinel", 1)
-        declared_project = roots[1] / _PROJECT_SLUG
-        declared_project.mkdir()
-        _write_code_review_session(declared_project / "sess-b.jsonl", "feat-b", 3)
-        merged_prs = [
-            _merged_pr_sized(31, _HOSTILE_HEAD_BRANCH, additions=4, deletions=3),
-            _merged_pr_sized(22, "feat-b", additions=20, deletions=5),
-            _merged_pr_sized(11, "feat-a", additions=3, deletions=2),
-            _merged_pr_sized(30, "feat-t2", additions=6, deletions=1),
-            _merged_pr_sized(99, "feat-no-sessions", additions=1, deletions=1),
-        ]
-        return merged_prs, roots
-
-    def test_default_mode_reads_the_active_root_alone_and_prints_rows_after_every_aggregate(
-        self, tmp_path, monkeypatch, capsys,
+    def test_all_accounts_exits_2_under_projects_dir_after_the_banner_when_the_config_dir_is_unresolvable(
+        self, monkeypatch, capsys,
     ):
-        merged_prs, roots = self._two_root_corpus(tmp_path, monkeypatch)
+        """`_projects_dir` reads config_dir() only while PROJECTS_DIR is absent from the module globals, and an
+        earlier test's monkeypatch can leave it there as a real global, so the test removes it first."""
+        def unresolvable_config_dir():
+            raise ValueError("no HOME")
+
+        monkeypatch.delitem(vars(scope), "PROJECTS_DIR", raising=False)
+        monkeypatch.setattr(scope, "config_dir", unresolvable_config_dir)
         call_log: list[list[str]] = []
-        out, err = _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=merged_prs, repo=_SENTINEL_ORIGIN_REPO, call_log=call_log,
-            enforce_repo_pin=_SENTINEL_ORIGIN_REPO,
-        )
-        pr_list_argv = next(argv for argv in call_log if argv[:3] == ["gh", "pr", "list"])
-        requested_fields = set(pr_list_argv[pr_list_argv.index("--json") + 1].split(","))
-        assert {"number", "headRefName", "additions", "deletions"} <= requested_fields
-        lines = out.splitlines()
-        assert lines[0] == _HEADER_ACTIVE_ACCOUNT
-        assert "scanning root" not in err
-        assert "DO NOT PUBLISH" not in out + err
-        assert "  PRs joined: 3" in lines
-        assert "  Merged PRs listed: 5" in lines
-        assert "  Unmatched branches: 1" in lines
-        assert any(line.startswith("  0-149 lines: n=3;") for line in lines)
-        assert _printed_pr_numbers(out) == [11, 30, 31]
-        assert out.index("Aggregates") < out.index("Join diagnostics") < out.index("Per-PR rows")
-        for withheld in (
-            *_TWO_ROOT_CORPUS_WITHHELD, *_REPORT_IDENTITY_WITHHELD, *_account_directory_names(roots), str(tmp_path),
-        ):
-            assert withheld not in out + err
-        # feat-a: two rounds at the opening-turn price.
-        assert re.search(r"^\s+11\s+5\s+2\s+\$0\.40\s+\$0\.20$", out, re.MULTILINE)
-
-    def test_a_pr_of_a_thousand_or_more_lines_prints_its_lines_with_a_thousands_separator(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        _write_code_review_session(fake_projects / "sess-large.jsonl", "feat-large", 2)
-        out, _err = _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=[_merged_pr_sized(7, "feat-large", additions=1000, deletions=480)],
-        )
-        assert "        7     1,480       2       $0.40       $0.20" in out.splitlines()
-
-    def test_origin_remote_host_reaches_the_auth_preflight_repo_pin_and_pr_discovery(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        """A GitHub Enterprise origin host is the host the preflight, the repo pin and the PR listing use.
-
-        The pin's gh-side host must agree with the origin host, or the run exits 2.
-        """
-        call_log: list[list[str]] = []
-        _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            host="ghe.example.com", repo="ghe-org/ghe-repo", call_log=call_log,
-            gh_repo_view_host="ghe.example.com",
-        )
-        auth_argv = next(argv for argv in call_log if argv[:3] == ["gh", "auth", "status"])
-        assert auth_argv[auth_argv.index("--hostname") + 1] == "ghe.example.com"
-        assert any(argv[:3] == ["gh", "repo", "view"] for argv in call_log)
-        pr_list_argv = next(argv for argv in call_log if argv[:3] == ["gh", "pr", "list"])
-        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "ghe.example.com/ghe-org/ghe-repo"
-
-    def test_all_accounts_merges_every_root_and_marks_both_streams_do_not_publish(
-        self, tmp_path, monkeypatch, capsys,
-    ):
-        merged_prs, roots = self._two_root_corpus(tmp_path, monkeypatch)
-        out, err = _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=merged_prs, repo=_SENTINEL_ORIGIN_REPO,
-        )
-        lines = out.splitlines()
-        assert lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-        assert lines[1] == _HEADER_EVERY_ACCOUNT
-        assert err.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-        assert "scanning root" in err
-        assert "  PRs joined: 4" in lines
-        assert any(line.startswith("  0-149 lines: n=4;") for line in lines)
-        assert _printed_pr_numbers(out) == [11, 30, 31, 22]
-        for withheld in (
-            *_TWO_ROOT_CORPUS_WITHHELD, *_REPORT_IDENTITY_WITHHELD, *_account_directory_names(roots), str(tmp_path),
-        ):
-            assert withheld not in out + err
-
-    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
-    def test_a_head_name_carried_by_two_merged_prs_is_counted_as_ambiguous_and_never_printed(
-        self, fake_projects, monkeypatch, capsys, all_accounts,
-    ):
-        _write_code_review_session(fake_projects / "sess-reused.jsonl", _HOSTILE_HEAD_BRANCH, 1)
-        out, err = _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=[
-                _merged_pr_sized(40, _HOSTILE_HEAD_BRANCH, additions=3, deletions=2),
-                _merged_pr_sized(41, _HOSTILE_HEAD_BRANCH, additions=6, deletions=1),
-            ],
-        )
-        lines = out.splitlines()
-        assert "  Ambiguous branches (excluded): 1" in lines
-        assert "  PRs joined: 0" in lines
-        for withheld in _TWO_ROOT_CORPUS_WITHHELD:
-            assert withheld not in out + err
+        with pytest.raises(SystemExit) as exc_info:
+            _run_cmd(
+                monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=True), call_log=call_log,
+            )
+        assert exc_info.value.code == 2
+        assert call_log == []
+        out, err = capsys.readouterr()
+        assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+        assert err.splitlines() == [review_cost_by_size._PRIVATE_VIEW_BANNER, "_projects_dir: no HOME"]
 
     def test_all_accounts_over_a_single_root_still_marks_both_streams_do_not_publish(
         self, fake_projects, monkeypatch, capsys,
     ):
-        out, err = _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
-        )
+        out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=True))
         assert out.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-        assert err.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-        assert "scanning root" not in err
-
-    def test_unreadable_session_files_are_counted_and_the_readable_one_still_joins(
-        self, tmp_path, fake_projects, monkeypatch, capsys,
-    ):
-        if os.geteuid() == 0:
-            pytest.skip("root bypasses file permission bits")
-        _write_code_review_session(fake_projects / "readable.jsonl", "feat-a", 1)
-        sealed_files = [fake_projects / "sealed-1.jsonl", fake_projects / "sealed-2.jsonl"]
-        for sealed in sealed_files:
-            _write_code_review_session(sealed, "feat-a", 1)
-            os.chmod(sealed, 0o000)
-        try:
-            out, err = _run_cmd(
-                monkeypatch, capsys,
-                _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-                merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
-                repo=_SENTINEL_ORIGIN_REPO,
-            )
-        finally:
-            for sealed in sealed_files:
-                os.chmod(sealed, 0o644)
-        lines = out.splitlines()
-        assert "  Unreadable sources skipped: 2" in lines
-        assert "  PRs joined: 1" in lines
-        for withheld in (*_REPORT_IDENTITY_WITHHELD, str(tmp_path)):
-            assert withheld not in out + err
-
-    def test_unreadable_sources_at_different_scan_levels_are_summed_across_roots(self, tmp_path, monkeypatch, capsys):
-        """A sealed session file in one root and a sealed project directory in the other count as 2.
-
-        The count sums the session-file and project-dir gap levels across both roots, so a count that read one
-        level alone would report 1.
-        """
-        if os.geteuid() == 0:
-            pytest.skip("root bypasses file permission bits")
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        active_project = roots[0] / _PROJECT_SLUG
-        active_project.mkdir()
-        _write_code_review_session(active_project / "readable.jsonl", "feat-a", 1)
-        sealed_file = active_project / "sealed.jsonl"
-        _write_code_review_session(sealed_file, "feat-a", 1)
-        sealed_project_dir = roots[1] / _PROJECT_SLUG
-        sealed_project_dir.mkdir()
-        os.chmod(sealed_file, 0o000)
-        os.chmod(sealed_project_dir, 0o000)
-        try:
-            out, err = _run_cmd(
-                monkeypatch, capsys,
-                _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
-                merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
-                repo=_SENTINEL_ORIGIN_REPO,
-            )
-        finally:
-            os.chmod(sealed_file, 0o644)
-            os.chmod(sealed_project_dir, 0o755)
-        lines = out.splitlines()
-        assert "  Unreadable sources skipped: 2" in lines
-        assert "  PRs joined: 1" in lines
-        for withheld in (*_REPORT_IDENTITY_WITHHELD, *_account_directory_names(roots), str(tmp_path)):
-            assert withheld not in out + err
-
-    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
-    def test_failing_gh_auth_exits_1_before_any_report_or_scan(self, tmp_path, monkeypatch, capsys, all_accounts):
-        self._two_root_corpus(tmp_path, monkeypatch)
-        scan_calls: list[tuple] = []
-        monkeypatch.setattr(
-            review_cost_by_size, "_scan_code_review_rounds", lambda *scan_args: scan_calls.append(scan_args),
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            _run_cmd(
-                monkeypatch, capsys,
-                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
-                gh_auth_status_failure=True,
-            )
-        assert exc_info.value.code == 1
-        out, err = capsys.readouterr()
-        error_lines = err.splitlines()
-        assert scan_calls == []
-        assert "scanning root" not in err
-        if all_accounts:
-            assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
-            assert error_lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-            assert error_lines[1].startswith("review-cost-by-size: gh auth status failed")
-        else:
-            assert out == ""
-            assert error_lines[0].startswith("review-cost-by-size: gh auth status failed")
+        assert err == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
 
     @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
     def test_failing_origin_remote_lookup_exits_1_under_this_commands_name(
         self, fake_projects, monkeypatch, capsys, all_accounts,
     ):
         """The helper's `subcommand` default is `pr-cost`; the failure message must name this command."""
-        remaining_calls_double = _fake_pr_cost_subprocess_run()
-
         def origin_remote_lookup_fails(cmd, *args, **kwargs):
-            if cmd[:3] == ["git", "remote", "get-url"]:
-                raise subprocess.CalledProcessError(128, cmd)
-            return remaining_calls_double(cmd, *args, **kwargs)
+            raise subprocess.CalledProcessError(128, cmd)
 
         monkeypatch.setattr(subprocess, "run", origin_remote_lookup_fails)
         with pytest.raises(SystemExit) as exc_info:
             review_cost_by_size.cmd_review_cost_by_size(
-                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
+                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts),
             )
         assert exc_info.value.code == 1
         out, err = capsys.readouterr()
@@ -690,106 +428,426 @@ class TestCmdReviewCostBySize:
             assert out == ""
             assert error_lines[0].startswith("review-cost-by-size: could not resolve this repo's own remote")
 
-    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
-    def test_failing_worktree_listing_exits_1_under_this_commands_name_before_any_report(
-        self, fake_projects, monkeypatch, capsys, all_accounts,
-    ):
-        """With no pre-seeded slugs the scan resolves them from `git worktree list`, which fails here."""
-        remaining_calls_double = _fake_pr_cost_subprocess_run()
-
-        def worktree_listing_fails(cmd, *args, **kwargs):
-            if cmd[:3] == ["git", "worktree", "list"]:
-                raise subprocess.CalledProcessError(128, cmd)
-            return remaining_calls_double(cmd, *args, **kwargs)
-
-        monkeypatch.setattr(subprocess, "run", worktree_listing_fails)
-        with pytest.raises(SystemExit) as exc_info:
-            review_cost_by_size.cmd_review_cost_by_size(
-                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts),
-            )
-        assert exc_info.value.code == 1
-        out, err = capsys.readouterr()
-        assert "review-cost-by-size: cannot determine repo scope" in err
-        assert out == (review_cost_by_size._PRIVATE_VIEW_BANNER + "\n" if all_accounts else "")
-
-    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
-    def test_failing_merged_pr_discovery_exits_1_before_any_scan_or_report(
-        self, fake_projects, monkeypatch, capsys, all_accounts,
-    ):
-        scan_calls: list[tuple] = []
-        monkeypatch.setattr(
-            review_cost_by_size, "_scan_code_review_rounds", lambda *scan_args: scan_calls.append(scan_args),
-        )
-        remaining_calls_double = _fake_pr_cost_subprocess_run()
-        pr_list_calls: list[list[str]] = []
-        requested_sleeps: list[float] = []
-        monkeypatch.setattr(time, "sleep", lambda seconds: requested_sleeps.append(seconds))
-
-        def merged_pr_discovery_fails(cmd, *args, **kwargs):
-            if cmd[:3] == ["gh", "pr", "list"]:
-                pr_list_calls.append(cmd)
-                # Auth-shaped stderr is never retried.
-                return subprocess.CompletedProcess(cmd, 1, "", "error: not logged into any GitHub hosts\n")
-            return remaining_calls_double(cmd, *args, **kwargs)
-
-        monkeypatch.setattr(subprocess, "run", merged_pr_discovery_fails)
-        with pytest.raises(SystemExit) as exc_info:
-            review_cost_by_size.cmd_review_cost_by_size(
-                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
-            )
-        assert exc_info.value.code == 1
-        out, err = capsys.readouterr()
-        error_lines = err.splitlines()
-        assert len(pr_list_calls) == 1
-        assert requested_sleeps == []
-        assert scan_calls == []
-        # The abort label's command prefix is shared-helper wording, so only the fragment after it is pinned.
-        assert "gh pr list failed (degraded_auth) before any row could be captured" in error_lines[-1]
-        if all_accounts:
-            assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
-            assert error_lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-        else:
-            assert out == ""
-
-    def test_limit_note_prints_only_when_the_merged_list_reaches_the_gh_limit(self, fake_projects, monkeypatch, capsys):
-        """No sessions are in scope, so each run is the empty scope: the full report with n/a aggregates."""
-        monkeypatch.setattr(gh_cli, "_PR_COST_GH_PR_LIST_LIMIT", 3)
-        merged_prs = [_merged_pr_sized(number, f"feat-{number}", additions=1, deletions=1) for number in (1, 2, 3)]
-        args = _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG])
-
-        out_below_limit, _err = _run_cmd(monkeypatch, capsys, args, merged_prs=merged_prs[:2])
-        out_at_limit, _err = _run_cmd(monkeypatch, capsys, args, merged_prs=merged_prs)
-
-        assert "gh pr list limit" not in out_below_limit
-        assert "gh pr list limit" in out_at_limit
-        assert "can join the wrong PR" in out_at_limit
-        assert "can join the wrong PR" not in out_below_limit
-        for out in (out_below_limit, out_at_limit):
-            assert "  rounds per PR: n/a" in out
-            assert "  PRs joined: 0" in out.splitlines()
-
-    def test_gh_repo_view_naming_another_repo_exits_2_before_merged_pr_discovery(
+    def test_a_zero_length_ledger_exits_1_with_the_parse_error_and_prints_no_report(
         self, fake_projects, monkeypatch, capsys,
     ):
-        """The origin remote and `gh repo view` name different repos, so the pin refuses before any
-        `gh pr list` call. Without the pin the run would list the merged PRs and print a report."""
+        pr_cost_ledger._pr_cost_ledger_path(config_dir_override=fake_projects.parent.parent).write_text("")
+        call_log: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc_info:
+            _run_cmd(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True), call_log=call_log)
+        assert exc_info.value.code == 1
+        assert call_log == _ORIGIN_LOOKUP_ONLY
+        out, err = capsys.readouterr()
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as parse_error:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text("")
+        assert out == ""
+        assert err == f"review-cost-by-size: account-1: {parse_error.value}\n"
+
+    def test_all_accounts_prints_the_banner_on_both_streams_before_a_ledger_failure(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        pr_cost_ledger._pr_cost_ledger_path(config_dir_override=roots[1].parent).write_bytes(b"\xff\xfe\x00")
         call_log: list[list[str]] = []
         with pytest.raises(SystemExit) as exc_info:
             _run_cmd(
-                monkeypatch, capsys,
-                _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-                merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
-                repo="sentinel-org/sentinel-repo", gh_repo_name_with_owner="other-org/other-repo",
-                call_log=call_log,
+                monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=True), call_log=call_log,
+            )
+        assert exc_info.value.code == 1
+        assert call_log == _ORIGIN_LOOKUP_ONLY
+        out, err = capsys.readouterr()
+        assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+        assert err.splitlines() == [
+            review_cost_by_size._PRIVATE_VIEW_BANNER, "review-cost-by-size: account-2: ledger file could not be read",
+        ]
+
+    def test_an_exported_ledger_path_is_refused_under_all_accounts_across_two_roots_after_the_banner(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        _two_declared_roots(tmp_path, monkeypatch)
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(tmp_path / _OVERRIDE_BASENAME))
+        call_log: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc_info:
+            _run_cmd(
+                monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=True), call_log=call_log,
             )
         assert exc_info.value.code == 2
-        assert ["gh", "repo", "view"] in [argv[:3] for argv in call_log]
-        assert not any(argv[:3] == ["gh", "pr", "list"] for argv in call_log)
+        assert call_log == _ORIGIN_LOOKUP_ONLY
         out, err = capsys.readouterr()
-        assert out == ""
-        assert "does not match this repo's own git remote identity" in err
-        for withheld in ("sentinel-org", "sentinel-repo", "other-org", "other-repo"):
-            assert withheld not in err
+        assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+        assert err.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+        assert err.splitlines()[1].startswith("review-cost-by-size: PR_COST_LEDGER_PATH is refused")
+        _assert_withheld(out, err, str(tmp_path), _OVERRIDE_BASENAME)
+
+
+class TestScopeHeader:
+    @pytest.mark.parametrize(
+        ("all_accounts", "ledger_path_overridden", "expected"),
+        [
+            pytest.param(False, False, _HEADER_ACTIVE_ACCOUNT, id="default"),
+            pytest.param(True, False, _HEADER_EVERY_ACCOUNT, id="all-accounts"),
+            pytest.param(False, True, _HEADER_LEDGER_PATH_OVERRIDE, id="default-with-override"),
+            pytest.param(True, True, _HEADER_LEDGER_PATH_OVERRIDE, id="all-accounts-with-override"),
+        ],
+    )
+    def test_the_header_names_the_account_scope_and_an_override_replaces_it(
+        self, all_accounts, ledger_path_overridden, expected,
+    ):
+        assert review_cost_by_size._scope_header(all_accounts, ledger_path_overridden) == expected
+
+
+class TestCmdSuccessRuns:
+    """Each success run asserts its positive controls and withholds every component of the seeded rows."""
+
+    def test_default_mode_reads_the_active_account_ledger_alone_and_withholds_every_seeded_component(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        _write_account_ledger(roots[0].parent, _active_account_rows())
+        _write_account_ledger(roots[1].parent, [_kept_row(31)])
+
+        out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        lines = out.splitlines()
+        assert lines[0] == _HEADER_ACTIVE_ACCOUNT
+        assert err == ""
+        assert "DO NOT PUBLISH" not in out
+        assert _printed_pr_numbers(out) == [12, 11]
+        assert _count_line(out, "PRs reported") == 2
+        assert _count_line(out, "PRs with a current row for this repository") == 2 + _EXCLUDED_PR_COUNT
+        _assert_exclusion_counts(out)
+        _assert_withheld(out, err, *_success_run_withheld(tmp_path), *_account_directory_names(roots))
+
+    def test_all_accounts_reads_a_second_account_with_no_opt_in_and_marks_both_streams_do_not_publish(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        _write_account_ledger(roots[0].parent, _active_account_rows())
+        _write_account_ledger(roots[1].parent, [_kept_row(31)])
+
+        out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=True))
+
+        lines = out.splitlines()
+        assert lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+        assert lines[1] == _HEADER_EVERY_ACCOUNT
+        assert err == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+        assert _printed_pr_numbers(out) == [31, 12, 11]
+        assert _count_line(out, "PRs reported") == 3
+        assert _count_line(out, "PRs with a current row for this repository") == 3 + _EXCLUDED_PR_COUNT
+        _assert_withheld(out, err, *_success_run_withheld(tmp_path), *_account_directory_names(roots))
+
+    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts-single-root"])
+    def test_an_exported_ledger_path_replaces_the_active_ledger_at_one_root_and_the_header_says_so(
+        self, fake_projects, tmp_path, monkeypatch, capsys, all_accounts,
+    ):
+        override_file = tmp_path / _LEDGER_DIR_MARKER / _OVERRIDE_BASENAME
+        override_file.parent.mkdir()
+        pr_cost_ledger._write_pr_cost_ledger_file(override_file, [_kept_row(41), *_non_origin_rows()])
+        _write_account_ledger(tmp_path, [_kept_row(42)])
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(override_file))
+
+        out, err = _run_report(
+            monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts),
+        )
+
+        lines = out.splitlines()
+        assert lines[1 if all_accounts else 0] == _HEADER_LEDGER_PATH_OVERRIDE
+        assert _printed_pr_numbers(out) == [41]
+        _assert_withheld(out, err, *_success_run_withheld(tmp_path), str(override_file), _OVERRIDE_BASENAME)
+
+    def test_an_empty_exported_ledger_path_counts_as_unset_and_the_header_names_the_active_account(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(43)])
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "")
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert out.splitlines()[0] == _HEADER_ACTIVE_ACCOUNT
+        assert _printed_pr_numbers(out) == [43]
+
+    def test_the_report_prints_the_ledgers_figures_and_never_a_transcript_sessions(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """The ledger PR's two rounds cost $0.60. A transcript session on the same branch holds five rounds at
+        $1.00, which a transcript fallback would print."""
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(71, round_count=2)])
+        _write_code_review_session(fake_projects / "sess-same-branch.jsonl", _head_branch(71), 5)
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args_scoped_to_seeded_session(fake_projects))
+
+        assert _printed_pr_numbers(out) == [71]
+        assert f"  {71:>7}  {5:>8,}  {2:>6}  {'$0.60':>10}  {'$0.30':>10}" in out.splitlines()
+        assert "$1.00" not in out
+
+    def test_the_header_is_followed_by_the_scope_unverified_notice(self, fake_projects, monkeypatch, capsys):
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(11)])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        assert out.splitlines()[:2] == [_HEADER_ACTIVE_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE]
+        assert _NO_PR_REPORTED_TEXT not in out
+
+    def test_a_degraded_row_is_reported_with_its_size(self, fake_projects, monkeypatch, capsys):
+        _write_account_ledger(fake_projects.parent.parent, [
+            _kept_row(11, status=pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, additions=37, deletions=5),
+        ])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        assert f"  {11:>7}  {42:>8,}  {1:>6}" in out
+
+
+class TestCmdArithmeticAndDiagnostics:
+    def test_a_pr_is_sized_by_additions_plus_deletions_and_its_rounds_are_repriced_in_list_order(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """Four code-review rounds cost $0.30, $0.90, $0.60 and $1.20 in list order, so the within-PR rho is 0.80, where
+        sorted order would give 1.00. A huge after-merge round sits between the second and third, and a huge
+        plan-review round beside them. Neither adds to the series. Every stored micro-dollar figure differs from the
+        splits' price."""
+        pr_cell = _optional_code_review_cell(
+            [
+                _round_scaled(100_000), _round_scaled(300_000), _round_scaled(5_000_000) | {"after_merge": 1},
+                _round_scaled(200_000), _round_scaled(400_000),
+            ],
+            **{"plan-review": [_round_scaled(9_000_000)]},
+        )
+        _write_account_ledger(fake_projects.parent.parent, [_origin_ledger_row(61, additions=1000, deletions=480, cell=pr_cell)])
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert f"  {61:>7}  {'1,480':>8}  {4:>6}  {'$3.00':>10}  {'$0.75':>10}" in out.splitlines()
+        assert "  PRs with a rho: 1; median rho 0.80; share above zero 100.0%" in out.splitlines()
+
+    def test_a_pr_whose_rounds_carry_no_agent_tokens_is_reported_at_its_main_price(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """Main input of 100_000 tokens prices at $0.20, so two rounds with an empty agent object cost $0.40. A PR
+        whose rounds have neither object costs $0.00. Both are reported, not excluded as unpriceable."""
+        _write_account_ledger(fake_projects.parent.parent, [
+            _origin_ledger_row(
+                97, cell=_optional_code_review_cell([_ledger_round(agent_tokens={}), _ledger_round(agent_tokens={})]),
+            ),
+            _origin_ledger_row(98, cell=_optional_code_review_cell([_ledger_round(main_tokens={}, agent_tokens={})])),
+        ])
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert _count_line(out, "PRs reported") == 2
+        assert _printed_pr_numbers(out) == [97, 98]
+        assert f"  {97:>7}  {5:>8,}  {2:>6}  {'$0.40':>10}  {'$0.20':>10}" in out.splitlines()
+        assert f"  {98:>7}  {5:>8,}  {1:>6}  {'$0.00':>10}  {'$0.00':>10}" in out.splitlines()
+        _assert_exclusion_counts_are_zero(out)
+
+    def test_a_row_with_negative_additions_plus_deletions_is_reported_with_its_negative_size(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """Only a hand-edited ledger can hold a negative size. Its aggregate treatment is pinned in
+        test_transcript_review_cost_by_size_aggregates.py."""
+        _write_account_ledger(fake_projects.parent.parent, [
+            _kept_row(95, additions=-30, deletions=10), _kept_row(96, additions=3, deletions=2),
+        ])
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert _count_line(out, "PRs reported") == 2
+        assert any(line.startswith(f"  {95:>7}  {-20:>8,}  {1:>6}") for line in out.splitlines())
+
+    def test_the_per_pr_rows_print_after_every_aggregate_and_the_diagnostics(self, fake_projects, monkeypatch, capsys):
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(11)])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        assert out.index("Aggregates") < out.index("Ledger diagnostics") < out.index("Per-PR rows")
+        assert "Join diagnostics" not in out
+
+    def test_the_diagnostics_print_their_exact_line_set_with_each_count_flowing_from_the_fixture(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        _write_account_ledger(roots[0].parent, _active_account_rows())
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert _diagnostics_block(out) == [
+            f"  PRs with a current row for this repository: {2 + _EXCLUDED_PR_COUNT}",
+            "  PRs reported: 2",
+            *(f"  PRs excluded, {reason}: {len(numbers)}" for reason, numbers in _EXCLUDED_PR_NUMBERS.items()),
+            "  PRs with no code-review round before merge: 0",
+            "  Code-review rounds removed as opened at or after merge: 1",
+            "  Unpriced turns inside reported rounds: 0",
+            "  Dangling dispatches inside reported rounds: 0",
+        ]
+
+    def test_an_excluded_prs_after_merge_round_is_not_counted_as_removed(self, fake_projects, monkeypatch, capsys):
+        _write_account_ledger(fake_projects.parent.parent, [
+            _kept_row(11),
+            _origin_ledger_row(
+                24, cell=_excluded_cell(_ledger_round()), join_confidence=pr_cost_ledger._PR_COST_JOIN_CONFIDENCE_LOW,
+            ),
+        ])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        assert _count_line(out, f"PRs excluded, {ledger_rounds.EXCLUDED_JOIN_CONFIDENCE_LOW}") == 1
+        assert _count_line(out, "Code-review rounds removed as opened at or after merge") == 0
+
+    def test_an_unpriceable_prs_after_merge_round_ahead_of_the_unpriceable_one_is_not_counted_as_removed(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        unpriced_round = _ledger_round(main_tokens={_UNPRICED_MODEL_SENTINEL: {"standard": {"input": 1}}})
+        _write_account_ledger(
+            fake_projects.parent.parent, [_kept_row(11), _origin_ledger_row(32, cell=_excluded_cell(unpriced_round))],
+        )
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        assert _count_line(out, f"PRs excluded, {ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND}") == 1
+        assert _count_line(out, "Code-review rounds removed as opened at or after merge") == 0
+
+    def test_a_cell_under_an_older_rule_lands_under_the_rule_reason_alone(self, fake_projects, monkeypatch, capsys):
+        older_rule_cell = {**_excluded_cell(_ledger_round()), "rule": review_rounds.REVIEW_ROUND_RULE - 1}
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(11), _origin_ledger_row(27, cell=older_rule_cell)])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        for reason in ledger_rounds.EXCLUSION_REASONS:
+            assert _count_line(out, f"PRs excluded, {reason}") == int(reason == ledger_rounds.EXCLUDED_RULE)
+        assert _count_line(out, "PRs with a current row for this repository") == 2
+        assert _count_line(out, "PRs reported") == 1
+        assert _count_line(out, "Code-review rounds removed as opened at or after merge") == 0
+
+    @pytest.mark.parametrize("reported_invalid_usage_records", [1_234, 0])
+    def test_the_sums_cover_the_reported_code_review_rounds_alone(
+        self, fake_projects, monkeypatch, capsys, reported_invalid_usage_records,
+    ):
+        """Four rounds carry nonzero, distinct counts: the reported code-review round, an after-merge code-review
+        round, the kept PR's plan-review round and an excluded PR's round. Only the first reaches the sums."""
+        reported = _ledger_round(unpriced_turns=3, dangling=5, invalid_usage_records=reported_invalid_usage_records)
+        after_merge = _ledger_round(unpriced_turns=700, dangling=1_100, invalid_usage_records=1_300, after_merge=1)
+        plan_review = _ledger_round(unpriced_turns=17, dangling=19, invalid_usage_records=23)
+        plan_review_after_merge = _ledger_round(
+            unpriced_turns=2_900, dangling=3_100, invalid_usage_records=3_700, after_merge=1,
+        )
+        excluded = _ledger_round(unpriced_turns=31, dangling=37, invalid_usage_records=41)
+        _write_account_ledger(fake_projects.parent.parent, [
+            _origin_ledger_row(51, cell=_optional_code_review_cell(
+                [reported, after_merge], **{"plan-review": [plan_review, plan_review_after_merge]},
+            )),
+            _origin_ledger_row(
+                52, cell=_optional_code_review_cell([excluded]), join_confidence=pr_cost_ledger._PR_COST_JOIN_CONFIDENCE_LOW,
+            ),
+        ])
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert _count_line(out, "Unpriced turns inside reported rounds") == 3
+        assert _count_line(out, "Dangling dispatches inside reported rounds") == 5
+        assert _count_line(out, "Code-review rounds removed as opened at or after merge") == 1
+        malformed_lines = [line for line in out.splitlines() if "MALFORMED USAGE" in line]
+        if reported_invalid_usage_records:
+            assert malformed_lines == [
+                "  MALFORMED USAGE — 1,234 usage-bearing turns inside reported rounds had non-numeric or negative"
+                " token fields and were excluded from this report's dollars"
+            ]
+        else:
+            assert malformed_lines == []
+
+    def test_a_kept_pr_without_a_code_review_round_before_merge_is_counted_and_not_reported(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_account_ledger(fake_projects.parent.parent, [
+            _origin_ledger_row(91, cell=_optional_code_review_cell(None, **{"plan-review": [_ledger_round()]})),
+            _origin_ledger_row(92, cell=_optional_code_review_cell([_ledger_round(after_merge=1)])),
+            _origin_ledger_row(93, cell=_optional_code_review_cell(None)),
+            _kept_row(94),
+        ])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+        assert _count_line(out, "PRs with no code-review round before merge") == 3
+        assert _count_line(out, "PRs reported") == 1
+        assert _printed_pr_numbers(out) == [94]
+        assert _NO_PR_REPORTED_TEXT not in out
+
+
+class TestCmdEmptyReport:
+    @staticmethod
+    def _seed_ledger(case: str, account_dir: Path) -> tuple[int, ...]:
+        """Write the ledger for `case` and return the PR numbers seeded, whose components a report must withhold."""
+        if case == "missing-ledger":
+            return ()
+        if case == "header-only-ledger":
+            _write_account_ledger(account_dir, [])
+            return ()
+        if case == "other-repository-rows-only":
+            _write_account_ledger(account_dir, _non_origin_rows())
+            return ()
+        if case == "all-rows-excluded":
+            _write_account_ledger(account_dir, [
+                _origin_ledger_row(81, cell=None),
+                _origin_ledger_row(
+                    82, cell=_optional_code_review_cell([_ledger_round()]),
+                    join_confidence=pr_cost_ledger._PR_COST_JOIN_CONFIDENCE_LOW,
+                ),
+                *_non_origin_rows(),
+            ])
+            return (81, 82)
+        _write_account_ledger(account_dir, [
+            _origin_ledger_row(91, cell=_optional_code_review_cell(None, **{"plan-review": [_ledger_round()]})),
+            _origin_ledger_row(92, cell=_optional_code_review_cell([_ledger_round(after_merge=1)])),
+            _origin_ledger_row(93, cell=_optional_code_review_cell(None)),
+            *_non_origin_rows(),
+        ])
+        return (91, 92, 93)
+
+    @pytest.mark.parametrize(
+        ("case", "excluded_prs", "no_review_prs", "expected_message"),
+        [
+            pytest.param("missing-ledger", 0, 0, _NO_PR_RECORDED_TEXT, id="missing-ledger"),
+            pytest.param("header-only-ledger", 0, 0, _NO_PR_RECORDED_TEXT, id="header-only-ledger"),
+            pytest.param("other-repository-rows-only", 0, 0, _NO_PR_RECORDED_TEXT, id="other-repository-rows-only"),
+            pytest.param("all-rows-excluded", 2, 0, _NO_PR_REPORTED_TEXT, id="all-rows-excluded"),
+            pytest.param(
+                "kept-prs-without-a-review-round", 0, 3, _NO_PR_REPORTED_TEXT, id="kept-prs-without-a-review-round",
+            ),
+        ],
+    )
+    def test_an_empty_report_prints_the_no_pr_message_zero_aggregates_and_the_counts_that_explain_it(
+        self, fake_projects, tmp_path, monkeypatch, capsys, case, excluded_prs, no_review_prs, expected_message,
+    ):
+        seeded_prs = self._seed_ledger(case, fake_projects.parent.parent)
+        # A case with no origin row has no branch to share, so its session only checks that a transcript scan finds
+        # nothing to report.
+        for decoy_pr in seeded_prs or (81,):
+            _write_code_review_session(fake_projects / f"sess-same-branch-{decoy_pr}.jsonl", _head_branch(decoy_pr), 3)
+
+        out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args_scoped_to_seeded_session(fake_projects))
+
+        lines = out.splitlines()
+        assert lines[:3] == [
+            _HEADER_ACTIVE_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE,
+            expected_message,
+        ]
+        assert "  rounds per PR: n/a (n=0)" in lines
+        assert _count_line(out, "PRs reported") == 0
+        assert _count_line(out, "PRs with no code-review round before merge") == no_review_prs
+        assert sum(
+            _count_line(out, f"PRs excluded, {reason}") for reason in ledger_rounds.EXCLUSION_REASONS
+        ) == excluded_prs
+        assert _printed_pr_numbers(out) == []
+        _assert_withheld(
+            out, err, _ESC, str(tmp_path), _LEDGER_DIR_MARKER, _ORIGIN_HOST, _ORIGIN_OWNER, _ORIGIN_REPO_NAME,
+            *_row_components(*(seeded_prs or (81,))), *_non_origin_components(),
+        )
+
+
+class TestWording:
+    def test_the_scope_unverified_notice_and_the_no_pr_message_read_verbatim(self):
+        assert review_cost_by_size._SCOPE_UNVERIFIED_NOTICE == _NOTICE_TEXT
+        assert review_cost_by_size._NO_PR_REPORTED_MESSAGE == _NO_PR_REPORTED_TEXT
+        assert review_cost_by_size._NO_PR_RECORDED_MESSAGE == _NO_PR_RECORDED_TEXT
+
+    @pytest.mark.parametrize(
+        ("message_name", "cited_doc"),
+        [
+            pytest.param("_SCOPE_UNVERIFIED_NOTICE", _TRANSCRIPT_ANALYSIS_DOC, id="scope-unverified-notice"),
+            pytest.param("_NO_PR_REPORTED_MESSAGE", _TRANSCRIPT_ANALYSIS_DOC, id="no-pr-reported"),
+            pytest.param("_NO_PR_RECORDED_MESSAGE", _PR_COST_DOC, id="no-pr-recorded"),
+        ],
+    )
+    def test_each_message_cites_a_real_heading(self, message_name, cited_doc):
+        message = getattr(review_cost_by_size, message_name)
+        cited = re.search(r'§\s+"([^"\n]+)"', message)
+        assert cited, f"{message_name} does not cite a heading in the § \"...\" form"
+        assert normalize_heading(cited.group(1)) in heading_texts(cited_doc.read_text())
 
     def test_private_view_banner_cites_a_real_heading(self):
         banner = review_cost_by_size._PRIVATE_VIEW_BANNER
@@ -798,25 +856,43 @@ class TestCmdReviewCostBySize:
         assert cited, f"{banner!r} does not cite a heading in the § \"...\" form"
         assert normalize_heading(cited.group(1)) in heading_texts(_PRIVATE_PROJECT_REDACTION_DOC.read_text())
 
-    def test_the_docs_sample_labels_match_the_real_report_over_a_fixture(self, fake_projects, monkeypatch, capsys):
-        _write_code_review_session(fake_projects / "sess-sample.jsonl", "feat-a", 2)
-        out, _err = _run_cmd(
-            monkeypatch, capsys,
-            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
-        )
-
+    def test_the_docs_sample_labels_match_the_real_report_over_a_ledger_fixture(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(11, round_count=2)])
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
         assert _label_lines_with_figures_masked(_docs_sample_lines()) == _label_lines_with_figures_masked(
             out.splitlines()
         )
 
 
-class TestReviewCostBySizeArgparseWiring:
-    def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
-        parser = cli.build_parser()
-        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
-        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
-        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert with_flag.all_accounts is True
-        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert without_flag.all_accounts is False
+class TestSubparserHelp:
+    @staticmethod
+    def _review_cost_by_size_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
+        top_level = argparse.ArgumentParser()
+        subparsers = top_level.add_subparsers()
+        review_cost_by_size._add_review_cost_by_size_subparser(subparsers)
+        return top_level, subparsers.choices["review-cost-by-size"]
+
+    def test_this_repo_help_describes_ledger_rows_and_makes_no_worktree_claim(self):
+        _top_level, subparser = self._review_cost_by_size_parser()
+        help_text = _option_help(subparser, "--this-repo")
+        assert help_text == (
+            "Select the pr-cost ledger rows recorded for this checkout's origin repository"
+            " (see docs/transcript-analysis.md)."
+        )
+        assert "worktree" not in help_text
+
+    def test_all_accounts_help_names_the_ledger_and_the_multi_account_exclusion(self):
+        _top_level, subparser = self._review_cost_by_size_parser()
+        assert _option_help(subparser, "--all-accounts") == (
+            "Read every declared account's pr-cost ledger instead of the active account's alone. A PR with"
+            " more than one row that carries a review_rounds cell is excluded and counted, not summed."
+            " A private view: prints DO NOT PUBLISH, and its output is never proposed for publication."
+        )
+
+    def test_the_command_help_says_it_needs_a_ledger_and_makes_no_gh_call(self, monkeypatch):
+        """argparse wraps at the terminal width, so the width is pinned above the longest help line."""
+        monkeypatch.setenv("COLUMNS", "1000")
+        top_level, _subparser = self._review_cost_by_size_parser()
+        assert "Requires --this-repo and a pr-cost ledger; makes no gh call." in " ".join(top_level.format_help().split())
