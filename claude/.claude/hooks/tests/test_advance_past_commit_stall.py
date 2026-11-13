@@ -36,19 +36,17 @@ from helpers import (
 
 ADVANCE_HOOK = HOOKS_DIR / "advance-past-commit-stall.sh"
 
-# Verbatim from .claude/plans/commit-stall-block.md's Context section — the
-# issue's own quotes. The first is exactly 64 characters, which pins the
-# tail-slice-floor defect the plan's Assumption ledger Row 13 documents:
-# a byte-count tail slice (${msg: -600}) returns EMPTY for any message
-# shorter than 600 chars, so this exact quote is the regression pin for the
-# final-sentence-extraction replacement.
+# Verbatim from issue #526 — the issue's own quotes. The first is exactly 64
+# characters. A byte-count tail slice (${msg: -600}) returns EMPTY for any
+# message shorter than 600 chars, so this exact quote pins final-sentence
+# extraction.
 ISSUE_QUOTE_QUESTION = (
     "Want me to commit this, or do you want to review the diff first?"
 )
 ISSUE_QUOTE_NONQUESTION = "Per your standing instruction, I haven't committed."
-assert len(ISSUE_QUOTE_QUESTION) == 64, "pin drifted from the plan's own 64-char quote"
+assert len(ISSUE_QUOTE_QUESTION) == 64, "pin drifted from the issue's own 64-char quote"
 
-# The plan's own design-history examples (Part 2), also verbatim.
+# The modal commit ask the hook must fire on, and an accepted miss (see CORPUS).
 MODAL_CASE = (
     "Fixed the failing test in the parser. "
     "Want me to commit this, or do you want to review the diff first?"
@@ -155,8 +153,8 @@ def _fire(payload: dict, cwd, home, extra_env: dict | None = None) -> dict | Non
 
 CORPUS: list[tuple[str, bool]] = [
     (ISSUE_QUOTE_QUESTION, True),
-    (ISSUE_QUOTE_NONQUESTION, False),  # Row 19: non-question stops are uncaught
-    (MODAL_CASE, True),  # "must FIRE — the modal case" per the plan
+    (ISSUE_QUOTE_NONQUESTION, False),  # non-question stops are uncaught
+    (MODAL_CASE, True),  # the modal case: must fire
     (DOCUMENTED_MISS, True),  # accepted miss: exclusion window is final-sentence only
     ("I committed and pushed the change. Want me to profile it?", False),
     (

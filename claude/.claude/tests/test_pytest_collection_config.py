@@ -478,8 +478,8 @@ class TestNoBareSameDirectorySiblingImports:
 
         violations = []
         for path in tracked_paths:
-            # A directory with no __init__.py (claude/.claude/tests/, by this
-            # plan's own "Out of scope" note — see .claude/plans/fix-conftest-module-collision.md)
+            # A directory with no __init__.py (claude/.claude/tests/ stays
+            # unpackaged — see .claude/rules/test-tree-packaging.md)
             # is never handed a package identity, so pytest's prepend import
             # mode keeps inserting it directly onto sys.path and a bare
             # same-directory import there stays correct rather than latent.

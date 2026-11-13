@@ -137,7 +137,7 @@ class TestRsyncRemoveSourceFiles:
 
 
 class TestKnownGapBypass:
-    """row1c: source-argument resolution cannot see through shell variables
+    """Source-argument resolution cannot see through shell variables
     or thread cwd across a preceding `cd` in the same command — both fail
     OPEN (allow) by design, not deny. Pinned here so a future change to
     either behavior is visible, not silent."""

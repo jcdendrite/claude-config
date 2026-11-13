@@ -69,8 +69,7 @@ def _pop_segments(prefix: str | None, count: int) -> str | None:
 def _resolve_repo_path_expr(
     node: ast.expr, *, env: dict[str, str | None], test_file_relpath: str,
 ) -> str | None:
-    """Resolves one AST expression to a repo-relative prefix string, per the
-    grammar table in .claude/plans/select-tests-cross-domain-read-completeness.md.
+    """Resolves one AST expression to a repo-relative prefix string.
     Any shape not explicitly handled below is unresolvable by design:
     - a bare string `Constant`
     - a `BoolOp`
@@ -164,8 +163,10 @@ def _test_corpus(repo_root: Path) -> list[str]:
 
 class TestModuleLevelRepoPathResolver:
     """Pins _resolve_module_level_repo_paths' grammar directly against small
-    ast.parse-able fixture strings, one case per row of the grammar table
-    plus its negatives -- no real files involved."""
+    ast.parse-able fixture strings, one case per accepted shape (a seeded or
+    in-file name, `Path(__file__)`, `.resolve()`, `.parent`, `.parents[<int
+    literal>]`, `/ "<str literal>"`) plus its negatives -- no real files
+    involved."""
 
     _TEST_FILE = "claude/.claude/scripts/tests/test_example.py"
 
@@ -272,7 +273,7 @@ class TestModuleLevelRepoPathResolver:
         assert "X" not in resolved
 
     def test_parents_subscript_with_a_name_index_is_unresolvable(self):
-        """Pins the grammar table's own restriction to an int Constant --
+        """Pins the resolver's restriction of a `.parents[...]` index to an int Constant --
         a Name index (even one bound to an int elsewhere) doesn't qualify."""
         source = "N = 4\nX = Path(__file__).resolve().parents[N]\n"
         resolved = _resolve_module_level_repo_paths(source, test_file_relpath=self._TEST_FILE)
@@ -1867,20 +1868,22 @@ class TestResolveTargetPaths:
     select_pytest_targets' own tuple(sorted(targets)) contract."""
 
     def test_directory_absorbs_a_file_target_inside_it(self):
-        """Measured collision (ledger row 1): HOOKS_TESTS_DIR silently
-        drops to 623 collected tests instead of 5267 when
+        """Collision: HOOKS_TESTS_DIR silently under-collects, running far
+        fewer tests than the whole directory holds, when
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH, a file inside it, is also
-        a selected target."""
+        a selected target. resolve_target_paths collapses the pair to the
+        container alone."""
         resolved = _mod.resolve_target_paths(
             [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH], repo_root=_REPO_ROOT,
         )
         assert resolved == [_mod.HOOKS_TESTS_DIR]
 
     def test_directory_absorbs_a_globs_expansions(self):
-        """Measured collision (ledger row 1): SCRIPTS_TESTS_DIR silently
-        drops to 126 collected tests instead of 2718 when
+        """Collision: SCRIPTS_TESTS_DIR silently under-collects, running far
+        fewer tests than the whole directory holds, when
         TRANSCRIPT_ANALYSIS_TEST_GLOB expands to concrete files already
-        inside it."""
+        inside it. resolve_target_paths collapses the pair to the
+        container alone."""
         resolved = _mod.resolve_target_paths(
             [_mod.SCRIPTS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB], repo_root=_REPO_ROOT,
         )
@@ -1897,7 +1900,7 @@ class TestResolveTargetPaths:
 
     def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
         """Structural, synthetic -- not an observed collision. The real
-        rule tables are one level deep (ledger row 15), so only a synthetic
+        rule tables are one level deep, so only a synthetic
         fixture exercises the all-pairs-against-the-original-list behavior
         a progressively-shrinking working list would miss."""
         resolved = _mod.resolve_target_paths(["A", "A/B", "A/B/c.py"], repo_root=_REPO_ROOT)
@@ -1944,7 +1947,7 @@ class TestResolveTargetPaths:
         """Derived invariant, not a fixed fixture: every
         DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
         pair where one covers the other, so this self-updates when a row
-        gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
+        gains a target. Excludes FULL_SUITE_TARGETS.
         Including it collapses the check to the disjoint FULL_SUITE_TARGETS
         roots, making the assertion pass regardless of whether _covers
         works -- and that combined universe (FULL_SUITE_TARGETS plus every
@@ -3060,10 +3063,9 @@ class TestMainComposition:
     def test_stderr_scope_matches_recorded_pytest_argv_across_containment_collisions(
         self, monkeypatch, capsys, changed_paths, expected_argv,
     ):
-        """Regression test for ledger row 4: the printed line and the
-        pytest argv used to come from two separately derived calls, so a
-        containment collision could go silently under-collected while
-        stderr still claimed the wider (unresolved) scope.
+        """The printed scope line must match the pytest argv actually run,
+        so a containment collision cannot go under-collected while
+        stderr claims the wider (unresolved) scope.
         resolve_repo_root is monkeypatched to the real _REPO_ROOT, not a
         fake one, because the first case's selection includes a glob
         target that must really expand."""

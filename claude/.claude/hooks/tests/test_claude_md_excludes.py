@@ -65,7 +65,7 @@ class TestClaudeMdExcludes:
 
     def test_excluded_pattern_matches_stow_source_but_not_repo_root_claude_md(self):
         # claudeMdExcludes patterns match against absolute paths (see
-        # docs/design-decisions.md §39's Sources and the plan's assumption ledger).
+        # docs/design-decisions.md §39's Sources).
         stow_source_claude_md = REPO_ROOT / "claude" / ".claude" / "CLAUDE.md"
         assert stow_source_claude_md.is_file()
         # fnmatch approximates the real matcher, not proof of it — see docs/design-decisions.md §39 for the authoritative check.

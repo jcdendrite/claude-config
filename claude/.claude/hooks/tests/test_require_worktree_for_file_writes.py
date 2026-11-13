@@ -255,7 +255,7 @@ class TestRequireWorktreeForFileWritesHomeExemption:
 class TestRequireWorktreeForFileWritesConfigDirExemption:
     """CLAUDE_CONFIG_DIR relocates the harness-infrastructure exemption to
     the resolved config dir — a union with the literal $HOME/.claude arm
-    above, not a swap (ledger row 5)."""
+    above, not a swap."""
 
     def test_config_dir_outside_home_claude_exempted(self, opted_in_repo, isolated_home, monkeypatch):
         """A resolved config dir nested inside an opted-in main tree but
@@ -363,9 +363,7 @@ def _lock_worktree(worktree, reason: str) -> None:
 
 class TestWorktreeCollisionGuard:
     """Coverage for _lib_worktree_collision_guard (_lib.sh), called by this
-    hook at its 'already in a linked worktree' allow point. See
-    .claude/plans/worktree-collision-guard.md 'Critical files' for the case
-    list this class covers.
+    hook at its 'already in a linked worktree' allow point.
 
     Two branches of the guard cannot be forced deterministically from a
     full-hook, black-box subprocess invocation: the re-read-shows-unlocked

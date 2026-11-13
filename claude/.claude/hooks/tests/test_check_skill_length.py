@@ -1346,9 +1346,7 @@ class TestCheckSkillLengthMergeAwareBase:
         correct merge-tree base, 220 > 250 is false, so the gate allows;
         this discriminates the correct base from a regressed
         literal-HEAD fallback, where 220 > 0 is true and the gate would
-        instead deny -- the fixture shape
-        .claude/plans/merge-aware-review-gates.md's Verification section
-        names as untested against this gate's own git show pair."""
+        instead deny."""
         repo = _build_delete_modify_conflict_growing_skill(tmp_path)
         assert (
             run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)

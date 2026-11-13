@@ -153,7 +153,7 @@ def _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch) -> tuple[
     """Active profile (config_dir() via CLAUDE_CONFIG_DIR) plus one declared
     root (via TRANSCRIPT_CONFIG_DIRS_FILE), each holding a matching --this-repo
     project dir ("-repo-main") with a nonzero-cost transcript on branch
-    "main" -- the minimal fixture mechanism 1's --summary narrowing test and
+    "main" -- the minimal fixture the --summary narrowing test and
     its non-summary union counterpart share. Mocks `git worktree list` /
     `git rev-parse --show-toplevel` the same way every other --this-repo
     TestCostSummary fixture does."""
@@ -244,7 +244,7 @@ class TestCost:
 
     def test_flat_and_nested_both_present_not_double_counted(self):
         """flat cache_creation_input_tokens sums the nested fields on every real
-        record (row2); the split must read only the nested block, never add
+        record; the split must read only the nested block, never add
         flat on top of it."""
         usage = _priced("claude-sonnet-5", ephemeral_1h=10_000, ephemeral_5m=20_000)["message"]["usage"]
         assert usage["cache_creation_input_tokens"] == 30_000  # flat present too
@@ -342,8 +342,8 @@ class TestCost:
         assert pricing._context_bucket(200_001) == ">=200k"
 
     def test_price_turn_rate_independent_of_context_bucket(self):
-        """The $/token rate does not change with context size — pins row4 (no
-        >200k long-context premium applies to any model in the corpus) against
+        """The $/token rate does not change with context size — pins that no
+        >200k long-context premium applies to any model in the corpus, against
         a future regression."""
         usage_small = _priced("claude-sonnet-5", input=199_999)["message"]["usage"]
         usage_large = _priced("claude-sonnet-5", input=200_001)["message"]["usage"]
@@ -807,7 +807,7 @@ class TestCostResolveRoots:
     def test_summary_narrows_to_active_root_only_ignoring_declared_and_config_dir(
         self, tmp_path, monkeypatch, fake_config_dir_factory
     ):
-        """Mechanism 1a: --summary resolves to config_dir()/projects alone,
+        """--summary resolves to config_dir()/projects alone,
         skipping both declared_transcript_roots() and --config-dir extras
         entirely -- --summary already refuses --config-dir in combination at
         _cost_report, so this only has to prove the union itself never
@@ -840,7 +840,7 @@ class TestCostResolveRoots:
         assert roots == [default_dir / "projects", declared / "projects", acct_b / "projects"]
 
     def test_declared_roots_union_unaffected_for_non_cost_subcommand(self, tmp_path, monkeypatch):
-        """Mechanism 1 narrows _resolve_cost_roots only for subcommand ==
+        """The --summary narrowing in _resolve_cost_roots applies only for subcommand ==
         "cost" -- a populated declared-roots file still unions for every
         other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR caller that goes
         through this function, since only cost's argparser defines --summary
@@ -1587,8 +1587,7 @@ class TestCostByAccount:
 
     def test_cost_by_account_section_absent_at_single_root(self, fake_projects, capsys):
         """No --config-dir (single root): the '## Cost by account' section
-        must not appear at all -- promoted from the plan's manual
-        verification check into an automated regression pin."""
+        must not appear at all."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
@@ -1961,9 +1960,8 @@ class TestCostBranchFilter:
         """One session's records split across two branches: --branches A
         returns only A's dollars, and --branches A + --branches B sum to the
         unfiltered total — a session-level (not per-record) filter would
-        misprice this in both directions (row2: one real session in this
-        repo's own corpus splits 863 records on a feature branch, 212 on
-        main)."""
+        misprice this in both directions (a real session can span a feature
+        branch and main)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),  # $2.00
             _priced("claude-sonnet-5", input=500_000, branch="main"),         # $1.00
@@ -2386,7 +2384,7 @@ class TestCostSummary:
             cost._cost_report(_cost_args(summary=True, projects="*"), date(2026, 8, 2))
 
     def test_summary_with_machine_wide_projects_bypass_glob_exits_nonzero(self, fake_projects, capsys):
-        """row23: every _path_to_project_slug-derived project slug begins
+        """Every _path_to_project_slug-derived project slug begins
         with '-', so a glob like '-*' is machine-wide despite not being the
         literal default '*' — pins that this bypass is refused too, not just
         the literal default value."""
@@ -2589,7 +2587,7 @@ class TestCostSummary:
     def test_summary_totals_equal_active_root_only_when_second_account_declared(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Mechanism 1's core guarantee, driven through cmd_cost (not
+        """The --summary narrowing's core guarantee, driven through cmd_cost (not
         _cost_report directly) so _resolve_cost_roots' own narrowing is
         actually exercised: with two declared roots and a matching,
         nonzero-cost --this-repo project dir under each, cost --this-repo
@@ -2608,7 +2606,7 @@ class TestCostSummary:
     ):
         """Allow-path counterpart: the identical two-declared-root fixture,
         the same command minus --summary, still unions both accounts' totals
-        -- proves mechanism 1's narrowing is --summary-specific, not a
+        -- proves the narrowing is --summary-specific, not a
         blanket regression on --this-repo plus a declared root."""
         _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
         cost.cmd_cost(_cost_args(this_repo=True, branches="main"))
@@ -4287,7 +4285,7 @@ class TestCostTrendConfigDir:
     def test_per_root_empty_window_warns(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         """One of two --config-dir roots holds no transcripts at all -- its
         own WARNING fires, not masked by the other root's non-empty scan
-        (Mechanism 2 step 4's new per-root diagnostic, cost-trend's own
+        (cost-trend's own per-root diagnostic, the
         counterpart to cost's own per-root-empty-state coverage)."""
         default_dir = tmp_path / "default"
         monkeypatch.setattr(scope, "config_dir", lambda: default_dir)

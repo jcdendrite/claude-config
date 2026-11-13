@@ -192,8 +192,8 @@ class TestUnknownOrMissingToolToken:
 
 
 class TestSettingsJsonRegression:
-    """Phase 1's whole point is that both keys are true in the shared,
-    tracked settings.json every stow consumer inherits."""
+    """Both keys are true in the shared, tracked settings.json every
+    stow consumer inherits."""
 
     def test_both_disable_keys_are_true_in_the_shared_settings_json(self) -> None:
         settings = json.loads(_SETTINGS_JSON.read_text())

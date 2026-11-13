@@ -1194,8 +1194,6 @@ def _lock_worktree(worktree, reason: str) -> None:
 class TestWorktreeCollisionGuard:
     """Coverage for _lib_worktree_collision_guard (_lib.sh), called by this
     hook at both the fast-path and slow-path linked-worktree allow points.
-    See .claude/plans/worktree-collision-guard.md 'Critical files' for the
-    case list this class covers.
 
     Two branches of the guard cannot be forced deterministically from a
     full-hook, black-box subprocess invocation: the re-read-shows-unlocked

@@ -65,7 +65,7 @@ def _stow(repo: Path, home: Path) -> subprocess.CompletedProcess:
 
 def _stow_tree_folded(repo: Path, home: Path) -> subprocess.CompletedProcess:
     """Stow with ~/.claude deliberately NOT pre-created, so stow tree-folds
-    it into a single symlink — the legacy form (row2b)."""
+    it into a single symlink — the legacy form."""
     (home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
     return subprocess.run(
         ["stow", "-v", "--adopt", "-t", str(home), "claude"],
@@ -82,7 +82,7 @@ def _make_claude_shim(
 ) -> None:
     """`fail_subcommands` names which of {"remove", "add"} should exit
     non-zero instead of logging -- for pinning sync_marketplace_registration's
-    explicit error-handling around those calls (row G)."""
+    explicit error-handling around those calls."""
     marketplace_list_json = json.dumps(marketplace_entries)
     fail_subcommands_repr = repr(set(fail_subcommands))
     shim = textwrap.dedent(f"""\
@@ -403,7 +403,7 @@ class TestRepairQuarantineInvariant:
     def test_live_symlink_and_real_directory_left_untouched(self, tmp_path: Path) -> None:
         """Only a confirmed-broken symlink is quarantined — a live
         (non-broken) symlink and a real directory sitting alongside the
-        dangling stow-managed entries must survive untouched (row2c)."""
+        dangling stow-managed entries must survive untouched."""
         home = tmp_path / "home"
         old_repo = _make_repo(tmp_path, "old-repo")
         _stow(old_repo, home)
@@ -479,7 +479,7 @@ class TestDestinationValidation:
 
     def test_dash_prefixed_destination_not_parsed_as_flag(self, tmp_path: Path) -> None:
         """`--` ends flag parsing; without it a leading '-' would be read as
-        an unknown flag rather than the destination path (row2d)."""
+        an unknown flag rather than the destination path."""
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         (home / ".local" / "bin").mkdir(parents=True)
@@ -569,7 +569,7 @@ class TestClaudeCliMissing:
 
 class TestMarketplaceSubcommandFailure:
     def test_remove_failure_is_reported_and_does_not_abort_relocation(self, tmp_path: Path) -> None:
-        """Pins row G's fail-and-continue decision: a failing `claude plugin
+        """Pins the fail-and-continue decision: a failing `claude plugin
         marketplace remove` must not fall through to bash's default
         uncaught-error trace, must not abort finish_relocation's remaining
         steps (manifest write, self-copy refresh), and must not attempt the

@@ -1292,8 +1292,9 @@ class TestPlanFileAuthoringExemption:
 
 class TestRequirePlanReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the plan-review marker directory the same
-    way for marker.sh (write) and this hook (read) -- see marker.sh and the
-    cross-account bypass this closes (ledger row 7)."""
+    way for marker.sh (write) and this hook (read) -- a marker another
+    account writes under its own config directory, in the same $HOME, never
+    releases this account's gate."""
 
     def test_marker_under_matching_config_dir_allows(
         self, plan_review_repo, plan_review_home, tmp_path
@@ -2182,10 +2183,10 @@ class TestRequirePlanReviewPlanMode:
     def test_stale_or_no_marker_denies_with_planfilepath_set(
         self, plan_review_repo, plan_review_home, tmp_path
     ):
-        """Regression test for the bug this plan fixes: with no repo-relative
-        plan present, the pre-fix hook's CURRENT_HASH-empty short-circuit
-        let ExitPlanMode through unconditionally regardless of planFilePath.
-        A plan-mode ExitPlanMode call with no covering marker must now deny."""
+        """With no repo-relative plan present, the CURRENT_HASH-empty
+        short-circuit must not let ExitPlanMode through unconditionally
+        regardless of planFilePath. A plan-mode ExitPlanMode call with no
+        covering marker must deny."""
         sid = "session-planmode-nomark"
         shutil.rmtree(plan_review_repo / ".claude" / "plans", ignore_errors=True)
         plan_mode_file = tmp_path / "planmode-scratch.md"
