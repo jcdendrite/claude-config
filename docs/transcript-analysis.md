@@ -1507,7 +1507,11 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - For the same reason, and because the writer has no fork guard, a fork PR whose head name equals a local branch name inherits that branch's rounds, paired with the PR's size.
 - A row's size is `additions + deletions` as the ledger holds it. A row with a negative sum, which only a hand-edited ledger can hold, is ranked and counted but falls in no size bucket.
 - Because the join is by head-branch name, a PR whose head branch is `main`, `master`, `develop`, a detached `HEAD` or a `worktree-agent-*` name carries every round the capture saw on that name, including other repositories' sessions, and the report does not exclude it. A row holds only an opaque per-run branch label, so the report cannot refuse such a row.
-- Each account's ledger lives in its own config directory, so a PR worked on two machines shows only the rounds this machine captured, an undercount no field marks. If two machines with distinct machine identities write one ledger file, such a PR is excluded for carrying more than one cell-bearing row. A synced config directory shares one machine identity, so the report collapses to the latest capture with no exclusion count; see `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close". Whether any setup shares a file under distinct identities is unverified.
+- Each account's ledger lives in its own config directory, which has these consequences:
+  - A PR worked on two machines shows only the rounds this machine captured, an undercount no field marks.
+  - If two machines with distinct machine identities write one ledger file, such a PR is excluded for carrying more than one cell-bearing row.
+  - A synced config directory shares one machine identity, so the report collapses to the latest capture with no exclusion count. See `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
+  - Whether any setup shares a file under distinct identities is unverified.
 
 **Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication.
 
@@ -1537,7 +1541,7 @@ Ledger diagnostics
   PRs with a current row for this repository: 14
   PRs reported: 6
   PRs excluded, no review_rounds cell recorded: 5
-  PRs excluded, more than one row with a review_rounds cell, see docs/transcript-analysis.md: 0
+  PRs excluded, more than one row with a review_rounds cell: 0
   PRs excluded, join confidence low: 1
   PRs excluded, review-round rule other than the current one: 0
   PRs excluded, a round this checkout cannot price: 0

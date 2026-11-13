@@ -43,8 +43,7 @@ _SCOPE_UNVERIFIED_NOTICE = (
     " § \"review-cost-by-size\"."
 )
 _NO_PR_REPORTED_MESSAGE = (
-    "No PR reported. This report reads only rows that pr-cost --record captured, which needs the pr_cost_recording"
-    " config key, and a row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
+    "No PR reported. A row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
     " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
     " permanently understates the PR's row. The ledger diagnostics below count the PRs"
     " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."

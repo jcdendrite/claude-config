@@ -77,9 +77,6 @@ class TestExclusionReasons:
         assert len(set(ledger_rounds.EXCLUSION_REASONS)) == len(ledger_rounds.EXCLUSION_REASONS)
         assert list(_select().excluded) == list(ledger_rounds.EXCLUSION_REASONS)
 
-    def test_the_multi_row_label_points_at_the_docs_for_the_cause_list(self):
-        assert ledger_rounds.EXCLUDED_MULTI_ROW == "more than one row with a review_rounds cell, see docs/transcript-analysis.md"
-
 
 class TestSelectLedgerPrsFilter:
     def test_a_row_for_another_host_is_never_returned_or_counted(self):

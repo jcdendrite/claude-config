@@ -14,7 +14,7 @@ from transcript_analysis import pr_cost_ledger, pricing, review_rounds, scope
 
 # Printed labels, one per exclusion, in the order a PR is checked against them: the first match counts.
 EXCLUDED_NO_CELL = "no review_rounds cell recorded"
-EXCLUDED_MULTI_ROW = "more than one row with a review_rounds cell, see docs/transcript-analysis.md"
+EXCLUDED_MULTI_ROW = "more than one row with a review_rounds cell"
 EXCLUDED_JOIN_CONFIDENCE_LOW = "join confidence low"
 EXCLUDED_RULE = "review-round rule other than the current one"
 EXCLUDED_UNPRICEABLE_ROUND = "a round this checkout cannot price"

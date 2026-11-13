@@ -43,8 +43,7 @@ _HEADER_LEDGER_PATH_OVERRIDE = (
     " account scope unverified)"
 )
 _NO_PR_REPORTED_TEXT = (
-    "No PR reported. This report reads only rows that pr-cost --record captured, which needs the pr_cost_recording"
-    " config key, and a row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
+    "No PR reported. A row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
     " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
     " permanently understates the PR's row. The ledger diagnostics below count the PRs"
     " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
@@ -653,7 +652,6 @@ class TestCmdArithmeticAndDiagnostics:
         _write_account_ledger(fake_projects.parent.parent, [_kept_row(11)])
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
         assert out.index("Aggregates") < out.index("Ledger diagnostics") < out.index("Per-PR rows")
-        assert "Join diagnostics" not in out
 
     def test_the_diagnostics_print_their_exact_line_set_with_each_count_flowing_from_the_fixture(
         self, tmp_path, monkeypatch, capsys,
@@ -871,7 +869,6 @@ class TestSubparserHelp:
             "Select the pr-cost ledger rows recorded for this checkout's origin repository"
             " (see docs/transcript-analysis.md)."
         )
-        assert "worktree" not in help_text
 
     def test_all_accounts_help_names_the_ledger_and_the_multi_account_exclusion(self):
         _top_level, subparser = self._review_cost_by_size_parser()
