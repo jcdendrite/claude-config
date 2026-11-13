@@ -250,7 +250,7 @@ Both checks, and `check_tool_call_paths` as a whole:
 - `check_tool_call_paths` also returns `transcript-unreadable` (`runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE`) when the transcript is unreadable, its last line is torn or lines were skipped. Phase 4 calls it on the subagent sidecar of every attempt.
 - The check reads literal paths only, so it detects and does not contain.
 
-Each run also records how many `tool_result` entries carry a permission-rule `non_execution_kind`, which a hook denial and a permission-flow denial both carry (row 48). A denied write can empty one arm's diff without failing validity, so `smoke` prints the count and `summarize` reports it by arm. Each run also records its Reads of Read-allow-list paths, each with whether it ran or was denied, and the paths of its denied Reads of other toolkit files.
+Each run also records how many calls were denied, which a hook denial and a permission-flow denial both produce (rows 48, 165). A denied write can empty one arm's diff without failing validity, so `smoke` prints the count and `summarize` reports it by arm. Each run also records its Reads of Read-allow-list paths, each with whether it ran or was denied, and the paths of its denied Reads of other toolkit files.
 
 **Instruction-load check.** The runner reads its own `<attempt dir>/instructions-loaded.jsonl` as untrusted input. It uses the `file_path` values only to classify them.
 - The hook runs asynchronously (row 121). So the runner reads the log only after `wait_for_session_flush` returns and the log's size holds across two polls `SESSION_FLUSH_POLL_INTERVAL_S` apart, bounded by `SESSION_FLUSH_TIMEOUT_S`. It reads both constants from `review_bench.runner` at call time (row 107).
@@ -289,9 +289,9 @@ Each run also records how many `tool_result` entries carry a permission-rule `no
   - `analysis-error`: the diff, the classifier or a check raised after the launch, or a post-run git call failed or timed out. The run keeps the attempt's cost.
 - Neither reaches `main()` as an exit 2. A task-specific one costs its own block, and the per-arm stop (Campaign) halts the campaign with exit 1 only after two such blocks in a row.
 - When `fixture-error` or `analysis-error` comes from a git timeout, its `missing_detail` reads `git timed out after <limit> s; raise --fixture-git-timeout-s`, naming the limit in force.
-- One attempt can meet several reasons. One attempt can meet several reasons. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`. All five sit in one constant, and the precedence between them is:
-  - `arm-leak` and `fixture-instruction-load` outrank every other reason, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`;
-  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` outrank only when the run reached its end;
+- One attempt can meet several reasons. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`. All five sit in one constant, and the precedence between them is:
+  - `arm-leak` and `fixture-instruction-load` outrank every other reason, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`. The one exception is the next bullet;
+  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` outrank the non-instrument reasons only when the run reached its end, and then they also outrank `arm-leak`. `arm-leak` and these three reasons all halt the campaign, so the order changes the recorded reason and not the outcome;
   - a timeout, `launch-no-output`, `launch-error`, `no-result-event` or a missing session store keeps its own reason, because a run that never finished leaves a log that is often absent or torn;
   - `result-error`, `budget` and `api-error-final-record` count as reaching the end.
 
@@ -840,6 +840,13 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 162. [unverified] The session's design: `block_calibration_verdict` reads only the `toolkit` log, so the "both logs" wording of earlier rows is vestigial. The forged-log invariant lives in Phase 4. The runner takes the attempt dir and the fixture dir. It derives the verdict from the attempt path only, so a log written into the fixture is never read. Phase 3's pure functions cannot show that.
 163. [engineer-verified: "Proceed anyway (Recommended)"] Asked whether to proceed past the diff-size gate for the second PR as one PR after the architect recommended one PR, the engineer selected this label. The gate showed the measured Phase 3 size of 2,658 lines, not the 7,500 to 8,000 projection. The label covers proceeding as one PR past the gate, nothing more. [unverified] The projected final size of 7,500 to 8,000 lines is the architect's inference, and the engineer has not accepted that figure by name. Row 141's 6,300 stands as the last figure the engineer accepted by name until they do.
 164. [verified: Verification step 1b, as relayed] Step 1b ran against model `claude-sonnet-5` and CLI `2.1.322`. It found a `SubagentStop` send-back shape, which Phase 4 reads. It left eight environment names unverified, and Phase 4 treats them as a residual the README states: `AI_AGENT`, `CLAUDE_EFFORT`, `CLAUDE_PID`, `COREPACK_ENABLE_AUTO_PIN`, `GIT_EDITOR`, `NoDefaultCurrentDirectoryInExePath`, `PYTEST_ADDOPTS` and `__CF_USER_TEXT_ENCODING`. No figure from step 1b is published (rows 9, 10).
+165. [verified: `evals/replay_bench/checks.py` `_marks_permission_denial`, committed as `1b8cd410`; `evals/test_replay_bench_checks_denials.py`] On CLI `2.1.323` a denied Write leaves a top-level `toolDenialKind` and a `permissionDecision` whose `decision` is `reject` on the user entry, and no `tool_result_meta` marker. A call counts as denied on any of three markers:
+    - a `toolDenialKind` in the closed set `permission-rule`, `user-rejected`, `automode-blocked`, `automode-unavailable`;
+    - a `permissionDecision` of `reject`;
+    - the legacy `non_execution_kind` of `permission-rule`.
+
+    An `interrupted` or unknown kind counts as executed. [unverified] The shape on a subagent sidecar is unseen, so the legacy marker stays.
+166. [verified: the session's runs of the live checks, on the engineer's "I authorize you to run those scripts"] The first `smoke` failed `bare` on the denial shape in row 165. After that fix, `tasks`, `preflight` and `smoke` passed. `smoke` ended `instrument: ok` on both arms. No figure from these runs is published (rows 9, 10).
 
 **Mechanisms:**
 - **M1. Task mining from first-parent commits.** Tasks states the selection rules, refusals, briefs and recorded fields. anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
