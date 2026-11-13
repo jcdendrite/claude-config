@@ -2987,6 +2987,21 @@ def build_path_with_silent_python3(shim_dir: Path) -> str:
     return f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
+def fake_bin_dir(tmp_path: Path, name: str) -> Path:
+    """Creates (or reuses) `tmp_path/fakebin-<name>` for PATH shims."""
+    fake_bin = tmp_path / f"fakebin-{name}"
+    fake_bin.mkdir(exist_ok=True)
+    return fake_bin
+
+
+def fake_python3(fake_bin: Path, script_body: str) -> str:
+    """Writes a `python3` shim into fake_bin and returns a PATH that finds it ahead of the real one."""
+    shim = fake_bin / "python3"
+    shim.write_text(script_body)
+    shim.chmod(0o755)
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
 def _awk_implementations_on_this_machine() -> dict[str, str]:
     """Real path of each awk the matrix knows how to find, keyed by the real file's name."""
     implementations: dict[str, str] = {}

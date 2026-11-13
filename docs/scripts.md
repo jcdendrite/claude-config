@@ -38,7 +38,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   - The skills loaded this session, each with its SKILL.md path, most recently loaded first.
   - The branch's plan file.
-  - The engineer's five newest prompts, quoted from the transcript, oldest first. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
+  - The five newest prompts, quoted from the transcript, oldest first. A prompt sent headless through `claude -p` is preceded by a label line saying so. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
 
   The plan line names the absolute `<checkout root>/.claude/plans/<slug>.md`. It carries a sentence saying the block does not check who wrote the file or whether the session used it. The script reads the file `PATH` names and checks the checkout's `.git` and plan file on disk. It makes no network call and writes nothing.
 

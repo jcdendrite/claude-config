@@ -15,6 +15,7 @@ from ._compaction_context_helpers import (
     compact_caveat,
     compact_summary,
     compaction_context,
+    fenced_messages,
     headless_prompt,
     make_plan_checkout,
     pasted_prompt,
@@ -23,6 +24,7 @@ from ._compaction_context_helpers import (
     sidechain,
     skill_dir,
     skill_load,
+    text_outside_fences,
     user_prompt,
     write_transcript,
 )
@@ -124,6 +126,54 @@ class TestDropOrder:
             if len(kept_skills) < len(skill_paths):
                 assert len(messages) == 1
             assert len(block) <= cap or (len(messages) == 1 and not kept_skills)
+
+
+class TestHeadlessLabelUnderTheCap:
+    def test_block_over_the_cap_keeps_a_headless_newest_prompt_labelled_and_drops_the_older_one_with_its_label(
+        self, tmp_path, monkeypatch
+    ):
+        records = [headless_prompt("older headless " + "z" * 100), headless_prompt("newest headless " + "z" * 100)]
+        block_of_newest_alone = block_for(tmp_path, records[1:])
+
+        monkeypatch.setattr(compaction_context, "BLOCK_CHAR_CAP", len(block_of_newest_alone))
+        block = block_for(tmp_path, records)
+
+        assert block == block_of_newest_alone
+        assert len(block) <= compaction_context.BLOCK_CHAR_CAP
+        assert [(message.line_above, message.body) for message in fenced_messages(block)] == [
+            (compaction_context.HEADLESS_LABEL, "newest headless " + "z" * 100)
+        ]
+
+    def test_label_line_counts_toward_the_cap_exactly(
+        self, tmp_path, monkeypatch
+    ):
+        records = [user_prompt("older human " + "y" * 100), headless_prompt("newest headless " + "z" * 100)]
+        full_block = block_for(tmp_path, records)
+
+        monkeypatch.setattr(compaction_context, "BLOCK_CHAR_CAP", len(full_block))
+        at_cap = block_for(tmp_path, records)
+        monkeypatch.setattr(compaction_context, "BLOCK_CHAR_CAP", len(full_block) - 1)
+        one_over = block_for(tmp_path, records)
+
+        assert at_cap == full_block
+        assert [message.body for message in fenced_messages(one_over)] == ["newest headless " + "z" * 100]
+        assert len(one_over) <= len(full_block) - 1
+
+    def test_label_never_outlives_its_message_at_any_cap(self, tmp_path, monkeypatch):
+        records = [headless_prompt(f"headless {index} " + "w" * 300) for index in range(compaction_context.PROMPT_LIMIT)]
+        full_block = block_for(tmp_path, records)
+        kept_message_counts = set()
+
+        for cap in range(len(full_block), 400, -97):
+            monkeypatch.setattr(compaction_context, "BLOCK_CHAR_CAP", cap)
+            block = block_for(tmp_path, records)
+            kept_message_counts.add(len(fenced_messages(block)))
+
+            assert text_outside_fences(block).count(compaction_context.HEADLESS_LABEL) == len(fenced_messages(block))
+            assert all(message.line_above == compaction_context.HEADLESS_LABEL for message in fenced_messages(block))
+
+        # A sweep that stopped trimming would pass the loop's assertions without ever dropping a message.
+        assert len(kept_message_counts) >= 3
 
 
 class TestTruncation:

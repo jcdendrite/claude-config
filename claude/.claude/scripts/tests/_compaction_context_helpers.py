@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 _SCRIPT = Path(__file__).parent.parent / "compaction-context.py"
 _spec = importlib.util.spec_from_file_location("compaction_context", _SCRIPT)
@@ -214,6 +215,24 @@ _FENCED_MESSAGE_RE = re.compile(r"^(~{3,})\n(.*?)\n\1$", re.DOTALL | re.MULTILIN
 def quoted_messages(block: str) -> list[str]:
     """The fenced message bodies of a block, oldest first."""
     return [match.group(2) for match in _FENCED_MESSAGE_RE.finditer(block)]
+
+
+class FencedMessage(NamedTuple):
+    line_above: str
+    fence: str
+    body: str
+
+
+def fenced_messages(block: str) -> list[FencedMessage]:
+    """Each fenced message of a block, oldest first, with its fence and the line directly above the opening fence."""
+    return [
+        FencedMessage(block[: match.start() - 1].rsplit("\n", 1)[-1], match.group(1), match.group(2))
+        for match in _FENCED_MESSAGE_RE.finditer(block)
+    ]
+
+
+def text_outside_fences(block: str) -> str:
+    return _FENCED_MESSAGE_RE.sub("", block)
 
 
 def write_transcript(directory: Path, records: list, *, ensure_ascii=True) -> Path:

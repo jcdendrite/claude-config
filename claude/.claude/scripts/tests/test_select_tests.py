@@ -1628,6 +1628,7 @@ class TestSelectPytestTargets:
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
+            _mod.RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,
         }
         # Hand-typed literal, independent of the constant: an emptied
         # SKILLS_TESTS_IMPORTING_CONFIG would otherwise satisfy the set above.
@@ -1643,6 +1644,7 @@ class TestSelectPytestTargets:
         REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
         MEASURE_EXPLORE_RECALL_TEST.
         A sixth contributor, the TRANSCRIPT_ANALYSIS_SCRIPT row, adds NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH.
+        A seventh, the COMPACTION_CONTEXT_SCRIPT row, adds RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH.
         """
         result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
         assert result.is_full_suite is False
@@ -1655,6 +1657,7 @@ class TestSelectPytestTargets:
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             _mod.MEASURE_EXPLORE_RECALL_TEST,
             _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
+            _mod.RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,
         }
 
     def test_transcript_analysis_package_module_change_selects_review_ledger_script_test(self):
@@ -1672,6 +1675,7 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
             _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
+            _mod.RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,
         }
 
     @pytest.mark.parametrize(
@@ -1693,6 +1697,26 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False
         assert "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py" in result.target_paths
+
+    @pytest.mark.parametrize(
+        "changed_path",
+        [
+            _mod.COMPACTION_CONTEXT_SCRIPT,
+            "claude/.claude/scripts/transcript_analysis/user_input.py",
+            _mod.CONFIG_MODULE,
+            _mod.CONFIG_DIR_MODULE,
+        ],
+        ids=["script", "package-module", "config", "config-dir"],
+    )
+    def test_compaction_context_import_closure_selects_the_session_state_hook_test(self, changed_path):
+        """test_restore_session_state_on_compact.py runs the real compaction-context.py, and through it the script's
+        first-party imports, as a subprocess of restore-session-state-on-compact.sh. Those imports load at run
+        time, which TestCrossDomainReadCompleteness cannot see, so only this row selects it for these paths.
+        The test path is hand-typed so a constant retyped to another existing file fails here."""
+        assert (_REPO_ROOT / changed_path).is_file()
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        assert "claude/.claude/hooks/tests/test_restore_session_state_on_compact.py" in result.target_paths
 
     def test_skill_md_change_selects_the_multi_root_scope_test_file(self):
         """The multi-root scope test file reads SKILL.md inside test bodies, which TestCrossDomainReadCompleteness
@@ -2275,6 +2299,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.EVALS_README_MD,
     _mod.EVALS_CONFTEST,
     _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
+    _mod.COMPACTION_CONTEXT_SCRIPT,
 )
 
 # The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file rather
@@ -2299,6 +2324,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
+    _mod.RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,
     _mod.PLAN_SHAPE_TEST_PATH,
     _mod.TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH,
     _mod.ROUTING_GUARD_CAPTURE_TEST_PATH,
