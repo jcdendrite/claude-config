@@ -1606,12 +1606,11 @@ def install_resume_context_stub(home: Path) -> Path:
     cannot run a real launcher."""
     stub_bin = home / ".resume-context-stub-bin"
     stub_bin.mkdir(exist_ok=True)
-    stub = stub_bin / "resume-context"
-    stub.write_text(
+    write_prewarmed_stub(
+        stub_bin / "resume-context",
         "#!/bin/sh\n"
-        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'invocations.log'))}\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'invocations.log'))}\n",
     )
-    stub.chmod(0o755)
     return stub_bin
 
 
@@ -3051,9 +3050,7 @@ def _forced_fallback_path_env(tmp_path: Path) -> str:
     both of which force the same fast-path failure for the same reason."""
     shim_dir = tmp_path / "realpath_shim"
     shim_dir.mkdir(exist_ok=True)
-    shim = shim_dir / "realpath"
-    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
-    shim.chmod(0o755)
+    write_prewarmed_stub(shim_dir / "realpath", _FORCED_FALLBACK_REALPATH_SHIM)
     link_bash_into(shim_dir)
     return f"{shim_dir}:/usr/bin:/bin"
 
@@ -3074,9 +3071,101 @@ def _forced_fallback_path_env(tmp_path: Path) -> str:
 # pipe was actually killed, rather than only that some stage at that
 # duration was.
 
+# The scaled cap bounds every capped call a hook makes under this shim, not only the call a test stalls.
 TIMEOUT_SCALE_DIVISOR = 3
 
 _SCALED_TIMEOUT_MARKER_DIRNAME = "scaled-timeout-markers"
+
+_PREWARM_GUARD_VARIABLE = "CLAUDE_CONFIG_TEST_PREWARM"
+
+# The shebang lines a stub may start with: each names an sh-family interpreter that runs the guard line below.
+_PREWARM_SHEBANGS = frozenset({"#!/usr/bin/env bash", "#!/usr/bin/env sh", "#!/bin/bash", "#!/bin/sh"})
+
+# Prints the variable's value and exits when it is set, even to an empty value. POSIX syntax only, since a stub may run under sh.
+_PREWARM_GUARD_LINE = (
+    f'[ -z "${{{_PREWARM_GUARD_VARIABLE}+set}}" ] || {{ printf \'%s\' "${_PREWARM_GUARD_VARIABLE}"; exit 0; }}'
+)
+
+
+def _prewarm_exec_path() -> str:
+    """The session's `bash` directory ahead of `os.defpath`, or `os.defpath` alone when the session has no `bash`."""
+    session_bash = shutil.which("bash")
+    if session_bash is None:
+        return os.defpath
+    return os.pathsep.join([os.path.dirname(os.path.abspath(session_bash)), os.defpath])
+
+
+# Fixed at import so a test that later narrows or empties PATH cannot hide `bash` from the warm exec.
+_PREWARM_EXEC_PATH = _prewarm_exec_path()
+
+
+def write_prewarmed_stub(path: Path, script: str) -> Path:
+    """Write `script` as an executable at `path`, exec it once, and return `path`.
+
+    A newly written executable's first exec can outlast a scaled cap, so this pays that cost at write time.
+    A guard line after the shebang ends that exec before any body line runs.
+    The exec's environment holds only PATH and the guard's variable, so no shell startup file or exported function runs first.
+    The exec's PATH resolves `bash` the way `link_bash_into` does,
+    so an `env bash` stub warms under the interpreter its test runs.
+    An existing entry at `path` is removed first, because writing through a symlink would rewrite its target.
+    A relative `path` or a first line outside `_PREWARM_SHEBANGS` raises ValueError before the filesystem is touched.
+    An exec that exits nonzero, prints other than `path`, or cannot start raises AssertionError with `path` and the exec's PATH.
+    """
+    if not path.is_absolute():
+        raise ValueError(f"write_prewarmed_stub needs an absolute path, since a bare name would resolve through PATH: {path}")
+    shebang, _, body = script.partition("\n")
+    if shebang not in _PREWARM_SHEBANGS:
+        raise ValueError(
+            f"write_prewarmed_stub takes only these shebangs: {sorted(_PREWARM_SHEBANGS)}; first line of {path} is {shebang!r}"
+        )
+    path.unlink(missing_ok=True)
+    path.write_text(f"{shebang}\n{_PREWARM_GUARD_LINE}\n{body}")
+    path.chmod(0o755)
+    exec_path = _PREWARM_EXEC_PATH
+    try:
+        # No timeout argument: the guard ends the exec at line 2, and a timeout literal would need a cited bound.
+        completed = subprocess.run(
+            [str(path)],
+            env={"PATH": exec_path, _PREWARM_GUARD_VARIABLE: str(path)},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as launch_error:
+        raise AssertionError(
+            f"warm exec of {path.name} could not start: path={path} PATH={exec_path} shebang={shebang!r} error={launch_error!r}"
+        ) from launch_error
+    if completed.returncode != 0 or completed.stdout != str(path):
+        raise AssertionError(
+            f"warm exec of {path.name} did not exit 0 printing its own path: "
+            f"path={path} PATH={exec_path} returncode={completed.returncode} "
+            f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        )
+    return path
+
+
+def record_subprocess_runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
+    """Wrap `subprocess.run` for the test and return the list it fills with each call's `(args, kwargs)`.
+
+    Every call still runs for real, through whatever `subprocess.run` was when this was called.
+    """
+    recorded_calls: list[tuple[tuple, dict]] = []
+    wrapped_run = subprocess.run
+
+    def recording_run(*args, **kwargs):
+        recorded_calls.append((args, kwargs))
+        return wrapped_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    return recorded_calls
+
+
+def assert_each_stub_warm_exec_ed_once(recorded_calls: list[tuple[tuple, dict]], stub_paths: list[Path]) -> None:
+    """Assert `recorded_calls` holds exactly one exec per path in `stub_paths`, each with the guard variable set to that path."""
+    assert sorted(args[0] for args, _ in recorded_calls) == sorted([str(stub_path)] for stub_path in stub_paths)
+    for args, kwargs in recorded_calls:
+        assert kwargs["env"][_PREWARM_GUARD_VARIABLE] == args[0][0]
 
 
 def write_scaled_timeout_shim(bin_dir: Path) -> bool:
@@ -3090,6 +3179,9 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
     Only a `timeout` fake is written, never a `gtimeout` one:
     _lib_capped_for probes `timeout` first, so a `gtimeout` fake would be
     unreachable on every host.
+
+    Write each sh-family stub a capped call can reach with write_prewarmed_stub,
+    since a newly written executable's first exec can outlast a scaled cap.
     """
     real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
     if real_timeout is None:
@@ -3099,11 +3191,8 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
     started_log = marker_dir / "started"
     completed_log = marker_dir / "completed"
     shim_path = bin_dir / "timeout"
-    # A surviving symlink (the two closed-PATH sites that symlink the real
-    # timeout binary into place) would send write_text through to the real
-    # binary rather than replacing it.
-    shim_path.unlink(missing_ok=True)
-    shim_path.write_text(
+    write_prewarmed_stub(
+        shim_path,
         "#!/bin/bash\n"
         "# Test-only: scales an integer timeout(1) duration down so a cap-boundary test waits a fraction of the production cap.\n"
         "# Only a 1-9-leading integer scales: bash arithmetic reads a leading zero as an octal prefix,\n"
@@ -3137,9 +3226,8 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
         f"    printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
         '  exit "$status"\n'
         "fi\n"
-        f'exec {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$@"\n'
+        f'exec {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$@"\n',
     )
-    shim_path.chmod(0o755)
     return True
 
 

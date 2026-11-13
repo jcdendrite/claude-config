@@ -24,8 +24,10 @@ import pytest
 from helpers import (
     assert_cap_engaged,
     assert_cap_not_engaged,
+    assert_each_stub_warm_exec_ed_once,
     bash_input,
     caps_that_fired,
+    record_subprocess_runs,
     run_hook,
     scaled_cap,
     scaled_shim_sleep,
@@ -37,6 +39,7 @@ from helpers import (
 # directly at this module's scope would make pytest collect them a second
 # time under this file's own node-ID, alongside test_lib.py's and test_lib_capped_for.py's.
 from . import test_lib, test_lib_capped_for
+from .conftest import _write_conditional_sleep_shim
 from .test_deny_pii_in_commits import DENY_PII_IN_COMMITS_HOOK, DIFF_CALL_PREDICATE, GHP_TOKEN, _stage
 
 
@@ -277,6 +280,45 @@ def test_scaled_under_cap_sleep_stays_below_its_cap():
     """The one inverted site: its sleep must finish inside its
     cap, not outlast it."""
     assert scaled_under_cap_sleep(3.5) < scaled_cap(10)
+
+
+@pytest.mark.parametrize(
+    ("write_shims", "expected_stub_names"),
+    [
+        pytest.param(write_scaled_timeout_shim, ["timeout"], id="write_scaled_timeout_shim"),
+        pytest.param(
+            lambda bin_dir: _write_conditional_sleep_shim(bin_dir, "fake-binary", "true", '[ "$1" = never ]', sleep_seconds=5),
+            ["fake-binary", "timeout"],
+            id="_write_conditional_sleep_shim",
+        ),
+    ],
+)
+def test_every_stub_a_shim_writer_leaves_is_warm_exec_ed_once_with_the_guard_variable(
+    monkeypatch, tmp_path, write_shims, expected_stub_names
+):
+    """A fresh executable's first exec can outlast a scaled cap, so each writer pays it at write time and
+    no other exec happens. Each exec sets the guard variable to its own file's path, so it ends at the guard."""
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — write_scaled_timeout_shim writes nothing")
+    recorded_calls = record_subprocess_runs(monkeypatch)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+
+    write_shims(bin_dir)
+
+    assert_each_stub_warm_exec_ed_once(recorded_calls, [bin_dir / name for name in expected_stub_names])
+
+
+def test_python3_stub_writer_warm_exec_s_the_stub_once_with_the_guard_variable(monkeypatch, tmp_path):
+    # Imported here so a failure importing test_python_floor fails only this test, not the cap-boundary tests.
+    from .test_python_floor import _write_python3_stub
+
+    recorded_calls = record_subprocess_runs(monkeypatch)
+    bin_dir = tmp_path / "bin"
+
+    _write_python3_stub(bin_dir, "exit 0")
+
+    assert_each_stub_warm_exec_ed_once(recorded_calls, [bin_dir / "python3"])
 
 
 class TestProtectedProbeOrderTestsAreUnscaled:

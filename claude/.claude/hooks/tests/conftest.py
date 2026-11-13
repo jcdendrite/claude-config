@@ -26,6 +26,7 @@ from helpers import (
     run_autonomous_shipping_statement,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -250,16 +251,15 @@ def _write_conditional_sleep_shim(
     post_sleep = (
         f"  echo {shlex.quote(fake_output)}\n  exit 0\n" if fake_output is not None else ""
     )
-    fake_binary = bin_dir / binary_name
-    fake_binary.write_text(
+    write_prewarmed_stub(
+        bin_dir / binary_name,
         f"#!/bin/bash\n"
         f"if {match_condition}; then\n"
         f"{sleep_line}"
         f"{post_sleep}"
         f"fi\n"
-        f'exec {real_binary} "$@"\n'
+        f'exec {real_binary} "$@"\n',
     )
-    fake_binary.chmod(0o755)
 
 
 @pytest.fixture

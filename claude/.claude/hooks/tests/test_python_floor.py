@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR
+from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR, write_prewarmed_stub
 
 from .test_bash_floor import README_REQUIREMENTS, _run_in_bash, readme_requirements_bullet
 from .test_git_floor import (
@@ -81,7 +81,7 @@ def _write_python3_stub(bin_dir: Path, body: str, *, calls_log: Path | None = No
     """A `python3` that ignores its arguments and runs `body`, first appending its arguments to `calls_log` when given."""
     bin_dir.mkdir(exist_ok=True)
     log_line = f"printf '%s\\n' \"$*\" >> '{calls_log}'\n" if calls_log is not None else ""
-    _write_executable(bin_dir / "python3", f"#!/bin/sh\n{log_line}{body}\n")
+    write_prewarmed_stub(bin_dir / "python3", f"#!/bin/sh\n{log_line}{body}\n")
 
 
 def _link_real_python3(bin_dir: Path) -> None:
