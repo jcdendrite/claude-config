@@ -277,8 +277,8 @@ The review-cost-by-size command: `cmd_review_cost_by_size`, its `_add_review_cos
 registration, and every helper used only by it. It reads each kept PR's `code-review` rounds from
 `ledger_rounds.read_ledger_prs`, which re-prices them, and prints aggregates, ledger diagnostics and per-PR
 rows. Imports `gh_cli`, `ledger_rounds`, `pr_cost_ledger`, `render`, and `scope` all by module (attribute access).
-`cli.py` reads `_add_review_cost_by_size_subparser` bare. The `gh_cli` import reaches only the origin-remote lookup. The
-aggregation and the diagnostics are separate functions so tests can feed each one literals.
+`cli.py` reads `_add_review_cost_by_size_subparser` bare. The aggregation and the diagnostics are separate functions
+so tests can feed each one literals.
 
 ### `author_outcome.py`
 
@@ -447,10 +447,7 @@ bare.
 The reader for the pr-cost ledger's `review_rounds` cells: `read_ledger_prs` reads each account's ledger and
 `select_ledger_prs` applies the selection policy to parsed rows, so the policy is testable without a ledger file.
 Makes no gh call and scans no transcript corpus. Imports `pr_cost_ledger`, `pricing`, `review_rounds`, and
-`scope` all by module. The `pr_cost_ledger` import reaches the ledger parser and its error type, and the shared
-collapse, path-exit and override helpers that the `pr_cost_ledger.py` section above names. The `pricing` import reaches
-`_reprice_token_splits`, which prices a round's stored token splits at the current rate table. The `scope` import
-reaches `_redaction_ordinals`, so an error names an account by an `account-N` ordinal.
+`scope` all by module. The `scope` import exists so an error names an account by an `account-N` ordinal.
 
 ### `cache_rebuild_rules.py`
 

@@ -1,7 +1,7 @@
 """Tests for transcript_analysis/review_cost_by_size.py (review-cost-by-size).
 
-Aggregates are tested over literal records. The command is tested over pr-cost ledger files, with `subprocess.run`
-faked so that any `gh` call, and any git call beyond the origin lookup, shows in the recorded argv.
+The command is tested over pr-cost ledger files, with `subprocess.run` faked so that any `gh` call, and any git
+call beyond the origin lookup, shows in the recorded argv.
 """
 import argparse
 import re
@@ -105,11 +105,7 @@ def _row_components(*pr_numbers: int) -> tuple[str, ...]:
 
 
 def _ledger_round(*, main_input: int = 100_000, agent_input: int = 50_000, **overrides) -> dict:
-    """A priceable round whose main and agent splits differ and whose stored micro-dollars differ from their price.
-
-    The defaults hold 100_000 main input tokens and 50_000 agent input tokens, which price at 1.5 times
-    _DOLLARS_PER_100K_INPUT_TOKENS, while the stored micro-dollars sum to 16.
-    """
+    """A priceable round whose main and agent splits differ and whose stored micro-dollars differ from their price."""
     return _round_with_priced_splits(
         {"standard": {"input": main_input}}, {"standard": {"input": agent_input}},
         **{
@@ -716,8 +712,9 @@ class TestCmdArithmeticAndDiagnostics:
     def test_the_sums_cover_the_reported_code_review_rounds_alone(
         self, fake_projects, monkeypatch, capsys, reported_invalid_usage_records,
     ):
-        """Four rounds carry nonzero, distinct counts: the reported code-review round, an after-merge code-review
-        round, the kept PR's plan-review round and an excluded PR's round. Only the first reaches the sums."""
+        """Five rounds carry distinct counts: the reported code-review round, an after-merge code-review round, the
+        kept PR's plan-review round and its after-merge plan-review round, and an excluded PR's round. Only the first
+        reaches the sums."""
         reported = _ledger_round(unpriced_turns=3, dangling=5, invalid_usage_records=reported_invalid_usage_records)
         after_merge = _ledger_round(unpriced_turns=700, dangling=1_100, invalid_usage_records=1_300, after_merge=1)
         plan_review = _ledger_round(unpriced_turns=17, dangling=19, invalid_usage_records=23)
