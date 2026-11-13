@@ -8,9 +8,9 @@ The invariants:
 - both jobs' keys equal one expected literal, apart from `test-slice`'s steps and the aggregate step's `run:` body;
 - each pytest step's `if:` is the install step's condition plus its own leg test, because conftest.py's
   require_direnv() hard-fails a pytest step that runs without the install step;
-- the four work steps, the install step keyed by its name, the pytest steps keyed by their `-m` marker
-  expression and the Lint step keyed by `ruff check`, equal one expected literal, so a changed command,
-  `shell:` or `env:` cannot turn a failed pass green;
+- the four work steps equal one expected literal, so a changed command, `shell:` or `env:` cannot turn a
+  failed pass green. Keys: the install step by name, a pytest step by its `-m` marker expression, Lint by
+  `ruff check`;
 - the install step's `run:` is the one exemption from that literal, so an install-command edit needs no test
   edit, while its `name`, `if:` and every other key stay pinned;
 - exactly one step has the id `detect` and it carries no `if:`, so no leg can skip its change detection;
@@ -126,7 +126,6 @@ _LEG_TEST = re.compile(r"matrix\.slice == '([^']+)'")
 
 
 def _without_step_bodies(jobs: dict) -> dict:
-    """A copy of `jobs` minus test-slice's steps and the aggregate steps' `run:` bodies."""
     stripped = copy.deepcopy(jobs)
     stripped.get(CI_TEST_SLICE_JOB_ID, {}).pop("steps", None)
     for step in stripped.get(_AGGREGATE_JOB_ID, {}).get("steps", []):
@@ -171,7 +170,6 @@ def _work_step_identity(step: dict) -> str | None:
 
 
 def _step_as_compared(identity: str, step: dict) -> dict:
-    """The step as the pair-list equality sees it: the install step minus its `run:`, any other step whole."""
     if identity != _INSTALL_STEP_NAME:
         return step
     return {key: value for key, value in step.items() if key != "run"}

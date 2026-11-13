@@ -19,7 +19,9 @@ permissions:
 
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  # A push-to-main run that has started is not cancelled by a newer push, because the `tests` aggregate would report a cancelled run as failed.
+  # A run still waiting in the group can be replaced by a newer push, and a replaced run never runs the `tests` aggregate.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test-slice:
