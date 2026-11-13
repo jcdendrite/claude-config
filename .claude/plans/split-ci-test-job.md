@@ -26,7 +26,7 @@ Accepted costs:
 - Each run holds two runner slots while the timing leg runs, about 5m25s (row 12), so a burst of runs reaches the account's concurrent-job limit sooner. A run held at that limit shows `tests` pending in a queue, not failing.
 - Each leg runs its own `apt-get update` and package installs, including the `--error-on=any` update (`tests.yml:142`), so a transient mirror error gets two chances per run. Re-running the failed jobs re-runs the failed leg and the aggregate, not both legs (row 23).
 - A hung `timing` leg holds `tests` pending until the 25-minute cap, the same bound today's single job has, and holds its runner that long.
-- A cancelled run reports `tests` as failed rather than cancelled, on a PR and on a superseded `main` push alike (row 25). Branch protection treats both as not passing. A superseded `main` run may also send a run-failure notification and show on the README's workflow badge (`README.md:3`) until the newer run ends, and neither effect was checked. Verification step 5 observes both a supersede and a manual cancel.
+- A cancelled run reports `tests` as failed rather than cancelled, on a PR and on a superseded `main` push alike (row 25). Branch protection treats both as not passing. A superseded `main` run may also send a run-failure notification. It may also show on the README's workflow badge (`README.md:3`) until the newer run ends. Neither effect was checked. Verification step 5 observes both a supersede and a manual cancel, but only on a `pull_request` run, and records each run's run-level `conclusion` (`gh run view <run-id> --json conclusion`). The badge and notification key off that run-level value, whichever event started the run. The red mark on a superseded `main` commit is an accepted cost. The PR body names the post-merge observation: the first superseded `main` run, read with `gh run list --workflow tests.yml --branch main --json conclusion,event,headSha`. If the effect is unwanted, the fallback is to restrict `cancel-in-progress` to `pull_request` events.
 - In `/ready-for-review`'s bucket table, `fail` outranks `cancel` (row 24). A cancel on the current head, such as a manual cancel or a lost runner, therefore dispatches a `/root-cause-analysis` diagnosis on `tests`. A cancel by a newer push still stops at that skill's staleness check. The aggregate's log line names `cancelled`, so the diagnosis finds the cause in one read. Changing that table is a separate change (Out of scope).
 
 No option keeps a cancelled run's `tests` in the `cancel` bucket without failing open or widening the token:
@@ -117,7 +117,8 @@ The aggregate job, in full, appended after `test-slice`:
   - The module docstring lists these invariants, one item each:
     - both jobs' keys equal one expected literal, apart from `test-slice`'s steps and the aggregate step's `run:` body;
     - each pytest step's `if:` is the install step's condition plus its own leg test, because conftest.py's require_direnv() hard-fails a pytest step that runs without the install step;
-    - the four work steps, each keyed by its command, equal one expected literal, so a changed command, `shell:` or `env:` cannot turn a failed pass green;
+    - the four work steps, each keyed by its command, equal one expected literal (the install step's `run:` excepted), so a changed command, `shell:` or `env:` cannot turn a failed pass green;
+    - the detect step carries no `if:`, so no leg can skip its change detection;
     - Lint runs in the `timing` leg only, so it reports once;
     - every matrix leg owns a work step, and no `test-slice` step carries `continue-on-error`;
     - the aggregate step's `run:` body passes only on `success`.
@@ -128,7 +129,7 @@ The aggregate job, in full, appended after `test-slice`:
   - The gate check reads the `test-slice` job:
     - It finds the four work steps. "Install stow and direnv" is found by name. The two pytest steps and Lint are found by command, as `_steps_running` does (`test_select_tests.py:2262-2263`), so a rename cannot hide one.
     - Each work step's key is its command-derived identity, never its step name: the `-m` expression (`not timing` or `timing`) for a pytest step, and `ruff check` for Lint. Only the install step is keyed by its name. A swap of the two pytest `run:` bodies therefore moves each identity onto the other step's `if:`, so the swapped-bodies fixture below is not vacuous.
-    - The (identity, step) pairs, sorted by identity, equal one expected list, with each step as its whole parsed mapping. That one equality pins each step's `name`, `if:` and full `run:` text, and rejects any other key, such as `shell:`, `env:`, `working-directory:` or `continue-on-error`. List equality also fails a missing or duplicated step. The expected `if:` values are:
+    - The (identity, step) pairs, sorted by identity, equal one expected list, with each step as its whole parsed mapping. That one equality pins each step's `name`, `if:` and full `run:` text. The expected `if:` values are:
       - the install step: the shared condition;
       - `not timing`: the shared condition plus `matrix.slice == 'parallel'`;
       - `timing`: the shared condition plus `matrix.slice == 'timing'`;
@@ -146,17 +147,25 @@ The aggregate job, in full, appended after `test-slice`:
       - the two pytest steps' `run:` bodies swapped (pair list);
       - ` || true` appended to the timing pytest step's `run:` (pair list). No existing test catches it, because `_matching_pytest_line` (`test_ci_path_filter.py:209-223`) matches only the phrases `-m timing` and `-n0`, and `_leading_positional_roots` (`test_select_tests.py:2249-2259`) stops at the first option;
       - a third leg in `matrix.slice` with no step gated to it (leg set);
-      - `continue-on-error: true` on the pinned-git step, which the pair list does not cover (`continue-on-error`).
+      - `continue-on-error: true` on the pinned-git step, which the pair list does not cover (`continue-on-error`);
+      - `if: matrix.slice == 'parallel'` on the detect step (detect assertion);
+      - the detect step's `id` renamed (detect assertion);
+      - `shell: bash` on the install step (pair list).
 
-      The pair list runs first, so a fixture that also breaks a later assertion still matches the pair list's message.
-  - Equality fails any added or changed job key, or work-step key, by construction, so no fixture per key is needed. The fixtures show that each check reads the real aggregate, `test-slice` and its steps.
+      One positive control changes only the install step's `run:` text and must pass, which shows the exemption is live. It is a new fixture shape in this file: a mutation that must not raise.
+
+      The equality rejects any other key, such as `shell:`, `env:`, `working-directory:` or `continue-on-error`. List equality also fails a missing or duplicated step.
+    - The install step's `run:` is the one exemption. The exemption removes only the `run` key from the actual and the expected install mapping before comparing. A failed or no-op install cannot flip a failing pytest pass green. A missing stow skips its tests silently, as today. A missing direnv fails loudly in the parallel leg (`conftest.py:118-131`, `require_direnv()`).
+    - The detect step has its own assertion and message. It finds the step through the exactly-one-`id: detect` lookup that `extract_ci_detect_step_run_block` (`helpers.py`) already uses, so zero or two matches fail instead of reading as "no `if:`". It then requires the step to carry no `if:`.
+    - The pair list runs first, so a fixture that also breaks a later assertion still matches the pair list's message.
+  - Equality fails any added or changed job key, or work-step key, by construction, apart from the install step's `run:`, so no fixture per key is needed. The fixtures show that each check reads the real aggregate, `test-slice` and its steps.
   - The behavior test writes the aggregate step's real `run:` body to a file and runs it under bash, as `_run_pin_step` does (`test_git_floor.py:394-429`).
     - The env is built fresh, holding only `PATH` and, when the case sets it, `SLICE_RESULT`. It is never copied from `os.environ`, so an exported `SLICE_RESULT` or `BASH_ENV` cannot mask a case.
     - The cases:
       - `success` exits 0;
       - `failure`, `cancelled`, `skipped` and the empty string each exit 1, with stderr naming the value;
       - an unset `SLICE_RESULT` exits nonzero.
-  - Both literals are change detectors. A deliberate edit to either job's keys or to a work step's command, such as a runner-label bump, a re-derived cap or a new pytest flag, updates them in the same PR.
+  - Both literals are change detectors. A deliberate edit to either job's keys or to a pytest or Lint step's command, such as a runner-label bump, a re-derived cap or a new pytest flag, updates them in the same PR.
   - Alternatives set aside:
     - A pin and a fixture per key: each new key needs both, and a key no pin lists passes, as `name`, `permissions` or `defaults` on `test-slice` would.
     - Key allow-lists: they close the key set but not the values, so a widened `permissions` or a changed `env` expression passes.
@@ -359,6 +368,7 @@ Projected diff: about 495 lines, above `/plan-review`'s 400-line threshold.
    - For each B and P that step 5 used, `git merge-base --is-ancestor <commit> <head>` exits 1, so no scratch run's head is a commit of this PR (row 34). The PR body records each B and P and this head SHA.
    - `gh pr checks <PR>` lists one check per leg plus `tests`, all passing.
    - `gh pr checks <PR> --required` lists `tests` as required and passing. This shows the aggregate satisfies the required context without reading protection settings (G1).
+   - While a leg is still running, run `gh pr checks <PR> --json name,bucket` once, the fields `ci-watch.sh` snapshots. Record in the PR body whether `tests` is listed pending or absent. Count it absent only when the same output lists a `test-slice` leg as pending, since an empty list at the start is not evidence. If `tests` is absent, stop and report instead of relying on the watch's `pass` verdict. Absent means `ci-watch.sh` can snapshot both legs as `pass` before `tests` reports, and the ready-for-review `pass` row can then report green early. The background watch starts when the PR opens and the run lasts about 16 minutes, so take this read right after the push. If the window is missed, re-run the read on a `gh run rerun` of the real PR, or state in the PR body that the watch's `pass` for this head is unconfirmed. This extends ledger row `db81ac62c5d6`, whose premise stays `[unverified]` until the read lands.
    - `gh run view <run-id> --json headSha,jobs` shows each leg finishing under 25 minutes, the parallel leg near the ~16 minutes and the timing leg near the ~5 minutes row 12 predicts.
    - The same read lists every step's name and conclusion per leg, and the lists show that each named work step ran in its own leg. Any other conclusion: stop and report. This PR's diff touches paths outside the deny-list (row 19), so detect sets `changed` to `true` in both legs:
      - parallel leg: "Run tests (parallel)" is `success`, and "Run tests (timing, serial)" and "Lint" are `skipped`;
@@ -384,7 +394,7 @@ Projected diff: about 495 lines, above `/plan-review`'s 400-line threshold.
   - Bind the required `tests` check to the GitHub Actions app, if the protection form supports it.
 
   M5's checks guard only against an honest regression, because one PR can edit the workflow and its tests together. That exposure is the same today.
-- Pinning the keys of `test-slice` steps other than the four work steps, beyond `continue-on-error`, such as a setup step's `env:` or the detect step's own `if:` and `run:`: closing them means equality over the whole step list, which copies about 150 lines of workflow into the test and fails on every unrelated step edit (M5). The four work steps are pinned whole, because their `run:`, `shell:` and `env:` decide whether a failed pass reports as failed.
+- Pinning the keys of `test-slice` steps other than the four work steps, beyond `continue-on-error`, such as a setup step's `env:` or the detect step's own `run:`. Closing them means equality over the whole step list, which copies about 150 lines of workflow into the test and fails on every unrelated step edit. The install step's `run:` joins them: a `run:` that writes `$GITHUB_ENV` or `$GITHUB_PATH` could alter the pytest steps, which takes a crafted edit. The detect step's `if:` is the exception, pinned absent (M5). The pytest and Lint steps are pinned whole (M5).
 - Workflow-level keys, and the YAML reader's view of the file: the schema check reads only `jobs`. Each residual is either unchanged from today or needs crafted input, which is beyond the cooperative threat model these checks guard:
   - Workflow-level `permissions` sets `test-slice`'s token scope, and no test reads it. That exposure is the same today, and it does not touch whether `tests` passes.
   - Workflow-level `defaults` and `env` reach the aggregate step. Turning either into a fail-open takes a deliberately crafted shell template or env value.

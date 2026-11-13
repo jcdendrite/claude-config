@@ -1,22 +1,28 @@
 """The required `tests` check in tests.yml must fail whenever a test pass does not succeed.
 
-The workflow runs each pytest pass in its own `test-slice` matrix leg, and the job id `tests` names the
-aggregate job that the tests.yml header ties to the required-check context. Two structural checks read the parsed workflow and a
-behavior test executes the aggregate's `run:` body. The invariants:
+The workflow runs each pytest pass in its own `test-slice` matrix leg.
+The job id `tests` names the aggregate job that the tests.yml header ties to the required-check context.
+Two structural checks read the parsed workflow and a behavior test executes the aggregate's `run:` body.
+The invariants:
 
 - both jobs' keys equal one expected literal, apart from `test-slice`'s steps and the aggregate step's `run:` body;
 - each pytest step's `if:` is the install step's condition plus its own leg test, because conftest.py's
   require_direnv() hard-fails a pytest step that runs without the install step;
 - the four work steps, the install step keyed by its name and the pytest and Lint steps keyed by their
   command, equal one expected literal, so a changed command, `shell:` or `env:` cannot turn a failed pass green;
+- the install step's `run:` is the one exemption from that literal, so an install-command edit needs no test
+  edit, while its `name`, `if:` and every other key stay pinned;
+- exactly one step has the id `detect` and it carries no `if:`, so no leg can skip its change detection;
 - Lint runs in the `timing` leg only, so it reports once;
-- the legs named across the steps' `if:` conditions equal the matrix legs, and no `test-slice` step carries
-  `continue-on-error`;
+- the legs named across the steps' `if:` conditions equal the matrix legs;
+- no `test-slice` step carries `continue-on-error`;
 - the aggregate step's `run:` body passes only on `success`.
 
 Both literals are change detectors: a deliberate edit to either job's keys or to a work step's command
-updates them in the same change. Each structural check also runs against permanent negative fixtures,
-which show that the check reads the real workflow and can fail.
+(other than the install command, which the literal omits) updates them in the same change.
+Each structural check also runs against permanent negative fixtures, which show that the check reads
+the real workflow and can fail. A positive control, an install-command edit that must not raise,
+shows that the install step's `run:` exemption is live.
 
 These tests prove the workflow's parsed structure and the aggregate's shell comparison. How GitHub Actions
 evaluates `needs.test-slice.result` for a matrix with a failed or cancelled leg, and whether `always()`
@@ -38,6 +44,7 @@ from helpers import CI_TEST_SLICE_JOB_ID, ci_test_slice_job, ci_tests_workflow_j
 _AGGREGATE_JOB_ID = "tests"
 _INSTALL_STEP_NAME = "Install stow and direnv"
 _PIN_GIT_STEP_ID = "pin-git"
+_DETECT_STEP_ID = "detect"
 _BASH = shutil.which("bash") or "bash"
 
 # Bounds a hung local bash run; no vendor value applies.
@@ -50,6 +57,7 @@ _TIMING_LEG_CONDITION = f"{_SHARED_GATE_CONDITION} && matrix.slice == 'timing'"
 _SCHEMA_MESSAGE = "jobs differ from the expected literal"
 _FAIL_FAST_MESSAGE = "test-slice must set fail-fast to the boolean false"
 _WORK_STEPS_MESSAGE = "work steps differ from the expected list"
+_DETECT_STEP_MESSAGE = "the detect step must be the only step with its id and must carry no `if:`"
 _LEG_SET_MESSAGE = "legs named by step conditions differ from the matrix legs"
 _CONTINUE_ON_ERROR_MESSAGE = "test-slice steps must not set continue-on-error"
 
@@ -76,14 +84,14 @@ _EXPECTED_JOBS_WITHOUT_STEP_BODIES = {
     },
 }
 
-# (identity, whole step), sorted by identity. The install step's identity is its name; the others' is their command.
+# (identity, step), sorted by identity. The install step's identity is its name; the others' is their command.
+# The install step's entry omits `run:`; the comparison drops it from the actual step (`_step_as_compared`).
 _EXPECTED_WORK_STEPS = [
     (
         _INSTALL_STEP_NAME,
         {
             "name": _INSTALL_STEP_NAME,
             "if": _SHARED_GATE_CONDITION,
-            "run": "sudo apt-get update\nsudo apt-get install -y stow direnv\ndirenv --version\n",
         },
     ),
     (
@@ -160,17 +168,38 @@ def _work_step_identity(step: dict) -> str | None:
     return None
 
 
+def _step_as_compared(identity: str, step: dict) -> dict:
+    """The step as the pair-list equality sees it: the install step minus its `run:`, any other step whole."""
+    if identity != _INSTALL_STEP_NAME:
+        return step
+    return {key: value for key, value in step.items() if key != "run"}
+
+
 def _assert_work_steps_gate_their_legs(test_slice_job: dict) -> None:
     steps = test_slice_job["steps"]
     work_steps = sorted(
-        ((identity, step) for step in steps if (identity := _work_step_identity(step)) is not None),
+        (
+            (identity, _step_as_compared(identity, step))
+            for step in steps
+            if (identity := _work_step_identity(step)) is not None
+        ),
         key=lambda pair: pair[0],
     )
     assert work_steps == _EXPECTED_WORK_STEPS, (
         f"{_WORK_STEPS_MESSAGE}; found {work_steps}. Each pytest step's `if:` must be the install step's "
         "condition plus its own leg test, and Lint must run in the timing leg only. A deliberate edit to a work "
-        "step's command (pytest roots, flags, marker expression), the install commands, a step name, or a step "
-        "`if:` legitimately updates the expected literal."
+        "step's command (pytest roots, flags, marker expression), a step name, or a step `if:` legitimately "
+        "updates the expected literal."
+    )
+
+    detect_steps = [step for step in steps if step.get("id") == _DETECT_STEP_ID]
+    assert len(detect_steps) == 1, (
+        f"{_DETECT_STEP_MESSAGE}: found {len(detect_steps)} steps with id {_DETECT_STEP_ID!r}. "
+        "Zero or two matches would otherwise read as a step with no `if:`."
+    )
+    assert "if" not in detect_steps[0], (
+        f"{_DETECT_STEP_MESSAGE}: found `if: {detect_steps[0]['if']}`. "
+        "A leg that skips detection runs none of its gated steps and finishes green."
     )
 
     legs_named_by_conditions = {
@@ -214,6 +243,27 @@ def _remove_parallel_step_leg_test(job: dict) -> None:
 def _append_or_true_to_timing_step(job: dict) -> None:
     _, timing_step = _parallel_and_timing_pytest_steps(job)
     timing_step["run"] += " || true"
+
+
+def _gate_detect_step_to_the_parallel_leg(job: dict) -> None:
+    _step_with_id(job, _DETECT_STEP_ID)["if"] = "matrix.slice == 'parallel'"
+
+
+def _rename_detect_step_id(job: dict) -> None:
+    _step_with_id(job, _DETECT_STEP_ID)["id"] = "detect-renamed"
+
+
+def _add_second_step_with_the_detect_id(job: dict) -> None:
+    # No `run:` and no install name, so the work-step pair list ignores it and the detect assertion is reached.
+    job["steps"].append({"name": "Second detect", "id": _DETECT_STEP_ID})
+
+
+def _set_shell_on_install_step(job: dict) -> None:
+    _step_with_name(job, _INSTALL_STEP_NAME)["shell"] = "bash"
+
+
+def _change_install_step_run_body(job: dict) -> None:
+    _step_with_name(job, _INSTALL_STEP_NAME)["run"] = "sudo apt-get install -y stow direnv\n"
 
 
 def _add_third_leg_without_a_step(job: dict) -> None:
@@ -273,6 +323,10 @@ def test_the_real_test_slice_job_gates_each_work_step_to_its_leg() -> None:
         pytest.param(_remove_parallel_step_leg_test, _WORK_STEPS_MESSAGE, id="parallel-step-loses-its-leg-test"),
         pytest.param(_swap_pytest_run_bodies, _WORK_STEPS_MESSAGE, id="pytest-run-bodies-swapped"),
         pytest.param(_append_or_true_to_timing_step, _WORK_STEPS_MESSAGE, id="timing-step-swallows-failure-with-or-true"),
+        pytest.param(_set_shell_on_install_step, _WORK_STEPS_MESSAGE, id="install-step-gains-a-shell-key"),
+        pytest.param(_gate_detect_step_to_the_parallel_leg, _DETECT_STEP_MESSAGE, id="detect-step-gains-an-if"),
+        pytest.param(_rename_detect_step_id, _DETECT_STEP_MESSAGE, id="detect-step-id-renamed"),
+        pytest.param(_add_second_step_with_the_detect_id, _DETECT_STEP_MESSAGE, id="detect-step-id-duplicated"),
         pytest.param(_add_third_leg_without_a_step, _LEG_SET_MESSAGE, id="matrix-leg-without-a-gated-step"),
         pytest.param(
             _set_continue_on_error_on_pin_git_step, _CONTINUE_ON_ERROR_MESSAGE, id="continue-on-error-on-a-setup-step",
@@ -287,6 +341,13 @@ def test_the_gate_check_rejects_a_workflow_where_a_failed_pass_could_report_gree
 
     with pytest.raises(AssertionError, match=re.escape(expected_message)):
         _assert_work_steps_gate_their_legs(test_slice_job)
+
+
+def test_the_gate_check_accepts_a_changed_install_step_run_body() -> None:
+    test_slice_job = copy.deepcopy(ci_test_slice_job())
+    _change_install_step_run_body(test_slice_job)
+
+    _assert_work_steps_gate_their_legs(test_slice_job)
 
 
 def _aggregate_run_body() -> str:
