@@ -887,7 +887,8 @@ class TestScriptEnvironmentIsolation:
     def test_fake_gh_environment_keeps_the_account_under_tmp_path_so_a_script_run_cannot_read_the_real_key(
         self, tmp_path, fake_gh
     ):
-        # The suite-wide fixture that pins CLAUDE_CONFIG_DIR under tmp_path keeps every script run off the real account.
+        # `_isolate_transcript_corpus_lookups` in this tree's conftest.py pins CLAUDE_CONFIG_DIR under tmp_path.
+        # It covers only this test tree.
         env = fake_gh({})
 
         assert_script_env_confined(env)
@@ -1006,5 +1007,5 @@ class TestBranchRecordsArchive:
 
         assert result.returncode == 0, result.stderr
         assert not wt_path.exists()
-        assert not (Path(env["HOME"]) / ".local" / "state").exists()
+        assert not archive_root(env).exists()
         assert_output_never_mentions_the_archive(result.stdout + result.stderr, tmp_path)

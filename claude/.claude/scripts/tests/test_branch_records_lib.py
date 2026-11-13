@@ -68,8 +68,10 @@ class TestProcessIsolation:
 
 
 class TestEnvironmentConfinement:
-    @pytest.mark.parametrize("variable", ["HOME", "CLAUDE_CONFIG_DIR"])
-    @pytest.mark.parametrize("escape", ["outside", "unset"])
+    @pytest.mark.parametrize(
+        ("variable", "escape"),
+        [("HOME", "outside"), ("HOME", "unset"), ("CLAUDE_CONFIG_DIR", "outside")],
+    )
     def test_run_lib_refuses_an_environment_that_could_reach_the_real_archive(self, tmp_path, variable, escape):
         env = build_archive_env(tmp_path)
         if escape == "outside":
@@ -81,6 +83,46 @@ class TestEnvironmentConfinement:
             run_lib(tmp_path, env, "call_status")
 
         assert not (tmp_path / "call_stdout").exists(), "the subprocess started before the check"
+
+    @pytest.mark.parametrize("home", ["outside", "unset"])
+    def test_run_lib_refuses_an_unset_config_dir_unless_home_is_under_tmp_path(self, tmp_path, home):
+        env = build_archive_env(tmp_path)
+        del env["CLAUDE_CONFIG_DIR"]
+        if home == "outside":
+            env["HOME"] = str(tmp_path.parent)
+        else:
+            del env["HOME"]
+
+        with pytest.raises(AssertionError, match="HOME"):
+            run_lib(tmp_path, env, "call_status")
+
+        assert not (tmp_path / "call_stdout").exists(), "the subprocess started before the check"
+
+    @pytest.mark.parametrize("config_dir_state", ["unset", "empty"])
+    def test_run_lib_refuses_a_default_config_dir_that_resolves_outside_tmp_path(self, tmp_path, config_dir_state):
+        env = build_archive_env(tmp_path)
+        if config_dir_state == "unset":
+            del env["CLAUDE_CONFIG_DIR"]
+        else:
+            env["CLAUDE_CONFIG_DIR"] = ""
+        (Path(env["HOME"]) / ".claude").symlink_to(tmp_path.parent)
+
+        with pytest.raises(AssertionError, match="default config dir"):
+            run_lib(tmp_path, env, "call_status")
+
+        assert not (tmp_path / "call_stdout").exists(), "the subprocess started before the check"
+
+    @pytest.mark.parametrize("config_dir_state", ["unset", "empty"])
+    def test_assert_lib_env_confined_accepts_an_unset_or_empty_config_dir_when_home_is_under_tmp_path(
+        self, tmp_path, config_dir_state
+    ):
+        env = build_archive_env(tmp_path)
+        if config_dir_state == "unset":
+            del env["CLAUDE_CONFIG_DIR"]
+        else:
+            env["CLAUDE_CONFIG_DIR"] = ""
+
+        assert_lib_env_confined(tmp_path, env, tmp_path)
 
     def test_script_environment_may_keep_the_real_home_while_the_key_is_not_named(self, tmp_path):
         env = {**build_archive_env(tmp_path, key_line=None), "HOME": str(tmp_path.parent)}
@@ -95,6 +137,13 @@ class TestEnvironmentConfinement:
 
     def test_script_environment_always_needs_a_config_dir_under_tmp_path(self, tmp_path):
         env = {**build_archive_env(tmp_path, key_line=None), "CLAUDE_CONFIG_DIR": str(tmp_path.parent)}
+
+        with pytest.raises(AssertionError, match="CLAUDE_CONFIG_DIR"):
+            assert_script_env_confined(env, tmp_path)
+
+    def test_script_environment_needs_a_config_dir_under_tmp_path_even_when_home_is_outside_it(self, tmp_path):
+        env = {**build_archive_env(tmp_path, key_line=None), "HOME": str(tmp_path.parent)}
+        del env["CLAUDE_CONFIG_DIR"]
 
         with pytest.raises(AssertionError, match="CLAUDE_CONFIG_DIR"):
             assert_script_env_confined(env, tmp_path)
@@ -142,6 +191,16 @@ class TestBranchRecordsStatus:
         assert (report.state, report.reason) == ("ready", "")
         assert report.account_dir == str(account_directory(env))
         assert list_tree(archive_root(env)) == root_before
+
+    def test_ready_under_the_default_config_dir_when_claude_config_dir_is_unset(self, tmp_path, status_shell_options):
+        default_config_dir = tmp_path / "archive_home" / ".claude"
+        env = build_archive_env(tmp_path, config_dir=default_config_dir)
+        del env["CLAUDE_CONFIG_DIR"]
+
+        report = run_status(tmp_path, env, status_shell_options)
+
+        assert (report.state, report.reason) == ("ready", "")
+        assert report.account_dir == str(archive_root(env) / account_component(default_config_dir))
 
     @pytest.mark.parametrize("sentinel_state", ["missing", "directory", "dangling-root"])
     def test_unavailable_without_a_regular_file_sentinel(self, tmp_path, reason, status_shell_options, sentinel_state):

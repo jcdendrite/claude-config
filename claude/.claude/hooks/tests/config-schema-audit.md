@@ -497,27 +497,14 @@ Column legend:
 - Fail direction on a malformed or unreadable enabling line: **keep every
   item**. When `_config_enabled` reads the key as off, `branch_records_status`
   makes the archive `unavailable` unless `claude-config.toml` provably does not
-  exist or was read and holds no offending line. These states refuse:
-  - the file cannot be read;
-  - a directory on its path cannot be searched;
-  - a non-directory sits above it on its path;
-  - a dangling or self-looping link sits on its path;
-  - a non-file sits at its path;
-  - a line containing the text `agent_branch_records` is one `_config.sh` cannot parse;
-  - a line for the key reads as other than `true` or `false`.
-
-  A directory that can be searched but not read does not refuse.
-  `docs/agent-branch-records.md` § "Fail direction" holds the full condition
-  list.
+  exist or was read and holds no offending line.
+  `docs/agent-branch-records.md` § "Fail direction" holds the condition list
+  and the residuals.
 - Check scope: the check does not run when `_config_enabled` reads the key as
   on, so a `= true` line followed by a malformed duplicate still archives.
 - Misspelled key name: a misspelled name, the hyphenated `agent-branch-records`
   included, reads as off and is not detected. Only `_config.sh`'s stderr
   warning marks that line.
-- Residuals: the config reader's own read of the file swallows a transient
-  read failure, so that failure can still read as off. A stat error under a
-  searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE,
-  ETIMEDOUT) can still read as off too.
 - Fail direction on an internal resolver failure of `_config.sh`:
   **remove unarchived**. `_config_resolve_fail_safe` substitutes the schema
   default, false, so `_config_enabled` returns 1 and the key reads as off.

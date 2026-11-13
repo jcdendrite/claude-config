@@ -236,8 +236,9 @@ _branch_records_find_reusable_snapshot() {
 
 # branch_records_archive_worktree WORKTREE BRANCH MAIN_WORKTREE TRIGGER
 # BRANCH is the name that refs/heads/<BRANCH> resolves, with neither a refs/heads/ nor a heads/ prefix, because the ledger key hashes it verbatim.
-# Returns 0 when the archive is disabled (BRANCH_RECORDS_SNAPSHOT empty, which means nothing was archived) or a complete snapshot holds
-# the worktree's current state (BRANCH_RECORDS_SNAPSHOT names it). Otherwise returns 1 and sets BRANCH_RECORDS_REASON.
+# Returns 0 with BRANCH_RECORDS_SNAPSHOT empty when the archive is disabled, which means nothing was archived.
+# Otherwise returns 0 with BRANCH_RECORDS_SNAPSHOT naming a complete snapshot of the worktree's current state.
+# Otherwise returns 1 and sets BRANCH_RECORDS_REASON.
 # A snapshot is complete once its manifest.json exists, which is written last.
 # shellcheck disable=SC2034 # BRANCH_RECORDS_REASON and BRANCH_RECORDS_SNAPSHOT are read by the sourcing scripts, not by this lib.
 branch_records_archive_worktree() {

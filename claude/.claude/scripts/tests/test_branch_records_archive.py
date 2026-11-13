@@ -414,6 +414,19 @@ class TestArchiveWorktree:
         assert (second.rc, second.snapshot) == (0, first_snapshot)
         assert list(first_snapshot.parent.iterdir()) == [first_snapshot]
 
+    def test_empty_agent_reviews_is_copied_as_an_empty_directory_and_reused(self, tmp_path, archive_worktree):
+        env = build_archive_env(tmp_path)
+        (archive_worktree.worktree / "agent-reviews").mkdir()
+
+        first_snapshot = archive_successfully(tmp_path, env, archive_worktree)
+        second = run_archive(tmp_path, env, archive_worktree)
+
+        assert read_manifest(first_snapshot)["agent_reviews"] == "copied"
+        assert (first_snapshot / "agent-reviews").is_dir()
+        assert list((first_snapshot / "agent-reviews").iterdir()) == []
+        assert (second.rc, second.snapshot) == (0, first_snapshot)
+        assert list(first_snapshot.parent.iterdir()) == [first_snapshot]
+
     def test_unresolvable_branch_records_an_empty_tip_sha_and_is_reused(self, tmp_path, archive_worktree):
         env = build_archive_env(tmp_path)
         target = replace(archive_worktree, branch="feat/never-created")

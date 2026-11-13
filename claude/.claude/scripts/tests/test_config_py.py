@@ -101,21 +101,19 @@ class TestSchema:
 
     @pytest.mark.parametrize("key", _PER_ACCOUNT_OPT_IN_KEYS)
     def test_per_account_opt_in_key_resolves_from_the_config_dir_only(self, key):
-        """A per-account opt-in key resolves from the config dir only: a widening
-        to config-dir-or-home would let a home-level file enable it for every
-        account."""
+        """A widening to config-dir-or-home would let a home-level file enable it
+        for every account."""
         assert schema()[key].resolution == "config-dir"
 
     @pytest.mark.parametrize("key", _PER_ACCOUNT_OPT_IN_KEYS)
     def test_per_account_opt_in_key_is_bool_typed(self, key):
-        """A per-account opt-in key is a bool: config-get.sh's exit-0 gate
-        compares against the literal "false", which holds for a bool only."""
+        """config-get.sh's exit-0 gate compares against the literal "false", which
+        holds for a bool only."""
         assert schema()[key].type == "bool"
 
     @pytest.mark.parametrize("key", _PER_ACCOUNT_OPT_IN_KEYS)
     def test_per_account_opt_in_key_is_not_offered_in_the_install_prompt(self, key):
-        """A per-account opt-in key stays out of install.sh's opt-in prompt: a
-        non-empty prompt_description would offer it to every consumer."""
+        """A non-empty prompt_description would offer it to every consumer."""
         assert schema()[key].prompt_description == ""
 
     def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):

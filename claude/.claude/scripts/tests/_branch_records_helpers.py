@@ -1,7 +1,7 @@
 """Shared scaffolding for every test that exercises the branch-records archive.
 
-`run_lib` fails any call whose HOME or CLAUDE_CONFIG_DIR sits outside `tmp_path`,
-so no lib case can resolve the engineer's real archive root.
+`run_lib` fails any call whose environment could resolve the engineer's real archive root.
+`assert_lib_env_confined` states the rule.
 """
 from __future__ import annotations
 
@@ -199,9 +199,19 @@ def _assert_variable_confined_to(base: Path, env: dict[str, str], variable: str,
 
 
 def assert_lib_env_confined(tmp_path: Path, env: dict[str, str], cwd: Path) -> None:
-    """Fails unless `env`'s HOME and CLAUDE_CONFIG_DIR resolve under `tmp_path`, with a relative value taken from `cwd`."""
-    for variable in ("HOME", "CLAUDE_CONFIG_DIR"):
-        _assert_variable_confined_to(tmp_path, env, variable, cwd)
+    """Fails unless `env`'s HOME and resolved config dir resolve under `tmp_path`, with a relative value taken from `cwd`.
+
+    The lib falls back to `$HOME/.claude` when CLAUDE_CONFIG_DIR is unset or empty.
+    That state is accepted when HOME is confined and `$HOME/.claude`, symlinks followed, resolves under `tmp_path`.
+    """
+    _assert_variable_confined_to(tmp_path, env, "HOME", cwd)
+    if env.get("CLAUDE_CONFIG_DIR"):
+        _assert_variable_confined_to(tmp_path, env, "CLAUDE_CONFIG_DIR", cwd)
+    else:
+        default_config_dir = Path(env["HOME"]) / ".claude"
+        assert (cwd / default_config_dir).resolve().is_relative_to(tmp_path.resolve()), (
+            f"the default config dir {default_config_dir} resolves outside {tmp_path}"
+        )
 
 
 # The cleanup-script cases inherit the real HOME.
@@ -466,10 +476,7 @@ def make_fifo_in_agent_reviews(worktree: Path) -> None:
 def assert_cleanup_manifest(
     snapshot: Path, *, trigger: str, branch: str, tip_sha: str, main_worktree_path: str, worktree_path: str
 ) -> None:
-    """Holds a cleanup script's snapshot to the fields the script itself decides.
-
-    The paths and tip are read before the run, because the script removes the worktree and its branch.
-    """
+    """The caller reads the paths and tip before the run, because the script removes the worktree and its branch."""
     manifest = read_manifest(snapshot)
     assert manifest["trigger"] == trigger
     assert manifest["branch"] == branch
