@@ -332,8 +332,10 @@ class TestReadLedgerPrs:
     def test_two_roots_read_both_ledgers_without_either_opting_in(self, tmp_path):
         root_a, root_b = _account_root(tmp_path, "a"), _account_root(tmp_path, "b")
         pr_cost_ledger._write_pr_cost_ledger_file(_ledger_file(root_a), [_row(1, cell=_code_review_cell())])
-        pr_cost_ledger._write_pr_cost_ledger_file(_ledger_file(root_b), [_row(2, cell=_code_review_cell())])
-        assert [pr.number for pr in _read([root_a, root_b]).prs] == [1, 2]
+        pr_cost_ledger._write_pr_cost_ledger_file(_ledger_file(root_b), [_row(1, cell=_code_review_cell())])
+        read = _read([root_a, root_b])
+        assert (read.prs, read.pr_count) == ([], 1)
+        assert read.excluded[ledger_rounds.EXCLUDED_MULTI_ROW] == 1
 
     def test_a_missing_ledger_yields_no_rows(self, tmp_path):
         read = _read([_account_root(tmp_path, "a")])

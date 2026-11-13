@@ -59,8 +59,8 @@ _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 # model by _model_rates, so each model needs only its base rate kept current.
 # Keys persist verbatim in pr-cost ledger rows and exports; add vendor-published model IDs only.
 # A key must match pr_cost_ledger._MODEL_BREAKDOWN_KEY_RE, or the ledger cannot read back any row that carries it.
-# Removing or renaming a key leaves recorded rounds holding that model unpriceable,
-# which excludes from review-cost-by-size every PR with such a round that is not after-merge, in any skill.
+# Removing or renaming a key leaves every recorded round that holds that model unpriceable
+# (see ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND).
 _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     "claude-opus-5-5": 4.00,
     "claude-opus-5": 5.00,

@@ -392,7 +392,7 @@ status enum a single source of truth rather than a duplicated pair of strings. `
 `workstream_cost.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
 by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
-discipline. `review_cost_by_size.py` reads `_git_remote_origin_host_and_owner_repo` the same way.
+discipline.
 
 The period-cost command shares four pieces of this module:
 
@@ -450,9 +450,7 @@ Makes no gh call and scans no transcript corpus. Imports `pr_cost_ledger`, `pric
 `scope` all by module. The `pr_cost_ledger` import reaches the ledger parser and its error type, and the shared
 collapse, path-exit and override helpers that the `pr_cost_ledger.py` section above names. The `pricing` import reaches
 `_reprice_token_splits`, which prices a round's stored token splits at the current rate table. The `scope` import
-reaches `_redaction_ordinals`, so an error names an account by an `account-N` ordinal. The ordinals match
-`pr-cost-export`'s only when both commands resolve the same root set (`--all-accounts`); default mode passes a one-root
-list, so it always reports `account-1`.
+reaches `_redaction_ordinals`, so an error names an account by an `account-N` ordinal.
 
 ### `cache_rebuild_rules.py`
 

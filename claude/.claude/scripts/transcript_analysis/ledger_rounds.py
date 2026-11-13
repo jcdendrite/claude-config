@@ -141,8 +141,7 @@ def select_ledger_prs(rows_by_account: Sequence[Sequence[dict]], host: str, repo
 
 def _read_account_ledger_rows(account_root: Path, ordinal: int, subcommand: str) -> list[dict]:
     """One account's ledger rows, or none when it has no ledger file. Every failure exits 1 and echoes no path or
-    cell value: an unreadable file prints a fixed message, and a parse failure prints the parser's own, which names
-    the rule broken and, for a data row, its ledger line number.
+    cell value.
     Each exit follows its except block so that the caught error does not stay on SystemExit.__context__."""
     ledger_path = pr_cost_ledger._pr_cost_ledger_path_or_exit(subcommand, ordinal, account_root.parent)
     try:

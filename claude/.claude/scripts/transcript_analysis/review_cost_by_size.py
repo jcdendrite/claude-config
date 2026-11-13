@@ -46,7 +46,7 @@ _NO_PR_REPORTED_MESSAGE = (
     "No PR reported. This report reads only rows that pr-cost --record captured, which needs the pr_cost_recording"
     " config key, and a row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
     " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
-    " permanently understates the PR's row and the PR stays excluded. The ledger diagnostics below count the PRs"
+    " permanently understates the PR's row. The ledger diagnostics below count the PRs"
     " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
 )
 _NO_PR_RECORDED_MESSAGE = (
@@ -178,7 +178,8 @@ def _fmt_measure(measure: str, value: float | None) -> str:
 
 
 def _scope_header(all_accounts: bool, ledger_path_overridden: bool) -> str:
-    """The override label names neither the variable's value nor a path, because one file may hold several accounts."""
+    """The override label omits the variable's value and any path. It reads "account scope unverified" because one file
+    may hold several accounts."""
     if ledger_path_overridden:
         account_scope = "PR_COST_LEDGER_PATH file, account scope unverified"
     else:

@@ -46,7 +46,7 @@ _NO_PR_REPORTED_TEXT = (
     "No PR reported. This report reads only rows that pr-cost --record captured, which needs the pr_cost_recording"
     " config key, and a row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
     " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
-    " permanently understates the PR's row and the PR stays excluded. The ledger diagnostics below count the PRs"
+    " permanently understates the PR's row. The ledger diagnostics below count the PRs"
     " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
 )
 _NO_PR_RECORDED_TEXT = (
@@ -758,54 +758,45 @@ class TestCmdArithmeticAndDiagnostics:
 
 
 class TestCmdEmptyReport:
-    @staticmethod
-    def _seed_ledger(case: str, account_dir: Path) -> tuple[int, ...]:
-        """Write the ledger for `case` and return the PR numbers seeded, whose components a report must withhold."""
-        if case == "missing-ledger":
-            return ()
-        if case == "header-only-ledger":
-            _write_account_ledger(account_dir, [])
-            return ()
-        if case == "other-repository-rows-only":
-            _write_account_ledger(account_dir, _non_origin_rows())
-            return ()
-        if case == "all-rows-excluded":
-            _write_account_ledger(account_dir, [
-                _origin_ledger_row(81, cell=None),
-                _origin_ledger_row(
-                    82, cell=_optional_code_review_cell([_ledger_round()]),
-                    join_confidence=pr_cost_ledger._PR_COST_JOIN_CONFIDENCE_LOW,
-                ),
-                *_non_origin_rows(),
-            ])
-            return (81, 82)
-        _write_account_ledger(account_dir, [
-            _origin_ledger_row(91, cell=_optional_code_review_cell(None, **{"plan-review": [_ledger_round()]})),
-            _origin_ledger_row(92, cell=_optional_code_review_cell([_ledger_round(after_merge=1)])),
-            _origin_ledger_row(93, cell=_optional_code_review_cell(None)),
-            *_non_origin_rows(),
-        ])
-        return (91, 92, 93)
-
     @pytest.mark.parametrize(
-        ("case", "excluded_prs", "no_review_prs", "expected_message"),
+        ("ledger_rows", "decoy_prs", "excluded_prs", "no_review_prs", "expected_message"),
         [
-            pytest.param("missing-ledger", 0, 0, _NO_PR_RECORDED_TEXT, id="missing-ledger"),
-            pytest.param("header-only-ledger", 0, 0, _NO_PR_RECORDED_TEXT, id="header-only-ledger"),
-            pytest.param("other-repository-rows-only", 0, 0, _NO_PR_RECORDED_TEXT, id="other-repository-rows-only"),
-            pytest.param("all-rows-excluded", 2, 0, _NO_PR_REPORTED_TEXT, id="all-rows-excluded"),
+            pytest.param(None, (81,), 0, 0, _NO_PR_RECORDED_TEXT, id="missing-ledger"),
+            pytest.param([], (81,), 0, 0, _NO_PR_RECORDED_TEXT, id="header-only-ledger"),
+            pytest.param(_non_origin_rows(), (81,), 0, 0, _NO_PR_RECORDED_TEXT, id="other-repository-rows-only"),
             pytest.param(
-                "kept-prs-without-a-review-round", 0, 3, _NO_PR_REPORTED_TEXT, id="kept-prs-without-a-review-round",
+                [
+                    _origin_ledger_row(81, cell=None),
+                    _origin_ledger_row(
+                        82, cell=_optional_code_review_cell([_ledger_round()]),
+                        join_confidence=pr_cost_ledger._PR_COST_JOIN_CONFIDENCE_LOW,
+                    ),
+                    *_non_origin_rows(),
+                ],
+                (81, 82), 2, 0, _NO_PR_REPORTED_TEXT, id="all-rows-excluded",
+            ),
+            pytest.param(
+                [
+                    _origin_ledger_row(
+                        91, cell=_optional_code_review_cell(None, **{"plan-review": [_ledger_round()]}),
+                    ),
+                    _origin_ledger_row(92, cell=_optional_code_review_cell([_ledger_round(after_merge=1)])),
+                    _origin_ledger_row(93, cell=_optional_code_review_cell(None)),
+                    *_non_origin_rows(),
+                ],
+                (91, 92, 93), 0, 3, _NO_PR_REPORTED_TEXT, id="kept-prs-without-a-review-round",
             ),
         ],
     )
     def test_an_empty_report_prints_the_no_pr_message_zero_aggregates_and_the_counts_that_explain_it(
-        self, fake_projects, tmp_path, monkeypatch, capsys, case, excluded_prs, no_review_prs, expected_message,
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+        ledger_rows, decoy_prs, excluded_prs, no_review_prs, expected_message,
     ):
-        seeded_prs = self._seed_ledger(case, fake_projects.parent.parent)
-        # A case with no origin row has no branch to share, so its session only checks that a transcript scan finds
-        # nothing to report.
-        for decoy_pr in seeded_prs or (81,):
+        """`decoy_prs` get a session on their head branch, whose components a report must withhold. A case with no
+        origin row has no branch to share, so its decoy only checks that a transcript scan finds nothing to report."""
+        if ledger_rows is not None:
+            _write_account_ledger(fake_projects.parent.parent, ledger_rows)
+        for decoy_pr in decoy_prs:
             _write_code_review_session(fake_projects / f"sess-same-branch-{decoy_pr}.jsonl", _head_branch(decoy_pr), 3)
 
         out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args_scoped_to_seeded_session(fake_projects))
@@ -824,7 +815,7 @@ class TestCmdEmptyReport:
         assert _printed_pr_numbers(out) == []
         _assert_withheld(
             out, err, _ESC, str(tmp_path), _LEDGER_DIR_MARKER, _ORIGIN_HOST, _ORIGIN_OWNER, _ORIGIN_REPO_NAME,
-            *_row_components(*(seeded_prs or (81,))), *_non_origin_components(),
+            *_row_components(*decoy_prs), *_non_origin_components(),
         )
 
 

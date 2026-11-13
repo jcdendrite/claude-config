@@ -1,12 +1,11 @@
 """Tests of conftest's shared fixtures and helpers. This file deliberately loads no transcript-analysis.py shim,
 so a fixture that comes to depend on the shim fails here first."""
-import argparse
 import os
 
 import pytest
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, scope
 
-from .conftest import _option_help, _pin_transcript_corpus_lookups, _table_cols
+from .conftest import _pin_transcript_corpus_lookups, _table_cols
 
 _LEDGER_PATH_SENTINEL = "/zz-ledger-path-sentinel/pr-cost-ledger.tsv"
 
@@ -21,16 +20,6 @@ def test_pin_transcript_corpus_lookups_unsets_the_ledger_path_and_pins_both_corp
     assert "PR_COST_LEDGER_PATH" not in os.environ
     assert os.environ["CLAUDE_CONFIG_DIR"] == str(tmp_path / "isolated-claude-config")
     assert os.environ["TRANSCRIPT_CONFIG_DIRS_FILE"] == str(tmp_path / "nonexistent-transcript-config-dirs")
-
-
-def test_option_help_returns_the_whole_help_string_however_long_it_is():
-    long_help = "A help string " + "that runs well past any terminal width " * 8
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--long-option", help=long_help)
-    parser.add_argument("--other-option", help="Another help string.")
-
-    assert _option_help(parser, "--long-option") == long_help
-    assert _option_help(parser, "--other-option") == "Another help string."
 
 
 class TestAutouseIsolationAppliesTheCorpusPin:
