@@ -79,6 +79,12 @@ TOOLKIT_SUBDIRECTORY_NAMES = ("rules", "agents", "skills")
 GIT_DIR_NAME = ".git"
 
 NON_EXECUTION_PERMISSION_RULE = "permission-rule"
+PERMISSION_DECISION_REJECT = "reject"
+# The `toolDenialKind` values observed on a call that never ran. `interrupted` and any unknown value count as
+# executed, so a new harness value fails closed.
+NEVER_EXECUTED_DENIAL_KINDS = frozenset({
+    NON_EXECUTION_PERMISSION_RULE, "user-rejected", "automode-blocked", "automode-unavailable",
+})
 _TOOL_NAME_BASH = "Bash"
 _TOOL_NAME_READ = "Read"
 _TOOL_NAME_NOTEBOOK_EDIT = "NotebookEdit"
@@ -521,10 +527,19 @@ def _prompt_size(message: Mapping) -> int | None:
 
 
 def _marks_permission_denial(carrier: object) -> bool:
-    meta = carrier.get("tool_result_meta") if isinstance(carrier, dict) else None
-    return isinstance(meta, list) and any(
+    """True when the carrier holds any of the three denial shapes named in `read_subagent_transcript`."""
+    if not isinstance(carrier, dict):
+        return False
+    meta = carrier.get("tool_result_meta")
+    if isinstance(meta, list) and any(
         isinstance(item, dict) and item.get("non_execution_kind") == NON_EXECUTION_PERMISSION_RULE for item in meta
-    )
+    ):
+        return True
+    denial_kind = carrier.get("toolDenialKind")
+    if isinstance(denial_kind, str) and denial_kind in NEVER_EXECUTED_DENIAL_KINDS:
+        return True
+    decision = carrier.get("permissionDecision")
+    return isinstance(decision, dict) and decision.get("decision") == PERMISSION_DECISION_REJECT
 
 
 def _read_transcript_entries(subagent_jsonl: Path) -> tuple[list[dict], int, bool]:
@@ -551,10 +566,13 @@ def read_subagent_transcript(subagent_jsonl: Path) -> SubagentTranscript:
     """Entries that are neither an assistant message nor a user message, such as the attachment a
     `SubagentStop` hook's send-back leaves, are ignored. Never raises on the file's content or absence.
 
-    `docs/case-studies/claude-code-sandbox-write-boundary.md` places `tool_result_meta` on the result without
-    saying whether the block or its enclosing entry holds it. A block's marker always counts, and an
-    entry's marker counts only when the entry holds a single result, since it could not name which of
-    several was denied.
+    A call counts as denied when its carrier holds any of three markers: a `tool_result_meta` item whose
+    `non_execution_kind` is `permission-rule`, a `toolDenialKind` in `NEVER_EXECUTED_DENIAL_KINDS`, or a
+    `permissionDecision` object whose `decision` is `reject`. A `toolDenialKind` of `interrupted`, or any
+    value outside that set, leaves the call counted as executed. The carrier is the `tool_result` block, or
+    the enclosing user entry when it holds exactly one result, since an entry-level marker cannot name which
+    of several results it denied. The last two markers sit on the user entry in a main-session transcript
+    recorded on CLI 2.1.323, and a subagent transcript may carry the first on the block instead.
     """
     try:
         entries, skipped_lines, last_line_torn = _read_transcript_entries(subagent_jsonl)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,6 +163,24 @@ def _result(tool_use_id: str, *, denied: bool = False, kind: str = checks.NON_EX
     if denied:
         block["tool_result_meta"] = [{"non_execution_kind": kind}]
     return {"type": "user", "message": {"role": "user", "content": [block]}}
+
+
+def denied_result_entry(tool_use_id: str, path: str) -> dict:
+    """A user entry holding one denied `tool_result`, in the shape a `claude -p --permission-mode acceptEdits`
+    session records on CLI 2.1.323: the denial markers sit on the entry, and the block carries no `tool_result_meta`."""
+    message = f"Claude requested permissions to write to {path}, but you haven't granted it yet."
+    return {
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": message, "is_error": True, "tool_use_id": tool_use_id},
+        ]},
+        "toolUseResult": f"Error: {message}",
+        "toolDenialKind": "user-rejected",
+        "permissionDecision": {"decision": "reject", "source": "config", "reasonCode": "workingDir"},
+        "sourceToolAssistantUUID": str(uuid.UUID(int=1)),
+        "sessionId": str(uuid.UUID(int=2)),
+        "version": "synthetic",
+    }
 
 
 def _call_and_result(tool_use_id: str, name: str, tool_input: dict, *, denied: bool = False) -> list[dict]:
