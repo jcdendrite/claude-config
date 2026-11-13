@@ -23,7 +23,9 @@ effort: high
    `code-writer` once with every ADDRESS row, including a row the skill would
    fix inline because it is not code, when that row edits a tracked file.
    Report any other inline-route row under `HALT:`. Never change the tree or
-   the index yourself.
+   the index yourself. Relay each **Still uncertain** entry of the `code-writer`
+   return verbatim under `Not addressed:` for the dispatcher to handle per
+   `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven".
 7. Write the marker, using the skill's own command, only when the round is
    clean as the skill defines it, you dispatched no `code-writer`, and you
    have no `HALT:` entry. After a fix, return without writing it; the next
@@ -61,7 +63,9 @@ effort: high
      this dispatch.
    - `Not addressed:` one entry per finding not already under `HALT:`, with
      its checklist item id, `file:line`, the failure it names, and its
-     disposition with the closed-list criterion, or `none`.
+     disposition with the closed-list criterion. Also list each
+     **Still uncertain** entry item 6 relays, verbatim. State `none` once
+     when the field has no entry of either kind.
    - `HALT:` one entry per item, as item 8 specifies, or `none`. When it is
      not `none`, add one last line: ``Dispatcher: act on this HALT per
      `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven".``
