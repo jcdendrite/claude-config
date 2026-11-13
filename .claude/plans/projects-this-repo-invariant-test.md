@@ -18,9 +18,9 @@ Intended outcome: the invariant pin lands in `tests/test_transcript_cli.py`, and
 
 ## Approach
 
-Pin every subcommand that lacks a scope flag in `tests/test_transcript_cli.py` as one module-level map from subcommand to the flags it lacks, assert that the registrar's map equals it, and run the exclusivity walk over every subcommand outside it. Add one parametrized test to `tests/test_transcript_sessions.py` that seeds a main session and a split subagent file, runs `sessions --paths` through `cli.build_parser()` and `args.func(args)`, and asserts the exact stdout path list without and with `--include-subagents`.
+Pin every subcommand that lacks a scope flag in `tests/test_transcript_cli.py` as one module-level map from subcommand to the flags it lacks, assert that the registrar's map equals it, and run the exclusivity walk over every subcommand outside it. Add one parametrized test to `tests/test_transcript_sessions.py` that seeds two main sessions (one with a subagent transcript and its sidecar, one without a subagents directory) and an orphan subagent directory, runs `sessions --paths` through `cli.build_parser()` and `args.func(args)`, and asserts the exact stdout path list without and with `--include-subagents`.
 
-Paths below are under `claude/.claude/scripts/`. A bare `:N` is a line, at `HEAD`, of the file its paragraph or bullet names.
+Paths below are under `claude/.claude/scripts/`. A bare `:N` is a line, at `origin/main`, of the file its paragraph or bullet names.
 
 **The scope-flag pin** (rows 1-7), in `tests/test_transcript_cli.py`.
 
@@ -64,42 +64,53 @@ The walked set is unchanged today (row 3). A subcommand outside the map that los
 - Keeping the `<=` check: its comment (:305-307) states its purpose as catching flag loss on four registrar paths, and the pin now covers every registrar. It also fails when one of the four is unregistered, which other files already catch (row 8).
 - A count assertion on the walked set fails without naming the change.
 
-**The `sessions --paths` test** (rows 9-16), in `tests/test_transcript_sessions.py`. :5 becomes `from .conftest import _asst, _write_jsonl, _write_subagent_jsonl`. After :19 come two blank lines, then:
+**The `sessions --paths` test** (rows 9-16), in `tests/test_transcript_sessions.py`. :5 becomes `from .conftest import _asst, _write_jsonl, _write_subagent_dispatch, _write_subagent_jsonl`. After :19 come two blank lines, then:
 
 ```python
 @pytest.mark.parametrize(
     ("argv", "expected_relative_paths"),
     [
-        (["sessions", "--paths"], ["sess.jsonl"]),
-        (["sessions", "--paths", "--include-subagents"], ["sess.jsonl", "sess/subagents/agent-probe.jsonl"]),
+        (["sessions", "--paths"], ["sess.jsonl", "tail.jsonl"]),
+        (
+            ["sessions", "--paths", "--include-subagents"],
+            ["sess.jsonl", "sess/subagents/agent-probe.jsonl", "tail.jsonl"],
+        ),
     ],
     ids=["paths", "paths-include-subagents"],
 )
 def test_sessions_paths_emits_subagent_paths_only_under_include_subagents(
     fake_projects, capsys, argv, expected_relative_paths
 ):
-    """Plain --paths must not print subagent paths, and --include-subagents prints transcripts only, not sidecars.
+    """Plain --paths must not print subagent paths.
 
-    The --include-subagents case shows the seeded subagent file would print, so the plain case cannot pass vacuously.
+    --include-subagents prints subagent transcripts only, not their sidecars.
+    That case shows the seeded subagent file would print, so the plain case cannot pass vacuously.
+    The orphan subagent directory has no main transcript, so it must not print in either case.
+    The tail session sorts after the session with subagents and has no subagents directory, so it prints only its own transcript.
     """
     _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-5")])
-    _write_subagent_jsonl(fake_projects, "sess", "agent-probe", [_asst("claude-sonnet-5", sidechain=True)])
-    (fake_projects / "sess" / "subagents" / "agent-probe.meta.json").write_text("{}")
+    _write_jsonl(fake_projects / "tail.jsonl", [_asst("claude-sonnet-5")])
+    _write_subagent_dispatch(
+        fake_projects, "sess", "agent-probe", "toolu_probe", [_asst("claude-sonnet-5", sidechain=True)]
+    )
+    _write_subagent_jsonl(fake_projects, "orphan", "agent-orphan", [_asst("claude-sonnet-5", sidechain=True)])
     args = cli.build_parser().parse_args(argv)
 
     args.func(args)
 
     captured = capsys.readouterr()
     assert captured.out.splitlines() == [str(fake_projects / path) for path in expected_relative_paths]
-    assert captured.err.startswith("SESSIONS SOURCES (*; ")
+    assert "SESSIONS SOURCES (*; " in captured.err
 ```
 
 What each assertion catches:
 - The plain case fails if `sessions.py:45`'s guard goes, or if the parser's `--include-subagents` default flips (`sessions.py:65-68`). The hand-built object at `tests/test_transcript_analysis_multi_root_scope.py:122-125` cannot see a flipped default.
 - The exact stdout list also fails if the header moves to stdout (`sessions.py:42`).
-- The stderr prefix pins the header to stderr and the `*` label in it. It does not pin the parser's `--projects` default, because `scope.py:611` falls back to `*` when the default is `None`. The prefix does couple this file to `scope.py`'s `<COMMAND> SOURCES (<label>; ` header format. The rest of the header is `_root_count_desc`'s wording, already pinned elsewhere (row 12), and is left out so a change to it does not fail this file.
+- The stderr containment check pins the header to stderr and the `*` label in it, wherever it falls among other stderr output. It does not pin the parser's `--projects` default, because `scope.py:611` falls back to `*` when the default is `None`. The check does couple this file to `scope.py`'s `<COMMAND> SOURCES (<label>; ` header format. The rest of the header is `_root_count_desc`'s wording, already pinned elsewhere (row 12), and is left out so a change to it does not fail this file.
 - The `.meta.json` sidecar beside the seeded subagent file sits in the real `subagents/` directory (`corpus.py:33`). The control case's exact list therefore fails if `sessions.py:48`'s `glob("*.jsonl")` widens to `glob("*")`.
-- The oracle spells `subagents` literally while the seed goes through `SUBAGENT_SUBDIR` (row 13). The control case therefore also fails if that constant drifts from the on-disk name.
+- The oracle spells `subagents` literally while the seed, sidecar included, goes through `_write_subagent_dispatch` and `SUBAGENT_SUBDIR` (row 13). The control case therefore also fails if that constant drifts from the on-disk name.
+- The orphan subagent directory has no main transcript. The control case fails if the subagent paths come from a scope-wide glob instead of from each emitted session.
+- The `tail.jsonl` session has no `subagents/` directory and sorts after `sess.jsonl`. The control case fails if the per-session derivation raises on a session without one, or carries the previous session's subagent paths into it.
 
 **Alternatives set aside for the sessions test.** The control case is heavier than a single plain case, which passes vacuously if the seed misses the directory `cmd_sessions` reads. Lighter primitives checked for proving the seed:
 - The subprocess test at `tests/test_transcript_cli_bootstrap.py:636-664` proves its own seed, built by `_seed_git_and_sessions_account` in another file, not this one.
@@ -136,7 +147,7 @@ Other drivers set aside:
 10. On a single root, `_resolve_project_scope` reads `corpus.iter_sessions` (`transcript_analysis/scope.py:611-624`). That globs `<root>/<projects_glob>/*.jsonl` and yields only files with records (`transcript_analysis/corpus.py:212-217`). A subagent file two levels under the project directory is never yielded as a session, so only `sessions.py:45-49` can print it. `[verified: read]`
 11. `fake_projects` (`tests/conftest.py:1525-1547`) points `scope.PROJECTS_DIR` at `tmp_path/"projects"` and returns its one project directory. The autouse `_isolate_transcript_corpus_lookups` (`tests/conftest.py:1630-1656`) points `TRANSCRIPT_CONFIG_DIRS_FILE` at a nonexistent path, so `resolve_scan_roots` (`scope.py:472-506`) returns that one root. `[verified: read]`
 12. The header is `SESSIONS SOURCES (<label>; <root clause>)` (`scope.py:676`). On the single-root branch the label is the `--projects` value (`scope.py:611`, `:624`), which `_add_project_scope_args` defaults to `"*"` (`scope.py:517`). The root clause is `_root_count_desc`'s (`scope.py:635-657`), pinned by `tests/test_transcript_analysis_multi_root_scope.py:136`. `[verified: read]`
-13. `_write_subagent_jsonl(proj, session_id, agent_id, records)` (`tests/conftest.py:781-787`) writes `<proj>/<session_id>/<SUBAGENT_SUBDIR>/<agent_id>.jsonl`, and `SUBAGENT_SUBDIR` is `"subagents"` (`corpus.py:13`). Outside `tests/conftest.py`, 25 test files call it on 122 lines. `[verified: read; grep count]`
+13. `_write_subagent_jsonl(proj, session_id, agent_id, records)` (`tests/conftest.py:781-787`) writes `<proj>/<session_id>/<SUBAGENT_SUBDIR>/<agent_id>.jsonl`, and `SUBAGENT_SUBDIR` is `"subagents"` (`corpus.py:13`). Outside `tests/conftest.py`, 25 test files call it on 122 lines. `_write_subagent_dispatch` (`tests/conftest.py:790-809`) calls it, then writes `<agent_id>.meta.json` into the same `SUBAGENT_SUBDIR` directory. `[verified: read; grep count]`
 14. Plain `sessions --paths` runs in-process only through a hand-built object that sets `include_subagents` to `False` (`tests/test_transcript_analysis_multi_root_scope.py:122-125`). Through the parser it runs only in a subprocess with `--include-subagents`, seeded by `_seed_git_and_sessions_account` (`tests/test_transcript_cli_bootstrap.py:583-599`, `:636-664`). `[verified: read]`
 15. `tests/test_transcript_sessions.py` is 19 lines with one test. It imports `pytest` and `cli`, imports `_asst` and `_write_jsonl` from `.conftest` at :5, and drives `cli.build_parser().parse_args([...])` then `args.func(args)`. `[verified: read]`
 16. `cmd_sessions` prints paths built on `scope.PROJECTS_DIR` as given, so each printed line equals `str(fake_projects / <relative path>)`. `[verified: staff-sdet's plan-review run of the original test body through fake_projects, reported to the dispatching session; Verification step 3 reruns it on the final body]`
@@ -154,7 +165,7 @@ Other drivers set aside:
 - M2: The walk runs over the map's complement, and the filter, comment and `<=` assert go. `anchors: row2, row3, row8`.
 - M3: No custom assertion message, since pytest's dict diff names the change. `anchors: row4, row5, row6`.
 - M4: One parametrized sessions test, with a plain case and an `--include-subagents` control case. `anchors: root, row9, row10, row14`. The lighter primitives checked are under "Alternatives set aside for the sessions test".
-- M5: The seed goes through `_write_subagent_jsonl`, stdout is compared as an exact list, and stderr only by its prefix. `anchors: row11, row12, row13, row15, row16`.
+- M5: The `sess` seed goes through `_write_subagent_dispatch` and the orphan seed through `_write_subagent_jsonl`, stdout is compared as an exact list, and stderr only by containment of the header. `anchors: row11, row12, row13, row15, row16`.
 - M6: Placement per G1. `anchors: row17, row18`.
 - M7: Verification by the two files' collection and run, a grep of the diff's `def test_` lines and `select-tests.py`, with no `test-ids` proof. `anchors: row20, row21, row22, row23`. The conditional merge-base worktree is heavier than rerunning a failure in place. Lighter primitives checked:
   - Rerunning a failing ID on this tree cannot tell a pre-existing failure from one this change caused (G3).
@@ -174,11 +185,11 @@ Other drivers set aside:
 
 **Also in the diff:** `.claude/plans/projects-this-repo-invariant-test.md`.
 
-**Reuse:** `fake_projects`, `_asst`, `_write_jsonl` and `_write_subagent_jsonl` from `tests/conftest.py`; `TestBuildParser._subcommand_flags`; `cli.build_parser()`. No new helper or fixture.
+**Reuse:** `fake_projects`, `_asst`, `_write_jsonl`, `_write_subagent_dispatch` and `_write_subagent_jsonl` from `tests/conftest.py`; `TestBuildParser._subcommand_flags`; `cli.build_parser()`. No new helper or fixture.
 
 **PR body requirement.** The PR body names the renamed test ID, old and new, so a reviewer comparing CI test lists reads the rename as intended.
 
-Projected diff: about 55 lines. About 25 change in `test_transcript_cli.py` (16 added, 9 deleted) and about 30 in `test_transcript_sessions.py` (29 added, 1 deleted).
+Projected diff: about 63 lines. About 25 change in `test_transcript_cli.py` (16 added, 9 deleted) and about 38 in `test_transcript_sessions.py` (37 added, 1 deleted).
 
 ## Verification
 
@@ -192,10 +203,10 @@ Run from the worktree root. `<tests>` is `claude/.claude/scripts/tests`.
    - `test_sessions_paths_emits_subagent_paths_only_under_include_subagents[paths-include-subagents]`;
    - `test_sessions_without_paths_exits_2_and_emits_no_path`.
 3. `scripts/venv-run.sh pytest <tests>/test_transcript_cli.py <tests>/test_transcript_sessions.py` exits 0 with no failure, which also proves row 16.
-4. `git diff HEAD -- <tests>/test_transcript_cli.py <tests>/test_transcript_sessions.py | grep -E '^[+-][[:space:]]*def test_'` prints exactly three lines: the removed `test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions`, the added `test_subcommands_lacking_a_scope_flag_are_exactly_the_expected_set`, and the added `test_sessions_paths_emits_subagent_paths_only_under_include_subagents`.
+4. `git diff origin/main -- <tests>/test_transcript_cli.py <tests>/test_transcript_sessions.py | grep -E '^[+-][[:space:]]*def test_'` prints exactly three lines: the removed `test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions`, the added `test_subcommands_lacking_a_scope_flag_are_exactly_the_expected_set`, and the added `test_sessions_paths_emits_subagent_paths_only_under_include_subagents`.
 5. Scope of the diff:
-   - `git diff HEAD --name-only` prints exactly the two test files.
-   - `git diff HEAD --numstat` totals near 50 changed lines.
+   - `git diff origin/main --name-only -- claude/` prints exactly the two test files.
+   - `git diff origin/main --numstat -- claude/` totals near 60 changed lines.
    - `git grep -n test_subcommands_with_projects_but_no_this_repo -- ':!.claude/plans/'` prints nothing.
 6. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. Its stderr names `claude/.claude/scripts/tests` among its targets and does not report the full suite (rows 20, 21). Then:
    - These pass, including their cases for both edited files: `claude/.claude/hooks/tests/test_ticket_reference_discipline.py`'s `test_no_ticket_prefixed_identifier` and `test_no_duplicate_top_level_test_name_within_a_file` (row 22), and `claude/.claude/tests/test_pytest_collection_config.py`'s `TestNoBareSameDirectorySiblingImports`.
@@ -213,7 +224,7 @@ Run from the worktree root. `<tests>` is `claude/.claude/scripts/tests`.
 - **Changing which subcommands carry scope flags**, such as giving `user-input` `--this-repo`. The map records today's registrations and changes none.
 - **Pinning that `cost`, `skill-invocation`, `skill-pair` and `subagents` stay registered.** The deleted `<=` check did so only incidentally, and other files already parse or run each one (row 8).
 - **The hand-built `sessions` case at `tests/test_transcript_analysis_multi_root_scope.py:122-125` and the subprocess case at `tests/test_transcript_cli_bootstrap.py:636-664`.** Their subjects are the header across subcommands and fresh-interpreter dispatch, and both stay.
-- **Pinning the order `--paths` emits subagent paths in.** The seed holds one session and one subagent transcript, so dropping the `sorted()` at `sessions.py:48` passes. Order is not part of this change's subject.
+- **Pinning the order `--paths` emits subagent paths in.** The seed holds one subagent transcript, so dropping the `sorted()` at `sessions.py:48` passes. Order is not part of this change's subject.
 - **`test_every_projects_registration_across_every_subcommand_has_no_argparse_type` (:352-359).** It has the same filter-then-`<=` shape, and was looked at. It filters on `action.dest == "projects"`, not the option string, and its `<=` keeps that walk from running empty, so the pin does not cover it and it stays.
 - **The walk's docstring (:300-302).** It stays accurate, because a subcommand registered later still lands in the walk unless it is added to the map.
 - **Mentions of the old test layout in `.claude/plans/*.md`**, `.claude/plans/cli-subparser-move.md:142` included. They are preserved records (`CLAUDE.md` §Working Style "Scope discipline", Axis 3).
