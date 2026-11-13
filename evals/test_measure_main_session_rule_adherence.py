@@ -3010,7 +3010,24 @@ class TestFaultsAndPauses:
 
         assert paused == [False, False, False, False, True]
         assert isinstance(built.harness._halt, m.RunPaused)
-        assert "5 consecutive faults" in built.harness._halt.status_line()
+        assert "5 consecutive faults across slots" in built.harness._halt.status_line()
+
+    def test_a_slot_out_of_retries_pauses_the_run_naming_the_retry_limit_not_the_consecutive_count(
+        self, kit: RunKit,
+    ) -> None:
+        built = kit.build(ScriptedLauncher())
+        outcome = m.AttemptOutcome(m.CLS_FAULT, 0.0, m.COST_SOURCE_NONE, fault_class=m.FAULT_OVERLOAD)
+
+        paused = built.harness._after_fault(outcome, m.FAULT_MAX_RETRIES)
+
+        assert paused is True
+        halt_message = str(built.harness._halt)
+        per_slot_wording = (
+            f"{m.FAULT_MAX_RETRIES + 1} faults on one slot since this process started, "
+            f"past its {m.FAULT_MAX_RETRIES} retries"
+        )
+        assert per_slot_wording in halt_message
+        assert "consecutive" not in halt_message
 
     def test_a_success_between_faults_resets_the_consecutive_count_so_sporadic_faults_never_pause_the_run(
         self, kit: RunKit,

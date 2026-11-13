@@ -697,8 +697,8 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """The child leads its own session (start_new_session), so its pid is its
     process group ID and this reaches every descendant it spawned.
 
-    A group that is already gone counts as killed. On macOS, signalling the
-    group of an exited but unreaped leader raises PermissionError (EPERM)."""
+    A group that is already gone counts as killed: ProcessLookupError and
+    PermissionError from the group kill are both treated as gone."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
 

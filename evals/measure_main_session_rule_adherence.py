@@ -174,7 +174,6 @@ def target_for_sizing_p(sizing_p: float, entered_count: int) -> int:
 
 
 def planned_look_target(memory_successes: int, entered_count: int) -> int:
-    """Scored samples per arm per observable at the planned look."""
     return target_for_sizing_p(round(sizing_point(memory_successes), SIZING_P_DECIMALS), entered_count)
 
 
@@ -1345,8 +1344,7 @@ if deny:
 def project_settings(
     arm: ArmSpec, *, deny_script: Path | None, observable: Observable | None, user_claude_md: Path,
 ) -> dict:
-    """The sample's project settings: the user CLAUDE.md excluded by link path and real path, the arm's handlers,
-    and the deny hook."""
+    # The user CLAUDE.md can be a symlink, so the exclude list names both its link path and its real path.
     excludes = list(dict.fromkeys([str(user_claude_md), str(user_claude_md.resolve())]))
     hooks: dict[str, list] = {}
     for entry in arm.handlers:
@@ -2165,8 +2163,11 @@ class Harness:
             self._set_halt(RunPaused(fault_class, self.config.log_path, detail))
         elif not outcome.retryable:
             self._set_halt(RunPaused(fault_class, self.config.log_path, outcome.detail or "a retry cannot fix this fault"))
-        elif consecutive >= CONSECUTIVE_FAULT_PAUSE or fault_retries >= FAULT_MAX_RETRIES:
-            self._set_halt(RunPaused(fault_class, self.config.log_path, f"{consecutive} consecutive faults"))
+        elif consecutive >= CONSECUTIVE_FAULT_PAUSE:
+            self._set_halt(RunPaused(fault_class, self.config.log_path, f"{consecutive} consecutive faults across slots"))
+        elif fault_retries >= FAULT_MAX_RETRIES:
+            detail = f"{fault_retries + 1} faults on one slot since this process started, past its {FAULT_MAX_RETRIES} retries"
+            self._set_halt(RunPaused(fault_class, self.config.log_path, detail))
         return self._halted()
 
     def _build_request(

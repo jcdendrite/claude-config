@@ -891,8 +891,8 @@ class TestRunClaudeToCompletion:
     def test_a_group_kill_refused_with_permission_denied_still_reaps_the_child_and_records_its_status(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """macOS raises PermissionError when signalling the group of an exited but unreaped leader. The harness must
-        read that as "already gone", not as a launch fault that charges nothing for a child that ran."""
+        """The harness must read a PermissionError from the group kill as "already gone", not as a launch fault that
+        charges nothing for a child that ran."""
         outcome = msmr.LaunchOutcome()
         real_killpg = os.killpg
 
@@ -924,6 +924,38 @@ class TestRunClaudeToCompletion:
             msmr._run_claude_to_completion(["sh", "-c", "echo out; exit 3"], tmp_path, 10, outcome=outcome)
 
         assert outcome.exit_status == 3
+
+    def test_stdout_is_closed_even_when_the_wait_raises_after_the_child_is_reaped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        stdout_closes: list[bool] = []
+
+        class StdoutRecordingClose:
+            def __init__(self, real_stdout: object) -> None:
+                self._real_stdout = real_stdout
+
+            def fileno(self) -> int:
+                return self._real_stdout.fileno()
+
+            def close(self) -> None:
+                stdout_closes.append(True)
+                self._real_stdout.close()
+
+        class PopenWhoseWaitFailsAfterReaping(subprocess.Popen):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)
+                self.stdout = StdoutRecordingClose(self.stdout)
+
+            def wait(self, timeout: float | None = None) -> int:
+                super().wait(timeout)
+                raise OSError("wait failed")
+
+        monkeypatch.setattr(msmr.subprocess, "Popen", PopenWhoseWaitFailsAfterReaping)
+
+        with pytest.raises(OSError, match="wait failed"):
+            msmr._run_claude_to_completion(["sh", "-c", "echo out; exit 3"], tmp_path, 10)
+
+        assert stdout_closes == [True]
 
     def test_the_exit_status_is_recorded_even_when_closing_stdout_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

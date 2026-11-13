@@ -523,6 +523,18 @@ the emitter, every arm receives the rules by hook, so the preflight refuses.
   files exists, and each content file has text. The candidate ref's hooks
   execute with the operator's credentials and environment, so name only a ref
   the operator has reviewed.
+  - The planned look is the first of the two comparisons. Its target is the
+    number of scored samples each arm needs per observable, sized from the
+    calibration.
+  - The extension is the second look. It adds half the target for each
+    observable the planned look leaves undecided.
+  - An arm's reach is its scored share of attempts.
+  - A miss is a per-observable flag on the `hook` arm: its reach trails
+    `memory`'s by more than the 0.15 margin, or it scored fewer samples than
+    the target while `memory` scored at least that many. The target is the
+    planned target, plus the extension for an observable that extended. A void
+    run, a delivery failure or a failed observable takes precedence over a
+    miss in the run verdict.
 
 ```bash
 # Print the schedule and launch nothing:
@@ -538,8 +550,10 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
   --resume /tmp/msra/run.jsonl --json /tmp/msra/result.json --keep-artifacts /tmp/msra/streams
 ```
 
-- Hold a macOS machine awake with `caffeinate -i`: a sleep trips the
-  wall-clock timeout.
+- Hold a macOS machine awake with `caffeinate -i`. The per-sample timeout runs
+  on `time.monotonic()`, which does not advance while the machine sleeps, so a
+  sleep does not use up `--timeout-s`. It can leave a sample's API connection
+  dead on wake, which ends that sample as a fault or as a timeout.
 - `--resume LOG` continues the run recorded in LOG:
   - It replays the seeded schedule by stage and slot and skips finished slots.
   - It runs a slot again when its last attempt ended in a fault, a delivery
@@ -553,7 +567,9 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
   - It refuses when an arm-input, prompt, scorer, deny-hook, launch-command or
     seeded-fixture hash, the CLI version, the ambient config commit, the model,
     the seed, the phase or the account differs from the log's. A refusal leaves
-    the log untouched.
+    the log's records untouched. A final line cut short by a hard kill is
+    repaired first: truncated when it does not parse, completed with a newline
+    when it does.
   - A run already at its cumulative stop launches nothing.
   - A stage refused for its projected cost continues with `--resume` and a
     higher `--cumulative-stop-usd`.
@@ -609,9 +625,9 @@ file exist, and before the run log.
 **Costs are nominal dollars**, the unit of the CLI's `total_cost_usd`. Under
 subscription auth that is a unit of account, not a charge.
 
-- The run's real limit is the usage window of the account it runs under,
-  shared with your own sessions, so run it outside working hours at the default
-  worker count.
+- Run it outside working hours at the default worker count. The run's real
+  limit is the usage window of the account it runs under, shared with your own
+  sessions.
 - `--workers` takes 1 to 8. `--timeout-s` takes a whole number of seconds above
   zero.
 - Dollar figures and the account label appear only in the notices on stderr,
@@ -631,9 +647,11 @@ subscription auth that is a unit of account, not a charge.
   `--budget-cap-usd` when the smoke reports no positive charge.
 - Both take a finite number above zero.
 - The gate phase refuses its planned look (`planned look refused`) when what
-  remains of `--cumulative-stop-usd` is below the with-extension figure at the
-  calibrated reach. A resume skips the refusal once the planned look has
-  started. The attempt-cap ceiling in the notice is not the figure it compares.
+  remains of `--cumulative-stop-usd` is below the with-extension figure, the
+  projected spend if every observable extends. It prices both arms' attempts at
+  each `memory` cell's calibration reach and mean charge per attempt. A resume
+  skips the refusal once the planned look has started. The attempt-cap ceiling
+  in the notice is not the figure it compares.
 
 **Footprint on the live config dir.** Each sample is a real session, so it
 leaves the following:
