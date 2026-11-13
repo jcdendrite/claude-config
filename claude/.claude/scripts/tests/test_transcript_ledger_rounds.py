@@ -87,6 +87,17 @@ class TestSelectLedgerPrsFilter:
         read = _select([_row(1, cell=_code_review_cell(), repo="owner/other")])
         assert (read.prs, read.pr_count) == ([], 0)
 
+    def test_a_row_for_another_host_or_repo_with_the_same_pr_and_machine_is_not_a_second_row_for_the_origin_pr(self):
+        """PR numbers repeat across repositories, so a row for another host or repo sharing the origin's PR number and
+        machine must never count as a second cell-carrying row for the origin PR, which stays selected."""
+        origin = _row(1, cell=_code_review_cell(), additions=1, deletions=1)
+        other_host = _row(1, cell=_code_review_cell(), host="ghe.example")
+        other_repo = _row(1, cell=_code_review_cell(), repo="owner/other")
+        read = _select([origin, other_host], [other_repo])
+        assert [pr.lines for pr in read.prs] == [2]
+        assert read.pr_count == 1
+        assert read.excluded == dict.fromkeys(ledger_rounds.EXCLUSION_REASONS, 0)
+
     def test_a_superseded_row_is_ignored(self):
         older = _row(1, cell=_code_review_cell(), captured_at="2026-01-02T00:00:00Z", additions=1, deletions=1)
         newer = _row(1, cell=_code_review_cell(), captured_at="2026-01-03T00:00:00Z", additions=70, deletions=3)
@@ -270,6 +281,15 @@ class TestSelectLedgerPrsRounds:
             pytest.approx(_round_usd(before_first)), pytest.approx(_round_usd(before_second)),
         ]
         assert read.after_merge_rounds == {"code-review": 1, "plan-review": 1}
+
+    def test_after_merge_counts_total_across_kept_prs_per_skill(self):
+        first_pr = _code_review_cell([_round(), _round(after_merge=1)])
+        second_pr = _code_review_cell(
+            [_round(), _round(after_merge=1), _round(after_merge=1)], **{"plan-review": [_round(after_merge=1)]},
+        )
+        read = _select([_row(1, cell=first_pr), _row(2, cell=second_pr)])
+        assert [pr.number for pr in read.prs] == [1, 2]
+        assert read.after_merge_rounds == {"code-review": 3, "plan-review": 1}
 
     def test_a_round_flagged_zero_or_with_no_flag_is_kept(self):
         flagged_zero = _round(after_merge=0)

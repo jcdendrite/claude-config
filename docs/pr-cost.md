@@ -199,7 +199,7 @@ After an exit 1 for a `review_rounds` check failure:
   - A third refusal, `the ledger on disk changed during this run and no longer parses: <reason>`, means something else edited the ledger into an unparseable state mid-run. A rerun stops at the ordinary parse error instead. Repair the file per that error (see "Data" for the two exempt edits), and do not report it as a defect.
   - Two more refusals share the prefix and also leave the ledger unchanged: `write verification mismatch` (the staged file did not read back identical to what was written) and `column '<name>' contains a tab or newline -- refusing to write a corrupt row`. Neither is expected in practice; report a repeat as for the first refusal.
 - **Older checkouts.** An upgraded ledger cannot be read by older checkouts, and there is no supported downgrade.
-  - Symptom: they print `missing or mismatched pr-cost ledger header row` on read mode, `--record`, export, and `review-cost-by-size`, and write nothing.
+  - Symptom: they print `missing or mismatched pr-cost ledger header row` on read mode, `--record`, and export, and write nothing.
   - Recovery: update every checkout that shares the ledger, with `git pull` for a stow clone or a rebase or merge for a worktree on an older base. The ledger is intact; do not delete or recreate it.
   - Cost of delay: a checkout that cannot record loses each uncaptured PR once its transcripts age out.
   - Off switch: `pr_cost_recording` is for a defect in a current checkout that writes wrong data. Turn it off until a fix lands; read mode still parses the ledger. A refused write needs no off switch, because it already leaves the ledger unchanged: rerun.

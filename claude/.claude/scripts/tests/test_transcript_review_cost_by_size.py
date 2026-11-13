@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
-from transcript_analysis import ledger_rounds, pr_cost_ledger, review_cost_by_size, review_rounds, scope
+from transcript_analysis import cli, ledger_rounds, pr_cost_ledger, review_cost_by_size, review_rounds, scope
 
 from ._pr_cost_helpers import (
     _LEDGER_DIR_MARKER,
@@ -69,6 +69,13 @@ _UNPRICED_MODEL_SENTINEL = "zzunpricedmodelsentinel"
 _UNKNOWN_SKILL_SENTINEL = "zzunknownskillsentinel"
 _UNKNOWN_ROUND_KEY_SENTINEL = "zzunknownroundkeysentinel"
 _OVERRIDE_BASENAME = "zzoverridesentinel.tsv"
+# 100_000 input tokens on _REPRICED_ROUND_MODEL at its base input rate of $2.00 per million (pricing._MODEL_BASE_INPUT_RATES).
+_DOLLARS_PER_100K_INPUT_TOKENS = 0.20
+
+
+def _dollars_text(input_tokens_in_100k: float) -> str:
+    """The report's dollar text for a price of `input_tokens_in_100k` times 100_000 input tokens."""
+    return f"${input_tokens_in_100k * _DOLLARS_PER_100K_INPUT_TOKENS:.2f}"
 
 
 def _branch_token(pr_number: int) -> str:
@@ -100,8 +107,8 @@ def _row_components(*pr_numbers: int) -> tuple[str, ...]:
 def _ledger_round(*, main_input: int = 100_000, agent_input: int = 50_000, **overrides) -> dict:
     """A priceable round whose main and agent splits differ and whose stored micro-dollars differ from their price.
 
-    The defaults price at $0.20 for 100_000 main input tokens and $0.10 for 50_000 agent input tokens, while the
-    stored micro-dollars sum to 16.
+    The defaults hold 100_000 main input tokens and 50_000 agent input tokens, which price at 1.5 times
+    _DOLLARS_PER_100K_INPUT_TOKENS, while the stored micro-dollars sum to 16.
     """
     return _round_with_priced_splits(
         {"standard": {"input": main_input}}, {"standard": {"input": agent_input}},
@@ -163,8 +170,9 @@ def _review_cost_by_size_args_scoped_to_seeded_session(fake_projects: Path) -> o
 
 
 def _write_code_review_session(session_path, branch: str, round_count: int) -> None:
-    """One transcript session of `round_count` code-review rounds on `branch`, each priced at $0.20 and closed by a
-    fresh user prompt. The command ignores transcripts, so a figure from this session in a report is a defect."""
+    """One transcript session of `round_count` code-review rounds on `branch`, each priced at
+    _DOLLARS_PER_100K_INPUT_TOKENS and closed by a fresh user prompt. The command ignores transcripts, so a figure
+    from this session in a report is a defect."""
     records = []
     for round_index in range(round_count):
         minute = 2 * round_index
@@ -567,16 +575,16 @@ class TestCmdSuccessRuns:
     def test_the_report_prints_the_ledgers_figures_and_never_a_transcript_sessions(
         self, fake_projects, monkeypatch, capsys,
     ):
-        """The ledger PR's two rounds cost $0.60. A transcript session on the same branch holds five rounds at
-        $1.00, which a transcript fallback would print."""
+        """The ledger PR's two rounds cost three times _DOLLARS_PER_100K_INPUT_TOKENS. A transcript session on the same
+        branch holds five rounds at five times it, which a transcript fallback would print."""
         _write_account_ledger(fake_projects.parent.parent, [_kept_row(71, round_count=2)])
         _write_code_review_session(fake_projects / "sess-same-branch.jsonl", _head_branch(71), 5)
 
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args_scoped_to_seeded_session(fake_projects))
 
         assert _printed_pr_numbers(out) == [71]
-        assert f"  {71:>7}  {5:>8,}  {2:>6}  {'$0.60':>10}  {'$0.30':>10}" in out.splitlines()
-        assert "$1.00" not in out
+        assert f"  {71:>7}  {5:>8,}  {2:>6}  {_dollars_text(3):>10}  {_dollars_text(1.5):>10}" in out.splitlines()
+        assert _dollars_text(5) not in out
 
     def test_the_header_is_followed_by_the_scope_unverified_notice(self, fake_projects, monkeypatch, capsys):
         _write_account_ledger(fake_projects.parent.parent, [_kept_row(11)])
@@ -596,10 +604,10 @@ class TestCmdArithmeticAndDiagnostics:
     def test_a_pr_is_sized_by_additions_plus_deletions_and_its_rounds_are_repriced_in_list_order(
         self, fake_projects, monkeypatch, capsys,
     ):
-        """Four code-review rounds cost $0.30, $0.90, $0.60 and $1.20 in list order, so the within-PR rho is 0.80, where
-        sorted order would give 1.00. A huge after-merge round sits between the second and third, and a huge
-        plan-review round beside them. Neither adds to the series. Every stored micro-dollar figure differs from the
-        splits' price."""
+        """Four code-review rounds cost 1.5, 4.5, 3 and 6 times _DOLLARS_PER_100K_INPUT_TOKENS in list order, so the
+        within-PR rho is 0.80, where sorted order would give 1.00. A huge after-merge round sits between the second
+        and third, and a huge plan-review round beside them. Neither adds to the series. Every stored micro-dollar
+        figure differs from the splits' price."""
         pr_cell = _optional_code_review_cell(
             [
                 _round_scaled(100_000), _round_scaled(300_000), _round_scaled(5_000_000) | {"after_merge": 1},
@@ -611,14 +619,15 @@ class TestCmdArithmeticAndDiagnostics:
 
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
 
-        assert f"  {61:>7}  {'1,480':>8}  {4:>6}  {'$3.00':>10}  {'$0.75':>10}" in out.splitlines()
+        assert f"  {61:>7}  {'1,480':>8}  {4:>6}  {_dollars_text(15):>10}  {_dollars_text(3.75):>10}" in out.splitlines()
         assert "  PRs with a rho: 1; median rho 0.80; share above zero 100.0%" in out.splitlines()
 
     def test_a_pr_whose_rounds_carry_no_agent_tokens_is_reported_at_its_main_price(
         self, fake_projects, monkeypatch, capsys,
     ):
-        """Main input of 100_000 tokens prices at $0.20, so two rounds with an empty agent object cost $0.40. A PR
-        whose rounds have neither object costs $0.00. Both are reported, not excluded as unpriceable."""
+        """Main input of 100_000 tokens prices at _DOLLARS_PER_100K_INPUT_TOKENS, so two rounds with an empty agent object
+        cost twice that. A PR whose rounds have neither object costs nothing. Both are reported, not excluded as
+        unpriceable."""
         _write_account_ledger(fake_projects.parent.parent, [
             _origin_ledger_row(
                 97, cell=_optional_code_review_cell([_ledger_round(agent_tokens={}), _ledger_round(agent_tokens={})]),
@@ -630,8 +639,8 @@ class TestCmdArithmeticAndDiagnostics:
 
         assert _count_line(out, "PRs reported") == 2
         assert _printed_pr_numbers(out) == [97, 98]
-        assert f"  {97:>7}  {5:>8,}  {2:>6}  {'$0.40':>10}  {'$0.20':>10}" in out.splitlines()
-        assert f"  {98:>7}  {5:>8,}  {1:>6}  {'$0.00':>10}  {'$0.00':>10}" in out.splitlines()
+        assert f"  {97:>7}  {5:>8,}  {2:>6}  {_dollars_text(2):>10}  {_dollars_text(1):>10}" in out.splitlines()
+        assert f"  {98:>7}  {5:>8,}  {1:>6}  {_dollars_text(0):>10}  {_dollars_text(0):>10}" in out.splitlines()
         _assert_exclusion_counts_are_zero(out)
 
     def test_a_row_with_negative_additions_plus_deletions_is_reported_with_its_negative_size(
@@ -738,6 +747,26 @@ class TestCmdArithmeticAndDiagnostics:
             ]
         else:
             assert malformed_lines == []
+
+    def test_the_sums_total_the_counts_of_every_reported_pr(self, capsys):
+        def reported_pr(number: int, *, unpriced_turns: int, dangling: int, invalid_usage_records: int):
+            code_review_round = _ledger_round(
+                unpriced_turns=unpriced_turns, dangling=dangling, invalid_usage_records=invalid_usage_records,
+            )
+            return ledger_rounds.LedgerPr(number, 5, {"code-review": [code_review_round]}, {"code-review": [0.3]})
+
+        reported_prs = [
+            reported_pr(1, unpriced_turns=3, dangling=5, invalid_usage_records=7),
+            reported_pr(2, unpriced_turns=11, dangling=13, invalid_usage_records=17),
+        ]
+        ledger_read = ledger_rounds.LedgerRead(reported_prs, 2, dict.fromkeys(ledger_rounds.EXCLUSION_REASONS, 0), {})
+
+        review_cost_by_size._print_ledger_diagnostics(ledger_read, reported_prs)
+
+        out = capsys.readouterr().out
+        assert _count_line(out, "Unpriced turns inside reported rounds") == 14
+        assert _count_line(out, "Dangling dispatches inside reported rounds") == 18
+        assert "MALFORMED USAGE — 24 usage-bearing turns" in out
 
     def test_a_kept_pr_without_a_code_review_round_before_merge_is_counted_and_not_reported(
         self, fake_projects, monkeypatch, capsys,
@@ -883,3 +912,14 @@ class TestSubparserHelp:
         monkeypatch.setenv("COLUMNS", "1000")
         top_level, _subparser = self._review_cost_by_size_parser()
         assert "Requires --this-repo and a pr-cost ledger; makes no gh call." in " ".join(top_level.format_help().split())
+
+
+class TestArgparseWiring:
+    def test_all_accounts_flag_sets_all_accounts_through_the_real_parser(self):
+        parser = cli.build_parser()
+        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
+        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
+        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
+        assert with_flag.all_accounts is True
+        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
+        assert without_flag.all_accounts is False

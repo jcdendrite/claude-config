@@ -1492,6 +1492,28 @@ class TestCollapsePrCostRowsToCurrent:
         assert len(collapsed) == 2
         assert {row["machine"] for row, _cc in collapsed} == {"ci1", "ci2"}
 
+    def test_two_rows_differing_only_by_host_both_survive(self):
+        """The same PR number exists on every host, so a later row for another host is not a correction."""
+        rows = [
+            _sample_pr_cost_row(host="github.com", captured_at="2026-01-01T00:00:00Z"),
+            _sample_pr_cost_row(host="ghe.example", captured_at="2026-01-02T00:00:00Z"),
+        ]
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current(rows)
+        assert {(row["host"], correction_count) for row, correction_count in collapsed} == {
+            ("github.com", 0), ("ghe.example", 0),
+        }
+
+    def test_two_rows_differing_only_by_repo_both_survive(self):
+        """The same PR number exists in every repo, so a later row for another repo is not a correction."""
+        rows = [
+            _sample_pr_cost_row(repo="owner/repo", captured_at="2026-01-01T00:00:00Z"),
+            _sample_pr_cost_row(repo="owner/other", captured_at="2026-01-02T00:00:00Z"),
+        ]
+        collapsed = pr_cost_ledger._collapse_pr_cost_rows_to_current(rows)
+        assert {(row["repo"], correction_count) for row, correction_count in collapsed} == {
+            ("owner/repo", 0), ("owner/other", 0),
+        }
+
     def test_newer_degraded_row_wins_over_an_older_ok_row(self):
         """docs/pr-cost.md's documented invariant: collapse never prefers an
         older ok row over a newer, still-current correction, even when that

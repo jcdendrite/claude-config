@@ -727,8 +727,7 @@ class TestRepriceTokenSplits:
 
     def test_a_multi_turn_rounds_summed_splits_price_to_the_sum_of_each_turns_price(self):
         """The writer files per-(model, variant) sums of its turns' token counts through review_rounds._add_turn_tokens,
-        so the reader prices a sum where the writer priced each turn. A rule in _price_turn that is not linear in the
-        counts would make them differ."""
+        so the reader prices a sum where the writer priced each turn."""
         first_standard_turn = self._SOURCE_USAGE_BY_VARIANT["standard"]
         second_standard_turn = {**self._SOURCE_USAGE_BY_VARIANT["standard"], "input_tokens": 123_456, "output_tokens": 7}
         fast_turn = self._SOURCE_USAGE_BY_VARIANT["fast"]
