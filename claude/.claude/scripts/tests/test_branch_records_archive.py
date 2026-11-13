@@ -13,19 +13,18 @@ import shutil
 import stat
 import subprocess
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from helpers import SCRIPTS_DIR, assert_cap_engaged, ignore_agent_reviews, scaled_shim_sleep, write_scaled_timeout_shim
 
+from . import _branch_records_helpers as records_helpers
 from ._branch_records_helpers import (
     ARCHIVE_ARGUMENT_NAMES,
     SENTINEL_NAME,
-    STATUS_SHELL_OPTION_IDS,
-    STATUS_SHELL_OPTIONS,
     ArchiveWorktree,
-    account_component,
+    account_directory,
     archive_root,
     archive_successfully,
     archive_then_change_worktree,
@@ -40,7 +39,6 @@ from ._branch_records_helpers import (
     read_manifest,
     read_only,
     read_tree,
-    reason_variables,
     requires_non_root,
     run_archive,
     run_lib,
@@ -50,36 +48,20 @@ from ._branch_records_helpers import (
     write_shim,
     write_tree,
 )
-from .conftest import _clean_env, _commit, _git, _init_repo
+from .conftest import _clean_env, _commit, _git, _init_repo, _seed_session
+
+# The fixtures live once in the helper module. An import would trip F811 on every test parameter that names one.
+reason = records_helpers.reason
+archive_worktree = records_helpers.archive_worktree
+status_shell_options = records_helpers.status_shell_options
+process_isolation = records_helpers.process_isolation
 
 _MANIFEST_FIELDS = {
     "schema_version", "archived_at", "trigger", "branch", "tip_sha", "worktree_path",
     "main_worktree_path", "ledger_repo_root", "ledger_key", "agent_reviews",
 }
-# The UTC case runs under a five-hour zone offset, so a stamp taken in local time misses by far more than this.
-_UTC_TOLERANCE = timedelta(seconds=30)
 _STAMP_DATE_FORMAT = "%Y%m%dT%H%M%SZ"
 _MANIFEST_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-@pytest.fixture()
-def reason() -> dict[str, str]:
-    return reason_variables()
-
-
-@pytest.fixture(autouse=True)
-def _isolated_test_process(tmp_path, monkeypatch) -> None:
-    isolate_test_process(tmp_path, monkeypatch)
-
-
-@pytest.fixture(params=STATUS_SHELL_OPTIONS, ids=STATUS_SHELL_OPTION_IDS)
-def status_shell_options(request) -> str:
-    return request.param
-
-
-@pytest.fixture()
-def archive_worktree(tmp_path) -> ArchiveWorktree:
-    return make_archive_worktree(tmp_path)
 
 
 def date_shim_body(failing_format: str | None = None, fixed_stamp: str | None = None) -> str:
@@ -153,13 +135,7 @@ class TestArchiveWorktree:
     def test_ledger_key_equals_the_file_name_review_ledger_append_writes(self, tmp_path, archive_worktree):
         env = build_archive_env(tmp_path)
         config_dir = Path(env["CLAUDE_CONFIG_DIR"])
-        process_start = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
-            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
-            capture_output=True, text=True, check=True,
-        ).stdout.rstrip("\n")
-        (config_dir / "sessions").mkdir()
-        (config_dir / "sessions" / str(os.getpid())).write_text(f"branch-records-session\n{process_start}\n")
+        _seed_session(Path(env["HOME"]), "branch-records-session", config_dir=config_dir)
         subprocess.run(
             [
                 "bash", str(SCRIPTS_DIR / "review-ledger.sh"), "append", "code-review",
@@ -174,6 +150,25 @@ class TestArchiveWorktree:
 
         assert report.rc == 0
         assert read_manifest(report.snapshot)["ledger_key"] == ledger_file.stem
+
+    def test_space_and_non_ascii_in_home_worktree_path_and_branch_still_archive_with_the_ledger_key(self, tmp_path):
+        # A git branch name cannot hold a space, so the branch carries only the non-ASCII characters.
+        env = build_archive_env(tmp_path, home_name="hôme with space")
+        target = make_archive_worktree(tmp_path, branch="feat/café-naïve", worktree_name="work tree é")
+        files = {"notes/finding é.md": "text\n"}
+        write_tree(target.worktree / "agent-reviews", files)
+
+        report = run_archive(tmp_path, env, target)
+
+        snapshot = checked_snapshot(tmp_path, env, report)
+        repo_root = _git(target.worktree, "rev-parse", "--show-toplevel").strip()
+        manifest = read_manifest(snapshot)
+        assert read_tree(snapshot / "agent-reviews")[0] == files
+        assert manifest["agent_reviews"] == "copied"
+        assert manifest["worktree_path"] == str(target.worktree)
+        assert manifest["branch"] == target.branch
+        assert manifest["ledger_key"] == expected_ledger_key(repo_root, target.branch)
+        assert snapshot.parent == key_directory(env, manifest["ledger_key"])
 
     def test_worktree_without_a_git_entry_hashes_its_own_path_not_the_enclosing_repository(
         self, tmp_path, archive_worktree
@@ -435,14 +430,17 @@ class TestArchiveWorktree:
         env = {**build_archive_env(tmp_path), "TZ": "EST5EDT"}
         write_tree(archive_worktree.worktree / "agent-reviews", {"finding.md": "text\n"})
 
+        # A stamp taken in local time under this zone offset of several hours falls outside the bracket.
+        # Both stamps truncate to whole seconds, so the lower bound is truncated too.
+        before_run = datetime.now(UTC).replace(microsecond=0)
         report = run_archive(tmp_path, env, archive_worktree)
+        after_run = datetime.now(UTC)
 
         assert report.rc == 0
-        now = datetime.now(UTC)
         archived_at = datetime.strptime(read_manifest(report.snapshot)["archived_at"], _MANIFEST_DATE_FORMAT)
         stamp = datetime.strptime(report.snapshot.name.split(".")[0], _STAMP_DATE_FORMAT)
-        assert abs(now - archived_at.replace(tzinfo=UTC)) < _UTC_TOLERANCE
-        assert abs(now - stamp.replace(tzinfo=UTC)) < _UTC_TOLERANCE
+        assert before_run <= archived_at.replace(tzinfo=UTC) <= after_run
+        assert before_run <= stamp.replace(tzinfo=UTC) <= after_run
 
     def test_two_calls_in_one_shell_within_one_stamp_get_distinct_complete_snapshots(
         self, tmp_path, archive_worktree
@@ -562,7 +560,8 @@ class TestArchiveWorktree:
     ):
         env = build_archive_env(tmp_path)
         first_snapshot = archive_then_change_worktree(tmp_path, env, archive_worktree)
-        # The shim plants a complete-looking directory at the path step 6 builds, then runs the real mkdir, which fails on it.
+        # The shim plants a complete-looking directory at the snapshot path the lib builds from the key directory,
+        # stamp, pid and counter, then runs the real mkdir, which fails on it.
         write_shim(
             tmp_path / "mkdir_shim",
             "mkdir",
@@ -642,7 +641,7 @@ class TestArchiveWorktree:
         self, tmp_path, archive_worktree, raced_directory
     ):
         env = build_archive_env(tmp_path)
-        account_dir = archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"]))
+        account_dir = account_directory(env)
         repo_root = _git(archive_worktree.worktree, "rev-parse", "--show-toplevel").strip()
         raced_path = {
             "account": account_dir,
@@ -711,7 +710,7 @@ class TestArchiveWorktree:
         report = run_archive(tmp_path, env, archive_worktree)
 
         assert (report.rc, report.reason, report.snapshot) == (1, reason["LEDGER_KEY"], None)
-        assert not (archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"])) / "branches").exists()
+        assert not (account_directory(env) / "branches").exists()
 
     def test_sentinel_removed_between_worktrees_keeps_the_second_and_the_first_snapshot(
         self, tmp_path, reason, archive_worktree
@@ -719,8 +718,7 @@ class TestArchiveWorktree:
         env = build_archive_env(tmp_path)
         second_worktree = make_archive_worktree(tmp_path, "feat/second", "second_worktree")
         first_arguments, second_arguments = (
-            " ".join(shlex.quote(str(value)) for value in (target.worktree, target.branch, target.main, "test.sh"))
-            for target in (archive_worktree, second_worktree)
+            quoted_archive_arguments(target) for target in (archive_worktree, second_worktree)
         )
         sentinel = shlex.quote(str(archive_root(env) / SENTINEL_NAME))
 
@@ -777,7 +775,7 @@ class TestArchiveWorktree:
         report = run_lib(tmp_path, env, f"call_archive {quoted_archive_arguments(archive_worktree, empty_argument)}").only
 
         assert (report.rc, report.reason, report.snapshot) == (1, reason["LEDGER_KEY"], None)
-        assert not (archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"])) / "branches").exists()
+        assert not (account_directory(env) / "branches").exists()
 
     @pytest.mark.parametrize("empty_argument", ARCHIVE_ARGUMENT_NAMES)
     def test_disabled_key_returns_zero_for_an_empty_argument_and_leaves_the_root_unchanged(

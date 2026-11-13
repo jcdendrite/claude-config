@@ -1,7 +1,8 @@
 """Shared scaffolding for every test that exercises the branch-records archive.
 
 `build_archive_env` is the one function through which archive cases build their
-per-command environment, so no case can resolve the engineer's real archive root.
+per-command environment, and `run_lib` fails any call whose HOME or CLAUDE_CONFIG_DIR sits
+outside `tmp_path`, so no case can resolve the engineer's real archive root.
 `run_lib` sources `_branch-records-lib.sh` in `bash -c`, and `archive_successfully` is the
 only way a case turns an archive result into a path it may modify.
 The cleanup-script tests share the worktree, manifest and output assertions at the end of the module.
@@ -46,6 +47,8 @@ LIB = SCRIPTS_DIR / "_branch-records-lib.sh"
 HOOKS_LIB = HOOKS_DIR / "_lib.sh"
 CALLER_UMASK = "0022"
 _REPORT_DELIMITER = "@@CALL@@"
+# Only has to exceed a call's normal latency under the parallel pass; no external document specifies it.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
 
 # Each call runs with its stdout sent to a file, so the report can assert the call printed nothing.
 _DRIVER = f"""
@@ -85,6 +88,11 @@ def account_component(config_dir: Path) -> str:
     return str(config_dir.resolve()).replace("%", "%25").replace("/", "%2F")
 
 
+def account_directory(env: dict[str, str]) -> Path:
+    """The account directory the scripts resolve from `env`'s HOME and CLAUDE_CONFIG_DIR."""
+    return archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"]))
+
+
 def build_archive_env(
     tmp_path: Path,
     base_env: dict[str, str] | None = None,
@@ -95,6 +103,7 @@ def build_archive_env(
     create_sentinel: bool = True,
     root_symlink_target: Path | None = None,
     create_symlink_target: bool = True,
+    home_name: str = "archive_home",
 ) -> dict[str, str]:
     """An environment whose HOME and CLAUDE_CONFIG_DIR sit under `tmp_path`.
 
@@ -105,7 +114,7 @@ def build_archive_env(
     that directory, which holds the sentinel instead of the root. `create_symlink_target=False`
     leaves that directory uncreated, so the root dangles and no sentinel can exist.
     """
-    home = tmp_path / "archive_home"
+    home = tmp_path / home_name
     resolved_config_dir = config_dir if config_dir is not None else tmp_path / "archive_config"
     directories = [home, resolved_config_dir]
     if root_symlink_target is not None:
@@ -145,6 +154,26 @@ def isolate_test_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         monkeypatch.delenv(variable, raising=False)
 
 
+@pytest.fixture()
+def reason() -> dict[str, str]:
+    return reason_variables()
+
+
+@pytest.fixture(autouse=True)
+def process_isolation(tmp_path, monkeypatch) -> None:
+    isolate_test_process(tmp_path, monkeypatch)
+
+
+@pytest.fixture(params=STATUS_SHELL_OPTIONS, ids=STATUS_SHELL_OPTION_IDS)
+def status_shell_options(request) -> str:
+    return request.param
+
+
+@pytest.fixture()
+def archive_worktree(tmp_path) -> ArchiveWorktree:
+    return make_archive_worktree(tmp_path)
+
+
 @dataclass(frozen=True)
 class CallReport:
     rc: int
@@ -173,18 +202,61 @@ class ArchiveWorktree:
     branch: str
 
 
+def _assert_variable_confined_to(base: Path, env: dict[str, str], variable: str, cwd: Path) -> None:
+    value = env.get(variable)
+    assert value, f"{variable} is unset in the environment handed to the subprocess"
+    assert (cwd / value).resolve().is_relative_to(base.resolve()), f"{variable}={value} resolves outside {base}"
+
+
+def assert_lib_env_confined(tmp_path: Path, env: dict[str, str], cwd: Path) -> None:
+    """Fails unless `env`'s HOME and CLAUDE_CONFIG_DIR resolve under `tmp_path`, with a relative value taken from `cwd`."""
+    for variable in ("HOME", "CLAUDE_CONFIG_DIR"):
+        _assert_variable_confined_to(tmp_path, env, variable, cwd)
+
+
+# The cleanup-script cases inherit the real HOME.
+# HOME is therefore held to `tmp_path` only for an account whose claude-config.toml names the key.
+# That is the one state in which the scripts touch the archive root.
+_script_env_base: Path | None = None
+
+
+@pytest.fixture(autouse=True)
+def pinned_script_env_base(tmp_path: Path) -> Iterator[None]:
+    """Gives `assert_script_env_confined` the case's `tmp_path`, for a module whose `_run_script` calls it."""
+    global _script_env_base
+    _script_env_base = tmp_path
+    yield
+    _script_env_base = None
+
+
+def assert_script_env_confined(env: dict[str, str], base: Path | None = None) -> None:
+    """Fails unless a cleanup-script subprocess's account cannot reach the engineer's real archive.
+
+    CLAUDE_CONFIG_DIR must resolve under the case's `tmp_path`. Without that, the script reads the real
+    account's key. HOME must too when the account's claude-config.toml names `agent_branch_records`.
+    """
+    base = _script_env_base if base is None else base
+    assert base is not None, "the module did not install the pinned_script_env_base fixture"
+    _assert_variable_confined_to(base, env, "CLAUDE_CONFIG_DIR", base)
+    config_file = Path(env["CLAUDE_CONFIG_DIR"]) / "claude-config.toml"
+    if config_file.is_file() and "agent_branch_records" in config_file.read_text():
+        _assert_variable_confined_to(base, env, "HOME", base)
+
+
 def run_lib(
     tmp_path: Path, env: dict[str, str], body: str, shell_options: str = STRICT_SHELL_OPTIONS
 ) -> LibRun:
     """Source both libs under `shell_options`, run `body`, and parse each call's report.
 
     The caller's cwd, umask and CDPATH are asserted unchanged and the call's own stdout empty,
-    for every call, on success and failure returns alike.
+    for every call, on success and failure returns alike. The environment is checked before the
+    subprocess starts (see `assert_lib_env_confined`).
     """
     caller_cwd = tmp_path / "caller_cwd"
     cdpath_dir = tmp_path / "cdpath_dir"
     caller_cwd.mkdir(exist_ok=True)
     cdpath_dir.mkdir(exist_ok=True)
+    assert_lib_env_confined(tmp_path, env, caller_cwd)
     script = "\n".join([
         f"CDPATH={shlex.quote(str(cdpath_dir))}",
         f"umask {CALLER_UMASK}",
@@ -201,6 +273,7 @@ def run_lib(
         capture_output=True,
         text=True,
         check=False,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     calls = []
     for block in result.stdout.split(_REPORT_DELIMITER + "\n")[1:]:
@@ -231,8 +304,7 @@ def run_archive(
     trigger: str = "test-trigger.sh",
     shell_options: str = STRICT_SHELL_OPTIONS,
 ) -> CallReport:
-    arguments = " ".join(shlex.quote(str(value)) for value in (target.worktree, target.branch, target.main, trigger))
-    return run_lib(tmp_path, env, f"call_archive {arguments}", shell_options).only
+    return run_lib(tmp_path, env, f"call_archive {quoted_archive_arguments(target, trigger=trigger)}", shell_options).only
 
 
 def checked_snapshot(tmp_path: Path, env: dict[str, str], report: CallReport) -> Path:
@@ -250,7 +322,6 @@ def checked_snapshot(tmp_path: Path, env: dict[str, str], report: CallReport) ->
 
 
 def archive_successfully(tmp_path: Path, env: dict[str, str], target: ArchiveWorktree) -> Path:
-    """Archives `target` for a case's setup and returns the checked snapshot."""
     return checked_snapshot(tmp_path, env, run_archive(tmp_path, env, target))
 
 
@@ -261,7 +332,9 @@ def reason_variables() -> dict[str, str]:
         f". {shlex.quote(str(HOOKS_LIB))}\n. {shlex.quote(str(LIB))}\n"
         'for name in "${!_BRANCH_RECORDS_REASON_@}"; do printf \'%s\\0%s\\0\' "$name" "${!name}"; done'
     )
-    output = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+    output = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS
+    ).stdout
     parts = output.split("\0")[:-1]
     prefix = "_BRANCH_RECORDS_REASON_"
     return {name.removeprefix(prefix): value for name, value in zip(parts[0::2], parts[1::2], strict=True)}
@@ -308,7 +381,7 @@ def expected_ledger_key(repo_root: str, branch: str) -> str:
 
 
 def key_directory(env: dict[str, str], ledger_key: str) -> Path:
-    return archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"])) / "branches" / ledger_key
+    return account_directory(env) / "branches" / ledger_key
 
 
 def list_tree(root: Path) -> list[str]:
@@ -350,13 +423,15 @@ def archive_then_change_worktree(tmp_path: Path, env: dict[str, str], target: Ar
     return first_snapshot
 
 
-def quoted_archive_arguments(target: ArchiveWorktree, empty_argument: str | None = None) -> str:
+def quoted_archive_arguments(
+    target: ArchiveWorktree, empty_argument: str | None = None, trigger: str = "test.sh"
+) -> str:
     """The four shell-quoted arguments `branch_records_archive_worktree` takes, with `empty_argument` blanked."""
     arguments = {
         "worktree": str(target.worktree),
         "branch": target.branch,
         "main_worktree": str(target.main),
-        "trigger": "test.sh",
+        "trigger": trigger,
     }
     if empty_argument is not None:
         arguments[empty_argument] = ""

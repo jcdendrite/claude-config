@@ -24,15 +24,17 @@ from helpers import assert_cap_engaged, scaled_shim_sleep, write_scaled_timeout_
 from ._branch_records_helpers import (
     REVIEW_FILES,
     SENTINEL_NAME,
-    account_component,
+    account_directory,
     archive_root,
     assert_cleanup_manifest,
     assert_output_never_mentions_the_archive,
+    assert_script_env_confined,
     build_archive_env,
     complete_snapshots,
     expected_ledger_key,
     list_tree,
     make_fifo_in_agent_reviews,
+    pinned_script_env_base,  # noqa: F401 -- an autouse fixture that applies to every test here
     porcelain_paths,
     read_tree,
     reason_variables,
@@ -326,6 +328,7 @@ def _run_script(
     direct subprocess.Popen.
     """
     cmd = [str(_SCRIPT)] + (args or [])
+    assert_script_env_confined(env)
     return subprocess.run(
         cmd,
         cwd=str(repo),
@@ -4680,6 +4683,17 @@ def _remote_branch_exists(repo: Path, branch: str) -> bool:
     return heads.strip() != ""
 
 
+class TestScriptEnvironmentIsolation:
+    def test_fake_gh_environment_keeps_the_account_under_tmp_path_so_a_script_run_cannot_read_the_real_key(
+        self, tmp_path, fake_gh
+    ):
+        # The suite-wide fixture that pins CLAUDE_CONFIG_DIR under tmp_path keeps every script run off the real account.
+        env = fake_gh({})
+
+        assert_script_env_confined(env)
+        assert Path(env["CLAUDE_CONFIG_DIR"]).resolve().is_relative_to(tmp_path.resolve())
+
+
 class TestBranchRecordsArchive:
     def test_ready_real_run_snapshots_the_reviews_before_removing_the_worktree(self, tmp_path, fake_gh):
         local, _ = _make_repo_with_remote(tmp_path)
@@ -4695,7 +4709,7 @@ class TestBranchRecordsArchive:
 
         result = _run_script(local, env)
 
-        account_dir = archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"]))
+        account_dir = account_directory(env)
         ledger_key = expected_ledger_key(porcelain_path, "feat/reviewed")
         (snapshot,) = complete_snapshots(env, ledger_key)
         assert result.returncode == 0, result.stderr

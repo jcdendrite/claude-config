@@ -50,8 +50,8 @@
 # wrong call" argument for skipping an interactive prompt applies here too.
 # With the `agent_branch_records` key on, each earlier candidate's archive runs
 # between the process snapshot and a later candidate's removal, which lengthens
-# that window, and agent-reviews/ data written after a candidate's copy is lost
-# with its worktree.
+# that window.
+# agent-reviews/ data written after a candidate's copy is lost with its worktree.
 #
 # No interactive prompt (unlike cleanup-merged-branches.sh's Tier B): once a
 # worktree passes every check above, there's no comparable judgment call to
@@ -78,7 +78,7 @@
 
 set -euo pipefail
 
-# `_lib.sh` sources `_config.sh` first, so the bash floor check still runs before anything else.
+# `_lib.sh` sources `_config.sh` first, so the bash floor check runs before anything else.
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 

@@ -28,6 +28,7 @@ _BRANCH_RECORDS_REASON_SNAPSHOT_MKDIR='the snapshot directory could not be creat
 _BRANCH_RECORDS_REASON_COPY_FAILED='copying agent-reviews failed'
 _BRANCH_RECORDS_REASON_COPY_MISMATCH='the snapshot copy of agent-reviews differs from the original'
 _BRANCH_RECORDS_REASON_MANIFEST='the snapshot manifest could not be written'
+_BRANCH_RECORDS_REASON_KEY_UNREADABLE='the archive setting in claude-config.toml could not be read as true or false'
 
 # Outputs, read by the sourcing scripts.
 BRANCH_RECORDS_STATE=''
@@ -49,7 +50,7 @@ _branch_records_canonical_dir() {
 }
 
 # _branch_records_encode_component PATH
-# Prints PATH as one path component: `%` becomes `%25`, then `/` becomes `%2F`.
+# Prints PATH as one path component. `%` is replaced before `/`, so a literal `%2F` in PATH stays distinct from an encoded slash.
 _branch_records_encode_component() {
   local percent='%' slash='/' encoded="$1"
   encoded=${encoded//"$percent"/%25}
@@ -63,6 +64,56 @@ _branch_records_mark_unavailable() {
   BRANCH_RECORDS_REASON="$1"
 }
 
+# _branch_records_toml_confirms_off CONFIG_DIR
+# Returns 0 only when CONFIG_DIR's claude-config.toml provably does not exist, or was read and holds no line naming the key
+# that _config.sh skips or reads as other than true or false. Every other outcome returns 1, except the two residuals below.
+# A failed lookup proves absence only when the nearest existing ancestor is a searchable directory, because EACCES, ELOOP and ENOTDIR also fail it.
+# A stat error such as EIO, ESTALE or ETIMEDOUT under a searchable parent still reads as absence and returns 0.
+# A transient read failure inside the config reader's own read is not detected here.
+# A misspelled key name is not detected.
+_branch_records_toml_confirms_off() {
+  local state_file="$1/$_CONFIG_STATE_FILENAME" entry="$1/$_CONFIG_STATE_FILENAME" parent
+  while [ ! -e "$entry" ] && [ ! -L "$entry" ]; do
+    # `${entry%/*}` of `/` is empty and `${parent:-/}` restores `/`, so only this line ends the walk if stat of `/` fails.
+    [ "$entry" != / ] || return 1
+    parent=${entry%/*}
+    [ "$parent" != "$entry" ] || return 1
+    entry=${parent:-/}
+  done
+  if [ "$entry" != "$state_file" ]; then
+    [ -d "$entry" ] && [ -x "$entry" ] || return 1
+    return 0
+  fi
+  [ -f "$state_file" ] || return 1
+
+  # Not `$(<file)`, which exits a `set -e` caller on a read failure even inside `||`.
+  # The braces let the redirect also hide bash's null-byte warning, which an inline `2>/dev/null` on the assignment does not.
+  local content
+  { content=$(cat -- "$state_file"); } 2>/dev/null || return 1
+  # Same single-BOM strip as _config_file_lines, which cannot report a read failure.
+  content="${content#$'\xEF\xBB\xBF'}"
+
+  local line key_out value_out line_status
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_status=0
+    _config_line_key_value "$line" key_out value_out || line_status=$?
+    case "$line_status" in
+      0)
+        if [ "$key_out" = agent_branch_records ] && [ "$value_out" != true ] && [ "$value_out" != false ]; then
+          return 1
+        fi
+        ;;
+      1) ;;
+      *)
+        case "$line" in
+          *agent_branch_records*) return 1 ;;
+        esac
+        ;;
+    esac
+  done <<< "$content"
+  return 0
+}
+
 # branch_records_status
 # Always returns 0. Sets BRANCH_RECORDS_STATE (disabled, ready or unavailable),
 # BRANCH_RECORDS_REASON (unavailable only) and BRANCH_RECORDS_ACCOUNT_DIR (ready only). Creates nothing.
@@ -71,19 +122,17 @@ branch_records_status() {
   BRANCH_RECORDS_REASON=''
   BRANCH_RECORDS_ACCOUNT_DIR=''
 
-  local key_status=0
+  local key_status=0 config_dir canonical_config_dir
   _config_enabled agent_branch_records || key_status=$?
-  case "$key_status" in
-    0) ;;
-    1) return 0 ;;
-    *) _branch_records_mark_unavailable "$_BRANCH_RECORDS_REASON_CONFIG"; return 0 ;;
-  esac
-
-  local config_dir canonical_config_dir
-  config_dir=$(_lib_config_dir) || {
+  if [ "$key_status" -gt 1 ] || ! config_dir=$(_lib_config_dir); then
     _branch_records_mark_unavailable "$_BRANCH_RECORDS_REASON_CONFIG"
     return 0
-  }
+  fi
+  if [ "$key_status" -eq 1 ]; then
+    _branch_records_toml_confirms_off "$config_dir" || _branch_records_mark_unavailable "$_BRANCH_RECORDS_REASON_KEY_UNREADABLE"
+    return 0
+  fi
+
   canonical_config_dir=$(_branch_records_canonical_dir "$config_dir") || {
     _branch_records_mark_unavailable "$_BRANCH_RECORDS_REASON_CONFIG"
     return 0
@@ -304,6 +353,7 @@ branch_records_archive_worktree() {
     _branch_records_abandon_snapshot "$snapshot_dir" "$_BRANCH_RECORDS_REASON_MANIFEST"
     return 1
   fi
+  # A snapshot counts as complete once the manifest is renamed into place, and its content is not read back.
   # shellcheck disable=SC2016 # single-quoted on purpose: the $names are jq --arg variables, and double quotes would expand them in the shell.
   _lib_jq -n \
     --argjson schema_version "$_BRANCH_RECORDS_MANIFEST_SCHEMA_VERSION" \
