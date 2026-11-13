@@ -191,8 +191,8 @@ the `**Self-review:**` ledger.
   ```
 - **Still uncertain:** anything you could not fully verify — an assumption you
   made, a contract you could not trace, a decision the parent should confirm,
-  a check that covered only part of a claim. This holds even when the dispatch
-  adds a separate verification field.
+  a check that covered only part of a claim, even when the dispatch adds a
+  separate verification field.
   If you shipped new behavior without a test because the codebase has no test
   convention (per the baseline rule), name the test-coverage gap as an
   explicit item — do not omit it. If there is nothing else, say "nothing."
