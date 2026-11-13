@@ -1261,16 +1261,18 @@ scripts/venv-run.sh python3 evals/run_replay_bench.py summarize --campaign-id <i
 `--local-dir` and `--fixture-git-timeout-s` go before the subcommand.
 `--fixture-git-timeout-s` bounds every git call that builds a fixture or reads
 it after a run. `smoke` and `run` also take `--model-id`, `--budget-cap-usd`,
-`--timeout-s` and `--direnv-timeout-s`, and `preflight` takes
+`--timeout-s` (a positive whole number of seconds) and `--direnv-timeout-s`, and
+`preflight` takes
 `--direnv-timeout-s`. `run` also takes `--account-stop-usd`, which caps each
 account and defaults to the cumulative stop, `--allow-early-stop`, `--arm`
 (repeatable, default every arm), `--seed` and `--campaign-id`. `summarize`
-takes `--budget-cap-usd`.
+takes `--budget-cap-usd`, which prices an unparsed spend line only when the
+campaign's manifest pins no usable cap.
 
 Exit codes: 0 for done, 1 for a run that stopped short, 2 for a refusal
 before the first launch. An interrupt exits 128 plus the signal number.
-`smoke` exits 0 only when its last line reads `instrument: ok`, and 2
-otherwise.
+`smoke` exits 0 only when its last line reads `instrument: ok`. A failed
+condition or refusal exits 2, and a held run-store lock exits 1.
 
 ### Tasks
 
@@ -1340,14 +1342,15 @@ terminal, a timeout, or the OS error. It never prints the child's output.
   `env` or the agent resolve a command from the fixture.
 - `preflight` prints, as names only, every variable the launch drops, ambient
   ones from the runner's own shell included. It leaves out direnv's own
-  `DIRENV_` variables. Read that list per account with `preflight` before the
-  first `smoke`, because `smoke` is the first paid launch and `smoke` and `run`
-  launch right after printing it, with no pause. A dropped provider-selecting
-  variable can leave a launch authenticating through the config dir's own login
-  instead of the route you meant. The bench cannot pass such a variable
-  through, so do not launch that account. The list is not pinned in the
-  campaign manifest, so a resume does not catch an `.envrc` edit. Read it
-  again after any `.envrc` change.
+  `DIRENV_` variables. A dropped provider-selecting variable can leave a launch
+  authenticating through the config dir's own login instead of the route you
+  meant, and the bench cannot pass such a variable through.
+  - Read that list per account with `preflight` before the first `smoke`.
+    `smoke` is the first paid launch, and `smoke` and `run` launch right after
+    printing the list, with no pause.
+  - Do not launch an account whose list holds a provider-selecting variable.
+  - Read the list again after any `.envrc` change. The list is not pinned in
+    the campaign manifest, so a resume does not catch an `.envrc` edit.
 - `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws`
   and `~/.ssh` stay reachable from the agent's Bash and are not routed by
   account.
@@ -1431,13 +1434,22 @@ estimate, so a gap close to the margin is weak evidence either way.
 
 ### Run
 
-`run` pins a manifest (task set, arms, `--k`, `--seed`, model, each repo's
-account and each account's CLI version and config commit) at its first start.
-A resume passes `--campaign-id` again, and it exits 2 when any pinned input
-differs. Before the first launch `run` prints the run count and the campaign's nominal ceiling, and
-it exits 2 when one block's ceiling exceeds either stop. It exits 2 as well
-when the campaign's ceiling exceeds `--cumulative-stop-usd`, unless
-`--allow-early-stop` accepts that the campaign will stop early.
+`run` pins a manifest (task set, arms, `--k`, `--seed`, model,
+`--budget-cap-usd`, `--timeout-s`, each repo's account and each account's CLI
+version and config commit) at its first start. A resume passes `--campaign-id`
+again, and it exits 2 when any pinned input differs, or when the manifest does
+not parse or lacks a pinned key. Before the first launch `run` prints the run
+count and the campaign's nominal ceiling, and it exits 2 when one block's
+ceiling exceeds either stop. It exits 2 as well when the campaign's ceiling
+exceeds `--cumulative-stop-usd`, unless `--allow-early-stop` accepts that the
+campaign will stop early.
+
+`run` reads and writes the manifest only while it holds the campaign's lock,
+and writes it only after those ceiling checks pass. A campaign refused for its
+ceiling therefore pins nothing, and a rerun with a lower `--k` starts fresh.
+The `campaign <id>` line, the uncharged-attempts line, a resume's spend line,
+the ceiling line and each progress line are flushed as they print, so a
+detached run's redirected output shows them as they happen.
 
 After each block `run` prints one progress line: the task, each arm's `ok` and
 `missing` counts, the arms with no valid run and their reasons, the tasks
@@ -1445,6 +1457,10 @@ dropped so far per arm, the block's spend, and the cumulative and per-account
 spend against their stops. A halt prints `halted: <reason>` and exits 1. Before
 each block `run` halts if the block's ceiling would carry the cumulative total
 or the block's account past its stop.
+
+A block's end environment reading that fails is read once more. A reading that
+still cannot be read halts `run` as a failed read, not as drift. As for drift,
+the block's records are discarded and a resume reruns the block.
 
 After each block the per-arm stop looks for an arm with no valid run:
 

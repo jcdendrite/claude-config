@@ -4,7 +4,10 @@ launch stands in for `claude`, and `read_environment_record` is stubbed to a fix
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
+import os
+import sys
 import tempfile
 import threading
 import uuid
@@ -40,6 +43,7 @@ class CampaignEnv:
     def __init__(self, world, monkeypatch, *, readings=None):
         self.world = world
         self.monkeypatch = monkeypatch
+        # Each item is a reading, or an exception the read raises.
         self.readings = readings if readings is not None else [READING]
         self.reading_calls = 0
         # A second account's config dir, its readings in order, and which repo maps to which account.
@@ -57,6 +61,8 @@ class CampaignEnv:
             return reading
         reading = self.readings[min(self.reading_calls, len(self.readings) - 1)]
         self.reading_calls += 1
+        if isinstance(reading, Exception):
+            raise reading
         return reading
 
     def add_second_account(self, tasks_in_order_of=None):
@@ -137,6 +143,66 @@ class TestACompletedCampaign:
         env.run(env.world.launch())
 
         assert "2 runs in 1 blocks; nominal ceiling $4.00" in capsys.readouterr().out
+
+
+class BlockBufferedStream(io.StringIO):
+    """Reports each complete line a block-buffered file would still hold unflushed: one a later write overtakes, or the last."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stranded_lines: list[str] = []
+        self._partial_line = ""
+        self._line_awaiting_flush: str | None = None
+
+    def write(self, text: str) -> int:
+        if self._line_awaiting_flush is not None:
+            self.stranded_lines.append(self._line_awaiting_flush)
+            self._line_awaiting_flush = None
+        self._partial_line += text
+        if text.endswith("\n"):
+            self._line_awaiting_flush, self._partial_line = self._partial_line.rstrip("\n"), ""
+        return super().write(text)
+
+    def flush(self) -> None:
+        self._line_awaiting_flush = None
+        super().flush()
+
+    def lines_lost_if_the_process_died_now(self) -> list[str]:
+        return [*self.stranded_lines, *([self._line_awaiting_flush] if self._line_awaiting_flush is not None else [])]
+
+
+class TestProgressReachesARedirectedStdout:
+    """Kills: dropping `flush=True` from a campaign print. A detached run's stdout is block-buffered."""
+
+    def test_the_ceiling_and_block_progress_lines_are_flushed_as_they_print(self, env, monkeypatch):
+        env.world.tasks[:] = env.world.tasks[:1]
+        stream = BlockBufferedStream()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        assert env.run(env.world.launch()) == 0
+
+        assert "nominal ceiling" in stream.getvalue() and "arms with no valid run" in stream.getvalue()
+        assert stream.lines_lost_if_the_process_died_now() == []
+
+    def test_a_resumes_uncharged_attempts_and_spend_lines_are_flushed_as_they_print(self, env, monkeypatch):
+        env.world.tasks[:] = env.world.tasks[:1]
+
+        def crash(self, defect_id):
+            raise RuntimeError("synthetic crash")
+
+        with monkeypatch.context() as crashing:
+            crashing.setattr(RunStore, "mark_block_complete", crash)
+            with pytest.raises(RuntimeError):
+                env.run(env.world.launch())
+        gone = Path(tempfile.gettempdir()) / f"{review_runner.FIXTURE_DIR_PREFIX}replay-gone"
+        RunStore(env.campaign_dir / "store").record_directory(env.world.tasks[0].id, gone, str(uuid.UUID(int=1)))
+        stream = BlockBufferedStream()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        assert env.run(env.world.launch()) == 0
+
+        assert "have no spend line" in stream.getvalue() and "spend on blocks not yet complete" in stream.getvalue()
+        assert stream.lines_lost_if_the_process_died_now() == []
 
 
 class TestTwoAccounts:
@@ -308,7 +374,8 @@ class TestTheManifestAndTheSmokeGate:
         ("field_name", "override"),
         [
             ("k", {"k": 2}), ("seed", {"seed": 9}), ("model_id", {"model_id": "claude-other"}),
-            ("arms", {"arm_names": ("toolkit",)}),
+            ("arms", {"arm_names": ("toolkit",)}), ("budget_cap_usd", {"budget_cap_usd": 2.0}),
+            ("timeout_s", {"timeout_s": 60}),
         ],
     )
     def test_a_resume_with_a_different_pinned_input_exits_two_before_any_launch(self, env, field_name, override):
@@ -319,6 +386,64 @@ class TestTheManifestAndTheSmokeGate:
         with pytest.raises(HarnessInvalidatedError, match=field_name):
             env.run(resumed, **override, cumulative_stop_usd=1000, account_stop_usd=1000)
         assert resumed.calls == []
+
+    @pytest.mark.parametrize(
+        ("damage", "refusal"),
+        [
+            pytest.param(lambda manifest: "not json", "cannot read the manifest", id="invalid-json"),
+            pytest.param(lambda manifest: "{}", "is malformed", id="empty-object"),
+            pytest.param(
+                lambda manifest: json.dumps({**manifest, "environments": {}}), "is malformed", id="no-environments-entry",
+            ),
+            pytest.param(lambda manifest: json.dumps({**manifest, "repo_accounts": []}), "is malformed", id="wrong-type"),
+            pytest.param(
+                lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "budget_cap_usd"}),
+                "is malformed", id="no-budget-cap-pin",
+            ),
+            pytest.param(
+                lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "timeout_s"}),
+                "is malformed", id="no-timeout-pin",
+            ),
+        ],
+    )
+    def test_a_resume_over_an_unreadable_or_malformed_manifest_exits_two_before_any_launch(self, env, damage, refusal):
+        env.world.tasks[:] = env.world.tasks[:1]
+        env.run(env.world.launch())
+        manifest_path = env.campaign_dir / "manifest.json"
+        manifest_path.write_text(damage(json.loads(manifest_path.read_text())))
+        resumed = env.world.launch()
+
+        with pytest.raises(HarnessInvalidatedError, match=refusal):
+            env.run(resumed)
+        assert resumed.calls == []
+
+    def test_a_manifest_is_not_written_while_another_invocation_holds_the_campaign_lock(self, env):
+        env.world.tasks[:] = env.world.tasks[:1]
+        holder = RunStore(env.campaign_dir / "store")
+        holder.acquire_lock()
+        try:
+            launch_stub = env.world.launch()
+            with pytest.raises(review_runner.RunStoreLocked):
+                env.run(launch_stub, k=2)
+        finally:
+            holder.release_lock()
+
+        assert not (env.campaign_dir / "manifest.json").exists() and launch_stub.calls == []
+
+    def test_a_first_run_pins_the_inputs_it_was_given(self, env):
+        env.world.tasks[:] = env.world.tasks[:1]
+
+        assert env.run(env.world.launch(), k=2) == 0
+
+        assert json.loads((env.campaign_dir / "manifest.json").read_text())["k"] == 2
+
+    def test_a_campaign_refused_for_its_ceiling_pins_nothing_so_a_rerun_with_a_lower_k_runs(self, env):
+        env.world.tasks[:] = env.world.tasks[:1]
+        with pytest.raises(HarnessInvalidatedError, match="ceiling"):
+            env.run(env.world.launch(), k=2, cumulative_stop_usd=5.0, account_stop_usd=1000)
+        assert not (env.campaign_dir / "manifest.json").exists()
+
+        assert env.run(env.world.launch(), k=1, cumulative_stop_usd=5.0, account_stop_usd=1000) == 0
 
     def test_a_resume_with_a_different_task_set_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
@@ -415,6 +540,27 @@ class TestEnvironmentDrift:
         assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
         error = capsys.readouterr().err
         assert "2 attempts" in error and "$1.00 spent" in error
+
+
+    def test_an_end_reading_that_fails_once_is_read_again_and_the_block_completes(self, env):
+        env.world.tasks[:] = env.world.tasks[:1]
+        env.readings = [READING, READING, HarnessInvalidatedError("environment record: read timed out"), READING]
+
+        assert env.run(env.world.launch()) == 0
+
+        assert env.completed() == {env.world.tasks[0].id}
+
+    def test_an_end_reading_that_fails_twice_halts_as_a_failed_read_and_not_as_drift(self, env, capsys):
+        env.world.tasks[:] = env.world.tasks[:1]
+        unreadable = HarnessInvalidatedError("environment record: read timed out")
+        env.readings = [READING, READING, unreadable, unreadable]
+
+        assert env.run(env.world.launch()) == 1
+
+        error = capsys.readouterr().err
+        assert "not drift" in error and "2 attempts" in error and "$1.00 spent" in error
+        assert "records were discarded" in error and "not marked complete" in error and "a resume reruns it" in error
+        assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
 
 
 class TestResumeAndAttempts:
@@ -573,6 +719,48 @@ class TestTheSpendFile:
     )
     def test_a_stop_fails_closed_on_a_total_that_is_not_finite(self, spent, stop_passed):
         assert campaign.stop_would_be_passed(spent, 4.0, 100.0) is stop_passed
+
+    def test_an_append_under_a_parent_that_is_a_regular_file_raises_spend_append_error(self, tmp_path):
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file, not a directory")
+        spend = SpendFile(blocker / "spend.jsonl", budget_cap_usd=CAP)
+
+        with pytest.raises(SpendAppendError, match="could not append to the spend file"):
+            spend.append(self.line())
+
+    def short_write_once(self, monkeypatch, written_bytes=7):
+        """The first `os.write` stores only a prefix of its bytes and reports the shorter count, as a full disk does."""
+        real_write = os.write
+        calls = []
+
+        def partial_write(descriptor, data):
+            calls.append(len(data))
+            return real_write(descriptor, data[:written_bytes] if len(calls) == 1 else data)
+
+        monkeypatch.setattr(os, "write", partial_write)
+
+    def test_a_short_write_raises_spend_append_error_naming_the_torn_line(self, tmp_path, monkeypatch):
+        spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
+        self.short_write_once(monkeypatch)
+
+        with pytest.raises(SpendAppendError, match="torn line"):
+            spend.append(self.line())
+
+    def test_an_append_after_a_short_write_ends_the_torn_line_so_it_counts_once_and_the_new_line_parses(
+        self, tmp_path, monkeypatch,
+    ):
+        spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
+        self.short_write_once(monkeypatch)
+        with pytest.raises(SpendAppendError):
+            spend.append(self.line(2.0))
+
+        spend.append(self.line(3.0))
+        spend.append(self.line(4.0))
+
+        totals = spend.totals()
+        assert totals.unparsed_lines == 1
+        assert totals.total_usd == CAP + 3.0 + 4.0
+        assert spend.path.read_text().count("\n\n") == 0, "only the first append after the short write adds a newline"
 
     def test_a_torn_last_line_is_truncated_at_resume_and_the_next_append_parses(self, tmp_path):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)

@@ -21,7 +21,7 @@ from replay_bench.account import Account
 from replay_bench.spend import SpendFile
 from review_bench import runner as review_runner
 from review_bench.runner import EnvironmentRecord, RunStore
-from test_replay_bench_checks_support import _line
+from test_replay_bench_checks_support import _line, denied_result_entry
 from test_replay_bench_tasks import _app_with, _change, _make_repo, _mine
 
 MODEL_ID = review_runner.REVIEWER_MODEL_ID
@@ -51,6 +51,10 @@ def write_executable(path: Path, body: str) -> Path:
     return path
 
 
+ENTRY_DENIAL = "entry"
+BLOCK_DENIAL = "block"
+
+
 @dataclass
 class Scenario:
     """What one scripted launch writes. The defaults are a clean run of the given arm."""
@@ -69,8 +73,15 @@ class Scenario:
     damage_sidecar: str | None = None  # "skip" puts a non-JSON line before the last line, "torn" tears the last line
     write_account_session_file: bool = True
     observed_model: str = MODEL_ID
+    # How a denied tool call is recorded: `ENTRY_DENIAL` is the shape a live CLI 2.1.323 session wrote, and
+    # `BLOCK_DENIAL` is the `tool_result_meta` shape a subagent transcript may carry.
+    denial_shape: str = ENTRY_DENIAL
     # Runs after the session is written and before the launch returns, with the call.
     after_write: Callable[..., None] | None = None
+
+    def __post_init__(self) -> None:
+        if self.denial_shape not in (ENTRY_DENIAL, BLOCK_DENIAL):
+            raise ValueError(f"unknown denial_shape {self.denial_shape!r}")
 
 
 @dataclass
@@ -238,9 +249,12 @@ def write_transcripts(
             "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": tool_input}],
         }})
         result_block: dict = {"type": "tool_result", "tool_use_id": tool_use_id, "content": "synthetic"}
-        if denied:
+        result_entry: dict = {"type": "user", "message": {"content": [result_block]}}
+        if denied and scenario.denial_shape == ENTRY_DENIAL:
+            result_entry = denied_result_entry(tool_use_id, str(tool_input.get("file_path", "synthetic")))
+        elif denied:
             result_block["tool_result_meta"] = [{"non_execution_kind": "permission-rule"}]
-        entries.append({"type": "user", "message": {"content": [result_block]}})
+        entries.append(result_entry)
     entries.append({"type": "assistant", "message": {
         "model": scenario.observed_model, "usage": usage, "content": [{"type": "text", "text": "src/new_module.py"}],
     }})

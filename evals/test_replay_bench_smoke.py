@@ -272,3 +272,42 @@ class TestNoRetryOnInstrumentReasons:
 
         assert exit_code == 2 and "missing (arm-leak)" in capsys.readouterr().out
         assert sum(call.agent_name == "bare-writer" for call in launch_stub.calls) == 2
+
+
+class TestAnAbortedSmokeWritesNoRecord:
+    def test_a_spend_file_the_os_will_not_append_to_exits_two_naming_the_uncharged_launches_and_writes_no_record(
+        self, world, capsys, monkeypatch,
+    ):
+        real_spend_file = smoke.SpendFile
+
+        def spend_file_under_a_regular_file(path, *, budget_cap_usd):
+            blocker = path.parent.parent / "blocker"
+            blocker.write_text("a file, not a directory")
+            return real_spend_file(blocker / "spend.jsonl", budget_cap_usd=budget_cap_usd)
+
+        monkeypatch.setattr(smoke, "SpendFile", spend_file_under_a_regular_file)
+
+        exit_code, launch_stub = run_smoke(world)
+
+        error = capsys.readouterr().err
+        assert exit_code == 2 and "could not append to the spend file" in error
+        assert launch_stub.calls and f"session {launch_stub.calls[0].session_id}" in error
+        assert not smoke_pass_exists(world)
+
+    def test_an_end_reading_that_cannot_be_read_exits_two_naming_the_failed_read_and_writes_no_record(
+        self, world, capsys, monkeypatch,
+    ):
+        readings = iter([READING, None, None])
+
+        def read(*, checkout_root=None):
+            reading = next(readings)
+            if reading is None:
+                raise review_runner.HarnessInvalidatedError("environment record: read timed out")
+            return reading
+
+        monkeypatch.setattr(review_runner, "read_environment_record", read)
+
+        exit_code, _launch_stub = run_smoke(world)
+
+        assert exit_code == 2 and "could not read the CLI version or config commit" in capsys.readouterr().err
+        assert not smoke_pass_exists(world)

@@ -3,6 +3,9 @@ synthetic session under a `tmp_path` config dir. Real git builds the fixtures. N
 """
 from __future__ import annotations
 
+import argparse
+import dataclasses
+import inspect
 import json
 import os
 import re
@@ -12,12 +15,13 @@ import sys
 import threading
 import time
 import types
+import uuid
 from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
 import run_replay_bench
-from replay_bench import account, arms, attempt, checks, diffing, smoke_pass, tasks
+from replay_bench import account, arms, attempt, campaign, checks, diffing, smoke, smoke_pass, tasks
 from replay_bench import runner as replay_runner
 from replay_bench.runner import execute_run
 from replay_bench.spend import SpendAppendError, SpendFile
@@ -26,6 +30,8 @@ from review_bench import runner as review_runner
 from test_replay_bench_checks_support import _line
 from test_replay_bench_runner_support import (
     AGENT_ID,
+    BLOCK_DENIAL,
+    ENTRY_DENIAL,
     MODEL_ID,
     READING,
     Scenario,
@@ -185,11 +191,17 @@ class TestPathReasonsReachTheRecord:
         assert target in outcome.record.missing_detail
         assert len(launch_stub.calls) == 2
 
-    def test_a_denied_write_outside_the_fixture_reached_nothing_and_fails_nothing(self, world):
+    @pytest.mark.parametrize("denial_shape", [ENTRY_DENIAL, BLOCK_DENIAL])
+    def test_a_denied_write_outside_the_fixture_reached_nothing_and_fails_nothing(self, world, denial_shape):
+        """`ENTRY_DENIAL` is the shape recorded on a live CLI, so the record, the denial count and the out-of-fixture
+        exemption are exercised end to end in it as well as in the block-level variant."""
         target = str(world.root / "elsewhere.py")
-        outcome, _launch_stub, _settings = run(world, arms.BARE.name, tool_scenario(("Write", {"file_path": target}, True)))
+        outcome, _launch_stub, _settings = run(
+            world, arms.BARE.name, tool_scenario(("Write", {"file_path": target}, True), denial_shape=denial_shape),
+        )
 
         assert outcome.record.missing_reason is None and outcome.record.permission_denials == 1
+        assert outcome.record.out_of_fixture_writes == []
 
     def test_commands_shaped_like_the_probe_transcripts_leave_a_bare_run_clean(self, world):
         commands = [
@@ -486,6 +498,24 @@ class TestAFailingWorkerStopsItsSiblings:
     @pytest.fixture(autouse=True)
     def stub_environment(self, monkeypatch):
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
+
+    def test_a_spend_file_the_os_will_not_append_to_surfaces_as_spend_append_error_with_the_launch_named(
+        self, world, tmp_path,
+    ):
+        """Kills: dropping the `OSError` translation in `SpendFile.append`, which would escape as a raw `OSError`
+        that `run_attempt` does not catch, so the uncharged launch is never reported."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file, not a directory")
+        launch_stub = world.launch()
+        real_settings = make_settings(world, launch_stub)
+        settings = dataclasses.replace(
+            real_settings, spend=SpendFile(blocker / "spend.jsonl", budget_cap_usd=real_settings.budget_cap_usd),
+        )
+
+        with pytest.raises(SpendAppendError, match="could not append to the spend file"):
+            execute_run(settings, make_block(world), arms.BARE.name, 0)
+
+        assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
 
     def test_a_failed_spend_append_starts_no_further_launch_and_names_the_uncharged_one(self, world, monkeypatch):
         def failing_append(self, line):
@@ -889,6 +919,11 @@ class TestTheCommandLine:
         err = capsys.readouterr().err
         assert code == 2 and "exit 3" in err and "sentinel-credential" not in err
 
+    # Gated on the feature, not `sys.version_info`: a version check is flagged by ruff UP036 under target-version py314.
+    @pytest.mark.skipif(
+        "color" not in inspect.signature(argparse.ArgumentParser).parameters,
+        reason="argparse colours its output only where ArgumentParser accepts `color` (Python 3.14+)",
+    )
     def test_argparses_own_help_and_error_output_is_not_escaped_even_with_colour_forced(self, monkeypatch, capsys):
         """Kills: parsing inside the wrapper. On Python 3.14 argparse colours its output when `FORCE_COLOR` is set,
         and the wrapper would turn each escape into literal `\\x1b` text."""
@@ -902,9 +937,8 @@ class TestTheCommandLine:
         error_output = capsys.readouterr()
 
         assert help_code == 0 and error_code == 2
-        if sys.version_info >= (3, 14):
-            # Colour is on, so a raw escape byte must reach the output; a colour-off run would pass vacuously.
-            assert "\x1b" in help_output.out
+        # Colour is on, so a raw escape byte must reach the output; a colour-off run would pass vacuously.
+        assert "\x1b" in help_output.out
         literal_escape = "\\x1b"
         assert literal_escape not in help_output.out + help_output.err + error_output.out + error_output.err
         assert "usage:" in help_output.out and "usage:" in error_output.err
@@ -933,6 +967,80 @@ class TestTheCommandLine:
 
         assert main_run(*argv) == 2
         assert launch_stub.calls == []
+
+    @staticmethod
+    def launching_argv(world, subcommand):
+        return {
+            "smoke": ["smoke", "--tasks", "set", "--task-id", world.tasks[0].id, "--budget-cap-usd", "1.0"],
+            "run": ["run", "--tasks", "set", "--k", "1", "--cumulative-stop-usd", "1000", "--budget-cap-usd", "1.0"],
+        }[subcommand]
+
+    @pytest.mark.parametrize("value", ["0", "-5"])
+    @pytest.mark.parametrize("subcommand", ["smoke", "run"])
+    def test_a_timeout_s_that_is_not_positive_is_refused_with_exit_two_naming_the_flag_before_any_launch(
+        self, run_ready, monkeypatch, capsys, subcommand, value,
+    ):
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+
+        assert main_run(*self.launching_argv(run_ready, subcommand), "--timeout-s", value) == 2
+        assert "--timeout-s" in capsys.readouterr().err
+        assert launch_stub.calls == []
+
+    @pytest.mark.parametrize("subcommand", ["smoke", "run"])
+    def test_the_same_argv_with_a_positive_timeout_s_reaches_the_launch(self, run_ready, monkeypatch, subcommand):
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+
+        main_run(*self.launching_argv(run_ready, subcommand), "--timeout-s", "30")
+
+        assert launch_stub.calls != []
+
+    @pytest.mark.parametrize("subcommand", ["smoke", "run"])
+    def test_a_held_run_store_lock_exits_one_naming_the_other_run_before_any_launch(
+        self, run_ready, local_dir, monkeypatch, capsys, subcommand,
+    ):
+        """A double start of one campaign must read as "another run in progress" (1), not a refusal (2) or a traceback."""
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+        fixed_smoke_id = uuid.UUID(int=1)
+        monkeypatch.setattr(smoke, "uuid", types.SimpleNamespace(uuid4=lambda: fixed_smoke_id))
+        campaign_id = {"smoke": "smoke-00000000", "run": "held"}[subcommand]
+        argv = self.launching_argv(run_ready, subcommand)
+        if subcommand == "run":
+            argv += ["--campaign-id", campaign_id]
+        holder = review_runner.RunStore(local_dir / campaign.CAMPAIGNS_DIR_NAME / campaign_id / campaign.STORE_DIR_NAME)
+        holder.acquire_lock()
+        try:
+            code = main_run(*argv)
+        finally:
+            holder.release_lock()
+
+        assert code == 1
+        error = capsys.readouterr().err
+        assert f"held by pid {os.getpid()}" in error and "another run on this store is still in progress" in error
+        assert launch_stub.calls == []
+
+    def test_the_campaign_id_line_reaches_a_redirected_stdout_before_the_campaign_returns(
+        self, run_ready, monkeypatch, tmp_path,
+    ):
+        """Kills: dropping `flush=True` from the `campaign <id>` print. A detached run's stdout is a block-buffered
+        file, so an unflushed line is lost with the process."""
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", run_ready.launch())
+        redirected = tmp_path / "stdout.txt"
+        seen_while_running = []
+
+        def observe(*_args, **_kwargs):
+            seen_while_running.append(redirected.read_text())
+            return 0
+
+        monkeypatch.setattr(campaign, "run_campaign", observe)
+        with redirected.open("w", buffering=8192) as stream:
+            monkeypatch.setattr(sys, "stdout", stream)
+            code = main_run(*self.RUN_ARGV, "--campaign-id", "detached")
+
+        assert code == 0
+        assert len(seen_while_running) == 1 and seen_while_running[0].endswith("campaign detached\n")
 
     def test_a_refusal_carrying_an_escape_an_osc_sequence_and_a_bell_reaches_stderr_with_none_of_them_raw(
         self, run_ready, monkeypatch, capsys,

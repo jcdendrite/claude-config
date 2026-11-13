@@ -21,7 +21,8 @@ Command-text scan. A Bash command is scanned for guarded paths as text, not exec
   that is still inside the location's own tree. The trees are the config dir (the toolkit and the projects
   root), each live checkout root (its changed paths and its `.git`), the local dir, and each
   `FIXTURE_DIR_PREFIX` directory other than the run's own. A directory above a tree is never a hit, so `/`,
-  `~`, `$HOME` and a division operator in a heredoc fail nothing, and `ls ~/.claude` fails.
+  `~`, `$HOME` and a division operator in a heredoc fail nothing.
+  `ls ~/.claude` fails when `~/.claude` is the config dir, because it names the config tree's root.
 
 The scan cannot see these shapes, which are illustrative, not exhaustive:
 - a command run on a directory above a guarded tree, as in `grep -r x ~`;
@@ -494,7 +495,7 @@ class ToolCall:
     name: str
     tool_input: dict
     answered: bool
-    denied: bool  # the result carries a permission-rule `non_execution_kind`, so the call never ran
+    denied: bool  # the result carries one of the denial markers `read_subagent_transcript` lists, so the call never ran
 
 
 @dataclass(frozen=True)
@@ -566,13 +567,17 @@ def read_subagent_transcript(subagent_jsonl: Path) -> SubagentTranscript:
     """Entries that are neither an assistant message nor a user message, such as the attachment a
     `SubagentStop` hook's send-back leaves, are ignored. Never raises on the file's content or absence.
 
-    A call counts as denied when its carrier holds any of three markers: a `tool_result_meta` item whose
-    `non_execution_kind` is `permission-rule`, a `toolDenialKind` in `NEVER_EXECUTED_DENIAL_KINDS`, or a
-    `permissionDecision` object whose `decision` is `reject`. A `toolDenialKind` of `interrupted`, or any
-    value outside that set, leaves the call counted as executed. The carrier is the `tool_result` block, or
-    the enclosing user entry when it holds exactly one result, since an entry-level marker cannot name which
-    of several results it denied. The last two markers sit on the user entry in a main-session transcript
-    recorded on CLI 2.1.323, and a subagent transcript may carry the first on the block instead.
+    A call counts as denied, and so as never run, when its carrier holds any of three markers:
+    - A `tool_result_meta` item whose `non_execution_kind` is `permission-rule`.
+    - A `toolDenialKind` in `NEVER_EXECUTED_DENIAL_KINDS`.
+    - A `permissionDecision` object whose `decision` is `reject`.
+
+    A `toolDenialKind` of `interrupted`, or any value outside that set, leaves the call counted as executed.
+    The carrier is the `tool_result` block, or the enclosing user entry when it holds exactly one result, since
+    an entry-level marker cannot name which of several results it denied.
+    In a main-session transcript recorded on CLI 2.1.323, `toolDenialKind` sits on the user entry.
+    In the same transcript, `permissionDecision` sits on the user entry.
+    A subagent transcript may carry `tool_result_meta` on the block.
     """
     try:
         entries, skipped_lines, last_line_torn = _read_transcript_entries(subagent_jsonl)

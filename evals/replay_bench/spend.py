@@ -62,12 +62,15 @@ def _parse_line(text: str) -> SpendLine | None:
 
 
 class SpendFile:
-    """Appends take one `os.write` on an `O_APPEND` descriptor under a lock the worker threads share."""
+    """Appends take one `os.write` on an `O_APPEND` descriptor under a lock the worker threads share. After a short
+    write, the next append starts with a newline, so the torn line stays one unparsed line and never fuses with it."""
 
     def __init__(self, path: Path, *, budget_cap_usd: float) -> None:
         self.path = path
         self.budget_cap_usd = budget_cap_usd
         self._lock = threading.Lock()
+        # Set by a short write: the file's last line is then unterminated, and the next append must end it first.
+        self._tail_is_torn = False
 
     def repair_torn_tail(self) -> None:
         """Truncates a torn last line, left by a killed process, so it never fuses with the next append."""
@@ -77,16 +80,18 @@ class SpendFile:
         """Raises SpendAppendError when the write fails."""
         encoded = (json.dumps(asdict(line)) + "\n").encode()
         with self._lock:
+            payload = b"\n" + encoded if self._tail_is_torn else encoded
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
                 try:
-                    written = os.write(descriptor, encoded)
+                    written = os.write(descriptor, payload)
                 finally:
                     os.close(descriptor)
             except OSError as exc:
                 raise SpendAppendError(f"could not append to the spend file: {review_runner._os_error_detail(exc)}") from None
-            if written != len(encoded):
+            self._tail_is_torn = written != len(payload)
+            if self._tail_is_torn:
                 raise SpendAppendError("a short write left a torn line in the spend file")
 
     def totals(self) -> SpendTotals:

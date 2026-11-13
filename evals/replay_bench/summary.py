@@ -1,16 +1,15 @@
 """`summarize`: the terminal-only summary of one campaign's complete blocks. It writes no file.
 
 The primary outcome, fixed before any run, is comment-plus-docstring words per added non-test code line.
-For a task and an arm it is a ratio of sums over that arm's valid runs of the task. A null difference shows
-only that the writing agent's instructions leave its first draft's comment density unchanged on these tasks:
-no arm runs the review loop through which the toolkit also shapes comments.
+For a task and an arm it is a ratio of sums over that arm's valid runs of the task.
+What a null difference does and does not show is stated in `evals/README.md` § "Replay bench".
 """
 from __future__ import annotations
 
 import json
 import statistics
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,9 +22,10 @@ from replay_bench import tasks as tasks_mod
 from replay_bench.arms import BARE, TOOLKIT
 from replay_bench.campaign import CAMPAIGNS_DIR_NAME, MANIFEST_NAME, SPEND_NAME, STORE_DIR_NAME
 from replay_bench.records import ReplayRunRecord
-from replay_bench.spend import SpendFile
+from replay_bench.spend import SpendFile, is_usable_cost
 
 TASKS_DIR_NAME = "tasks"
+EXCLUSION_KEYS = ("toolkit", "bare", "both", "code")
 
 
 @dataclass(frozen=True)
@@ -70,14 +70,28 @@ def _refuse_mixed_environments(all_records: Sequence[ReplayRunRecord]) -> None:
             )
 
 
-def _read_reference_metrics(local_dir: Path, tasks_name: str | None) -> dict[str, dict]:
+def _read_reference_metrics(local_dir: Path, tasks_name: str | None) -> tuple[dict[str, dict], str | None]:
+    """The reference metrics by task ID, and the reason they are empty when the task set could not be read."""
     if not tasks_name:
-        return {}
+        return {}, "the manifest names no task set"
     try:
         task_list = tasks_mod.read_task_set(local_dir / TASKS_DIR_NAME, tasks_name)
-        return {task.id: task.reference_metrics.to_dict() for task in task_list}
-    except (tasks_mod.TaskFileError, ValueError):
-        return {}
+        return {task.id: task.reference_metrics.to_dict() for task in task_list}, None
+    except (tasks_mod.TaskFileError, ValueError) as exc:
+        return {}, f"task set {tasks_name!r} could not be read: {exc}"
+
+
+def _read_manifest(manifest_path: Path) -> tuple[dict, str | None]:
+    """The manifest, and the reason it is empty when the manifest is absent, unreadable or not a JSON object."""
+    if not manifest_path.exists():
+        return {}, "the campaign has no manifest"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {}, f"the manifest could not be read: {type(exc).__name__}"
+    if not isinstance(manifest, dict):
+        return {}, "the manifest is not a JSON object"
+    return manifest, None
 
 
 def _docstring_rate(metrics_list: Sequence[dict]) -> float | None:
@@ -88,6 +102,46 @@ def _docstring_rate(metrics_list: Sequence[dict]) -> float | None:
 
 def _number(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.4f}"
+
+
+@dataclass(frozen=True)
+class PairedOutcome:
+    """The primary outcome as values, before any formatting. `differences` maps each paired task to its
+    `toolkit - bare` ratio difference. The interval is None below two paired tasks."""
+
+    differences: dict[str, float]
+    mean: float | None
+    interval: tuple[float, float] | None
+    excluded_counts: dict[str, int]
+    excluded_records: dict[str, list[ReplayRunRecord]]
+
+
+def paired_outcome(block_records: Mapping[str, Sequence[ReplayRunRecord]]) -> PairedOutcome:
+    differences: dict[str, float] = {}
+    excluded: dict[str, list[ReplayRunRecord]] = {key: [] for key in EXCLUSION_KEYS}
+    excluded_counts = dict.fromkeys(excluded, 0)
+    for task_id, task_records in block_records.items():
+        toolkit_records = [record for record in task_records if record.arm == TOOLKIT.name]
+        bare_records = [record for record in task_records if record.arm == BARE.name]
+        has_toolkit, has_bare = bool(_valid(toolkit_records)), bool(_valid(bare_records))
+        if not has_toolkit or not has_bare:
+            key = "both" if not has_toolkit and not has_bare else "toolkit" if not has_toolkit else "bare"
+            excluded_counts[key] += 1
+            missing_side = {"toolkit": toolkit_records, "bare": bare_records, "both": task_records}[key]
+            excluded[key].extend(record for record in missing_side if not record.is_ok)
+            continue
+        toolkit_ratio, bare_ratio = _sums(toolkit_records).ratio, _sums(bare_records).ratio
+        if toolkit_ratio is None or bare_ratio is None:
+            excluded_counts["code"] += 1
+            continue
+        differences[task_id] = toolkit_ratio - bare_ratio
+    if not differences:
+        return PairedOutcome(differences, None, None, excluded_counts, excluded)
+    interval = analysis.bootstrap_interval(
+        list(differences), lambda ids: statistics.fmean(differences[task_id] for task_id in ids),
+        cluster_by_defect={task_id: (task_id, "") for task_id in differences},
+    )
+    return PairedOutcome(differences, statistics.fmean(differences.values()), interval, excluded_counts, excluded)
 
 
 def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> list[str]:
@@ -111,59 +165,34 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
         counts = review_runner.count_outcomes(arm_records)
         lines.append(f"  {arm_name}: {review_runner.format_outcome_counts(counts)}")
 
-    differences: dict[str, float] = {}
-    excluded: dict[str, list[ReplayRunRecord]] = {key: [] for key in ("toolkit", "bare", "both", "code")}
-    excluded_counts = dict.fromkeys(excluded, 0)
-    for task_id, task_records in block_records.items():
-        toolkit_records = [record for record in task_records if record.arm == TOOLKIT.name]
-        bare_records = [record for record in task_records if record.arm == BARE.name]
-        has_toolkit, has_bare = bool(_valid(toolkit_records)), bool(_valid(bare_records))
-        if not has_toolkit or not has_bare:
-            key = "both" if not has_toolkit and not has_bare else "toolkit" if not has_toolkit else "bare"
-            excluded_counts[key] += 1
-            missing_side = {"toolkit": toolkit_records, "bare": bare_records, "both": task_records}[key]
-            excluded[key].extend(record for record in missing_side if not record.is_ok)
-            continue
-        toolkit_ratio, bare_ratio = _sums(toolkit_records).ratio, _sums(bare_records).ratio
-        if toolkit_ratio is None or bare_ratio is None:
-            excluded_counts["code"] += 1
-            continue
-        differences[task_id] = toolkit_ratio - bare_ratio
+    paired = paired_outcome(block_records)
 
     lines.append("primary outcome: comment-plus-docstring words per added non-test code line (ratio of sums per task and arm)")
-    if differences:
-        difference = statistics.fmean(differences.values())
-        interval = analysis.bootstrap_interval(
-            list(differences), lambda ids: statistics.fmean(differences[task_id] for task_id in ids),
-            cluster_by_defect={task_id: (task_id, "") for task_id in differences},
-        )
+    if paired.mean is not None:
         interval_text = (
-            f", 95% interval [{interval[0]:.4f}, {interval[1]:.4f}]" if interval
+            f", 95% interval [{paired.interval[0]:.4f}, {paired.interval[1]:.4f}]" if paired.interval
             else ", no interval for fewer than two paired tasks"
         )
-        lines.append(f"paired difference toolkit - bare: {difference:.4f}{interval_text}")
+        lines.append(f"paired difference toolkit - bare: {paired.mean:.4f}{interval_text}")
     else:
         lines.append("paired difference toolkit - bare: n/a")
-    lines.append(f"paired {len(differences)} of {len(complete_ids)} complete tasks")
+    lines.append(f"paired {len(paired.differences)} of {len(complete_ids)} complete tasks")
     labels = {
         "toolkit": "toolkit with no valid run", "bare": "bare with no valid run",
         "both": "both arms with no valid run", "code": "no non-test code line in an arm",
     }
     for key, label in labels.items():
-        suffix = f" (missing reasons: {_format_reasons(_reasons(excluded[key]))})" if key != "code" else ""
-        lines.append(f"  excluded, {label}: {excluded_counts[key]}{suffix}")
+        suffix = f" (missing reasons: {_format_reasons(_reasons(paired.excluded_records[key]))})" if key != "code" else ""
+        lines.append(f"  excluded, {label}: {paired.excluded_counts[key]}{suffix}")
 
-    manifest_path = campaign_dir / MANIFEST_NAME
-    tasks_name = None
-    if manifest_path.exists():
-        try:
-            tasks_name = json.loads(manifest_path.read_text(encoding="utf-8")).get("tasks_name")
-        except (OSError, ValueError, AttributeError):
-            tasks_name = None
-    reference = _read_reference_metrics(local_dir, tasks_name)
+    manifest, manifest_problem = _read_manifest(campaign_dir / MANIFEST_NAME)
+    reference, reference_problem = _read_reference_metrics(local_dir, manifest.get("tasks_name"))
+    reference_problem = manifest_problem or reference_problem
     lines.append("secondary outcome: Python docstring lines per 100 added non-test code lines")
     reference_rate = _docstring_rate([reference[task_id] for task_id in complete_ids if task_id in reference])
     lines.append(f"  reference (the merged commits) docstring lines per 100 code lines: {_number(reference_rate)}")
+    if reference_problem:
+        lines.append(f"  reference unavailable: {reference_problem}")
     for arm_name in arm_names:
         valid = _valid([record for record in all_records if record.arm == arm_name])
         arm_rate = _docstring_rate([record.metrics for record in valid])
@@ -186,12 +215,17 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
             f"undecodable_files {sum(r.metrics['undecodable_files'] for r in valid)}"
         )
 
-    totals = SpendFile(campaign_dir / SPEND_NAME, budget_cap_usd=budget_cap_usd).totals()
+    pinned_cap = manifest.get("budget_cap_usd")
+    has_pinned_cap = is_usable_cost(pinned_cap) and pinned_cap > 0
+    unparsed_cap_usd = pinned_cap if has_pinned_cap else budget_cap_usd
+    totals = SpendFile(campaign_dir / SPEND_NAME, budget_cap_usd=unparsed_cap_usd).totals()
     lines.append("spend by account:")
     lines.extend(f"  {account_key!r}: ${totals.account_usd(account_key):.2f}" for account_key in sorted(totals.by_account_usd))
     if totals.unparsed_lines:
         lines.append(
-            f"  {totals.unparsed_lines} spend lines did not parse and count at ${budget_cap_usd:.2f} each against every account"
+            f"  {totals.unparsed_lines} spend lines did not parse and count at ${unparsed_cap_usd:.2f} each "
+            f"({'the cap the campaign pinned' if has_pinned_cap else '--budget-cap-usd, since the manifest pins no usable cap'}) "
+            "against every account"
         )
     return lines
 

@@ -1,11 +1,12 @@
 """Tests for `summarize`, over synthetic run records under `tmp_path`. Printed values are parsed back as numbers."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
-from replay_bench import records, summary
+from replay_bench import records, summary, tasks
 from replay_bench.comment_metrics import CommentMetrics
 from replay_bench.spend import SpendFile, SpendLine
 from review_bench.runner import HarnessInvalidatedError, RunStore
@@ -85,7 +86,86 @@ class TestThePrimaryOutcome:
 
         line = next(line for line in campaign.summarize() if line.startswith("paired difference"))
 
-        assert "95% interval [" in line
+        assert re.fullmatch(r"paired difference toolkit - bare: -?\d+\.\d{4}, 95% interval \[-?\d+\.\d{4}, -?\d+\.\d{4}\]", line)
+
+
+class TestThePairedOutcomeAsValues:
+    def blocks(self, *differences_in_words):
+        """One block per task: the toolkit arm writes `words` over ten code lines and the bare arm writes none."""
+        return {
+            f"t{index}": [
+                record(f"t{index}", "toolkit", run_metrics=metrics(words=words, code=10)),
+                record(f"t{index}", "bare", run_metrics=metrics(words=0, code=10)),
+            ]
+            for index, words in enumerate(differences_in_words)
+        }
+
+    def test_each_tasks_difference_is_its_toolkit_ratio_less_its_bare_ratio_and_the_mean_is_their_mean(self):
+        outcome = summary.paired_outcome(self.blocks(20, 30, 70))
+
+        assert outcome.differences == {"t0": pytest.approx(2.0), "t1": pytest.approx(3.0), "t2": pytest.approx(7.0)}
+        assert outcome.mean == pytest.approx(4.0)
+
+    def test_a_nonzero_bare_ratio_is_subtracted_and_a_two_run_bare_arm_is_a_ratio_of_sums(self):
+        """Kills: dropping or adding the bare term, and averaging a two-run arm's per-run ratios."""
+        outcome = summary.paired_outcome({
+            "two-run-bare": [
+                record("two-run-bare", "toolkit", run_metrics=metrics(words=20, code=10)),
+                record("two-run-bare", "bare", run_metrics=metrics(words=6, code=10)),
+                record("two-run-bare", "bare", run_index=1, run_metrics=metrics(words=4, code=30)),
+            ],
+            "one-run-bare": [
+                record("one-run-bare", "toolkit", run_metrics=metrics(words=30, code=10)),
+                record("one-run-bare", "bare", run_metrics=metrics(words=9, code=6)),
+            ],
+        })
+
+        toolkit_ratio, bare_ratio = 20 / 10, (6 + 4) / (10 + 30)
+        assert bare_ratio != pytest.approx((6 / 10 + 4 / 30) / 2), "the fixture tells a ratio of sums from a mean of ratios"
+        assert outcome.differences == {
+            "two-run-bare": pytest.approx(toolkit_ratio - bare_ratio),
+            "one-run-bare": pytest.approx(30 / 10 - 9 / 6),
+        }
+        assert outcome.mean == pytest.approx(((toolkit_ratio - bare_ratio) + (30 / 10 - 9 / 6)) / 2)
+
+    def test_the_interval_of_two_paired_tasks_spans_exactly_their_two_differences(self):
+        """Kills: a bootstrap statistic that ignores the resampled IDs, which would collapse the interval to the mean."""
+        outcome = summary.paired_outcome(self.blocks(20, 30))
+
+        assert outcome.interval == (pytest.approx(2.0), pytest.approx(3.0))
+
+    def test_the_interval_of_several_tasks_lies_within_their_smallest_and_largest_difference_and_has_width(self):
+        outcome = summary.paired_outcome(self.blocks(20, 30, 70, 10))
+
+        low, high = outcome.interval
+        assert min(outcome.differences.values()) <= low < high <= max(outcome.differences.values())
+
+    def test_one_paired_task_has_a_mean_and_no_interval_and_none_has_neither(self):
+        single = summary.paired_outcome(self.blocks(20))
+        nothing = summary.paired_outcome({})
+
+        assert single.mean == pytest.approx(2.0) and single.interval is None
+        assert nothing.mean is None and nothing.interval is None and nothing.differences == {}
+
+    def test_each_exclusion_is_tallied_with_the_records_that_explain_it(self):
+        blocks = {
+            "paired": [record("paired", "toolkit"), record("paired", "bare")],
+            "no-toolkit": [record("no-toolkit", "toolkit", ok=False, reason="timeout"), record("no-toolkit", "bare")],
+            "no-bare": [record("no-bare", "toolkit"), record("no-bare", "bare", ok=False, reason="arm-leak")],
+            "neither": [
+                record("neither", "toolkit", ok=False, reason="timeout"),
+                record("neither", "bare", ok=False, reason="result-error"),
+            ],
+            "no-code": [record("no-code", "toolkit"), record("no-code", "bare", run_metrics=metrics(words=5, code=0))],
+        }
+
+        outcome = summary.paired_outcome(blocks)
+
+        assert list(outcome.differences) == ["paired"]
+        assert outcome.excluded_counts == {"toolkit": 1, "bare": 1, "both": 1, "code": 1}
+        assert [run.missing_reason for run in outcome.excluded_records["toolkit"]] == ["timeout"]
+        assert [run.missing_reason for run in outcome.excluded_records["bare"]] == ["arm-leak"]
+        assert sorted(run.missing_reason for run in outcome.excluded_records["both"]) == ["result-error", "timeout"]
 
 
 class TestTheExclusionLine:
@@ -181,8 +261,73 @@ class TestSecondaryAndDiagnostics:
         assert "runs with no non-test code line 1" in "\n".join(lines)
 
 
+class TestAnUnavailableReferenceNamesItsCause:
+    def reference_line(self, campaign):
+        return next(line for line in campaign.summarize() if line.startswith("  reference unavailable"))
+
+    def test_a_campaign_with_no_manifest_says_so(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+
+        assert self.reference_line(campaign) == "  reference unavailable: the campaign has no manifest"
+
+    def test_an_unparseable_manifest_says_it_could_not_be_read(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        (campaign.dir / "manifest.json").write_text("not json")
+
+        assert "the manifest could not be read: JSONDecodeError" in self.reference_line(campaign)
+
+    def test_a_manifest_that_is_not_a_json_object_says_so(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        (campaign.dir / "manifest.json").write_text("[]")
+
+        assert self.reference_line(campaign) == "  reference unavailable: the manifest is not a JSON object"
+
+    @pytest.mark.parametrize("task_file_text", [None, "not json", '{"not": "a list"}'], ids=["gone", "unparseable", "not-a-list"])
+    def test_a_task_set_that_cannot_be_read_says_which_one_and_gives_the_readers_own_cause(self, campaign, task_file_text):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        (campaign.dir / "manifest.json").write_text(json.dumps({"tasks_name": "damaged"}))
+        tasks_dir = campaign.local_dir / "tasks"
+        if task_file_text is not None:
+            tasks_dir.mkdir()
+            (tasks_dir / "damaged.json").write_text(task_file_text)
+        with pytest.raises(tasks.TaskFileError) as cause:
+            tasks.read_task_set(tasks_dir, "damaged")
+
+        line = self.reference_line(campaign)
+
+        assert line == f"  reference unavailable: task set 'damaged' could not be read: {cause.value}"
+
+
+class TestAReadableReferenceIsReportedWithoutAWarning:
+    def reference_task(self, *, code, docstring) -> tasks.ReplayTask:
+        source_repo, commit = "/synthetic/source-repo", "a" * 40
+        return tasks.ReplayTask(
+            id=tasks.make_task_id(Path(source_repo), commit), source_repo=source_repo, base_commit="b" * 40, commit=commit,
+            brief="synthetic brief", changed_paths=("src/app.py",), author_email="author@example.invalid",
+            committer_email="committer@example.invalid",
+            reference_metrics=CommentMetrics.from_dict(metrics(code=code, docstring=docstring)),
+            base_density=None, base_tree_bytes=0, base_tree_entries=0,
+        )
+
+    def test_the_reference_rate_is_the_task_sets_docstring_lines_per_100_code_lines_with_no_unavailable_line(self, campaign):
+        task = self.reference_task(code=40, docstring=10)
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
+        (campaign.dir / "manifest.json").write_text(json.dumps({"tasks_name": "readable"}))
+        campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare"))
+
+        lines = campaign.summarize()
+
+        counts = task.reference_metrics.line_counts["non_test"]
+        expected_rate = 100 * counts["docstring"] / counts["code"]
+        assert expected_rate == pytest.approx(25.0), "the fixture's metrics reach the task as written"
+        assert number_after(lines, "  reference (the merged commits) docstring lines per 100 code lines:") == pytest.approx(
+            expected_rate,
+        )
+        assert not any("reference unavailable" in line for line in lines)
+
+
 class TestSpendByAccount:
-    def test_an_unparseable_spend_line_counts_at_the_cap_against_every_account_and_is_said_so(self, campaign):
+    def spend_with_one_unparsed_line(self, campaign) -> None:
         campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
         spend = SpendFile(campaign.dir / "spend.jsonl", budget_cap_usd=CAP)
         spend.append(SpendLine("t1", "bare", 0, 1, ACCOUNT, "s", 2.0, False))
@@ -190,8 +335,29 @@ class TestSpendByAccount:
         with spend.path.open("a") as handle:
             handle.write("not json\n")
 
+    def test_an_unparseable_spend_line_counts_at_the_flag_when_the_manifest_pins_no_cap_and_says_so(self, campaign):
+        self.spend_with_one_unparsed_line(campaign)
+
         lines = campaign.summarize()
 
         assert f"  {ACCOUNT!r}: $5.00" in lines and "  '/other/account': $4.00" in lines
-        assert any("did not parse" in line and "$3.00 each" in line for line in lines)
+        assert any("did not parse" in line and "$3.00 each" in line and "manifest pins no usable cap" in line for line in lines)
+
+    def test_an_unparseable_spend_line_counts_at_the_cap_the_campaign_pinned_and_not_the_flag(self, campaign):
+        self.spend_with_one_unparsed_line(campaign)
+        (campaign.dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": 2.0}))
+
+        lines = campaign.summarize()
+
+        assert f"  {ACCOUNT!r}: $4.00" in lines and "  '/other/account': $3.00" in lines
+        assert any("did not parse" in line and "$2.00 each" in line and "campaign pinned" in line for line in lines)
+
+    @pytest.mark.parametrize("unusable_cap", ["three", 0, -1.0, True], ids=["string", "zero", "negative", "bool"])
+    def test_a_pinned_cap_that_is_not_a_positive_number_falls_back_to_the_flag(self, campaign, unusable_cap):
+        self.spend_with_one_unparsed_line(campaign)
+        (campaign.dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": unusable_cap}))
+
+        lines = campaign.summarize()
+
+        assert any("did not parse" in line and "$3.00 each" in line and "manifest pins no usable cap" in line for line in lines)
 

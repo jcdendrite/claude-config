@@ -33,7 +33,7 @@ STORE_DIR_NAME = "store"
 ATTEMPTS_DIR_NAME = "attempts"
 # Two task-specific failed blocks in a row halt the campaign.
 FAILED_BLOCKS_IN_A_ROW_HALT = 2
-_MANIFEST_COMPARED_FIELDS = ("task_set_hash", "arms", "k", "seed", "model_id")
+_MANIFEST_COMPARED_FIELDS = ("task_set_hash", "arms", "k", "seed", "model_id", "budget_cap_usd", "timeout_s")
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,7 @@ def _manifest_for(
     return {
         "task_set_hash": task_set_hash(config.tasks), "tasks_name": config.tasks_name, "arms": list(config.arm_names),
         "k": config.k, "seed": config.seed, "model_id": config.model_id,
+        "budget_cap_usd": config.budget_cap_usd, "timeout_s": config.timeout_s,
         "repo_accounts": {repo: account.key for repo, account in accounts_by_repo.items()},
         "environments": {
             key: {"cli_version": reading.cli_version, "ambient_config_commit": reading.ambient_config_commit}
@@ -171,7 +172,7 @@ def _progress_line(
     )
 
 
-def _drift_halt(block: BlockOutcome | None, task: tasks_mod.ReplayTask, message: str, spend: SpendFile) -> int:
+def _discarded_block_halt(block: BlockOutcome | None, task: tasks_mod.ReplayTask, message: str, spend: SpendFile) -> int:
     attempts = sum(record.attempts for record in block.records) if block is not None else 0
     block_spend = spend.totals().by_task_usd.get(task.id, 0.0)
     return _halt(f"{message} -- {task.id}: {attempts} attempts, ${block_spend:.2f} spent in the block")
@@ -198,22 +199,24 @@ def run_campaign(
         for key, account in accounts.items()
     }
     expected_manifest = _manifest_for(config, accounts_by_repo, readings)
-    manifest_path = campaign_dir / MANIFEST_NAME
-    is_resume = manifest_path.exists()
-    if is_resume:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise HarnessInvalidatedError(f"{manifest_path}: cannot read the manifest: {exc}") from exc
-        _check_manifest(manifest, expected_manifest, path=manifest_path)
-    _refuse_without_smoke_pass(config, readings)
-    if not is_resume:
-        atomic_write_text(manifest_path, json.dumps(expected_manifest, indent=2) + "\n")
-
     run_store = RunStore(campaign_dir / STORE_DIR_NAME)
     run_store.acquire_lock()
     try:
-        return _run_locked(config, accounts, accounts_by_repo, readings, run_store, runner_environ, launch, is_resume=is_resume)
+        # The manifest is read and written only under the lock, so two invocations of one campaign ID cannot
+        # each see no manifest and pin their own inputs over the other's.
+        manifest_path = campaign_dir / MANIFEST_NAME
+        is_resume = manifest_path.exists()
+        if is_resume:
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise HarnessInvalidatedError(f"{manifest_path}: cannot read the manifest: {exc}") from exc
+            _check_manifest(manifest, expected_manifest, path=manifest_path)
+        _refuse_without_smoke_pass(config, readings)
+        return _run_locked(
+            config, accounts, accounts_by_repo, readings, run_store, runner_environ, launch,
+            expected_manifest=None if is_resume else expected_manifest,
+        )
     finally:
         run_store.release_lock()
 
@@ -221,8 +224,11 @@ def run_campaign(
 def _run_locked(
     config: CampaignConfig, accounts: Mapping[str, Account], accounts_by_repo: Mapping[str, Account],
     readings: Mapping[str, review_runner.EnvironmentRecord], run_store: RunStore, runner_environ: Mapping[str, str],
-    launch: Launch, *, is_resume: bool,
+    launch: Launch, *, expected_manifest: dict | None,
 ) -> int:
+    """`expected_manifest` is the manifest to pin once the campaign's refusals pass, or None on a resume. A
+    campaign refused for its ceiling pins nothing, so a rerun with a lower `--k` is a fresh start."""
+    is_resume = expected_manifest is None
     campaign_dir = config.campaign_dir
     attempts_root = campaign_dir / ATTEMPTS_DIR_NAME
     if attempts_root.is_symlink():
@@ -239,7 +245,8 @@ def _run_locked(
     if uncharged:
         print(
             f"{uncharged} logged attempts with a session ID have no spend line and were not charged "
-            "(an attempt killed before its launch counts too)"
+            "(an attempt killed before its launch counts too)",
+            flush=True,
         )
 
     completed = run_store.completed_block_ids()
@@ -250,10 +257,11 @@ def _run_locked(
     qualifier = " (leaves out the uncharged attempts above)" if uncharged else ""
     if is_resume:
         incomplete_spend = sum(totals.by_task_usd.get(task.id, 0.0) for task in incomplete)
-        print(f"spend on blocks not yet complete: ${incomplete_spend:.2f}{qualifier}")
+        print(f"spend on blocks not yet complete: ${incomplete_spend:.2f}{qualifier}", flush=True)
     print(
         f"{len(incomplete) * len(config.arm_names) * config.k} runs in {len(incomplete)} blocks; "
-        f"nominal ceiling ${campaign_ceiling:.2f}{qualifier}"
+        f"nominal ceiling ${campaign_ceiling:.2f}{qualifier}",
+        flush=True,
     )
     if ceiling > config.cumulative_stop_usd or ceiling > config.account_stop_usd:
         raise HarnessInvalidatedError(
@@ -265,6 +273,8 @@ def _run_locked(
             f"the campaign's nominal ceiling ${campaign_ceiling:.2f} exceeds --cumulative-stop-usd "
             f"${config.cumulative_stop_usd:.2f}; raise the stop or pass --allow-early-stop"
         )
+    if expected_manifest is not None:
+        atomic_write_text(campaign_dir / MANIFEST_NAME, json.dumps(expected_manifest, indent=2) + "\n")
     if attempts_root.is_dir():
         review_runner.remove_tree_reporting_failure(attempts_root)
 
@@ -298,7 +308,7 @@ def _run_locked(
                 workers=config.workers,
             )
         except review_runner.EnvironmentMismatchError as exc:
-            return _drift_halt(None, task, str(exc), spend)
+            return _discarded_block_halt(None, task, str(exc), spend)
         except SpendAppendError as exc:
             launches = "; ".join(f"task {task_id} session {session_id}" for task_id, session_id in settings.uncharged_launches)
             return _halt(
@@ -306,7 +316,14 @@ def _run_locked(
                 f"Launches begun and not charged: {launches or 'none'}"
             )
         if block.end_drift is not None:
-            return _drift_halt(block, task, block.end_drift, spend)
+            return _discarded_block_halt(block, task, block.end_drift, spend)
+        if block.end_unread is not None:
+            return _discarded_block_halt(
+                block, task,
+                f"the block's end environment reading failed, which is not drift: {block.end_unread}; "
+                "the block's records were discarded and it is not marked complete, so a resume reruns it and pays for it again",
+                spend,
+            )
         for _arm, _index, outcome in block.runs:
             records.write_run(campaign_dir, outcome.record, outcome.diff_text)
         run_store.mark_block_complete(task.id)
@@ -314,7 +331,7 @@ def _run_locked(
         failures = _arm_failures(block, config.arm_names)
         for arm in failures:
             dropped[arm] += 1
-        print(_progress_line(block, config, account, failures, dropped, spend))
+        print(_progress_line(block, config, account, failures, dropped, spend), flush=True)
 
         instrument_failures = [
             outcome.record for _arm, _index, outcome in block.runs if outcome.record.missing_reason in INSTRUMENT_REASONS

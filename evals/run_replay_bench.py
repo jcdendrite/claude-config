@@ -57,6 +57,14 @@ def _positive_float(text: str) -> float:
     return value
 
 
+def _positive_int(text: str) -> int:
+    """Zero or a negative timeout would expire every launch at once and cap-charge each attempt for no data."""
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be an integer > 0, got {value}")
+    return value
+
+
 def _flag(field_name: str) -> str:
     return "--" + field_name.replace("_", "-")
 
@@ -122,7 +130,7 @@ def _add_launch_flags(parser: argparse.ArgumentParser) -> None:
     _add_preflight_flags(parser)
     parser.add_argument("--model-id", default=review_runner.REVIEWER_MODEL_ID)
     parser.add_argument("--budget-cap-usd", type=_positive_float, default=msmr.PER_RUN_BUDGET_CAP_USD)
-    parser.add_argument("--timeout-s", type=int, default=review_runner.REVIEWER_TIMEOUT_S)
+    parser.add_argument("--timeout-s", type=_positive_int, default=review_runner.REVIEWER_TIMEOUT_S)
 
 
 # --- subcommands ---------------------------------------------------------------
@@ -193,7 +201,7 @@ def cmd_run(args: argparse.Namespace, local_dir: Path) -> int:
         account_stop_usd=args.account_stop_usd or args.cumulative_stop_usd, allow_early_stop=args.allow_early_stop,
         fixture_git_timeout_s=args.fixture_git_timeout_s, local_dir=local_dir,
     )
-    print(f"campaign {campaign_id}")
+    print(f"campaign {campaign_id}", flush=True)
     return campaign.run_campaign(
         config, accounts_by_repo, runner_environ=os.environ, launch=msmr._run_claude_to_completion,
     )

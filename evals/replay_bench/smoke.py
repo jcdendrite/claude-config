@@ -105,7 +105,8 @@ def calibration_terms(account: Account, toolkit_final) -> tuple[float, float, in
 
 
 def evaluate_conditions(block: BlockOutcome, account: Account) -> tuple[list[tuple[str, str]], list[str]]:
-    """The failed conditions in the plan's order as (name, text) pairs, and the calibration lines to print."""
+    """The failed conditions as (name, text) pairs, and the calibration lines to print. The pairs run in this order:
+    a missing run for each arm, then the read-grant conditions, then the block calibration reasons."""
     by_arm = {arm: outcome for arm, _index, outcome in block.runs}
     toolkit_outcome, bare_outcome = by_arm[arms_mod.TOOLKIT.name], by_arm[arms_mod.BARE.name]
     failed: list[tuple[str, str]] = []
@@ -170,8 +171,8 @@ def run_smoke(
             launches = "; ".join(f"task {task_id} session {session_id}" for task_id, session_id in settings.uncharged_launches)
             print(f"{exc}. Launches begun and not charged: {launches or 'none'}", file=sys.stderr)
             return 2
-        if block.end_drift is not None:
-            print(block.end_drift, file=sys.stderr)
+        if block.end_drift is not None or block.end_unread is not None:
+            print(block.end_drift or block.end_unread, file=sys.stderr)
             return 2
         for arm_name in SMOKE_ARM_NAMES:
             for outcome in block.outcomes_for(arm_name):

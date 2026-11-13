@@ -99,8 +99,10 @@ KEPT = ["-", "_", ".", "+", "@", "~", "#", "!", ":", "=", "é"]
 class TestTheSharedCharacterCheck:
     @pytest.mark.parametrize("character", REFUSED)
     def test_each_refused_class_raises_naming_the_path_in_repr_form(self, character):
+        path = f"/config/a{character}b.md"
         with pytest.raises(launch.UnsafeConfigPathError) as raised:
-            launch.check_path_characters(f"/config/a{character}b.md")
+            launch.check_path_characters(path)
+        assert repr(path) in str(raised.value)
         assert "\n" not in str(raised.value) and "\x1b" not in str(raised.value)
 
     @pytest.mark.parametrize("character", KEPT)

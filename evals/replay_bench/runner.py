@@ -97,6 +97,9 @@ class BlockOutcome:
     runs: tuple[tuple[str, int, RunOutcome], ...]  # in the block plan's order
     # Set when the block's end reading differs from the reference: the block's records must then be discarded.
     end_drift: str | None = None
+    # Set when the end reading could not be read after a retry. The records are discarded as for drift, but the
+    # reading is no evidence of drift.
+    end_unread: str | None = None
 
     @property
     def records(self) -> list[ReplayRunRecord]:
@@ -142,6 +145,17 @@ def read_environment(checkout_root: Path) -> review_runner.EnvironmentRecord:
     )
 
 
+def _read_end_environment(checkout_root: Path) -> review_runner.EnvironmentRecord:
+    """The block's end reading, read again after one failure, as a run is retried once. A read that fails twice
+    raises HarnessInvalidatedError."""
+    for _attempt in range(review_runner.ATTEMPTS_PER_RUN - 1):
+        try:
+            return read_environment(checkout_root)
+        except HarnessInvalidatedError:
+            continue
+    return read_environment(checkout_root)
+
+
 def _stop_further_launches(settings: RunSettings) -> None:
     """Stops every run that has not launched yet, and kills the children of those that have."""
     settings.stop.set()
@@ -153,7 +167,8 @@ def run_block(
     environment_reference: EnvironmentReference, *, workers: int = run_skill_evals.DEFAULT_WORKERS,
 ) -> BlockOutcome:
     """Runs the task's block through a worker pool. Raises EnvironmentMismatchError when the start reading
-    differs from the reference. A differing end reading comes back as `end_drift`, with the runs."""
+    differs from the reference. A differing end reading comes back as `end_drift`, and one that cannot be read as
+    `end_unread`, each with the runs."""
     checkout_root = checkout_root_for(account)
     environment = read_environment(checkout_root)
     environment_reference.require_match(environment, where=f"{task.id}'s block start")
@@ -179,15 +194,17 @@ def run_block(
             if settings.failures and isinstance(exc, msmr.LaunchAbortedError):
                 raise settings.failures[0] from None  # the root cause, not a sibling's abort
             raise
-    end_drift = None
+    end_drift = end_unread = None
     try:
         environment_reference.require_match(
-            read_environment(checkout_root), where=f"{task.id}'s block end",
+            _read_end_environment(checkout_root), where=f"{task.id}'s block end",
         )
     except EnvironmentMismatchError as exc:
         end_drift = str(exc)
+    except HarnessInvalidatedError as exc:
+        end_unread = str(exc)
     runs = tuple((arm, index, outcome) for (arm, index), outcome in zip(plan.ordered_runs, outcomes, strict=True))
-    return BlockOutcome(task, runs, end_drift)
+    return BlockOutcome(task, runs, end_drift, end_unread)
 
 
 def new_campaign_suffix() -> str:

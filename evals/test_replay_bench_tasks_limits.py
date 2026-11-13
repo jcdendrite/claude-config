@@ -1,5 +1,5 @@
 """Tests for `build_task_fixture`'s optional settings file and for `SelectionLimits`' range checks. Kept apart from
-`test_replay_bench_tasks.py`, which is already past the line cap. Every repository is synthetic, built under
+`test_replay_bench_tasks.py`, which is already past 1,000 lines. Every repository is synthetic, built under
 `tmp_path` with real git. No test launches `claude`.
 """
 from __future__ import annotations
