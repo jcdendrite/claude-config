@@ -3890,7 +3890,8 @@ def test_the_recorded_bash_is_probed_as_having_builtin_and_runs_every_shell_inde
     A probe failure on the recorded bash must fail here, not silently move it to the no-`builtin` row."""
     assert SHELL_PROBES["bash"] is True
     assert set(SHELL_PROBES) <= {"bash", "sh", "zsh", "dash"}
-    assert list(dict.fromkeys(row for row, _ in BEHAVIOUR_PARAMS_BY_ROW_ORDER)) == BEHAVIOUR_ROW_IDS
+    rows_with_a_shell = [row for row in BEHAVIOUR_ROW_IDS if row not in ZSH_ONLY_ROWS or SHELL_PROBES.get("zsh") is True]
+    assert list(dict.fromkeys(row for row, _ in BEHAVIOUR_PARAMS_BY_ROW_ORDER)) == rows_with_a_shell
     rows_for_bash = {row for row, shell in BEHAVIOUR_PARAMS_BY_ROW_ORDER if shell == "bash"}
     assert rows_for_bash == set(BEHAVIOUR_ROW_IDS) - ZSH_ONLY_ROWS
     assert BEHAVIOUR_PARAMS, "no behaviour row has a shell to run under"

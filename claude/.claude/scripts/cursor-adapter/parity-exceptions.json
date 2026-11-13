@@ -17,6 +17,7 @@
     {"kind": "registration", "key": "SessionEnd|*|record-session-end.sh", "reason": "declined", "detail": "No Cursor process becomes a registered live ancestor"},
     {"kind": "registration", "key": "PreToolUse|Bash|require-worktree-for-git-writes.sh", "reason": "pending-phase", "phase": "4", "detail": "Needs the host-neutral session identity"},
     {"kind": "registration", "key": "PreToolUse|Edit|Write|MultiEdit|require-worktree-for-file-writes.sh", "reason": "pending-phase", "phase": "4", "detail": "Needs the host-neutral session identity"},
+    {"kind": "registration", "key": "SessionStart|startup|resume|check-python-floor.sh", "reason": "pending-phase", "phase": "3", "detail": "The installer's session-start check covers the python3 the hooks run"},
     {"kind": "registration", "key": "Stop|*|advance-past-commit-stall.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by a Cursor-side Stop hook"},
     {"kind": "registration", "key": "Stop|*|nudge-handoff-near-context-cap.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by a Cursor-side context-cap hook"},
     {"kind": "registration", "key": "SubagentStop|code-writer|send-back-skipped-self-review.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by a Cursor-side send-back hook"},
