@@ -12,7 +12,6 @@ import json
 import os
 import subprocess
 import sys
-import tokenize
 from pathlib import Path
 
 import pytest
@@ -275,17 +274,6 @@ def test_nodes_reverses_a_new_name_that_occurs_as_code_beside_a_string_naming_it
     code, lines = _run_nodes(capsys, tmp_path, before_source, [after_source], *RENAME_HELPER)
 
     assert (code, lines) == (0, ["compared-nodes: 1"])
-
-
-def test_nodes_rename_exits_2_when_tokenize_reports_no_f_string_tokens(capsys, tmp_path, monkeypatch):
-    monkeypatch.delattr(tokenize, "FSTRING_MIDDLE")
-
-    code, lines, err = _run_nodes_with_stderr(capsys, tmp_path, MOVED_BEFORE, [MOVED_AFTER], *RENAME_HELPER)
-    plain_code, plain_lines = _run_nodes(capsys, tmp_path, MOVED_BEFORE, [MOVED_BEFORE])
-
-    assert (code, lines) == (2, [])
-    assert "Python 3.12" in err
-    assert (plain_code, plain_lines) == (0, ["compared-nodes: 1"])
 
 
 def test_nodes_accepts_a_rename_used_only_by_the_second_of_two_compared_nodes(capsys, tmp_path):

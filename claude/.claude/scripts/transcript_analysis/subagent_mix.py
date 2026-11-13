@@ -680,3 +680,72 @@ def _dispatch_usage_summary(
         observed, actual_dollars, dict(dollars_by_class), counterfactual_dollars,
         unpriced_turns, unpriced_tokens, stale_models,
     )
+
+
+def _add_subagent_mix_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_mix = subparsers.add_parser(
+        "subagent-mix",
+        help=(
+            "Subagent_type spawn counts per branch, with code/plan/ready-for-review skill"
+            " invocations, plus a per-agentType observed/requested/declared model-mix table."
+        ),
+    )
+    p_mix.add_argument("--branches", metavar="B1,B2,...")
+    scope._add_project_scope_args(p_mix)
+    p_mix.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Refused together with --per-session."
+            " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
+            " one root is in scope."
+        ),
+    )
+    p_mix.add_argument(
+        "--since", metavar="Nd",
+        help="Limit the reported tables to records with timestamp in the last N days (e.g. 35d).",
+    )
+    p_mix.add_argument(
+        "--per-session",
+        action="store_true",
+        help="Break out by individual session instead of aggregating per branch. Refused under --config-dir.",
+    )
+    p_mix.add_argument(
+        "--since-date", metavar="DATE", type=scope._iso_date,
+        help=(
+            "Inclusive start date (YYYY-MM-DD) for the Actual $ / Counterfactual $ columns only,"
+            " filtered per sidechain record — independent of --since Nd, which keeps its existing"
+            " dispatch-level scope over every other column."
+        ),
+    )
+    p_mix.add_argument(
+        "--until-date", metavar="DATE", type=scope._iso_date,
+        help="Inclusive end date (YYYY-MM-DD) for the Actual $ / Counterfactual $ columns only — see --since-date.",
+    )
+    p_mix.add_argument(
+        "--reprice-as", metavar="MODEL_ID",
+        help=(
+            "Re-price each in-window dispatch's dollars at this model ID instead of its own real"
+            " model, adding Counterfactual $ and Delta columns. Must be a key in"
+            " _MODEL_BASE_INPUT_RATES; an unknown value is rejected listing the valid IDs."
+        ),
+    )
+    p_mix.set_defaults(func=cmd_subagent_mix)
+
+
+def _add_cost_counts_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_cost_counts = subparsers.add_parser(
+        "cost-counts",
+        help=(
+            "Per-branch review-round and subagent-spawn counts, as two GFM subsections for a"
+            " public PR body -- counts only, no dollar attribution. Requires --this-repo and"
+            " --branches; always scoped to the active account alone."
+        ),
+    )
+    scope._add_project_scope_args(p_cost_counts)
+    p_cost_counts.add_argument(
+        "--branches", metavar="B1,B2,...",
+        help="Branch name filter. Required at runtime (see cmd_cost_counts's own docstring).",
+    )
+    p_cost_counts.set_defaults(func=cmd_cost_counts)

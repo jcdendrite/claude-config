@@ -2,7 +2,7 @@
 # Mutates $HOME (stow symlinks) and this repo's tracked settings (marketplace
 # registration) -- never `source`/`.` this file; to exercise one block in
 # isolation, extract it via its INSTALL_TEST_FIXTURE markers instead (see
-# claude/.claude/hooks/tests/test_install_sh_python_floor.py for the pattern).
+# claude/.claude/hooks/tests/test_python_floor.py for the pattern).
 set -e
 
 echo "=== claude-config Setup ==="
@@ -76,14 +76,25 @@ fi
 # markers below and runs them under a stubbed `python3` on PATH. Keep both
 # markers on their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: python-floor-check — start
-# See parse-manifest-dependencies.py's module docstring for why 3.11.
-# Hooks resolve python3 from PATH at execution time, so this is checked
-# here too -- a below-floor interpreter must fail loudly at install
-# rather than degrade a hook silently later.
-if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-  echo "python3 on PATH does not meet the Python >= 3.11 this repo requires."
-  echo "Stock macOS /usr/bin/python3, Ubuntu 22.04 LTS, and Debian 11 all ship an older python3 by default."
-  echo "Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's python3.11+ package or pyenv on Linux) and make sure it resolves first on PATH, then re-run."
+# README.md § "Requirements" gives the reason for this floor.
+python3_floor="$_PYTHON_FLOOR_MAJOR.$_PYTHON_FLOOR_MINOR"
+python3_floor_status=0
+# shellcheck disable=SC2119 # passing `command` as the RUNNER would silence this, but a dummy runner argument obscures that the probe runs bare here.
+python3_found_version=$(_python3_floor_status) || python3_floor_status=$?
+if (( python3_floor_status != 0 )); then
+  python3_resolved_path=$(command -v python3) || python3_resolved_path=""
+  {
+    if (( python3_floor_status == 1 )); then
+      printf '%s\n' "\`python3\` reported Python $python3_found_version, which is older than the Python $python3_floor this repo requires."
+    else
+      printf '%s\n' "\`python3\` reported no version it could read, so the check cannot confirm the Python $python3_floor this repo requires."
+    fi
+    printf 'python3 resolved on PATH: %s\n' "${python3_resolved_path:-none found}"
+    printf '%s\n' \
+      "Install Python $python3_floor or newer so its \`python3\` resolves first on PATH, for example through Homebrew or with \`pyenv install\` and then \`pyenv global\`." \
+      "Confirm with \`python3 --version\`, re-run ./install.sh, and restart Claude Code so its hooks resolve the same python3." \
+      "See claude-config's README.md § \"Requirements\"."
+  } >&2
   exit 1
 fi
 # INSTALL_TEST_FIXTURE: python-floor-check — end
@@ -1054,7 +1065,7 @@ ensure_local_bin_on_path
 if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
   echo ""
   echo "NOTE: this python3 lacks ensurepip, so 'python3 -m venv' produces a venv with no pip."
-  echo "      On Debian/Ubuntu, install it first: sudo apt install python3.12-venv"
+  echo "      On Debian/Ubuntu, install it first: sudo apt install python${python3_found_version}-venv"
 fi
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE

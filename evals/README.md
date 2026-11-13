@@ -494,10 +494,8 @@ of this repo's own known-defect PRs — before that change is allowed to
 merge. This file's own "Why local only — never CI" section above applies
 here too, with one addition: `smoke`, `run`, and `judge` each price out a
 real reviewer or judge dispatch per sample, not one classification call, so
-the cost scales faster (see "Runtime cost" below). The harness needs Python
-3.12 or newer, since `review_bench/runner.py` calls `shutil.rmtree(onexc=...)`;
-the repository's floor elsewhere is 3.11. It also needs Git 2.32 or newer; see
-`review_bench/local_git.py`.
+the cost scales faster (see "Runtime cost" below). The harness needs Git 2.32
+or newer; see `review_bench/local_git.py`.
 
 ### Usage
 

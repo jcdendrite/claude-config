@@ -329,9 +329,7 @@ dependency names against the on-disk pre-state — the
 union for `package.json`, a per-format parser for each other recognized
 manifest — and asks — naming each `name@constraint` pair, capped at 10 with
 an "…and N more" marker — only when that diff is non-empty.
-`parse-manifest-dependencies.py` requires Python >= 3.11 (this repo's
-stated floor; see its own module docstring), needed for `Cargo.toml`/
-`pyproject.toml` parsing via stdlib `tomllib`. It covers six manifest
+It covers six manifest
 formats: `package.json`, `requirements*.txt`, `go.mod`, `Gemfile`,
 `Cargo.toml`, and `pyproject.toml` (see residuals below).
 
@@ -347,10 +345,11 @@ basename isn't one of the six recognized names (case-sensitive), sits under
 `node_modules/`/`fixtures/`/`__fixtures__/`/`test-data/`, or is evaluated
 with `python3` absent/unusable (e.g. the Xcode Command Line Tools shim)
 allows silently, since none of those is reachable by crafting the
-manifest's own content. An on-disk pre-state over 5 MB, the helper
-erroring/timing out/emitting unparseable output, or a present-but-usable
-`python3` below the 3.11 floor (a broken install, not an expected runtime
-state) instead degrades to a generic ask naming no packages — manifest
+manifest's own content. The `python3` case has a residual: a pin file
+(such as `.python-version`) or other cwd-resolved interpreter selection can
+make a version-manager shim fail, and a repository or one agent `Write` can
+set it. In that case this hook allows silently. `docs/hooks.md` § "Python version" states the unverified working-directory premise this rests on, what each other `python3` hook does in the same condition, and when the SessionStart notice reports it. An on-disk pre-state over 5 MB, or the helper
+erroring/timing out/emitting unparseable output, instead degrades to a generic ask naming no packages — manifest
 content is agent-authored, so silence there would be a one-step-suppressible
 reminder. No repo-scoped opt-out sentinel: a `.claude/*-optout` file this
 hook would be the sole reader of is agent-writable with one `Write` call and

@@ -6,12 +6,9 @@ One layer per part of the contract, so a failure is localized:
 - The git-backed layer runs `main` against a scratch repository.
 - The subprocess layer covers exit status, stderr and the `&&` chain at the process boundary.
 TestSkillContract ties the keys and command lines the skill names to the script's.
-
-Python-floor tests hold the script to 3.11 grammar. They do not cover stdlib APIs added after 3.11.
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
 import os
 import re
@@ -27,7 +24,6 @@ import pytest
 from helpers import SKILLS_DIR, init_git_repo_with_commit
 
 from .conftest import _INHERITED_GIT_VARIABLES
-from .test_plan_push_preflight import _fstring_offenders
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "pr-create-preflight.py"
 _SKILL_MD = SKILLS_DIR / "ready-for-review" / "SKILL.md"
@@ -802,19 +798,6 @@ class TestDocstringContract:
 
     def test_docstring_reason_codes_line_equals_the_code_constant(self, preflight) -> None:
         assert _docstring_reason_codes(preflight) == preflight._REASON_CODES
-
-
-class TestPythonFloor:
-    def test_script_parses_under_python_311_grammar(self) -> None:
-        """Covers 3.11 grammar except PEP 701 f-strings, which parse accepts."""
-        ast.parse(_SCRIPT_PATH.read_text(), feature_version=(3, 11))
-
-    @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 701 f-strings only parse on 3.12+")
-    def test_script_has_no_fstring_that_only_python_312_accepts(self) -> None:
-        """Covers the PEP 701 f-string forms that feature_version=(3, 11) accepts."""
-        assert _fstring_offenders('f"{d["k"]}"') != [], "the check must flag a nested string literal"
-
-        assert _fstring_offenders(_SCRIPT_PATH.read_text()) == []
 
 
 _STEP1_START = "\n## 1. Preconditions (halt on fail)\n"

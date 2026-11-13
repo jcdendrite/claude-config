@@ -38,8 +38,8 @@
 # hook; without that file, every invocation exits 0 before reading the
 # transcript. See CONTRIBUTING.md for how to enable it.
 #
-# Fail-open everywhere: any unexpected error (missing python3, python3 older
-# than 3.11, non-integer friction-count output, a friction-count timeout, an
+# Fail-open everywhere: any unexpected error (missing python3,
+# non-integer friction-count output, a friction-count timeout, an
 # unresolvable config dir) exits 0 with no stdout so the hook never blocks a
 # user prompt.
 #
@@ -117,15 +117,8 @@ if [ -f "$FIRED_MARKER" ]; then
   exit 0
 fi
 
-# 7. python3 preflight (bash-side fail-open). transcript-analysis.py does
-# `from datetime import UTC` at module top, which raises ImportError on
-# python3 < 3.11 before any subcommand runs — a script-side guard is
-# impossible, so the version compare is delegated to python3 itself rather
-# than hand-parsing a `python3 --version` string.
+# 7. A host without python3 exits here, before the checkpoint directory and the friction-count spawn.
 if ! command -v python3 >/dev/null 2>&1; then
-  exit 0
-fi
-if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
   exit 0
 fi
 

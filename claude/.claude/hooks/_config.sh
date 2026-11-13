@@ -67,6 +67,51 @@ if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
   return 1
 fi
 
+# install.sh and check-python-floor.sh compare python3 with this floor, and test_python_floor.py ties it to CI's pin.
+# Assigned unconditionally, so an inherited value cannot move the floor.
+# Not readonly, so a second source does not fail.
+_PYTHON_FLOOR_MAJOR=3
+_PYTHON_FLOOR_MINOR=14
+
+# _python_version_meets_floor MAJOR MINOR
+# Returns 0 when MAJOR.MINOR is at or above the floor, 1 when below it, and 2 when either field is not 1 to 9 digits.
+# The bound matches install.sh's git floor and keeps a long digit run out of any notice.
+# Compares base-10 numbers, so 3.100 passes and a leading zero is not read as octal.
+_python_version_meets_floor() {
+  case "${1-}" in '' | *[!0-9]*) return 2 ;; esac
+  case "${2-}" in '' | *[!0-9]*) return 2 ;; esac
+  if [ "${#1}" -gt 9 ] || [ "${#2}" -gt 9 ]; then
+    return 2
+  fi
+  local found_major=$((10#$1)) found_minor=$((10#$2))
+  if [ "$found_major" -gt "$_PYTHON_FLOOR_MAJOR" ]; then
+    return 0
+  fi
+  [ "$found_major" -eq "$_PYTHON_FLOOR_MAJOR" ] && [ "$found_minor" -ge "$_PYTHON_FLOOR_MINOR" ]
+}
+
+# _python3_floor_status [RUNNER...]
+# Asks the PATH's python3 for its version, under RUNNER if given, and returns _python_version_meets_floor's status for it.
+# Prints the validated X.Y on status 0 and 1, and nothing on status 2.
+# A missing python3, a nonzero exit, or a first output line that is not exactly two fields returns 2.
+# -I -S keeps site code and PYTHONPATH out of the probe, so only the interpreter's own version is read.
+_python3_floor_status() {
+  local IFS=$' \t\n'
+  local probe_output="" first_line="" found_major="" found_minor="" extra_fields="" meets_floor_status
+  probe_output=$("$@" python3 -I -S -c 'import sys; print("%d %d" % sys.version_info[:2])' 2>/dev/null) || probe_output=""
+  read -r first_line <<< "$probe_output" || first_line=""
+  read -r found_major found_minor extra_fields <<< "$first_line" || true
+  if [ -n "$extra_fields" ]; then
+    return 2
+  fi
+  meets_floor_status=0
+  _python_version_meets_floor "$found_major" "$found_minor" || meets_floor_status=$?
+  if [ "$meets_floor_status" -ne 2 ]; then
+    printf '%s.%s\n' "$found_major" "$found_minor"
+  fi
+  return "$meets_floor_status"
+}
+
 _CONFIG_SCHEMA_FILE="$(dirname "${BASH_SOURCE[0]}")/config-keys.psv"
 _CONFIG_STATE_FILENAME="claude-config.toml"
 

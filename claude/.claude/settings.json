@@ -207,6 +207,16 @@
             "command": "~/.claude/hooks/record-session-config-keys.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check-python-floor.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStart": [

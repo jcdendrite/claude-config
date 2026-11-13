@@ -1012,10 +1012,10 @@ def test_transcript_analysis_audit_routing_samples_help_exits_zero():
 
 
 def test_transcript_analysis_audit_routing_samples_subprocess_finds_seeded_turn(tmp_path):
-    """Proves `from transcript_analysis.audit_routing import cmd_audit_routing_samples`
-    resolves under a real subprocess. Asserts the JSON stream parses rather than
-    asserting on `candidates`' contents -- the minimal seed's non-empty `candidates`
-    list is not itself the bootstrap fact this test proves."""
+    """Proves, in a fresh interpreter, that audit_routing.py resolves through sys.path[0] alone and that real
+    argparse dispatches audit-routing-samples to cmd_audit_routing_samples through set_defaults(func=...).
+    Asserts the JSON stream parses rather than asserting on `candidates`' contents -- the minimal seed's
+    non-empty `candidates` list is not itself the bootstrap fact this test proves."""
     config_dir = _seed_audit_routing_account(tmp_path)
 
     result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing-samples")

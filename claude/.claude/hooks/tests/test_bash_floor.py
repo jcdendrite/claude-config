@@ -65,6 +65,17 @@ class Citation(NamedTuple):
 README_REQUIREMENTS = Citation("README.md", "Requirements")
 HOOKS_DOC_GATE_DEADLOCK_RECOVERY = Citation("docs/hooks.md", "Gate deadlock recovery")
 HOOKS_DOC_BASH_VERSION = Citation("docs/hooks.md", "Bash version")
+HOOKS_DOC_PYTHON_VERSION = Citation("docs/hooks.md", "Python version")
+
+
+def readme_requirements_bullet(opener: str) -> str:
+    """The one bullet of README.md's Requirements section that starts with `opener`."""
+    readme_text = (REPO_ROOT / README_REQUIREMENTS.document).read_text()
+    requirements_section = re.search(r"^## Requirements\n(.*?)(?=^## )", readme_text, re.MULTILINE | re.DOTALL)
+    assert requirements_section, "README.md has no Requirements section"
+    bullets = [line for line in requirements_section.group(1).splitlines() if line.startswith(opener)]
+    assert len(bullets) == 1, f"expected one bullet starting {opener!r} in Requirements, got {bullets!r}"
+    return bullets[0]
 
 
 def exact_output_env() -> dict[str, str]:
@@ -75,13 +86,23 @@ def exact_output_env() -> dict[str, str]:
     return env
 
 
-def _run_in_bash(script: str, *args: str, bash: str = _BASH) -> subprocess.CompletedProcess:
+def _run_in_bash(
+    script: str,
+    *args: str,
+    bash: str = _BASH,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """`env` defaults to `exact_output_env()`; pass it only to replace the whole environment."""
     return subprocess.run(
         [bash, "-c", script, "_", *args],
         capture_output=True,
         text=True,
         check=False,
-        env=exact_output_env(),
+        env=exact_output_env() if env is None else env,
+        cwd=cwd,
+        timeout=timeout,
     )
 
 
@@ -381,6 +402,8 @@ class TestFloorMessageCitationsResolve:
     docs/hooks.md Gate deadlock recovery citations are also asserted against rendered
     output in test_install_sh_bash_floor.py. The README Requirements citation is also
     asserted against the redactor's rendered message in test_redact_credential_values.py.
+    The "Python version" citation is also asserted against the agent text of
+    check-python-floor.sh's notice in test_check_python_floor.py.
     The "Bash version" citation appears only in
     static docs and comments, so for it this test checks only that the heading exists."""
 
@@ -390,6 +413,7 @@ class TestFloorMessageCitationsResolve:
             pytest.param(README_REQUIREMENTS, id="readme-requirements"),
             pytest.param(HOOKS_DOC_GATE_DEADLOCK_RECOVERY, id="hooks-doc-gate-deadlock-recovery"),
             pytest.param(HOOKS_DOC_BASH_VERSION, id="hooks-doc-bash-version"),
+            pytest.param(HOOKS_DOC_PYTHON_VERSION, id="hooks-doc-python-version"),
         ],
     )
     def test_cited_heading_exists_in_the_cited_document(self, citation: Citation) -> None:

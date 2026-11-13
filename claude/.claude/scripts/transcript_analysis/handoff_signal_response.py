@@ -643,3 +643,51 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
     _handoff_signal_response_aggregate_report(
         all_rows, log_diagnostic, benchmark_dollars=benchmark_dollars,
     )
+
+
+def _add_handoff_signal_response_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_handoff_signal_response = subparsers.add_parser(
+        "handoff-signal-response",
+        help=(
+            "Per-session observed context-budget signals (--check over_threshold/already_fired,"
+            " the advisory nudge injection, the hard-block stderr) and whether a same-session"
+            " /handoff followed each one, split by marker context. Redacted by default."
+        ),
+    )
+    scope._add_project_scope_args(p_handoff_signal_response)
+    p_handoff_signal_response.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "Emit raw session IDs in --sample curation cards instead of a run-scoped opaque"
+            " label, and print the DO NOT PUBLISH banner. Refused when scope resolves to more"
+            " than one root -- narrow to a single root first, e.g. with --this-repo."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--sample", type=int, default=0, metavar="N",
+        help=(
+            "Emit the top N signal rows by post-signal spend as curation cards instead of the"
+            " aggregate report."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--seed", type=int, default=None, metavar="N",
+        help=(
+            "Seed for reproducible tie-breaking among equal-spend rows in --sample (default:"
+            " unseeded -- ties keep scan order)."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--format", dest="output_format", choices=("json", "md"), default="json",
+        help="--sample output format: json (default) or md (a human curation document).",
+    )
+    p_handoff_signal_response.add_argument(
+        "--context-turns", type=int, default=0, metavar="N",
+        help=(
+            "With --sample, also attach the next N main-thread turns of text AND thinking-block"
+            " content after each signal (forward_context) -- unlike the single-turn excerpt"
+            " (text blocks only), this surfaces reasoning an agent confined to an"
+            " extended-thinking block. Requires --sample."
+        ),
+    )
+    p_handoff_signal_response.set_defaults(func=cmd_handoff_signal_response)

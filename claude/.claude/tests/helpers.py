@@ -3670,7 +3670,7 @@ def file_mode(path: Path) -> int:
 
 # (first_line, expect_consult, id) rows behind plan-architect consult
 # classification, reused by test_log_reviewer_round.py's bash-latch test and
-# test_transcript_review_trace.py's Python-classifier test. Proves the two
+# test_transcript_review_trace_detection.py's Python-classifier test. Proves the two
 # runtimes agree on classification behaviorally, not that their source text
 # matches byte-for-byte -- a byte-equality assertion across the literal sites
 # would still pass with the Python classifier's membership test inverted. A third

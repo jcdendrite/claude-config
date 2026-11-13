@@ -1898,11 +1898,11 @@ def _hand_totals(
     return totals
 
 
-def _pr_list(*entries) -> "period_cost._PrListResult":
+def _pr_list(*entries) -> period_cost._PrListResult:
     return period_cost._validated_pr_list(list(entries), "")
 
 
-def _unavailable(kind: str = "network") -> "period_cost._PrListResult":
+def _unavailable(kind: str = "network") -> period_cost._PrListResult:
     return period_cost._PrListResult(unavailable_kind=kind)
 
 
