@@ -16,6 +16,7 @@ from helpers import (
     plant_traversal_canary,
     run_hook_advisory,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -277,11 +278,9 @@ class TestRecordSessionEnd:
         """A wedged jq binary (sleeping past _lib_jq's 5s backstop) must not
         hang this hook indefinitely -- every jq call site here goes through
         _lib_jq, not bare jq, so the timeout cap applies to all three.
-        Invoked via `bash <path>` rather than direct exec, mirroring
-        test_lib.py's test_hung_jq_denied_within_timeout -- direct exec of a
-        freshly-written PATH shim measures wildly inflated, unstable wall
-        time on this suite's sandboxed runners for reasons unrelated to
-        _lib_jq's own cap."""
+        The jq stub is written through write_prewarmed_stub, so its slow
+        first exec happens at write time and cannot outlast the scaled cap
+        inside the `with` block."""
         import shutil
 
         timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
@@ -291,9 +290,7 @@ class TestRecordSessionEnd:
         stub_dir = tmp_path / "hung-jq-stub"
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
-        fake_jq = stub_dir / "jq"
-        fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
-        fake_jq.chmod(0o755)
+        write_prewarmed_stub(stub_dir / "jq", f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
 
         env = {
             **os.environ,
