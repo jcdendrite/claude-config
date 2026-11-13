@@ -34,6 +34,21 @@ HOOKS_DIR = "claude/.claude/hooks"
 HOOKS_TESTS_DIR = "claude/.claude/hooks/tests"
 SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
+# The Cursor adapter's shim and data files. The two hooks tests below run the shim through a subprocess or a path import
+# and read its JSON files, which TestCrossDomainReadCompleteness cannot see, so a change under the directory selects them
+# by path. The blanket SCRIPTS_DIR rule still selects the scripts tests.
+CURSOR_ADAPTER_DIR = "claude/.claude/scripts/cursor-adapter"
+CURSOR_ADAPTER_READING_TESTS = (
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_lib_parity.py",
+)
+# test_cursor_adapter_translate.py (SCRIPTS_TESTS_DIR) runs parse-manifest-dependencies.py through
+# ask-new-dependency-disclosure.sh, which calls it, a subprocess read TestCrossDomainReadCompleteness cannot see.
+# The row selects the whole SCRIPTS_TESTS_DIR, as the hooks-dir shell-script row does,
+# so a later scripts test that runs the helper is covered too.
+HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS = (
+    "claude/.claude/hooks/parse-manifest-dependencies.py",
+)
 SKILLS_DIR = "claude-skills/skills"
 SKILLS_TESTS_DIR = "claude-skills/skills/tests"
 REVIEW_PR_SKILL_DIR = "claude-skills/skills/review-pr"
@@ -245,6 +260,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/__init__.py",
     "claude/.claude/hooks/tests/conftest.py",
     "claude/.claude/hooks/tests/_lib_sh_helpers.py",
+    "claude/.claude/hooks/tests/_cursor_payloads.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
     "claude/.claude/hooks/tests/test_review_ledger_script.py",
 })
@@ -286,6 +302,8 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_translate.py",
     "claude/.claude/scripts/tests/test_diff_size_ack.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
     "claude/.claude/scripts/tests/test_review_pr_lib.py",
@@ -693,6 +711,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: every
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES member imports one of these
 # hooks-test-tree modules by name.
+# CURSOR_ADAPTER_DIR: see that constant's own comment above.
+# HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS: see its own comment above for citation.
 # _is_plugin_manifest_change: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # See its own comment above for why it's narrower than _is_plugin_subpath.
@@ -762,6 +782,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # The hook's read closure is .sh files plus config-keys.psv. This rule and
 # the CONFIG_KEYS_PSV row both map to SCRIPTS_TESTS_DIR, so the test needs no
 # exact-path constant. A read of any other file type would need one.
+# test_cursor_adapter_translate.py (SCRIPTS_TESTS_DIR) scans every hook's
+# source for the payload fields it reads and runs _lib.sh's fragment splitter
+# (_lib_split_fragments, a sed pipeline, not the tokenizer), both from function
+# bodies TestCrossDomainReadCompleteness can't see either.
 # _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
 # and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the
@@ -891,6 +915,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     ),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
+    (lambda p: _is_under(p, CURSOR_ADAPTER_DIR), CURSOR_ADAPTER_READING_TESTS),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),
@@ -910,6 +935,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PERIOD_COST_REPORT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p in HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: _is_under(p, AGENTS_DIR),
         (

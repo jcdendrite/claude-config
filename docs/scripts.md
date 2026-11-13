@@ -484,3 +484,54 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   find-consumed-continuity-file <slug>   # resolve a consumed continuity file's /tmp destination
   find-consumed-continuity-file          # list every still-live consumed destination
   ```
+
+- **`cursor-adapter/`** — the translation core that lets this repo's hooks run under Cursor's local IDE, with no file in a consuming repo. The installer and generator that wire it to Cursor are specified in `.claude/plans/cursor-adapter.md`. Its files:
+  - `hook-shim.py` runs one unchanged hook on a Cursor payload and prints Cursor's hook output. The adapter supports python3 3.14 or later, the version CI runs. The shim imports only the standard library. A generated command is to run it as `python3 -I -S hook-shim.py` with the recorded python3, so no `PYTHON*` variable, user site directory, `.pth` file or neighbouring module reaches it. The shim has a command-line contract, a record it reads and a set of faults it hands to its caller:
+    - Arguments:
+      - An argument the parser rejects, an abbreviated flag included, ends the run with exit 1 and no output.
+      - `--claude-event` (the Claude Code event) is required, and so is `--script` in `hook` mode, where it is an absolute path with no `:`, newline, NUL or `..` component.
+      - Every generated command carries `--contract-version` equal to the shim's `CONTRACT_VERSION`. An absent or different value, and a record of a different version, deny as `stale-install`.
+      - `--mode` is `hook`, `pin`, `pin-check` or `classify`.
+      - `--matcher` is a Claude matcher the shim re-checks.
+      - `--label` names the registration in the log and takes characters of `[0-9A-Za-z._:+-]` only. Any other label is logged as `unlabeled`.
+      - `--deadline` is a whole number of seconds from 2 to 60 (10 by default).
+      - `--fail-closed` (the default) or `--fail-open` picks the entry kind.
+    - Record: `$HOME/.cursor/cursor-adapter/install.json` holds `routed_config_dir` (an absolute path), `contract_version`, `tool_paths` and `tool_map`, the content of `tool-map.json` at install. Every tool path is absolute with no `:`, newline, NUL or `..` component, and the record names `timeout` or `gtimeout` for a `hook`-mode entry. A record that is missing or unreadable denies as `install-record` on a fail-closed entry.
+    - Input: the payload arrives on stdin under an 8 MiB cap and the deadline, and must be a strict UTF-8 JSON object. These each take the `payload-malformed` outcome:
+      - invalid UTF-8 or a top level that is not an object;
+      - `NaN`, `Infinity` or a float past the range;
+      - an integer past Python's digit limit;
+      - nesting past the recursion limit;
+      - a lone surrogate.
+
+      A NUL, U+001F or U+001E inside a payload string reaches the hook as the JSON escape.
+    - Hook run:
+      - The shim runs the hook under the recorded `timeout` wrapper in the resolved directory, with the translated payload on stdin.
+      - The hook gets `CLAUDE_CONFIG_DIR` set to the routed dir, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID` removed, and a `PATH` of the recorded tool directories followed by `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`.
+      - The shim opens no file the agent names.
+      - Under Cursor, a whole-file overwrite of an existing plan file reaches the plan-writer gate as `Edit` and passes it. Claude Code names it a Write and denies it. See the Limitations bullet on subagent bars.
+      - A hook output stream past 1 MiB takes the output-cap refusal at once. The hook keeps running until it ends or its time left runs out.
+    - Output: exit 0 with one JSON document on stdout. A hook's allow maps to `{}`, so Cursor's own approval flow decides. A fail-closed entry denies on a crash, a timeout, a missing or non-executable script, a non-zero exit other than 2, unusable output and the shim's own refusals, and an informational entry (`--fail-open`) prints `{}` for those.
+    - Faults: a fault of any kind ends the run with exit 1 and empty stderr. The generated launch guard around the interpreter call is to turn that into the entry's deny document or `{}`.
+    - Timing: `worst_case_wall_seconds` and `entry_timeout_seconds` in `hook-shim.py` define the entry timeout.
+  - `tool-map.json`, `field-table.json` and `parity-exceptions.json` are the data the shim and the generator read. `tool-map.json` is the source of the `tool_map` in the install record, and the shim maps only from the record.
+    - `field-table.json` holds the payload fields and required key paths. Each carries a `status`: `observed` (seen in a recorded Cursor payload), `doc-only` (listed in Cursor's hooks documentation and not yet seen in a recorded payload) or `unverified` (neither).
+    - `parity-exceptions.json` lists each `settings.json` registration, permission deny, adapter gate or Cursor tool name that the adapter does not carry, declines, or delivers later, with a reason (`unsupported`, `declined`, `pending-phase` or `withheld-premise`).
+    - A `pending-phase` row also names a `phase` of `.claude/plans/cursor-adapter.md`.
+  - `classify` mode runs the facts step only. It denies a Cursor tool name that neither the recorded tool map (its `MCP:` prefix class included) nor a `cursor-tool` entry in `parity-exceptions.json` lists. `pin` mode rewrites an agent Shell command to start with `builtin cd -- '<dir>' || exit 1`, so every Shell call starts in the directory the gates evaluate, and `pin-check` mode denies a command that lacks that prefix.
+  - Log: each call with a usable `cursor-adapter-state` directory in the routed config dir appends one line to `shim.log`. The line grammar and the field maxima are the log-field table in `hook-shim.py`. A call writes no line when the state directory is missing, a link or unwritable, and the `install-record` deny is always such a call. The call that wins the conversation's first-call mark also records the interpreter's `major.minor` in a `py` field, and a subagent's calls find their parent's mark.
+    - The installer owns the 16 MiB log rotation and the 7-day sweep of first-call marks. The shim does neither, so no Cursor entry may be wired to it before the installer provides both.
+  - Limitations:
+    - The subagent bars of `enforce-marker-script-shape.sh`, `deny-reviewer-tree-mutation.sh` and `deny-plan-writer-off-plan-writes.sh` key on `agent_type` (and, for the first, `agent_id`). The roster bar of `require-diff-size-prompt.sh` also keys on `agent_type`. The shim forwards neither on tool events, so a subagent those bars would stop is not stopped through the shim until agent attribution lands in Phase 5a.
+    - Engineer-facing `systemMessage` text is dropped on every event, and so is `hookSpecificOutput.sessionTitle`.
+    - Context with no Cursor channel (any event other than `postToolUse` and `sessionStart`) is dropped until the Cursor-side hooks of Phase 5b carry it.
+    - Output replacement (`updatedToolOutput`) is delivered for `MCP:` tools only, so `redact-credential-values.sh` does not redact tools' output under Cursor. The dropped replacement shows in the log's `drop` count.
+    - A hook whose stdout or stderr exceeds 1 MiB takes the `hook-output-cap` outcome, which prints `{}` on a `postToolUse` entry. A replacement tool output larger than that cap is therefore not applied, the original output reaches the model, and the log records `out=hook-output-cap`.
+    - A hook's deny, block or ask on an event with no channel for it delivers nothing. On `stop` and `subagentStop`, `continue: false` wins over a block decision, so no follow-up is sent.
+    - A `--fail-open` entry prints `{}` on every refusal, including `payload-malformed` and `payload-over-cap`, which a payload's author can cause, for example with a lone-surrogate escape in a Write's `content`. A Cursor entry that turns a hook's ask into a deny on a write tool must therefore be wired `--fail-closed`, or its targets covered by an independent fail-closed gate. Phase 3's generator is to wire such entries that way.
+    - A fail-closed deny reaches Cursor only on an event with a block channel: `preToolUse`, `beforeShellExecution`, `beforeReadFile`, `beforeSubmitPrompt` and `subagentStart`. Cursor does not enforce `subagentStart`'s deny. Every other event prints `{}`.
+    - A child that a hook leaves in its process group when it exits gets no signal from the wrapper, and a child outside the group gets none either. Each runs on until it exits. A call whose pipes such a child holds open ends at the shim's bound with the timeout outcome.
+    - A workspace root of `/` makes the leading-`cd` exception accept every existing directory, because nothing lies outside `/`.
+    - Under a C locale the interpreter gives the hook a UTF-8 `LC_CTYPE` that a hook run directly would not see.
+    - Every shim deny ends with a pointer to the Recovery section of `docs/cursor-adapter.md`, which Phase 3 starts.
+  - Tests: `claude/.claude/scripts/tests/test_cursor_adapter_translate.py` and `test_cursor_adapter_shim.py`, and under `claude/.claude/hooks/tests/` the shared payload builder `_cursor_payloads.py`, `test_cursor_adapter_gate_matrix.py` and `test_cursor_adapter_lib_parity.py`. All run without Cursor.

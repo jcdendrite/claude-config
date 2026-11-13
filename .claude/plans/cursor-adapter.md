@@ -295,9 +295,9 @@ Other findings:
 
 ## Approach
 
-Phase 1 ran. No Phase 2 file changes until `/plan-review` passes this revision (Phase exit; r14).
+Phase 1 ran. No Phase 2 file changes until `/plan-review` passes this revision (Phase exit; r14). Phase 2's first pass, a bash and jq shim, was built and measured, and the r22 revision replaces it with a Python shim, which r23 to r25 revise after its plan-review rounds. Phase 2's dispatch resumes once `/plan-review` passes r25 (rows 326, 327, 335 to 363).
 
-Phase 1's uncommitted kit recorded how Cursor's local IDE runs hooks, and `## Phase 1 observations` above is the one home of every run fact this section cites. This revision plans Phases 2 to 6 from those observations (rows 54, 80). The adapter is a native shim: one generated `~/.cursor/hooks.json` entry per harness registration runs the unchanged harness hook on a payload translated to Claude Code's shape. The import's own copies of those hooks keep running beside the shim's entries, because Cursor lets any deny win regardless of source (G5) and a copy cannot observe whether its twin runs (row 148). Native twins and Cursor-only adapter gates cover what translation cannot carry. OD9's checks C1 to C8 have run, and their results are in the observations' "OD9 check results" (OD9). Each agent Shell call's directory is pinned through C2's rewrite, which C7 showed the IDE applies with no explicit allow while the call still prompts (Repo resolution; r13; r14). OD7 to OD11 are all decided (rows 145, 232, 255, 258, 264), so no open decision gates any phase (r13; r15; r16; r17 cd R1). One design item gates Phase 4's merge: the CLI-coexistence rule the Phase 4 re-plan states (Installer; r21).
+Phase 1's uncommitted kit recorded how Cursor's local IDE runs hooks, and `## Phase 1 observations` above is the one home of every run fact this section cites. This revision plans Phases 2 to 6 from those observations (rows 54, 80). The adapter is a native shim: one generated `~/.cursor/hooks.json` entry per harness registration runs the unchanged harness hook on a payload translated to Claude Code's shape. The shim is one Python file, which the recorded python3 runs inside a generated shell command that turns any shim fault into a block, and the hooks it runs stay bash (rows 326, 345). The import's own copies of those hooks keep running beside the shim's entries, because Cursor lets any deny win regardless of source (G5) and a copy cannot observe whether its twin runs (row 148). Native twins and Cursor-only adapter gates cover what translation cannot carry. OD9's checks C1 to C8 have run, and their results are in the observations' "OD9 check results" (OD9). Each agent Shell call's directory is pinned through C2's rewrite, which C7 showed the IDE applies with no explicit allow while the call still prompts (Repo resolution; r13; r14). OD7 to OD11 are all decided (rows 145, 232, 255, 258, 264), so no open decision gates any phase (r13; r15; r16; r17 cd R1). One design item gates Phase 4's merge: the CLI-coexistence rule the Phase 4 re-plan states (Installer; r21).
 
 The user surface is every stow consumer. Phase 1's PR ships them only this plan, so Claude Code behaves exactly as it does today (row 66). The kit lives outside this repo, and the engineer deletes it after the run (row 68). Phases 2 to 6 ship scripts under `claude/.claude/scripts/cursor-adapter/`, which stow installs for everyone but which act only after an opt-in `install` writes `~/.cursor/` files on one machine. Phase 4 also changes `_lib.sh`'s identity resolution and its allow helper, and two session hooks, whose Claude Code path requirement 14 pins unchanged. The Cursor CLI is not an adapter target (row 5). It was the probe's second launcher for the sub-questions the IDE run left unrun (row 112).
 
@@ -714,15 +714,17 @@ The gitignored sketch file was this section's input (row 80). Its criteria are a
   - O7 holds under the CLI, and in the IDE per OD9's C2 (r12).
 - I3 is unmet: O25 and O27 are not observable, and a window close requests `sessionEnd` without running its hooks (O28.b).
 
-**Translation.** Every generated entry runs `hook-shim.sh` with the harness script, the Claude event and the Claude matcher as its arguments. On each call the shim:
+**Translation.** Every generated entry runs `hook-shim.py` with the harness script, the Claude event and the Claude matcher as its arguments. On each call the shim:
 
-1. reads stdin into memory, never into a file, under an 8 MiB cap and a deadline below the entry's `timeout`, and validates every payload id it uses (requirements 10, 15). The cap is the probe's, above the largest observed payload of about 1.4 MB (Payload). Past the cap a fail-closed entry denies, naming the cap, and an informational entry prints `{}`, never a truncated run (requirement 37);
+1. reads stdin into memory, never into a file, under an 8 MiB cap and a deadline below the entry's `timeout`, and validates every payload id it uses (requirements 10, 15). The cap is the probe's, above the largest observed payload of about 1.4 MB (Payload). Past the cap a fail-closed entry denies, naming the cap, and an informational entry prints `{}`, never a truncated run (requirement 37). A Cursor sender that holds stdin open past the deadline takes the timeout outcome, and no hook starts (r24 be R11);
 2. maps Cursor's event and tool to Claude's through the tool map `install` recorded from `tool-map.json`, never the live file, re-checks the Claude matcher, and prints `{}` when it does not match (requirement 7). On a fail-closed entry, a tool name that neither the recorded map nor a `cursor-tool` entry in the live `parity-exceptions.json` lists denies until someone classifies it (requirements 27, 37; Recovery). The tool map:
    - Shell becomes `Bash`.
    - Task becomes `Agent`, the name `require-routing-read` tests for (row 125).
    - Read and Grep keep their names.
-   - A Write to an existing file becomes `Edit`, with the file's current content as `old_string` and the new content as `new_string` (rows 143, 144).
-   - A Write that creates a file becomes `Write`.
+   - On preToolUse, a Write whose target `os.stat` reports a regular file, following links, is an overwrite. An overwrite becomes `Edit` for an entry whose Claude matcher selects `Edit` and keeps `Write` for any other entry (requirement 7). The payload is Cursor's `file_path` and `content`, with no `old_string` and no `new_string`. The `stat` test and the name choice are shim code, not tool-map content (rows 143, 144, 381, 383; r38 ciso R1; r39 be R2, sdet R2; r40 be R4; r41 ciso R1).
+   - Any other preToolUse Write keeps the name `Write`. That covers a `FileNotFoundError`, a target that is not a regular file, and any other `OSError` or `ValueError` from the `stat`. The shim opens no target file (row 381; r38 ciso R1).
+   - A target that is not absolute as sent also keeps `Write`, and the shim does not `stat` it. Requirement 39's entry denies that target on its own (r39 ciso R5).
+   - A postToolUse Write keeps the name `Write`, with Cursor's `file_path` and `content`, and the shim makes no `stat`. The Write has already run there, so a `stat` would find a regular file for a create too (row 383; r39 be R2, sdet R2).
    - Delete becomes `Bash` running `rm -- <quoted path>` (requirement 22).
    - WebFetch and WebSearch keep their names, so the matcher-less `classify` entry lets both through, as Claude Code runs them. That is classification only: a restricted subagent's marked call to either is still checked by requirement 8's restricted-agent check (Registration). No harness PreToolUse matcher selects either. WebFetch reaches only the PostToolUse `Bash|Read|WebFetch|Grep|Task` registration (`settings.json:559`), whose output replacement is dropped and counted (OD10). Cursor's spelling of both, and whether their calls reach preToolUse at all, are [unverified]: Payload's tool names hold neither, though O1's cell list included a WebFetch call (r21).
    - An `MCP:`-prefixed tool keeps its Cursor name, which no harness matcher selects (O21.h). It reaches only the MCP arms (Twins) and requirement 8's restricted-agent check. MCP names are user-defined, so `tool-map.json` holds them as one prefix class, `MCP:`, and the `classify` entry accepts any name that starts with it (requirement 37; r21);
@@ -736,14 +738,14 @@ The gitignored sketch file was this section's input (row 80). Its criteria are a
 
    A field Cursor lacks is synthesized only by a rule the table names, or left absent, never filled with an empty value (requirement 6);
 4. runs the hook (r5 cd R4):
-   - it changes to the resolved directory, and a directory it cannot enter takes requirement 3's unenterable-directory outcome (r21);
+   - it starts the hook in the resolved directory, and a directory the hook cannot start in takes requirement 3's unenterable-directory outcome. The shim never changes its own directory (r21; r23 sdet R10);
    - it removes `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID` from the environment (requirement 15);
    - it sets `CLAUDE_CONFIG_DIR` to the routed config dir recorded at install;
    - from Phase 4 only, it sets `CLAUDE_CONFIG_ADAPTER_SESSION_ID` to the call's session id (step 3; r17 be R1);
    - it runs the unchanged script with the payload on a pipe as its stdin (requirement 15).
 
    The `cd` is there because Cursor runs user hooks from `~/.cursor/` and the plan-review gate resolves its repo from its own directory (row 133);
-5. maps the result through `translate-output.jq`'s table, which is total over event, exit class and stdout class (requirements 3, 17):
+5. maps the result through the output table in the shim, which is total over event, exit class and stdout class (requirements 3, 17):
    - Exit 0 with empty stdout, a no-decision JSON or an allow becomes `{}` (requirements 2, 3).
    - A parsed deny becomes Cursor's `deny`, carrying the gate's reason in `agent_message` and `user_message`.
    - Exit 2 maps per event, whatever stdout holds (rows 154, 157):
@@ -778,7 +780,7 @@ The gitignored sketch file was this section's input (row 80). Its criteria are a
   - nor does `tool_input.cwd`, the Shell tool's own directory input. An absent, `null` or empty one, and an absolute one whose `realpath` form is the pinned directory, change nothing. Any other value, a non-string one included, takes the pin entry's directory-input refusal. The check tests the value's type, not its truthiness, so `false`, `true`, an empty array, an object and a whitespace-only string are each refused (r21 be R11, sdet R5). The refusal is a deny with one fixed text, which echoes no part of the value: "The Shell tool's directory input must be empty. To work in a directory inside a workspace root, start the command with `cd <absolute path> &&`, as its only leading `cd`, naming a directory whose path holds no `$`, `~` or backtick and does not resolve outside the roots. If the call is refused again with the input empty, or the directory is outside every workspace root, stop and tell the engineer in chat." The shim sends this text inside requirement 3's common deny text, which adds the hook name, the outcome class and the Recovery section (r21). So the pin never silently overrides the input (r20 be R1; r21; row 323);
   - the result goes through `realpath`.
 - File tools take the workspace root that contains the target. These are Write and the `Edit` built from it, Read, beforeReadFile, Grep's search path, and Delete as `rm`:
-  - containment is a path-component prefix test on the target's `realpath -m` form, as `_lib_realpath_m` computes it: `realpath -m`, then `grealpath -m`, then a walk to the nearest existing ancestor when neither returns a resolved path (row 181; r10 be R4). The shim's lib copies all three branches;
+  - containment is a path-component prefix test on the target's `os.path.realpath` form, in its default non-strict mode, which resolves the links in the part of the path that exists and appends the rest unresolved, as `realpath -m` does for a missing tail (row 329; r10 be R4; r22);
   - nested roots take the longest match;
   - a target under no root takes the first root, as Claude Code runs a hook from its session's directory, and with no workspace root at all the target's nearest existing ancestor is the directory;
   - a file tool never denies for resolution. The exceptions are requirement 39's self-protection entry, which denies a target that is not absolute or that cannot be resolved (r7 be R1; r8 ciso R4), and requirement 3's deny for a resolved directory the shim cannot enter (r21).
@@ -803,7 +805,7 @@ The gitignored sketch file was this section's input (row 80). Its criteria are a
 - `updated_input` copies the payload's whole `tool_input` and changes only `command`, because C2 and C7 changed only `command` and whether Cursor merges or replaces the object is unobserved (r19 be R5).
 - One entry writes the call's one `updated_input`, because G5 relays that the last response wins for fields other than the decision and the two messages (r19 cd R7).
 - It lands with Phase 3's first live entries, because every Shell gate entry Phase 3 installs resolves its directory from it. A gate that resolved the root while the command ran in Cursor's carried-over directory would evaluate the wrong repository.
-- Phase 2 builds and tests the pin prefix, its stripping, the directory rule and the `pin-check` mode in the shim's lib, and its OD5 benchmark counts the pin and `pin-check` entries among the adapter-only entries. Both entries land together in Phase 3 (r17 ciso R2; r19 cd R2).
+- Phase 2 builds and tests the pin prefix, its stripping, the directory rule and the `pin-check` mode in the shim, and its OD5 benchmark counts the pin and `pin-check` entries among the adapter-only entries. Both entries land together in Phase 3 (r17 ciso R2; r19 cd R2).
 - The entry is fail-closed, so a Shell call the shim cannot pin never runs (requirement 3).
 
 The cost, which `docs/cursor-adapter.md` states:
@@ -829,14 +831,14 @@ C7 selected the pin above: the rewrite with no `permission` applied, and the cal
 The taint rule is row 170's default when C1 and C2 both fail. C7 did not select it, so no phase builds it unless a Cursor update's re-run of acceptance step 16 (requirement 22) does (r14):
 
 - A Shell call whose command text holds `cd`, `pushd`, `popd`, `source`, `.` or `eval` as a word taints its conversation (row 166).
-  - These are the builtins that can change the shell's own directory. The match is a plain token match in the shim's lib, whose false positives cost only a leading `cd`.
+  - These are the builtins that can change the shell's own directory. The match is a plain token match in the shim, whose false positives cost only a leading `cd`.
   - Every later Shell call in a tainted conversation must start with a leading `cd` that meets the directory pin's exception rule above, which gives its own directory. Any other takes the resolution deny above, so the agent's text cannot choose a directory outside every workspace root (r17 ciso R1; r19 ciso R1, cd R7).
   - The taint records the tainting call's `tool_use_id`, so that call's sibling entries still resolve it from the state before it.
 
-**Registration.** `cursor-adapter.py generate` emits one user-level `~/.cursor/hooks.json` entry per harness registration Cursor can fire, so Cursor's parallel runner (O22.a) runs the hooks as Claude Code's does. Generating every registration, not only the gates the audit found (row 123), means no gate's coverage depends on that audit being complete. `generate`, `check` and requirement 19's tamper comparison read the registrations from one file, the tracked `claude/.claude/settings.json` in the stowed checkout. `check` verifies that bare `~/.claude/settings.json` and the routed config dir's `settings.json` both resolve to that file, and reports either one that does not (r21). Each `onFailure: "block"` entry becomes `failClosed: true` with an explicit `timeout` the generator states, which Cursor reads in seconds (O22.b). None of the 34 `onFailure` registrations carries a `timeout` of its own (`settings.json`), and `generate` asserts that the shim's inner deadline is below the `timeout` of every fail-closed entry it emits.
+**Registration.** `cursor-adapter.py generate` emits one user-level `~/.cursor/hooks.json` entry per harness registration Cursor can fire, so Cursor's parallel runner (O22.a) runs the hooks as Claude Code's does. Generating every registration, not only the gates the audit found (row 123), means no gate's coverage depends on that audit being complete. `generate`, `check` and requirement 19's tamper comparison read the registrations from one file, the tracked `claude/.claude/settings.json` in the stowed checkout. `check` verifies that bare `~/.claude/settings.json` and the routed config dir's `settings.json` both resolve to that file, and reports either one that does not (r21). Each `onFailure: "block"` entry becomes `failClosed: true` with an explicit `timeout` that the generator writes by requirement 15's rule, which Cursor reads in seconds (O22.b). None of the 35 `onFailure` registrations carries a `timeout` of its own (`settings.json`; row 355), so each takes requirement 15's 10-second default deadline and a 15-second `timeout`. `generate` asserts that the shim's worst-case wall time is below the `timeout` of every fail-closed entry it emits (r23 plat R4; r24).
 
 - PreToolUse: `Bash` to preToolUse `Shell|Delete`; `Edit|Write|MultiEdit` to `Write`; `Read` to `Read`, plus a `beforeReadFile` entry (requirement 34); `Agent` and `Agent|Task` to `Task`.
-- PostToolUse: the same tool map, on postToolUse.
+- PostToolUse: the same tool map, on postToolUse, except the Write rule, which applies on preToolUse only (Translation step 2; row 383).
 - SessionStart: matcher-less sessionStart entries, because Cursor's sessionStart matcher selected every value tested on a new conversation (O21.e). The shim sets `source` to `startup`, or to `compact` under the compact twin.
 - SubagentStart: matcher-less subagentStart, with the shim re-checking the agent name, because the probe agent's name matched and `generalPurpose` never did (O21.c).
 - UserPromptSubmit to beforeSubmitPrompt, Stop to the Stop twins, and SubagentStop `code-writer` to the send-back twin (Twins). SessionEnd's one registration, `record-session-end`, is declined (requirement 38), so no sessionEnd entry exists (r21).
@@ -849,7 +851,21 @@ The taint rule is row 170's default when C1 and C2 both fail. C7 did not select 
 
   Generation fails on any drop the file does not list.
 
-Each entry's command is a fixed launch guard, then the recorded bash running the stable shim path. The launch guard, a name kept apart from the directory pin's pin prefix, tests that the shim is readable and the recorded bash executable (r19 cd R1). Otherwise it writes one line naming the Recovery section of `docs/cursor-adapter.md` to stderr and exits 127, because when the shim never runs Cursor shows only the exit code and the shell's stderr (O22; requirement 3). Phase 3's run checks that Cursor shows that line (Phases). If it does not, the Recovery section's first entry after its opening sentence is headed by the exit code 127, so the engineer can find it from the code alone (r21).
+Each entry's command is the launch guard: POSIX `sh` text, which `bash` and `zsh` run the same way, around one call of the recorded python3 with `-I -S`, the stable shim path and the entry's arguments (requirement 15; r22; row 345). The name keeps it apart from the directory pin's pin prefix (r19 cd R1). Its parts (r24 ciso R2, sdet R4; r25 be R2, be R7, sdet R1, prod R4, plat R4, ciso R1, ciso R4):
+
+- the call runs as `out=$(… 2>/dev/null)`, so the shell holds the shim's stdout in memory and drops the interpreter's stderr. The shell never `exec`s the interpreter, because it must read the call's status;
+- the call's status goes into `rc`. No zsh special parameter, such as `status`, `path`, `argv` or `pipestatus`, holds it, because zsh aborts on an assignment to a read-only one (r26 plat R4);
+- the generator quotes the recorded python3 path and the stow path with `shlex.quote`, so a home path holding a space or a quote parses (r26 sdet R9);
+- the shim writes nothing to stderr itself. The dropped stream holds only Python's own text, such as a `SyntaxError` or a fatal error, which can name the shim's path and source lines (row 363);
+- when the status is 0 and `out` is not empty, it prints `out` with `printf '%s'`, never `echo`, and exits 0. `echo` in dash, macOS `/bin/sh` and zsh rewrites the backslash escapes that every shim document holds (row 363);
+- otherwise it runs the fault tail of the entry's kind, which the generator writes from the entry's `failClosed` field:
+  - a fail-closed entry's tail prints the entry's own deny document with `printf '%s'`, writes requirement 3's fixed fault text to stderr, and exits 2, the hooks doc's block (rows 154, 358);
+  - an informational entry's tail prints `{}` and exits 0;
+- a missing or unreadable shim and a missing or non-executable python3 reach the tail through the status the shell or the interpreter gives, so the guard runs no test of its own ahead of the call (row 346).
+
+The tail's deny document is a constant. `generate` renders it with the shim's own output mapper for the entry's event, with the fixed fault text in `agent_message` and `user_message`, so no second copy of the output table exists. It quotes the document with `shlex.quote` (row 358).
+
+`cursor-adapter.py` holds this command grammar, the shim's argument vocabulary and both tails included, because it emits the commands and `uninstall` parses them without loading shim code (row 344). Phase 3's run checks that Cursor shows the fault text (Phases). If it does not, the Recovery section's shim-fault entry is headed by exit code 2, so the engineer can find it from the code alone (r21; r24; r25 cd FYI).
 
 **Import copies (the sketch's Q2).** The import keeps running its own copy of each harness hook on Cursor's untranslated payload, beside the shim's entry, and no hook retires itself under Cursor (row 148). A copy cannot observe whether its shim twin runs, so retiring it would rest on proxies for that fact. Cursor lets any deny win over ask and allow, regardless of source (G5, O20.b), so:
 
@@ -1006,23 +1022,27 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
      - then it removes each prior manifest candidate whose source agent or rule is absent from the harness, by `uninstall` step 2's rule. A candidate that rule keeps stays in the new manifest (r6 plat R1; r7 cd R4, plat R6);
   4. the merged `hooks.json`, by atomic rename, after it re-reads the live file and finds it byte-equal to what the merge was computed from. A difference aborts before the rename, naming the file, in a state the next `uninstall` completes (r10 be R1);
   5. `manifest.json`, last.
-- An entry is adapter-owned when its command parses in the generated command grammar: the fixed launch guard, a recorded bash path, the stable stow path of `hook-shim.sh`, and the shim's known arguments, whatever contract version or recorded bash path it carries. This bullet is the one home of the ownership rule, and requirements 13 and 18 and M51 defer to it (r9 ciso R2). A version bump's or a bash change's `install` therefore replaces the old entries, and `uninstall` removes every one. The rule needs no marker field that the vocabulary-pinned schema would reject (r5 plat R6).
+- An entry is adapter-owned when its command parses in the generated command grammar: the fixed launch guard with either kind's fault tail (Registration), the fail-closed tail's quoted deny document whatever its content (r25), a recorded python3 path, `-I -S`, the stable stow path of `hook-shim.py`, and the shim's known arguments, whatever contract version or recorded python3 path it carries. This bullet is the one home of the ownership rule, and requirements 13 and 18 and M51 defer to it (r9 ciso R2; r22). A version bump's or a python3 change's `install` therefore replaces the old entries, and `uninstall` removes every one. The rule needs no marker field that the vocabulary-pinned schema would reject (r5 plat R6).
   - An entry that holds the shim path but does not parse in the grammar is foreign. The comparison names it, and `install` and `uninstall` keep it (r8 ciso R1).
   - An element that is not an object with a string `command`, such as a `type: "prompt"` entry (`hooks.md:209-216` in the saved copy), is non-owned and kept (r11 be R3).
 - Before they replace or remove anything, `install` and `uninstall` print to the terminal, from `hooks.json` as it stood before the merge, every entry whose evidence the step would otherwise erase. This list is the one statement of that print set, and requirement 19's print tests derive from it (r9 ciso R1, ciso R3; r10 ciso R2, sdet R3):
-  - each foreign entry;
+  - each foreign entry, including an entry whose fault tail's exit status was changed, because that leaves the guard's fixed text (r26 ciso R4; r27 cd R6);
   - each duplicated owned entry;
-  - each owned entry whose matcher, `failClosed`, `timeout`, key set or recorded bash path differs from what `generate` emits now, apart from the contract-version token and the prior install record's bash path;
+  - each owned entry whose matcher, `failClosed`, `timeout`, key set or command differs from what `generate` emits now, apart from the contract-version token and the prior install record's python3 path. So `install` prints an owned entry whose tail document was changed (r26 ciso R4);
   - each non-owned entry the existing pre-image does not hold (r11 cd R2):
     - printed by `install` when it is about to replace the pre-image;
     - printed by `uninstall` when it skips its step-1 restore, before its step 4 deletes the pre-image.
-- Nothing outside that list prints: an entry that differs only by the contract-version token or the prior record's bash path, an intact entry, and a non-owned entry the pre-image holds (r11 sdet R4).
+- Nothing outside that list prints: an entry that differs only by the contract-version token or the prior record's python3 path, an intact entry, and a non-owned entry the pre-image holds (r11 sdet R4).
 - The print shows each entry's event key, its position and each of its fields by name (r10 cd R9, ciso R3; r11 ciso R4, sdet R3):
   - the event key and each field's JSON value are bounded to 200 characters each, counted after escaping, so a differing field prints whatever the home path's length. Both numbers in this list are the plan's choice;
   - a cut value ends with a marker giving its full length;
   - every byte outside printable ASCII is shown as an escape, which covers C0 controls, DEL, C1 controls and bidi overrides;
   - at most 20 entries print, filled in the order of the four classes above, foreign entries first, and each class's remaining count follows.
 - `uninstall` refuses with zero writes, naming the file, when the live `hooks.json` does not parse or its `hooks` member has an unexpected shape, so it keeps the record that holds the routed config dir. The Recovery section's manual fallback covers that case (r10 be R1). A missing `hooks.json` gives step 1 nothing to remove, and `uninstall` names it and runs steps 2 to 4 (r11 be R3).
+- `cursor-adapter.py` loads `hook-shim.py` only inside `generate`, `install`, `check` and `status`, so `uninstall` runs with the shim missing or unable to load (row 344; r23 be R2, prod R4; r24):
+  - such an `uninstall` matches generated files by the manifest's hash alone, as it does when a source fails to parse;
+  - such an `uninstall` cannot compute what `generate` emits now. It prints one line naming the shim's load failure by exception class and saying the owned entries were not compared, then the count of owned entries in place of each one. It still prints the foreign and duplicated classes in full, because those need no comparison (r25 prod R8; r26 prod R4);
+  - `check` names a shim that does not load under its own interpreter, with the exception's class, before any step that needs it. Its self-check under the recorded python3 is below.
 - `uninstall` runs in reverse, so a crash at any point leaves a state the next `uninstall` completes:
   1. it removes the adapter-owned entries, and restores the pre-image bytes when the rest of `hooks.json` parses equal to them. Where the pre-image records that none existed, it deletes `hooks.json` when the rest, with empty event arrays dropped, equals `{"version": 1, "hooks": {}}` (r11 be R3);
   2. for each generated file and manifest candidate (r6 plat R1; r7 cd R6):
@@ -1038,6 +1058,8 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
 - The shim finds the record at its fixed path under `$HOME`. A test therefore runs the shim under a temporary home passed to the subprocess. No variable can point a real shim at another record (r4 sdet R9, plat R7; r5 cd R10).
 - The Recovery section of `docs/cursor-adapter.md`, which every shim deny names (requirement 3), gives (r5 plat R6, ciso R6, be R3):
   - first, the sentence the deny text also carries: "The engineer, not the agent, follows the Recovery section. An agent runs no command from that section, retries only where this deny's own text says to, and otherwise stops and reports this deny in chat." (requirement 3; r21);
+  - next, that the engineer's own terminal and `uninstall` are the way out of every entry below, so no entry repeats them (r30 prod R2);
+  - where the doc lives: in the claude-config checkout that `~/.claude`'s stowed files link into, not in the workspace. Stow does not link the repository's `docs/`, so every deny text names the repository (requirement 3; r25 prod R2);
   - the log path and `uninstall`;
   - the manual fallback for when `cursor-adapter.py` cannot run: copy `hooks.json.pre-install`'s bytes over `~/.cursor/hooks.json`, or delete that file when the record says none existed;
   - relaunching Cursor from the Dock when `check --hook-env` reports `CLAUDECODE` set, because a Cursor started from a Claude Code terminal makes every import copy refuse the adapter pair and deny in linked worktrees;
@@ -1048,15 +1070,36 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
       - a name added to `parity-exceptions.json` as a `cursor-tool` entry, with reason `unsupported` or `declined`, attaches no gate, and the shim reads that file on each call, so the deny lifts live (requirement 27);
       - a name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map and regenerates the entries it feeds. Until then the shim keeps the recorded map, and `check` reports the drift;
   - requirement 3's stale-install deny, after a pull changed the contract version: the engineer quits Cursor, re-runs `install` and relaunches (r21);
+  - the shim's own faults, from Phase 3 (r23 prod R2, prod R5, plat R2, plat R7; r24 prod R2, cd R8):
+    - the launch guard's fault text with exit code 2. The entry's heading quotes the text's opening diagnosis clause, from requirement 3's fixed fault text (r26 prod R6; r27 cd R9). Its causes:
+      - the recorded python3 is missing, not executable or below 3.14, or is a minor above 3.14 that `check` marks as untested (row 356; r28 prod R4);
+      - a pull was partial or the checkout is damaged, so `hook-shim.py` is missing, unreadable or does not parse;
+      - a fault in the shim itself, whose class `status` shows beside the interpreter's version;
+    - steps 1, 2 and 4 below run `cursor-adapter.py`, which needs a python3 of at least 3.14. Under an older one it can stop with Python's own `SyntaxError`. The manual fallback above needs no interpreter (r25 prod R8; r26 cd R4);
+    - the way out for that text, in order:
+      1. the engineer runs `check` and reads what it prints: the recorded interpreter's path and version, and whether the shim's self-check passes under it, with a failure's class, file and line;
+      2. for an interpreter cause, the engineer installs a python3 of 3.14 or later and re-runs `install`. For an untested minor, the way out is `install` under a 3.14 `python3` first on PATH, the one minor CI runs (row 366; r27 prod R2);
+      3. for a checkout cause, the engineer restores the checkout;
+      4. otherwise, or until then, the engineer runs `uninstall`, which loads no shim code, or the manual fallback above;
+    - a hook's own deny naming its bash floor or a missing `jq`, or an exit-nonzero deny with status 126 or 127, the statuses the wrapper gives when the hook's shebang interpreter is missing or not executable (r28 plat R3; r29 cd R1):
+      - the meaning: the hooks need bash 5.2 or later and `jq` on the PATH `install` recorded, and the shim needs neither;
+      - the way out: the engineer runs `check`, fixes the tool and re-runs `install`. When `check` finds no tool fault, the hook returned that status itself, and the engineer reports the hook's name and status (r30 prod R2);
+  - a deny that names a size cap or the deadline, from Phase 3 (r26 prod R3, plat R5; r38 ciso R1):
+    - the meaning: a limit by design, which the Limitations section lists. A retry on the same input repeats the deny;
+    - the way out: the engineer makes that Write or commit from their own terminal;
+  - a `start-failed` deny, from Phase 3 (row 371; r27 prod R3, plat R2):
+    - the meaning: the shim could not start the hook. The recorded `timeout` or `gtimeout` is the process every hook runs under. When it is missing, moved or not executable, every fail-closed call denies (r28 cd R7);
+    - for `EAGAIN`, `EMFILE`, `ENFILE` or `ENOMEM` the cause is transient, and the deny text invites one retry (r28 prod R3);
+    - for any other cause, `ENOENT` and `EACCES` among them, the engineer runs `check`, which re-tests the recorded wrapper's path and prints it with the cause. The engineer then restores the tool at that path or re-runs `install`. A `status:125` cause is the wrapper failing on its own, which `check`'s self-check repeats with the same flags. A one-off 125 with a passing `check` is probably the wrapper's own fork failing, so the engineer retries once before `uninstall` (r28 prod R3; r29 prod R1, cd R4; r30 prod R2);
   - requirement 3's unenterable-directory deny, from Phase 2 (r21):
     - the meaning: a workspace root was removed, renamed or made unsearchable while the conversation stayed open, and every fail-closed call that resolves to it denies, with text naming the directory;
-    - the way out: the engineer restores the folder or its permissions, or starts a new conversation on a folder that exists. The engineer's own terminal and `uninstall` also work;
+    - the way out: the engineer restores the folder or its permissions, or starts a new conversation on a folder that exists (r30 prod R2);
   - Repo resolution's directory-input refusal on every Shell call (r20 be R1; r20):
     - the symptom: calls whose agent set no directory are refused too;
     - the meaning: a Cursor build now fills the Shell tool's directory input itself;
-    - the way out: the engineer's own terminal and `uninstall`. The finding goes to the engineer as a plan revision;
-  - from Phase 3, a deny in a Cursor CLI session beside the installed adapter: expected, and `uninstall` is the way out (CLI coexistence, below). The Phase 4 re-plan replaces this entry with its rule (r21);
-  - from Phase 3, when the `pin-check` entry lands, a `pin-check` deny on every Shell call, which means Cursor no longer applies the pin's rewrite: the engineer's own terminal and `uninstall` are the way out (be R6; r21);
+    - the next step: the finding goes to the engineer as a plan revision (r30 prod R2);
+  - from Phase 3, a deny in a Cursor CLI session beside the installed adapter: expected, under the CLI-coexistence gate below. The Phase 4 re-plan replaces this entry with its rule (r21; r33 prod R5);
+  - from Phase 3, when the `pin-check` entry lands, a `pin-check` deny on every Shell call, which means Cursor no longer applies the pin's rewrite (be R6; r21; r30 prod R2);
   - from Phase 4, these further cases (r17):
     - a worktree lock held under the running `Cursor` process by a conversation the engineer has closed or archived: `git worktree unlock <path>` once they confirm it is closed, or quitting Cursor (plat R3);
     - the sessionStart entry reporting no `Cursor` host: a Cursor update changed the main process, and identity has stopped resolving (plat R2);
@@ -1076,20 +1119,150 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
   - the cooperative tier applies to the Phase 4 re-plan of this rule (row 321).
 - The doc tells the engineer to quit Cursor and end every Cursor CLI session before `install` and `uninstall`, and to relaunch after, because user-level hot reload is untested (Out of scope). A CLI session left open across either command meets whatever the half-changed files give (r20; r21).
 - Runtime state lives in `<routed config dir>/cursor-adapter-state/`, a real directory that `.gitignore` lists, because a stow-folded parent could otherwise stage it (`CLAUDE.md`, the `>>` footgun).
-- After checking each floor, `install` records the `command -v` path of bash, jq, git, `ps`, `sha256sum`, `timeout` or `gtimeout`, and `gh` when present. `sha256sum` is on the list because `README.md` and `install.sh` require it and the hash helpers in `_lib.sh` and `marker.sh` call it by bare name (r21). Generated commands name the recorded bash, and the shim's prologue sets PATH from the record (requirement 15).
-- `install` records python3 as the `sys.executable` it resolves to when run from `~/.cursor/`, because a pyenv or asdf shim picks its version by directory. Generated commands name that python3 (r5 cd R10).
-- The sessionStart `check --hook-env` entry is informational and runs once per conversation (r7 cd R2, plat R4; r8 cd R7). Its 10-second `timeout` is the plan's choice, matching the harness's own sessionStart precedent (`settings.json:178`). It does these in order:
-  1. re-tests python3's 3.11 floor, jq, `sha256sum` and `timeout -k` under Cursor's own hook environment, and reports a failure through `additional_context` and the log (r3 plat R3);
-  2. reports, by name only, whether `CLAUDECODE` or `CLAUDE_CODE_ENTRYPOINT` is set there;
-  3. gives requirement 5's run-mode line (row 197; r13), whole through `additional_context`, and as its closed label in the log line's run-mode field (requirement 15). From Phase 4 it also gives two reports, each by label and count only, and each in its own field of requirement 15's log-field table, within that table's 1024-byte bound (OD11(b); r15; r17 plat R2):
+- The Installer's tests are written as obligations. Each states a behavior and the bug a test must fail on, in the form "a test fails if ...", and the Installer's test rows below take that form (row 380; r35):
+  - an obligation names a layer only where its property needs one, as the probe bound's two obligations that say they need a real process do (r36 cd R2);
+  - three constraints hold for every Installer test:
+    - no expected value depends on the host's PATH or tool set;
+    - timing is held with an injected clock at the production constants, except in those two real-process obligations (r36 cd R2);
+    - a stand-in fails on any call it does not expect, and expected lists are literals written in the test;
+  - the Phase 3 PR designs the rest: stand-ins, seam and function names, numeric test values, PATH and `cwd` layouts, argument vectors and cell inventories. The Phase 3 dispatch takes as inputs the staff-sdet findings of plan-review rounds 8 to 11, the files `agent-reviews/staff-sdet-<suffix>-cursor-adapter-phase.md` with suffixes `1794200226`, `1794212038`, `1794213813` and `1794217430`. `.gitignore` lists `agent-reviews/`, so those files exist only in the checkout that ran the rounds [verified: `.gitignore:41`, read r35];
+  - the stopping rule (row 380; r36 cd R3, cd R4):
+    - the plan pins every behavior the Installer states, every obligation its test rows state and the three constraints above, and nothing the item above hands to the Phase 3 PR;
+    - a plan-review finding on a pinned item still revises the plan;
+    - a plan-review finding on a handed-off item goes to Phase 3's code review as an input, not into a plan revision.
+- After checking each floor, `install` records the `command -v` path of bash, jq, git, `ps`, `sha256sum`, `timeout` or `gtimeout`, and `gh` when present. `sha256sum` is on the list because `README.md` and `install.sh` require it and the hash helpers in `_lib.sh` and `marker.sh` call it by bare name (r21). The hooks need these tools. The shim starts only the recorded `timeout` or `gtimeout`, as each hook's parent, and sets the hook's PATH from the record (requirement 15; r22; row 364). For that wrapper, `install` judges `timeout`, then `gtimeout`, the hooks' own order (`_lib.sh:132-135`), and records the first whose `--version` names GNU coreutils (row 370; r27 prod R1, plat R6). `install` finds each path with CPython's `shutil.which`. This plan calls the result a tool's `command -v` path, after the hooks' own lookup (row 376; r34 sdet R4).
+- `install` records a tool only when its `command -v` path, python3's included, meets each condition below (row 370; r27 ciso R1; r32):
+  - it is absolute and has no `..` component;
+  - it holds no `:`, newline or NUL;
+  - it names, following links, a regular, executable file.
+
+  Otherwise it refuses with zero writes, naming the tool, the path and the first condition it fails, in the order listed (r30 ciso R4). `install` applies the rule to each `command -v` result before it runs that file (r28 ciso R3, plat R1). The `sys.executable` that python3 resolves to, which the record keeps, is not judged again (row 377). The record keeps the path as found, unresolved (r33 cd R9).
+
+  The refusal ends with its fix, in the sibling refusals' shape (r33 prod R3):
+  - for the first or second condition: remove that entry from PATH, or put the tool's directory, absolute and without `..`, first on PATH, then re-run `install`;
+  - for the third: restore the file at that path, or re-point the link, then re-run `install`.
+
+  The rule's grounds and its reach:
+  - the shim starts the recorded wrapper and builds the hook's PATH from the recorded directories;
+  - the rule keeps out a relative path, which would resolve in the hook's workspace;
+  - a relative or empty PATH entry resolves against the directory the lookup runs from: `~/.cursor/` for python3, and `install`'s working directory for the other tools. `install` makes python3's `shutil.which` call inside `contextlib.chdir` into `~/.cursor/`. That context manager changes the whole process's directory and restores it on exit, which a single-threaded `install` allows [verified: CPython 3.14.7 `contextlib.py:802-814`, read r34]. Whatever the lookup finds there is relative, so the rule refuses it. A shell `command -v` is not the lookup, and its form for an empty PATH element is [unverified] (r33 ciso R2, sdet R6; r34 sdet R4);
+  - `install` and requirement 3's read-time check share one function for the first two conditions, which `cursor-adapter.py` takes from `hook-shim.py` as it takes the session-id pattern (requirement 10). The shim's read-time rows therefore hold those shapes for `install` too (r33 sdet R2, ciso R2).
+
+  `TestInstallerTargets`'s obligations for the rule (r29 sdet R2, ciso R2, be R2, plat R2; r30 cd R3; row 377; r33; r35):
+  - a test fails if a value is accepted, or refused under a condition other than its own (r33 sdet R2, ciso R2; r36 cd R6):
+    - a relative path and a path with a `..` component fail the first condition;
+    - a path holding `:` or a newline fails the second;
+    - a directory, a link to a directory and a file without the execute bit fail the third;
+  - a test fails if the conditions are judged out of their listed order, so a value that fails the first and the second is refused under the first;
+  - a test fails if a refusal leaves out the tool, the path or the condition, or ends with another condition's fix sentence. The third condition's sentence is held too (row 378; r30 ciso R4; r33 prod R3; r34 sdet R3);
+  - a test fails if `install` runs a tool's file before the rule judges its path, or writes anything when the rule refuses. The same file reached through an accepted path does run, so that test can fail (row 377; r30 sdet R3);
+  - a test fails if an accepted link is recorded by its target's path in place of the path as found (r30 sdet R3; r33 sdet R3);
+  - a test fails if a tool reached through a relative PATH entry, or through a leading empty PATH element, is not refused as relative. `shutil.which` gives the bare name for an empty element, which is relative [verified: CPython 3.14.7 `shutil.py:1601`, `:1638`, read r33] (r33 sdet R6; r34 sdet R4);
+  - a test fails if python3's lookup runs anywhere but inside the `chdir` into `~/.cursor/`. A relative PATH entry that resolves only under `~/.cursor/` is then refused, where a lookup from `install`'s own directory would skip it and accept another python3 (r33 sdet R2; r34 sdet R4).
+- `install` records python3 as the `sys.executable` it resolves to when run from `~/.cursor/`, because a pyenv or asdf shim picks its version by directory. Generated commands name that python3, and every shim entry runs it with `-I -S` (requirement 15; r5 cd R10; r22).
+- `install` refuses with zero writes when that python3 runs in a virtual environment, where `sys.prefix` differs from `sys.base_prefix`. `install` reads both prefixes from the one query that gives python3's `sys.executable` (r34 sdet R5). The refusal tells the engineer to run `install` from a shell with no activated environment. A `TestInstallerTargets` test fails if `install`, with a virtual environment's python3 first on PATH, writes anything or gives a refusal that does not name the virtual environment as its cause (r25 plat R6; r26 sdet R3; r35).
+- `install` refuses, naming the path and version, when (row 356; r23 be R4, prod R5, plat R7; r25):
+  - the recorded python3 is below 3.14, the adapter's floor;
+  - the bare-name `python3` the record's PATH resolves, which the hooks run, is below 3.11, the toolkit's floor;
+  - the `bash` that PATH resolves is below 5.2;
+  - neither `timeout` nor `gtimeout` names GNU coreutils in the first line of its `--version` (requirement 15; rows 365, 370; r27 ciso R1);
+  - the one chosen fails the self-check's wrapper child below, because the hook run reads GNU's statuses through it (r30 plat R1; r33 cd R8).
+
+  The adapter's floor is 3.14 or later (row 366). CI tests only 3.14, so a later minor, such as the 3.15 that Homebrew's `python3` already resolves to, is allowed but untested. The 3.14 refusal's text (r26 prod R1):
+  - names the floor as "3.14 or later", and says the toolkit's own 3.11 floor is unchanged (r27 prod R2);
+  - says the interpreter judged is the `python3` that PATH resolves from `~/.cursor/`, which the generated entries name, not the one that launched `cursor-adapter.py`;
+  - gives the fix in `install.sh:83-86`'s shape: put a 3.14 or later `python3` first on PATH, then re-run `install`.
+
+  The GNU refusal's text, which a missing `timeout` also takes (row 370; r27 prod R1, plat R6):
+  - names each of `timeout` and `gtimeout` it judged, with its path and the first line of its `--version`, or says it printed none or was not found;
+  - says the adapter needs GNU coreutils' `timeout`, which is stricter than the README's `timeout` requirement, because BusyBox returns a TERM-trapping hook's own status, so a timed-out hook could read as an allow;
+  - gives the fix in `install.sh:1046`'s shape: on macOS, `brew install coreutils` provides `gtimeout`. Otherwise, put GNU's directory first on PATH. Then re-run `install`.
+
+  A chosen wrapper that fails the self-check's wrapper child takes its own text, the child-failure text, in place of the GNU text and the self-check's class, file and line, because its `--version` already names GNU (r28 prod R1, plat R2). The text names the wrapper's path and gives the outcome observed against the one required:
+  - for a wrapper that ran, a status, such as "status 0, needed status 3". The text says the wrapper does not run hooks as the shim needs;
+  - for a wrapper that did not start, its `start-failed` cause by requirement 3's closed vocabulary, such as `ENOENT`. The text says the wrapper could not be started at that path. `check` gives this case for a recorded wrapper it finds missing (r30 be R3, plat R3, prod R3; r33 cd R8).
+
+  Either way it says that replacing that file or putting another GNU build first on PATH, then re-running `install`, fixes it.
+
+  A probe past the probe bound, which the sessionStart entry's step 7 below defines (r35), takes its own text, the stall text, in place of the floor and GNU texts. A stalled tool printed no version to judge. `install`, `check`, `status` and the sessionStart report give it alike (r30 be R1, plat R2, prod R1; r33 plat R4, be R4). The text:
+  - names the tool and its path, and says it "did not answer within 2 s", rendered from the probe bound's constant;
+  - names the command that printed it. It says a first run after an install or a boot can be slow, and that re-running that command, or `check` after a sessionStart report, is the first step (r33 prod R1);
+  - says that if the stall repeats, the engineer runs that path from their own terminal to see what holds it.
+
+  What the contributor and `check` see, and the rows that hold it (r27 cd R1):
+  - A contributor whose `python3` is 3.11 to 3.13 sees the 3.14 refusal, or Python's own `SyntaxError` where `cursor-adapter.py` does not parse under that interpreter. No test holds which, under row 349's quoted decline, so the doc's prerequisites line is the guard of record and gives the same fix.
+  - `check` (r33 cd R3):
+    - re-tests the three version floors through the floor function `install` uses (r28 prod R2);
+    - tests the recorded wrapper's own path with `install`'s wrapper-candidate test, which the sessionStart entry's step 7 also uses. On a failure it prints that path and the cause and exits nonzero (r29 sdet R6, cd R3; r35);
+    - runs that test and its self-check both, and prints the wrapper-path report whether or not the self-check also fails (r30 be R3, plat R3, prod R3);
+    - runs the self-check only under a recorded python3 whose floor probe passed, so a stalled or below-floor interpreter gives one report and no unbounded second run (r30 be R1).
+  - `check` and `status` print the recorded python3's path and version, and beside it the bare-name `python3`'s, which the hooks run (r26 plat R3). `status` probes each version through step 7's probe function, so it takes the probe bound, the null stdin and the stall text (r33 plat R4, be R4; r35). When the recorded minor is above 3.14, both print one fixed line beside the version, saying CI tested only 3.14 (r27 prod R2, plat R4).
+  - `TestPrerequisitesAndContract`'s obligations for the floors and the wrapper (r26 ciso R5, plat R2; r27 prod R1, sdet R4, sdet R8; r35):
+    - a test fails if `install` accepts a recorded python3 below 3.14, writes anything when it refuses one, or leaves the path or version out of the refusal. `install` and `check` share the floor function, and a test fails if `check` does not report the same interpreter (r28 prod R2);
+    - a test fails if a recorded python3 above 3.14 is refused on the floor, or if `check` leaves out the untested-minor line for it;
+    - a test fails if `install` accepts a wrapper when neither candidate's `--version` first line names GNU coreutils, refuses with any text but the GNU text, or writes anything. A BusyBox banner, an empty line and a line that holds `coreutils` but not `GNU` are among those first lines. A test also fails if a wrapper whose first line names GNU coreutils is refused on that line (r29 plat R2, ciso R4; r30 plat R1, cd R1; r33 ciso R3);
+    - a test fails if a wrapper that names GNU coreutils but does not run its child passes the self-check, or if the refusal is not the child-failure text naming the wrapper's path and the status observed against the status 3 required;
+    - the removed-wrapper obligations, after a passing `install` with the recorded wrapper then removed (r28 sdet R5; r29 sdet R6, cd R3; r33 cd R7, be R3; r34 sdet R3; r35):
+      - a test fails if `check --hook-env` does not report the wrapper's path and cause, or reports a wrapper fault with the wrapper in place;
+      - a test fails if plain `check` stops at its first failure, or if any of these does not hold (r30 be R3, plat R3, prod R3; r36 cd R6):
+        - it prints the wrapper-path report naming the path and `ENOENT`, still runs its self-check, and exits nonzero;
+        - the self-check's failure prints the child-failure text, with its start sentence that the wrapper could not be started at that path, and the cause `ENOENT`;
+        - it prints neither the GNU text nor the self-check's class, file and line;
+    - the probe bound's obligations (r30 be R1, be R2, plat R2, prod R1, sdet R4; r33 ciso R5, sdet R1, sdet R5; r34 sdet R2, sdet R5; r35):
+      - a test fails if a stalled probe in `install`, `check`, `status` or `check --hook-env` is reported other than by the stall text naming the tool, its path, the bound and the command, or with the floor or GNU text beside it. A stalled query of python3's `sys.executable` is named by its `command -v` path;
+      - a test fails if `install` writes anything after a stalled probe, or if a stalled probe in step 7 leaves the entry's tamper comparison, log line or first-call mark undone;
+      - a test fails if a probe call goes out with stdin other than `subprocess.DEVNULL` or a `timeout` other than the probe bound, or if `install`'s query of python3 runs from a directory other than `~/.cursor/`. Under pytest's default capture fd 0 is already the null device, so a stub that answers only on a null stdin cannot hold the stdin half [verified: `_pytest/capture.py:488-489`, `:522`, in the contributor venv, read r33] (r33 sdet R1; r34 sdet R4);
+      - a test fails if an entry point's probe calls differ from its probe set below, or if it makes any call but those and the self-check's. From Phase 4 the sessionStart entry also runs the host walk, and Phase 4's PR adds that call to the entry's set and says whether the probe bound covers it (r35 sdet R6);
+      - a test fails if the bound's kill does not reach a stalled tool that `exec`s a sleep, so that the entry point returns within the bound plus a margin. This needs a real process;
+      - a test fails if a probe returns later than the bound plus a margin while a child of the stalled tool still holds its output pipe, so a reap that waits for the pipe's end fails. This needs a real process (r33 ciso R5).
+
+      Each entry point's probe set, all through the probe function (r34 sdet R5; r35):
+      - `install`: python3's one query by its `command -v` path, the floor probes of the recorded python3, the bare-name `python3` and `bash`, and the `--version` of each wrapper candidate it judges, `timeout` and then `gtimeout`, as the tool record states (r35 sdet R2);
+      - `check`: the floor probes of the recorded python3, the bare-name `python3` and `bash`, and the recorded wrapper's `--version`;
+      - `check --hook-env`: step 7's five, in that step's order;
+      - `status`: the version probes of the recorded python3 and the bare-name `python3`.
+
+      The tests that load `cursor-adapter.py` in-process need it to run no step when it is loaded without running `main`, as requirement 15 states for `hook-shim.py`.
+- Before it writes any file, `install` runs the shim's self-check under the recorded python3 with `-I -S`. It refuses when the self-check fails, naming the interpreter's path and `major.minor` and the failure's class, file and line. `check` runs the same self-check and reports the same (r24 plat R1, prod R2). The self-check is `cursor-adapter.py`'s internal `self-check` subcommand, run under the recorded python3 (r25 plat R3, ciso R2, sdet R5). `cursor-adapter.py` imports only the standard library, so under `-I -S` the self-check fails only for a cause in the recorded python3 or the shim, and any `install` row fails on a third-party import. Its steps:
+  - it loads `hook-shim.py` from the stable stow path the generated command names, never the checkout's copy, with the adapter's loader, which compiles its source. `install` refuses, naming the path, when that file is missing or unreadable, as in a stow tree that `./install.sh` has not restowed;
+  - it then calls the shim's `self_check`. That first builds a report of its own `sys.executable`, `major.minor`, `sys.flags.isolated` and `sys.flags.no_site`, which every result carries, a failure's included, and a refusal prints (r26 sdet R3; r28 sdet R6). It then runs:
+    - the reads of `field-table.json` and `parity-exceptions.json`;
+    - one synthetic payload through translation and the output table, with no log line written;
+    - one call of the real hook-run function under the recorded wrapper, at the default 10 s deadline, on a child that is the recorded python3 with `-I -S -c`. So `Popen`'s arguments, the wrapper and the read loop run under the recorded python3 (row 364). The child copies its stdin, a token, to stdout, writes a second token to stderr and exits 3. The call must give status 3 and both tokens, so a wrapper that does not run its child, pass its streams or return its status fails (row 370; r27 ciso R1; r28 ciso R1, plat R2). The wrapper's 124 for a hook that exits 0 on the TERM is left to the `--version` GNU test, which refuses BusyBox, and to the statuses row 365 cites from GNU's page (row 375; r30 plat R1).
+
+  A `TestPrerequisitesAndContract` test fails if `install` writes anything when the self-check fails through a real interpreter, or if the printed failure does not give the recorded path as the self-check's `sys.executable`, with both flags set, as the self-check reported them. CI needs no second interpreter for it (row 372; r24; r25 sdet R5; r26 sdet R3; r27 sdet R5; r35). Requirement 3's `TestShimFaults` holds `self_check`'s in-process rows.
+- The sessionStart `check --hook-env` entry is informational and runs once per conversation (r7 cd R2, plat R4; r8 cd R7). Its 10-second `timeout` is the plan's choice, matching the harness's own sessionStart precedent (`settings.json:178`). It does these in order (r36 cd R8):
+  1. reports, by name only (row 333; r24 plat R7; r25 cd R7):
+     - whether `CLAUDECODE` or `CLAUDE_CODE_ENTRYPOINT` is set there;
+     - whether `LANG`, `LC_ALL`, `LC_CTYPE` or any other `LC_` name is set there.
+
+     The second report tells the engineer which case of the Limitations section's locale residual applies;
+  2. gives requirement 5's run-mode line (row 197; r13), whole through `additional_context`, and as its closed label in the log line's run-mode field (requirement 15). From Phase 4 it also gives two reports, each by label and count only, and each in its own field of requirement 15's log-field table, within that table's 1024-byte bound (OD11(b); r15; r17 plat R2):
      - the host walk's result, as one of the tokens `found`, `not-found` and `claude-first`, which fit the log grammar `[0-9A-Za-z._:+-]`. `status` flags `not-found`;
      - a change in the payload's `cursor_version`, reported once, which names requirement 22's Cursor-update checklist. The state dir holds one file per seen version, created exclusively, so two concurrent conversations report it once. A version outside the grammar `[0-9A-Za-z.+-]`, up to 64 characters, is recorded and reported as `other` (r19 sdet R8);
-  4. rotates the log and sweeps first-call marks older than 7 days (requirement 15; r10 plat R3);
-  5. runs requirement 19's tamper comparison, which requirement 39 relies on (r6 ciso R1);
-  6. writes one log line, success included, in the log's field grammar, which lands in the current file because the rotation came first (requirement 19; r7 plat R1; r9 plat R2);
-  7. creates the conversation's first-call mark with an exclusive create, so a mark the entry made means its comparison and log line finished. A kill before this step leaves the shim to win the create and write a first line, which requirement 19 counts (r10 sdet R1; r11 ciso R5, plat R2, sdet R5);
-  8. from Phase 5a, last, the workspace `sandbox.json` report, through `additional_context` only, so a stalled read loses only this report, never the log line or the mark (r19 plat R5). Its rules (r17 ciso R4, plat R7):
-     - it reads, for the payload's `workspace_roots` in order, a `.cursor/sandbox.json` that is a regular file of at most 64 KiB, under one total deadline of 3 seconds, the plan's choice, well under the entry's `timeout`. Roots it has not reached by then are reported as `unfinished`;
+  3. rotates the log and sweeps first-call marks older than 7 days (requirement 15; r10 plat R3);
+  4. runs requirement 19's tamper comparison, which requirement 39 relies on (r6 ciso R1);
+  5. writes one log line, success included, in the log's field grammar, which lands in the current file because the rotation came first (requirement 19; r7 plat R1; r9 plat R2);
+  6. creates the conversation's first-call mark with an exclusive create, so a mark the entry made means its comparison and log line finished. A kill before this step leaves the shim to win the create and write a first line, which requirement 19 counts (r10 sdet R1; r11 ciso R5, plat R2, sdet R5);
+  7. re-tests, under Cursor's own hook environment, the tools the record's PATH resolves, in this order. It reports a failure through `additional_context` only, as step 8 does. No log field holds a tool outcome, so `status` shows no tool-test history (r3 plat R3; r23 cd R5, plat R7, be R4; r33 plat R3, prod R2; r35; r36 cd R7):
+     - the recorded wrapper's own path, with `install`'s wrapper-candidate test: present, executable, and naming GNU coreutils in its `--version`. The shim starts that path, not the name PATH resolves (row 371; r27 plat R2; r28 sdet R5; r29 sdet R6). It goes first because its fault denies every fail-closed call, so its report leads the step's text (r33 prod R1, plat R2; r35);
+     - the bare-name `python3` that hooks call, against 3.11;
+     - the `bash` that a hook's `#!/usr/bin/env bash` finds, against 5.2;
+     - jq and `sha256sum`.
+
+     The step runs after the first-call mark, as step 8 does, so a stalled probe here never costs the tamper comparison, log line or mark. From Phase 4 that holds for step 7's probes only, because step 2's host walk runs before the log line and the mark (row 380; r33 ciso R5; r35; r36 cd R8, be R2).
+
+     The step's one limit is the probe bound. Every probe that this step, `install`, `check` and `status` run goes through one probe function: the version and floor probes, and `install`'s query of python3's `sys.executable` (r29 be R4; r30 be R1, sdet R4; r33 plat R4, be R4, sdet R5; r35):
+     - the function calls `subprocess.run` with stdin from `subprocess.DEVNULL` and a `timeout` of 2 s, the probe bound, which is a constant of `cursor-adapter.py` and the plan's choice (r34 cd R4; r36 cd R7). A probe past it takes the Installer's stall text;
+     - on the bound, `subprocess.run` kills the probe and then waits for that process alone, with no timeout of its own (row 335). A child of the probe that still holds its output pipe does not extend that wait, because the wait is on the probe's process, not on the pipe's end [verified: CPython 3.14.7 `subprocess.py:555-571`, `:1105-1130`, read r33] (r33 ciso R5, be R2);
+     - the bound starts once `Popen` has returned, and `Popen` waits for the exec to succeed or fail [verified: `subprocess.py:555-557`, `:1939-1946`, read r33]. So the bound covers a started probe. It does not cover an exec the OS holds, nor a killed process the kernel does not release, which row 378 accepts (r33 plat R1, be R2);
+     - the bound does not cover the self-check, whose one wrapper call the shim's own bound ends (requirement 15);
+     - each probe starts when the one before it returns, so a run of stalls can reach the entry's 10 s `timeout`, whose cost row 378's residual 3 names (row 380; r35; r36 cd R7).
+
+     The step does not test its own interpreter, the recorded python3, because a below-floor interpreter could not run it to report the failure. The launch guard's fault tail covers shim entries, and `check`'s self-check covers the recorded python3 from the terminal (rows 338, 345; r34 cd R4);
+  8. from Phase 5a, last, the workspace `sandbox.json` report, through `additional_context` only. It runs after the mark, so a stalled read never costs the log line or the mark (r19 plat R5). A stalled read loses only this report when the entry reaches step 8 with its 3 s still inside the entry's `timeout`. Otherwise Cursor's kill costs the whole `additional_context`, as row 378's residual 3 states (r36 be R1). Its rules (r17 ciso R4, plat R7):
+     - it reads, for the payload's `workspace_roots` in order, a `.cursor/sandbox.json` that is a regular file of at most 64 KiB, under one total deadline of 3 seconds, the plan's choice (r36 be R1). Roots it has not reached by then are reported as `unfinished`;
+     - from Phase 5a, a `TestWorkspaceSandboxReport` test fails if the step's deadline is more than the 3 s stated above, which row 378's residual 3 counts (r34 sdet R1; r35; r36 cd R5);
      - it counts the files present, those that widen the sandbox and those that hold an unrecognized key. A file widens when an `additionalReadwritePaths` entry, resolved to a canonical absolute path with ASCII case folded, lies outside every workspace root and outside `/tmp` and `$TMPDIR`, which Cursor's sandbox already leaves writable (C6). An exemption that is unset, empty, relative or an ancestor of `$HOME`, `~/.cursor` or the routed config dir is dropped, not applied. "Ancestor of" includes equality, so a root equal to `$HOME`, `~/.cursor` or the routed config dir, or containing one of them, is dropped. An exemption is also dropped when `$HOME`, `~/.cursor` or the routed config dir is itself unset, empty, relative or unresolvable, because the test cannot be run (r21). The workspace roots, `/tmp` and `$TMPDIR` are resolved by the same function as the entries, so an entry spelled through a symlink such as macOS's `/tmp` or `/var` matches. Containment is a path-component prefix test, so a sibling of a root and `/tmpx` lie outside. An entry equal to a root, `/tmp` or `$TMPDIR` itself lies inside, unless that exemption is dropped. So `~/.cursor`, the routed config dir, `$HOME` and a tool directory the hooks run from all count. When a root's `.cursor/sandbox.json` is the same file as the adapter's own user-level `~/.cursor/sandbox.json`, as for a root equal to `$HOME`, the report skips it by file identity and counts it as neither present nor widening (r19 ciso R5; r20; r21 plat R8, be R14). A file that holds any key other than `additionalReadwritePaths` counts as an `unrecognized key`, a count of its own apart from widening, because C6 lists the other keys from the docs and no cell observed what they do. `additionalReadonlyPaths`, `disableTmpWrite` and `networkPolicy` count as an `unrecognized key` and not as widening, and their effect is unobserved (r20 ciso R2; r21 be R14; r21). The residual of the case fold: on a case-sensitive volume a case variant of a root or of `/tmp` counts as inside, though it can name a different directory the grant would make writable. The report is report-only (row 323);
      - an entry that is not absolute, holds `~`, `$` or a `..` part, or cannot be resolved counts as widening, as a file past the cap or that does not parse does. So do a top-level value that is not an object, an `additionalReadwritePaths` that is not a list, and a list holding a non-string, which never count as zero (r19 ciso R5; r21);
      - the doc states that the count covers the opened roots only, and that Cursor's lookup rule, its path expansion and whether a workspace list replaces or adds to the user-level one are unobserved.
@@ -1116,9 +1289,9 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
   - when the shim's create wins, as for a conversation with no sessionStart or a first call that beats its check, the shim writes a first line and makes the same comparison once, against a digest of the registrations `generate` read. On a mismatch it queues a warning into Deferred context (r3 be R5; r5 cd R10);
   - the sessionStart entry sweeps marks older than 7 days, the plan's bound on state growth. A live conversation whose mark it sweeps writes one shim first line at its next call, which requirement 19 names as a known trip.
 
-**Phases.** Each phase is its own PR, from a fresh branch once the one before it merges. Phase 5 is three PRs, 5a, 5b and 5c, in that order, because each extends the shim's lib and the generator the one before it touched. Each dispatch is one `code-writer` run, in sequence. Critical files names each dispatch's files, and Verification 6 its checks. Each phase's dispatch owns its section's test rows and message texts, under that phase's code review (r21).
+**Phases.** Each phase is its own PR, from a fresh branch once the one before it merges. Phase 5 is three PRs, 5a, 5b and 5c, in that order, because each extends the shim and the generator the one before it touched. Each dispatch is one `code-writer` run, in sequence. Critical files names each dispatch's files, and Verification 6 its checks. Each phase's dispatch owns its section's test rows and message texts, under that phase's code review (r21).
 
-- Phase 2, the translation core: the tool map, the field table, `parity-exceptions.json`, the two translators, the shim and its sourceable lib, and the gate matrix (requirement 40), tested without Cursor. It writes nothing under `~/.cursor/`, and it starts only once the OD9 results Run order and recording's Phase exit paragraph names are in the observations section (r13).
+- Phase 2, the translation core: the tool map, the field table, `parity-exceptions.json`, the shim, and the gate matrix (requirement 40), tested without Cursor. It writes nothing under `~/.cursor/`, and it starts only once the OD9 results Run order and recording's Phase exit paragraph names are in the observations section (r13).
 - Phase 3: the generator and the installer, whose first live entries include the directory pin's (Repo resolution; r13). `docs/cursor-adapter.md` starts here, with the first user-facing command.
 - Phase 4: identity and routing, and the user-level `sandbox.json`. OD11(b), OD11(d) and OD11(e) are decided (r15; r16).
 - Phase 5a: the adapter gates and attribution, after OD9's C4. Phase 5b: the twins. Phase 5c: the agents, rules and instructions, and step 6's withheld-twin outcomes in `parity-exceptions.json` (r5 plat R2).
@@ -1126,7 +1299,7 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
 
 The attended run per phase (row 171) happens after that phase merges and `git pull` updates the stowed checkout, because generated entries name stable stow paths, never a worktree (requirement 11). The next phase's branch starts only once the run passes, and a failure gets a fix PR first (r4 plat R2). Each run takes these acceptance steps:
 
-- Phase 3: step 2's triggers for the classes it covers, step 3's cells 1, 3, 4 and 5 and cell 2's control, step 4's shim-missing case and case 7 (r21), step 10's cell 6, step 13's round trip on the engineer's own `hooks.json`, step 14's triggers 3 and 4, and step 16. Every `install` in this run takes `--acceptance-only`, because Phase 3's `install` refuses without it (Installer's Phase 3 acceptance-only rule). Step 14's "plain `install`" means an `install` without `--acceptance-nonce`, not one without `--acceptance-only` (r5 be R2, plat R1, ciso R4; r6 ciso R1, ciso R3; r9 ciso R5, sdet R2; r13);
+- Phase 3: step 2's triggers for the classes it covers, step 3's cells 1, 3, 4 and 5 and cell 2's control, step 4's shim-missing case, case 3's records, case 7 and cases 8 to 10 (r21; r23 prod R3; r24; r26 ciso R3), step 10's cell 6, step 13's round trip on the engineer's own `hooks.json`, step 14's triggers 3 and 4, and step 16. Every `install` in this run takes `--acceptance-only`, because Phase 3's `install` refuses without it (Installer's Phase 3 acceptance-only rule). Step 14's "plain `install`" means an `install` without `--acceptance-nonce`, not one without `--acceptance-only` (r5 be R2, plat R1, ciso R4; r6 ciso R1, ciso R3; r9 ciso R5, sdet R2; r13);
 - Phase 4: steps 1 and 5, step 3's cell 2, step 3's cell 3 again, and step 16 again, for the rewrite's first line (r17 sdet R3);
 - Phase 5a: steps 7, 8 and 9, step 10's cells 1, 7 and 8, the sandbox grant's first install, and step 14's triggers 1, 2 and 5 (OD11(b); r15; r17 be R2);
 - Phase 5b: step 6;
@@ -1173,13 +1346,25 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
    - Observe, one call per case:
      1. the shim missing;
      2. the shim unreadable;
-     3. a hook killed by Cursor's timeout;
+     3. a hook killed by Cursor's timeout, from a scratch entry whose `timeout` is below its deadline. The case also records two facts (row 351; r24 plat R3, sdet R4; r26):
+        - whether a child the hook started still wrote its file, which shows whether the wrapper bounded the hook after Cursor's kill (row 364). The child records its own pid, then writes the file after a sleep past the deadline and the grace period. In this run and its control, the engineer reads the file only once that pid has ended (r28 sdet R4; r29 cd R5);
+        - which signal Cursor sent, and which shell ran the command, from a second scratch entry whose command records each signal it traps and its own shell (r25 ciso R4);
      4. a hook script missing;
      5. a hook exiting 1;
      6. a hook exiting 2;
-     7. the shim process itself exiting 1, by a scratch entry with `failClosed: true` whose command is `exit 1` (r21).
-   - Pass: each call blocks, and no output auto-approves a call. Cases 1 and 2 show the launch guard's line naming the Recovery section, and case 3 shows Cursor's own text. Case 7 blocks. A case 7 that does not block goes to the engineer as a plan revision, and the doc states the observed result. A Cursor timeout kill of a `failClosed` entry blocked in Phase 1 (Phase 1 observations, "Hook execution contract"), so the doc claims no fail-open for a signal death that no case observed (r21).
-   - Control: each entry with its fault removed lets the call proceed. Case 7's control is a `failClosed: true` entry whose command prints `{}`, because an exit 0 with empty output blocks under `failClosed` (Phase 1 observations, "Hook execution contract"; r21).
+     7. a scratch entry with `failClosed: true` whose command is `exit 1`, recorded only, because the launch guard never exits 1 on a fault (r21; r24 ciso R2);
+     8. the recorded python3 missing, by a scratch entry whose command names a path that does not exist (r23 prod R3);
+     9. the shim holding a syntax error, by a scratch copy of the shim directory, with one call on each fail-closed event class: preToolUse, beforeShellExecution and beforeReadFile. No generated entry is fail-closed on beforeSubmitPrompt, so case 9 runs none there (r23 prod R3; r24; r25 prod R6);
+     10. the generated command over a scratch interpreter path that exits 1, and over one that kills itself with SIGKILL, with one call each on preToolUse and beforeShellExecution (r24 ciso R2).
+   - Pass (r21; r23 prod R3; r24; r25 ciso R1, prod R3; r26 ciso R3):
+     - each call blocks, and no output auto-approves a call;
+     - cases 1, 2 and 8 to 10 block through the launch guard's fault tail. Each records, per event class, whether the deny document's message or the stderr fault text showed (row 358);
+     - where one shows only part of that text, the doc claims only what was seen (row 351);
+     - case 3 shows Cursor's own text;
+     - a case 1, 2 or 8 to 10 call that does not block goes to the engineer as a plan revision (r27 sdet R3);
+     - so does one on beforeShellExecution or beforeReadFile that blocks and shows neither the fault text nor exit code 2;
+     - case 7 records whether Cursor blocks a `failClosed` exit 1, and no outcome rests on it.
+   - Control: each entry with its fault removed lets the call proceed. Case 3's control, with its fault removed and the child's sleep below the deadline, must show the file written. Case 7's control is a `failClosed: true` entry whose command prints `{}`, because an exit 0 with empty output blocks under `failClosed` (Phase 1 observations, "Hook execution contract"; r21).
 5. Identity, per OD7 and OD11(d).
    - Observe: the markers and worktree locks of two conversations in one window and one in a second window, and `marker.sh` run from an agent Shell call under Allowlist with the sandbox off, once by the main agent and once by a subagent. Step 10's cell 1 runs the same write under Auto-Review (with Sandbox). Then, with one conversation's lock held, the engineer closes its window with Cursor still running, and later quits and relaunches Cursor (r15).
    - Pass: each conversation keeps its own markers and locks, and the `marker.sh` write lands under the routed dir with its conversation's session id. The closed window's lock stays held, and `check` names it, until Cursor quits. After the relaunch it reads dead (OD11(d); r15). A subagent's `marker.sh` write lands under its parent's session id (r17 be R1).
@@ -1213,7 +1398,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
      5. The ask-in-chat deny on a write. Pass: the deny names the hand-edit route.
      6. Whether `nudge-handoff-near-context-cap`'s reader resolves a measure from Cursor's `transcript_path` (row 140; r6 plat R5; r7 plat R2; r8 plat R3, plat R5):
         - The hook writes `<routed config dir>/.handoff-nudge.log`, not bare `~/.claude`'s (r9 cd R6).
-        - The command of the twin's `stop` scratch entry, the one that runs the hook (Twins), begins `export HANDOFF_NUDGE_ABS_CAP=1000;` ahead of the generated launch guard. The value then reaches the shim and the hook rather than only the launch guard's test command (r19 cd R1). `compute_threshold` accepts it (`nudge-handoff-near-context-cap.sh:155-157`), so a resolvable measure fires in a short conversation (r9 sdet R1; r10 plat R1).
+        - The command of the twin's `stop` scratch entry, the one that runs the hook (Twins), begins `export HANDOFF_NUDGE_ABS_CAP=1000;` ahead of the generated launch guard. The value then reaches the shim and the hook (r19 cd R1; r24). `compute_threshold` accepts it (`nudge-handoff-near-context-cap.sh:155-157`), so a resolvable measure fires in a short conversation (r9 sdet R1; r10 plat R1).
         - Pass, recorded as one of three results:
           - yes: `<routed config dir>/.handoff-nudge.log` gets a `nudged` line;
           - no: the shim's log shows the twin ran to exit 0 on a completed turn, and `<routed config dir>/.handoff-nudge.log` gets no `nudged` line (r10 cd R3; r11 cd R1):
@@ -1447,7 +1632,28 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
 - `r18` alone, with no reviewer tag, for a change made on the engineer's answers after that round and on the session's swap of the brace wrapper for a prefix line (rows 284 to 291);
 - `r19` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r18, and `r19` alone for the engineer's choice that round raised (rows 292 to 307);
 - `r20` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r19, and `r20` alone for a change answering the round after that, or the engineer's choices it raised (rows 309 to 315);
-- `r21` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r20, and `r21` alone for a change made on the engineer's choices that round raised and on C9's results (rows 316 to 325).
+- `r21` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r20, and `r21` alone for a change made on the engineer's choices that round raised and on C9's results (rows 316 to 325);
+- `r22` alone, with no reviewer tag, for a change made on the engineer's choice of a Python shim after Phase 2's bash and jq first pass was measured (rows 326 to 334);
+- `r23` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r22, where `prod` names staff-product-engineer, and `r23` alone for a change made on the engineer's choices that round raised (rows 335 to 344);
+- `r24` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r23, and `r24` alone for a change made on the engineer's choices that round raised (rows 345 to 355);
+- `r25` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r24, and `r25` alone for a change made on the engineer's choices that round raised (rows 356 to 363);
+- `r26` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r25, and `r26` alone for a change made on the engineer's choices that round raised (rows 364 to 367);
+- `r27` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r26, and `r27` alone for a change that follows from one (rows 368 to 372);
+- `r28` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r27, and `r28` alone for a change that follows from one (rows 373, 374);
+- `r29` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r28, and `r29` alone for a change that follows from one (no new row; row 374 lists its fixes);
+- `r30` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r29, and `r30` alone for a change made on the engineer's choices that round raised (row 375);
+- `r31` alone, with no reviewer tag, for a change made on the engineer's answers after that round on the tool-path rule's tier and its work-tree condition (rows 376, 377);
+- `r32` alone, with no reviewer tag, for a change made on the engineer's answer after r31 on python3's recorded `sys.executable` (row 377);
+- `r33` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r32, and `r33` alone for a change made on the engineer's choices that round raised or one that follows from a fix (row 378);
+- `r34` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r33, and `r34` alone for a change that follows from one (row 379);
+- `r35` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r34, and `r35` alone for a change made on the engineer's two answers after that round (row 380);
+- `r36` with a reviewer tag, for a wording or single-source change answering that reviewer's finding in the plan-review round after r35, and `r36` alone for a change that follows from one (no new row; it changes no behavior);
+- `r37` alone, with no reviewer tag, for the wording and sourcing fixes the code-review rounds after r36 made to the benchmark claims (rows 327, 328 and the sites that cite them) and to the Phase 2 doc-edit list (no new row; it changes no behavior);
+- `r38` with the `ciso` tag, for a change made on the engineer's answer to the ciso-reviewer's R1 and R2 in the code-review round after r37, which drops the shim's read of a Write's target, and `r38` alone for a change that follows from it (rows 381, 382);
+- `r39` with a reviewer tag, for a change answering that reviewer's finding in the plan-review round after r38, and `r39` alone for a change made on the engineer's two answers that round raised or one that follows from them (rows 383, 384).
+- `r40` with a reviewer tag, for a change answering that reviewer's finding in the code-review round after r39 (requirements 7, 17 and 41).
+- `r41` with a reviewer tag, for a change answering that reviewer's finding in the code-review round after r40 (requirements 7, 22 and 41, Translation step 2, OD5, the Test map, the Where-each-runs list and M34).
+- `r42` with a reviewer tag, for a change answering that reviewer's finding in the code-review round after r41 (Phase 2's gate-matrix test bullets).
 
 **Invariant** marks an enforcement property no later design may regress. The Test map after the list names each requirement's test class.
 
@@ -1459,25 +1665,109 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
    - Residual, which the doc states beside row 183's open question: a walk that fails, from a failing `ps` or a `claude` process met first, lets a copy's fresh-lock allow through, as with no adapter installed (Identity and routing; r8 ciso R8).
    - The directory pin's rewrite carries `updated_input` and no `permission` field. C7 showed the IDE applies it and the call still prompts, and acceptance step 16 checks that again on each Cursor build (Repo resolution; row 244; r13; r14).
 3. **Invariant.** A registration with `onFailure: "block"` blocks under Cursor on every outcome but a parsed deny, allow or no-opinion.
-   - The outcomes that block: a gate's crash, timeout, missing script or non-zero exit other than 2, which the shim maps to a deny (Translation step 5); Cursor's own timeout kill of the shim and a missing or non-executable shim command, which `failClosed` blocks (O22); and empty or non-JSON output from the shim itself. A gate's exit 2 blocks as a deny carrying its stderr (Translation step 5). Whether a shim fault on a fail-closed entry blocks is unverified until acceptance step 4's case 7 runs in Phase 3's run (Phases), and a fault that does not block is the plan revision case 7 names (r21).
-   - Each generated entry carries `failClosed: true`, which Cursor honors for a timeout, a missing command and a non-executable script (O22), and an explicit `timeout` with the shim's inner deadline below it.
+   - The outcomes that block (r25 cd R6):
+     - a gate's crash, timeout, missing script or non-zero exit other than 2, which the shim maps to a deny (Translation step 5);
+     - Cursor's own timeout kill of the generated command, which `failClosed` blocks (O22);
+     - every fault of the shim or its interpreter, which the launch guard's fault tail turns into a deny document and exit 2 (below);
+     - non-JSON output from the shim itself.
+
+     A gate's exit 2 blocks as a deny carrying its stderr (Translation step 5).
+   - A shim fault blocks through two channels (row 358; r21; r24 ciso R2; r25 ciso R1):
+     - the entry's own deny document, which Phase 1 saw block and show its message on preToolUse, beforeShellExecution and beforeReadFile;
+     - exit 2, the hooks doc's block (row 154), which Phase 1 saw block on a native preToolUse entry with its stderr shown (Phase 1 observations, Decisions).
+
+     So it does not rest on how Cursor treats an exit 1, which acceptance step 4's case 7 only records. Cases 9 and 10 observe both on each fail-closed event class in Phase 3's run (Phases).
+   - Each generated entry carries `failClosed: true`, which Cursor honors for a timeout, a missing command and a non-executable script (O22). Each also carries an explicit `timeout` above the shim's worst-case wall time, which requirement 15 states (r23 plat R4; r25 cd R7).
    - A gate's own empty stdout on exit 0, Claude Code's no-opinion, maps to `{}`, because under `failClosed` Cursor blocks empty stdout and `{}` never blocks (row 120; Phase 1 observations, "Decisions: what blocks, what is seen (O2, O19)"). Empty stdout on any other exit is not a no-opinion.
-   - A shim-authored deny carries one text in both `agent_message` and `user_message`: the hook name, the outcome class, any retry or ask-in-chat instruction, and the Recovery section of `docs/cursor-adapter.md` (Installer). OD9's run saw `user_message` reach the model and the `agent_message` text reach neither the model nor the screen, on one observation (row 182). A text in `agent_message` alone could therefore reach neither the agent nor the engineer, and both fields carry it in case a later build delivers only one. Acceptance step 14's trigger 4 is the second observation (rows 238, 239; r5 ciso R4; r13).
+   - A shim-authored deny carries one text in both `agent_message` and `user_message`: the hook name, the outcome class, any retry or ask-in-chat instruction, and the Recovery section of `docs/cursor-adapter.md` in the claude-config repository (Installer; r25 prod R2). OD9's run saw `user_message` reach the model and the `agent_message` text reach neither the model nor the screen, on one observation (row 182). A text in `agent_message` alone could therefore reach neither the agent nor the engineer, and both fields carry it in case a later build delivers only one. Acceptance step 14's trigger 4 is the second observation (rows 238, 239; r5 ciso R4; r13).
    - No deny text names the log path or `uninstall`. The Recovery pointer in the common text reads: "The engineer, not the agent, follows the Recovery section. An agent runs no command from that section, retries only where this deny's own text says to, and otherwise stops and reports this deny in chat." The Recovery section opens with the same sentence (Installer; requirement 39; r21).
-   - Where the shim never runs, because it or the recorded bash is missing or unreadable, the generated command's launch guard writes a line naming the Recovery section to stderr and exits 127, which Cursor shows with the exit code (O22). A Cursor timeout kill shows only Cursor's own text, and the doc says so.
-   - The shim encodes its deny without jq, or exits 2 when jq is unavailable.
-   - An `install.json` that is missing, unreadable or malformed denies on a fail-closed entry and prints `{}` on an informational one. Malformed means it does not parse, or lacks the routed config dir, the contract version or the recorded tool map (Installer).
+   - The launch guard's fault tail is the shim's last resort, outside the interpreter (Registration; row 345; r24 ciso R2, ciso R6, prod R3; r25 ciso R1, ciso R4, be R7):
+     - it runs when the interpreter call ends with no output document: any exit status but 0, or exit 0 with empty stdout;
+     - that covers a missing or unreadable shim, a missing or non-executable python3, a syntax error, an interpreter crash, a signal death, and every fault the shim's own handler catches;
+     - on a fail-closed entry it prints the entry's deny document, which carries one fixed text, writes the same text to stderr, and exits 2 (row 358). On an informational entry it prints `{}` and exits 0;
+     - the interpreter's own stderr never reaches Cursor, because the guard drops it (Registration);
+     - the fixed text opens with the diagnosis clause "The Cursor adapter's hook shim ended without deciding this call." The Recovery shim-fault entry's heading quotes it (r26 prod R6; r27 cd R9);
+     - it names the Recovery section of `docs/cursor-adapter.md` in the claude-config repository, and carries the Recovery pointer sentence above (r25 prod R2);
+     - it names no `uninstall`, state dir path or log filename;
+     - a Cursor timeout kill shows only Cursor's own text, and the doc says so.
+   - Inside `hook-shim.py`, a fault ends the run with no output document, so the tail decides it (row 345; r24 be R8, sdet R1, sdet R6):
+     - `main` returns every intentional exit status, and none travels as `SystemExit`: 0 once it has written its one output document, and 1 for the `usage` outcome. The shim installs no signal handler (requirement 15);
+     - one top-level handler around `main` catches any `BaseException`, `RecursionError`, `MemoryError` and a failed output write included, and exits 1;
+     - the handler tries once to log the call with the outcome `shim-fault`, the class name in requirement 15's `fault` field and the interpreter's `major.minor` in its `py` field;
+     - it ignores any failure of that attempt, and it writes nothing to stdout or stderr;
+     - its log line names only the exception's class, never its message, so no payload text reaches the log or stderr through a fault;
+     - the shim writes its output document with `os.write` on descriptor 1, never through `sys.stdout`, so interpreter exit has no buffered byte to flush. A closed reader therefore exits 1 through the handler, not 120;
+     - the write loops on `os.write`'s returned count until every byte is written, and a write that raises exits 1 through the handler. Exit 0 therefore means the whole document reached the pipe (r25 be R2; r26 cd R6);
+     - an argument the parser rejects, an abbreviated flag included, takes the `usage` outcome, which logs a `usage` line. The tail, which has the entry's kind from the generator, then decides the call, so no Python code reads `--fail-open` to choose a fault's outcome;
+     - the shim carries no floor check. `install` and `check` hold the recorded python3 to 3.14 or later (Installer; row 356). An interpreter the file does not suit fails at its first unsupported construct, which the tail blocks (r25).
+   - A hook that cannot start takes an outcome by its cause, never a generic one. The wrapper folds a script's start error into its own 126 or 127, so the shim tests the script before the call (r23 be R5, sdet R4; r24 be R7; r26 ciso R1):
+     - a `stat` of the script, following links, that raises `FileNotFoundError` takes the missing-script outcome;
+     - any other `OSError`, or a `ValueError`, from that `stat` takes the `start-failed` outcome, so the check's own call never reaches the handler (r25 be R1);
+     - a script that is not a regular file, or that `os.access` finds not executable, takes the not-executable outcome;
+     - a `Popen` start error whose file name is the hook's directory takes the unenterable-directory outcome below;
+     - any other `OSError` from `Popen`, such as a missing wrapper, `EAGAIN`, `EMFILE`, `ENFILE` or `ENOMEM`, takes the `start-failed` outcome;
+     - a `start-failed` deny's text names the program, `wrapper` or `hook script`, and the cause by the closed vocabulary below. It invites one retry for a cause in the transient set, the `hook-shim.py` constant requirement 15's constants list holds, and none for any other cause (Recovery; row 371; r27 prod R3; r28 prod R3; r29 prod R1; r30 prod R4);
+     - the wrapper's own statuses map by requirement 15. A 126 or 127 after the `stat` passed takes the exit-nonzero outcome. A hook whose shebang interpreter is missing or not executable gives one. Every exit-nonzero deny's text names the hook's status, which Recovery's 126 and 127 entry keys on (r29 plat R1; r30 cd R4).
+   - An outcome that names an error or a signal uses a closed vocabulary, through one naming function (r26 be R3; r27 be R5):
+     - an error names its `errno` symbol, else `errno:<number>` for a number `errno.errorcode` lacks, else the exception's class name. The wrapper's own failure, its status 125, names `status:125` (r29 prod R1);
+     - a signal names its `signal.Signals` name, else `signal:<number>`;
+     - it never uses the exception's message, which can hold a path.
+   - An `install.json` that is missing, unreadable or malformed denies on a fail-closed entry and prints `{}` on an informational one. Malformed means any of these (Installer; r28 cd R6):
+     - it does not parse;
+     - it lacks the routed config dir, the contract version or the recorded tool map;
+     - its recorded tool paths are not an object, or one of them is not a string;
+     - a recorded tool path is relative, holds `:`, a newline or NUL, or has a `..` component, by the function the Installer's tool-path rule shares (row 370; r27 ciso R1; r33 sdet R2). python3's recorded `sys.executable` is among those paths. `install` does not judge it (row 377), so it can write a record this check rejects, which row 378 accepts (r33 ciso R4, be R1).
    - A generated command whose contract version differs from the one the shim's code carries is a stale install, as after a pull changed the code but not `~/.cursor/hooks.json` (requirement 13). A fail-closed entry denies with one constant outcome text, `stale install: the engineer quits Cursor, re-runs install and relaunches`. An informational entry prints `{}`. Each logs the mismatch, and `status` counts the mismatched calls (r21).
    - A resolved directory the shim cannot enter, because it does not exist or cannot be searched, denies on a fail-closed entry, naming that cause, and prints `{}` with a logged count on an informational one. The deny text also names the action that clears it, which is the Recovery entry's way out, in both fields as the common rule above states. The shim never runs the hook from another directory, because an unchanged repo-resolving gate exits 0 outside a repo (Translation step 4; r21).
    - Tests: one case per outcome, with ids from one module-level list that a test asserts equal to this one (r5 sdet R3; r6 cd R6):
-     - exit and signal outcomes: exit 1, exit 2 with stderr, 126, 127, 137 and 124, and a timeout;
-     - script faults: a `set -u` abort, a missing script, and a failed source of `_config.sh`;
-     - `install.json` faults, each run on a fail-closed and an informational entry: missing, unreadable, unparseable, missing the routed config dir, missing the contract version, and missing the recorded tool map;
+     - exit and signal outcomes: exit 1, exit 2 with stderr, a hook that itself exits 126 and one that exits 127, a hook killed by a signal, and a timeout (r23 sdet R4);
+     - start faults (r23 sdet R4, be R5; r24 be R7; r26; r27 cd R2):
+       - a missing script, to the missing-script outcome;
+       - a script of mode 0644, to the not-executable outcome;
+       - a script whose shebang interpreter is missing, to the exit-nonzero outcome with status 127, which its deny text names (r29 plat R1);
+       - each of `EAGAIN`, `EMFILE`, `ENFILE` and `ENOMEM` from an in-process stand-in for `Popen`, one parameter per symbol written as a literal, not read from the constant, to `start-failed` with a retry invitation (r28 prod R3; r30 sdet R7);
+       - a `PermissionError` with `EACCES` from that stand-in, to `start-failed` naming `EACCES`, with no retry invitation (r30 sdet R7);
+       - a `FileNotFoundError` from that stand-in whose file name is the recorded wrapper, to `start-failed` with no retry invitation, never the unenterable-directory outcome (r27 sdet R7, prod R3).
+
+       The unenterable-directory rows below reach their outcome through a `Popen` start error that names the hook's directory;
+     - an in-process stand-in `os.stat` that raises a `ValueError`, and one that raises an `OSError` whose `errno` has no symbol, each with a canary in its message, run at the script's `stat`. Each gives `start-failed`, naming the class or `errno:<number>`, and the canary is absent from the deny text. `TestWriteTranslation` runs the same two stand-ins at the Write's `stat`, where each keeps the name `Write` (r26 be R3, sdet R8; r27 be R5, sdet R8; r38 ciso R1);
+     - script faults: a `set -u` abort;
+     - shim faults, in `TestShimFaults`. Each row runs a wrapper, `python3 -I -S -c`, that loads `hook-shim.py` with the tests' loader, replaces one named function with one that raises, and calls the shim's entry with the row's arguments and a canary in every payload string (r23 sdet R6; r24 sdet R6):
+       - the raised class is an `Exception` subclass whose message holds the canary, `SystemExit`, `RecursionError` or `MemoryError`, each raised from the output mapper and from translation;
+       - each of those rows asserts exit 1, empty stdout and stderr, the canary absent from both and from the log, and one `shim-fault` log line naming the class with `py` set;
+       - an in-process stand-in `os.write` that returns short counts still writes the whole document, and one that raises after a short count gives exit 1 (r25 be R2; r26 sdet R8);
+       - an unknown flag and an abbreviated one, on each entry kind, give exit 1 and a `usage` line;
+       - `self_check`'s in-process rows (Installer; r25 sdet R5; r26 sdet R4):
+         - each check fails on its own condition, and the failure names the check and the class. The conditions (r27 ciso R1; r28 ciso R1, cd R6):
+           - `field-table.json` absent, and malformed;
+           - `parity-exceptions.json` absent, and malformed;
+           - a translation stand-in that raises;
+           - a hook-run stand-in that raises;
+           - one that returns, for the exit-3 child, another status than 3 or other output than the two tokens;
+         - the failure names are distinct, so one catch-all message cannot satisfy every row;
+         - a passing run under requirement 28's audit-hook wrapper starts exactly one process, the wrapper, opens no log file for write and writes no log line (r30 plat R1);
+     - `install.json` faults, each run on a fail-closed and an informational entry: missing, unreadable, unparseable, missing the routed config dir, missing the contract version, and missing the recorded tool map. Each shape the malformed rule names also takes the install-record outcome, on these paths (r27 ciso R1; r28 ciso R3; r29 sdet R3; r30 sdet R6, cd R5):
+       - the relative and `:` shapes on `jq`'s path, beside a good wrapper;
+       - the relative, newline, NUL, `..` and non-string shapes on the wrapper's path, beside a good `jq`;
+       - the `..` shape on python3's recorded `sys.executable`, beside a good wrapper and `jq` (r33 ciso R4);
+       - a recorded tool-path map that is not an object.
+
+       Under requirement 28's audit-hook wrapper each starts no process;
      - a stale install, run on a fail-closed and an informational entry, with the log line and the `status` count asserted;
      - an unenterable resolved directory, one that does not exist and one of mode 000, each run on a fail-closed file-tool entry, which denies and never prints `{}` or the hook's silent exit 0, and on an informational entry, which prints `{}` and logs a count (r21);
      - output faults: empty or non-JSON stdout;
-     - over every outcome, `agent_message` equals `user_message` (r13), and no deny text names `uninstall`, the adapter state dir's path or the log filename (r6 sdet R1).
-   - Launch-guard tests: the missing shim, the unreadable shim and the missing recorded bash test the launch guard that Phase 3's generator emits (r19 cd R1), so they sit in Phase 3 (ciso R3, be R12, plat R14, chr 7; r2 ciso R12, be R2, chr 7; r3 be R1, be R7, plat R1, cd R2; r4 sdet R2, sdet R5, plat R7).
+     - over every outcome, `agent_message` equals `user_message` (r13), and no deny text names `uninstall`, the adapter state dir's path or the log filename (r6 sdet R1). Every deny text names the claude-config repository (r25 prod R2). `TestLaunchGuard` holds the fault tail's fixed text to the same rules, and asserts it carries the Recovery pointer sentence (r24 ciso R6, prod R3).
+   - Launch-guard tests sit in Phase 3's `TestLaunchGuard`, because Phase 3's generator emits the guard (r19 cd R1; ciso R3, be R12, plat R14, chr 7; r2 ciso R12, be R2, chr 7; r3 be R1, be R7, plat R1, cd R2; r4 sdet R2, sdet R5, plat R7; r24 ciso R2, sdet R4, sdet R7; r25 be R2, be R7, sdet R1, sdet R4, prod R4, plat R4, plat R5, ciso R1, ciso R4, cd R6):
+     - the real generated command runs under `/bin/sh`, `bash` and `zsh` where present, with the recorded python3 and the stow path under a scratch home whose path holds a space and a single quote, over these faults. `uninstall`'s ownership parse reads each such command as owned (r26 sdet R9):
+       - a missing shim, an unreadable shim and a shim holding a syntax error;
+       - a missing recorded python3 and a non-executable one;
+       - a scratch interpreter path that exits 1, that kills itself with SIGKILL, that exits 0 with empty stdout, or that prints `{` and exits 1;
+       - a scratch interpreter path that writes a Python traceback naming its own path to stderr and exits 1;
+     - on each, a fail-closed entry gives exit 2, stdout that parses as the entry's deny document with the fixed text in `agent_message` and `user_message`, and stderr equal to the fixed text, byte for byte. An informational entry gives `{}`, exit 0 and empty stderr;
+     - for every entry that `generate --shim <scratch shim>` emits, with the scratch shim holding a syntax error, the command runs and gives its kind's outcome. The row takes the kind from the entry's `failClosed` field, so it checks each entry shape's tail by running it (r25 sdet R4);
+     - a scratch interpreter that prints a document and exits 0 has it passed through. The documents hold the JSON escapes `\n`, `\"` and `\\`, a `\\` before a `c`, the six-character backslash-u escape of `é`, and a `%s`. One is small and one is 1 MiB, past a pipe's capacity. The row asserts the output parses with `json.loads` and equals the document (r26 sdet R8);
+     - the real shim, through the real generated command, returns a hook's deny whose text holds non-ASCII and a newline, and the output parses to that text;
+     - the PR body lists, per environment, the shells that ran and those that skipped, as `pytest -rs` prints them. Phase 3's PR body also records requirement 22's local macOS run of this class.
 4. **Invariant.** The 17 `Bash` deny entries, none with a hook twin (row 19), and the 13 `Read` deny entries (row 129) enforce under Cursor through `gate-settings-permissions.sh`, because Cursor documents no IDE deny list for Shell and its ignore list does not reach the terminal (G7, row 78). The two tool-name deny entries are parity exceptions (Twins; r3 ciso R9).
    - The gate matches a pattern's words both before and after wrapper stripping, including `&&` and `;` compounds, `$(...)`, `bash -c '...'`, `xargs`, `\sudo`, `/usr/bin/sudo` and `env X=1 sudo`, because `_lib_fragment_command_word` skips `sudo`, `env`, `xargs` and `pipx` as wrappers (`_lib.sh:2132`).
    - A `Read` deny also covers Grep and the `beforeReadFile` event, and an `Edit` deny covers Write. Patterns come from the install-time snapshot, never a consuming repo's file.
@@ -1508,7 +1798,13 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
    - A `doc-only` path translates like an `observed` one, so a payload that lacks it denies as a missing required key.
    - A gate-matrix row that rests on a `doc-only` path is reported unconfirmed until acceptance step 2 observes the path (r4 sdet R8). Phase 6's PR marks `observed` each path the acceptance run observed (r5 be R3).
    - A test checks each `observed` path against requirement 20's shapes-only fixtures, which come from C5's records rather than from the table (r5 sdet R5).
-7. **Invariant.** No Cursor-side matcher excludes a call the Claude matcher would match. Cursor's matcher is an unanchored, case-sensitive regular expression on the tool name (O21), so a generated matcher may select more, and the shim's re-check narrows it. Registrations split per event where needed, and identical tuples dedupe once `if:` is dropped. A generated beforeShellExecution matcher is never anchored at the command's start, because the directory pin puts its pin prefix ahead of the command (r19 cd R2) (Repo resolution; r13). Requirement 41 tests it (be R2, be R7, chr 6; r3 sdet R4).
+7. **Invariant.** No Cursor-side matcher excludes a call the Claude matcher would match. Cursor's matcher is an unanchored, case-sensitive regular expression on the tool name (O21), so a generated matcher may select more, and the shim's re-check narrows it.
+   - Registrations split per event where needed. Identical tuples dedupe once `if:` is dropped. The tuple's members include the Claude matcher, so a `Write` registration and an `Edit` registration of one script stay two entries and each gets its own name (r41 be R3).
+   - On preToolUse, the re-check tests the matcher against the name Translation step 2 gives a Write. A registration matching `Write` alone receives `Write` on an overwrite, as Claude Code sends it, and row 143's gate, whose matcher selects both names, receives `Edit` (r40 ciso R1; r41 ciso R1).
+   - An entry with no Claude matcher, such as the adapter-only entries, does not rename: it keeps `Write` (r41 be R2).
+   - The rename is preToolUse only, so an `Edit`-only PostToolUse registration is skipped for every Cursor edit. Requirement 41's first bullet reports it (row 383; r40 be R3; r41 ciso R2).
+   - A generated beforeShellExecution matcher is never anchored at the command's start, because the directory pin puts its pin prefix ahead of the command (r19 cd R2) (Repo resolution; r13).
+   - Requirement 41 tests this requirement (be R2, be R7, chr 6; r3 sdet R4).
 8. **Invariant.** Agent tool limits and every agent-keyed gate decide on the calling agent that active-set attribution gives (Twins).
    - Only a call that carries `parent_agent_id`, by Identity and routing's one definition, is attribution-checked. It is checked as each entry in its direct parent's active set, and denied if any check denies. A call that carries none is the main agent's and is never attribution-checked (Twins; r21).
    - A marked call with no entry under its parent, from a missed or late subagentStart, is checked as an unattributed subagent (row 138; r12; r20 ciso R1). Only Read and Grep pass. Any other tool denies, and the message tells the agent to retry once and, if the retry is denied too, to stop and tell the engineer in chat (r21 be R8).
@@ -1524,9 +1820,9 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
      - the allow side: a child whose tool list permits the Write and the Delete passes both once its subagentStart has populated its parent's set.
 9. **Invariant.** The adapter's own gates meet the `hooks/` gate invariants (malformed input, jq absent or hung, a below-floor bash, exit codes, the deny envelope) and run fail-closed. Their tiers are recorded in `docs/cursor-adapter.md`, because the tier-table test admits only `hooks/` gates (row 45), and the adapter-gates test checks that record. A test asserts every generated gate entry fail-closed (ciso R10, sdet R12, plat R13, chr 2; r2 sdet R12, chr 2).
 10. **Invariant.** Every payload id passes the grammar of `_lib_valid_session_id_component` before any path use.
-    - The shim's lib copies the grammar, because requirement 28 keeps `_lib.sh` out of the shim.
+    - The shim holds the grammar as a Python pattern, as `author_outcome.py:286` does (row 50), because a Python shim cannot call `_lib.sh`. `cursor-adapter.py` takes that pattern from the shim, so the adapter holds one copy (r22; r24). The pattern matches ASCII only, with `fullmatch`, by requirement 15's text rules (r23 ciso R5).
     - The copy's parity test calls the live `_lib.sh` function beside the copy over the corpus of `TestSessionIdPatternMatchesLibSh` (`test_author_outcome.py:739-766`, as the staff-sdet review cites it), plus an embedded newline, a `/` and an id of 256 or more characters.
-    - The parity test sits under `claude/.claude/hooks/tests/`, so a `_lib.sh` edit selects it, and a shell file under `scripts/` selects the hooks tests too (row 25).
+    - The parity test sits under `claude/.claude/hooks/tests/`, so a `_lib.sh` edit selects it, and requirement 22's domain row makes any adapter file select the hooks tests too.
     - Files are created 0600 and directories 0700 without following links.
     - Payloads travel by stdin, never argv. Requirement 15 states the no-path-name rule for payload fields that carry file, tool or conversation text, and for a hook's stdout and stderr within one call (r21).
     - Tests: a behavioral test passes `TRAVERSAL_SESSION_ID` and checks `plant_traversal_canary` (`claude/.claude/tests/helpers.py:1117`, `:1127`) at every adapter path-building site. Fixture builders give `session_id` and `conversation_id` distinct values and include an id the grammar rejects, such as one ending in a newline (ciso R13, sdet R9, chr 10; r2 sdet R12; r3 sdet R2, sdet R8, cd R2).
@@ -1536,8 +1832,8 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
     - it refuses symlinks and matches `--config-dir` with `fullmatch`;
     - the config dir must be user-owned, not group- or world-writable, and outside any work tree, at `install` and again when `uninstall` reads it from the record (r6 plat R6);
     - it records stable stow paths, never a worktree path;
-    - it records bash, jq, git, `ps`, `sha256sum`, `timeout` or `gtimeout`, and `gh` when present, as `command -v` reports them after checking each floor, and python3 as the `sys.executable` it resolves to from `~/.cursor/` (Installer);
-    - `check` re-tests each recorded tool against its floor;
+    - it records bash, jq, git, `ps`, `sha256sum`, `timeout` or `gtimeout`, and `gh` when present, as `command -v` reports them after checking each floor, and python3 as the `sys.executable` it resolves to from `~/.cursor/`. Each `command -v` result meets the Installer's tool-path rule, and that `sys.executable` is not judged again (Installer; row 377; r27 ciso R1; r32; r33 cd R9);
+    - `check` re-tests each recorded tool against its floor. `install` and `check` also test the bare-name `python3` and `bash` the record's PATH resolves, which the hooks run, and `install` refuses when either is below its floor (Installer; row 338; r23 be R4, plat R7);
     - it quotes every command token, and generated paths have a stated character set and quoting rule (ciso R12, plat R5, be R15; r2 chr 7, chr LOW; r3 plat R3, cd R2; r4 plat R7).
 12. **Invariant.** `install` refuses until every capability its generated entries need exists, and each entry declares its prerequisites. The generator emits a documented parity exception, never a gate whose prerequisite is absent, and a generate-time test checks it. Reverting a phase needs `uninstall` first and goes in reverse phase order, except for Phase 4's Claude-path files (Phases), and the doc says so (plat R3, be R6; r2 plat R10; r3 plat R6; r4 plat R3).
 13. **Invariant.** Generated commands carry a contract version that the code they run checks, and a mismatch takes requirement 3's stale-install outcome (r21). Adapter ownership of an entry never depends on that version, by the Installer's command grammar (r9 ciso R2). `check` enumerates its inputs, and a missing hook reports a stale install rather than an opaque deny (plat R4, be R6; r4 plat R1).
@@ -1562,40 +1858,165 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
     - the snapshot is generated from the `_lib.sh` at Phase 4's merge-base, before any edit. No earlier phase edits `_lib.sh`, so that base is the pre-adapter file;
     - the test takes a hooks-directory parameter. Phase 4's PR runs it once against a merge-base worktree's `claude/.claude/hooks/`. That run's one pass condition is that every Claude Code case passes and exactly the listed expected-different cases differ, which shows the snapshot came from the pre-adapter file (r7 be R3);
     - the snapshot names no function list, so a later, unrelated `_lib.sh` function does not fail it. It stays in the standing suite, where a later change to a touched function updates it on purpose.
-15. **Invariant.** Every native entry's prologue, and the shim's lib it runs, meet these:
-    - it fixes PATH from the install record, holding `timeout` or `gtimeout`, `git`, `ps`, `sha256sum`, `python3`, and `gh` when recorded (requirement 11). PATH is each recorded tool's directory, in the record's order, then `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`, and nothing else (r21);
-    - it reads that record with the `jq` its inherited PATH finds, which Cursor's observed hook PATH holds (O12). A missing `jq` or a failed read takes requirement 3's install-record outcome (r5 plat R6);
-    - it checks the bash floor before its first jq by sourcing `claude/.claude/hooks/_config.sh`, so the shim defines no floor predicate of its own (row 167);
-    - its lines above that source parse on bash 3.2, which `test_bash_floor.py`'s tripwire scans once Phase 2 adds the shim's pre-source region to it;
-    - a failed `cd` into the resolved directory takes requirement 3's unenterable-directory outcome, never a fallback directory (r21);
-    - it bounds its child and kills it on TERM;
+15. **Invariant.** Every native entry's prologue, and the shim, meet these:
+    - it fixes the hook's PATH from the install record, holding `bash`, `jq`, `timeout` or `gtimeout`, `git`, `ps`, `sha256sum`, `python3`, and `gh` when recorded (requirement 11). PATH is each recorded tool's directory, in the record's order, then `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`, and nothing else (r21; r23 plat R7, prod R8). The hooks therefore run the first `python3` on that PATH, which can differ from the recorded python3, so `check` and `status` print both (Installer; r26 plat R3);
+    - it reads that record with Python's `json`, so a missing `jq` changes no shim outcome. A hook that needs `jq` gives its own deny, which the Recovery section names (r5 plat R6; r22; r23 prod R7). A failed read takes requirement 3's install-record outcome;
+    - interpreter isolation (row 330; r22; r23 cd R1; r24 sdet R9):
+      - the generated command runs the recorded python3 with `-I -S`, so no `PYTHON*` variable, user site directory or `.pth` file reaches the shim;
+      - the shim imports only the standard library;
+      - `-I` leaves the script's directory off `sys.path`, so no file beside the shim shadows a standard-library module, and the shim adds nothing to `sys.path` (row 345);
+      - the shim reads no environment variable, argument or file and opens no descriptor when it is loaded without running `main`, so a test can load it in-process (r23 sdet R10);
+      - it holds no mutable module-level state, so an in-process row gives one result whatever its order or xdist worker. A row that changes a constant, such as the grace period or the drain bound, sets it through `monkeypatch`, which restores it (r25 sdet R6);
+      - Python compiles the script it runs from source and writes no bytecode for it (row 332). Every other loader, `cursor-adapter.py`, the self-check and the tests, compiles its source too, so no `__pycache__` file exists for the shim (row 345);
+    - `hook-shim.py` holds the whole shim in one file (row 345). `install` and `check` refuse a recorded python3 below 3.14, test the interpreters requirement 11 lists, and run the self-check under the recorded python3 (Installer; row 356; r23 be R4, plat R2; r24 plat R1; r25);
+    - a directory the hook cannot start in takes requirement 3's unenterable-directory outcome, never a fallback directory (r21);
+    - the hook run, under the recorded `timeout` or `gtimeout` as the hook's parent (rows 347, 348, 364, 365; r26 ciso R1):
+      - the shim starts `<timeout> -k <grace period> <time left> <script>` with `Popen`, where the time left is the deadline's remaining seconds. It never passes `--foreground`, the mode in which the hook's own children are not timed out, so the wrapper's TERM and KILL reach the hook's whole process group;
+      - the shim computes the time left once, just before `Popen`. A time left below the floor, 0 and a negative value included, takes the timeout outcome and starts no hook. At or above the floor, the shim renders the value with three decimals. GNU reads 0 as no timeout and a leading `-` as an option, and the floor keeps the rendering from reaching either (row 368; r27 be R1, ciso R2, plat R1, sdet R1; r28 cd R5);
+      - one loop, `communicate`'s own POSIX loop with a retention cap, writes the payload, ignores a broken pipe on that write, and reads stdout and stderr in reads of at most 32 KiB until EOF or the shim's bound;
+      - it keeps at most the output cap plus one byte of each stream. Under the cap it keeps every byte until EOF, so a deny the hook printed just before its pipes closed is never lost;
+      - a stream that passes the cap takes the output-cap outcome at that moment. The shim's bound takes the timeout outcome, whether it arrives in the read loop or in the wait below, and whether or not the wrapper has exited. On either outcome the shim closes its read ends, so a writer meets `EPIPE` or `SIGPIPE`. One function then writes its deny and exits, without waiting on or signalling the wrapper, whose own timer bounds the rest (row 368; r27 be R2; r28 be R1, ciso R2; r29 be R1, sdet R1);
+      - after both pipes reach EOF, the shim waits for the wrapper's exit until the bound;
+      - the wrapper's status maps as GNU's `timeout` documents it (`_lib.sh:107-120`; row 365):
+        - 124, 137 or death by SIGKILL is the timeout outcome when the shim's clock has reached the deadline at the wrapper's exit. GNU gives 124 even when the hook exits 0 on the TERM, so such a hook never reads as an allow (row 369; r27 be R3, prod R4, plat R3);
+        - before the deadline, 124 is the hook's own status, and 137 or death by SIGKILL is the signal outcome. Each still denies on a fail-closed entry;
+        - 125, the wrapper's own failure, is `start-failed`;
+        - death by another signal, or another status above 128, is the signal outcome, named by requirement 3's closed vocabulary;
+        - every other status is the hook's own, which Translation step 5 maps;
+      - process groups bound the hook's children this way (r27 cd R3):
+        - a child in the hook's group ends with the wrapper's signals while the hook runs;
+        - a child outside the group does not, and a call whose pipes it holds stays open until it exits or the bound arrives. GNU `timeout` puts the child of each `_lib_capped` call in a new group (`_lib.sh:80-81`), and a child may also start its own session;
+      - a child that the hook leaves in its group when it exits, on the TERM or before, gets no signal, because the wrapper exits with the hook (`_lib.sh:73-74`). It runs on after the call ends, and the doc names that residual (row 365);
+      - the shim installs no signal handler. A signal that ends the shim, SIGKILL included, leaves the wrapper bounding the hook, so no shim fault needs a kill path of its own;
+    - the hook run's constants (row 350; r24 be R11, plat R3, sdet R3):
+      - the deadline is the entry's `--deadline` argument, in whole seconds from 2 to 60, which the generator writes. It is the harness registration's own `timeout` where one exists, and 10 s otherwise;
+      - the grace period, the wrapper's `-k`, is 2 s, the drain bound is 1 s, the margin is 2 s and the time-left floor is 0.1 s. All four are constants in `hook-shim.py`, which `cursor-adapter.py` and the tests read from it (r26 sdet R5; r27 be R1);
+      - the transient set, the `start-failed` causes whose deny invites one retry, is `EAGAIN`, `EMFILE`, `ENFILE` and `ENOMEM`. It is a constant in `hook-shim.py` too, which requirement 3's deny text and the tests read (r30 prod R4);
+      - the output cap is 1 MiB per stream (r38 ciso R1);
+      - one monotonic clock, `time.monotonic`, times the deadline from `main`'s start. The read from Cursor and the wrapper's time left share it (r25 be R6);
+      - the shim's bound, its worst-case wall time, is the deadline, plus the grace period, plus the drain bound;
+      - the generator writes each entry's `timeout` as that sum plus the margin, which covers interpreter start-up before the deadline's clock starts. The default `timeout` is therefore 15 s (requirement 3; r23 plat R4);
+      - `generate` asserts that every fail-closed entry's `timeout` exceeds its worst-case wall time;
+      - tests shorten the deadline only through `--deadline`, so the shim reads no variable that could shorten it (row 179);
+    - the deadline bounds the read from Cursor and the hook run (O22; r23 ciso R6, be R1; r24 be R2; r25 cd R1):
+      - the shim's other in-process steps have no time bound, and this list of them is not exhaustive. They include the parse, Repo resolution's `lstat` and `realpath`, Translation step 2's `stat` of a Write's target, and the reads of `install.json`, `field-table.json` and `parity-exceptions.json` that each call makes (r38 ciso R1; r39 ciso R3);
+      - only Cursor's own kill ends a stuck step, and a fail-closed entry blocks on that kill;
+    - text rules (row 339; r23 ciso R5, be R5, sdet R5):
+      - every classifier over agent-influenced text matches ASCII only, with `fullmatch`, and splits lines on `\n` alone. The classifiers are (r25 sdet R7):
+        - the pin prefix and its recognition;
+        - the leading `cd <path> &&` exception;
+        - the taint word match;
+        - the session-id grammar;
+        - the log grammar;
+        - requirement 7's matcher re-check on the Cursor tool name;
+        - from Phase 5a, requirement 39's case-insensitive name compare;
+      - the leading `cd` exception's ASCII rule covers its syntax: the `cd` word, its separators and `&&`. Its path may hold any character but NUL, `$`, `~` and a backtick, so a directory with a non-ASCII name takes the exception (r24 prod R7);
+      - stdin is decoded as strict UTF-8. Invalid UTF-8, a top level that is not an object, `NaN`, `Infinity`, a number too large for a float such as `1e999`, an integer past Python's digit limit, nesting past the recursion limit, and a lone surrogate in a value or an object key each take the payload-malformed outcome, never a shim fault (r24 be R4);
+      - the shim serializes with `ensure_ascii=True` and `allow_nan=False`, so the hook parses the document the shim decided on;
+      - a numeric field is tested with `type(x) is int`, so a `bool` is not a number. An integral float such as `100.0` or `1E2` is not an integer either, and takes the payload-malformed outcome (row 353; r24 sdet R2);
+      - hook output is decoded as UTF-8 with `errors="replace"`, as the probe's input was (Phase 1, the probe's step 1);
+      - the shim reads and writes every stream as bytes and decodes JSON itself, so no locale changes a byte the hook receives;
+      - the first pass's refusals that bash's NUL limit or the facts line's separators forced go. A NUL, U+001F or U+001E inside a payload string reaches the hook as the escape its twin carries, and `_lib.sh`'s field-shift deny still decides U+001F (requirement 22);
+      - a NUL in a payload string that names a path takes that field's outcome before any filesystem call, so no `ValueError` reaches the handler (row 353; r24 be R4):
+        - in a `workspace_roots` entry, the payload-malformed outcome that a root's other invalid shapes take;
+        - in a Shell `tool_input.cwd`, the directory-input refusal, which any value but the pinned directory takes;
+        - in a leading `cd` path, no exception, so the pin stays at the first root;
+        - in a file tool's target, resolution under no root, a Write that keeps the name `Write`, and requirement 39's unresolvable deny on its entry (r38);
+        - in the payload's own `cwd`, nothing, because that field plays no part (Repo resolution);
+      - an `OSError` or `ValueError` from Repo resolution's own `lstat` of a file tool's target takes the NUL rule's outcome for that field: resolution under no root, and requirement 39's unresolvable deny on its entry. Translation step 2's `stat` of a Write's target keeps the name `Write` on the same errors (r25 be R1; r38 ciso R1);
+      - a path that cannot be encoded raises such a `ValueError` only under a non-UTF-8 file-system encoding. The adapter's one target, macOS, always uses UTF-8 for file names, and a lone surrogate already takes the payload-malformed outcome, so no row tests it (r25 be R1);
     - it removes `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID` from the hook's environment (row 178; r4 ciso R4);
-    - its log records are single lines of at most 1024 bytes with the newline, macOS's `BUFSIZ`, so one `printf` to an append-mode descriptor stays one write (row 188). Each is appended with no lock (r5 plat R4, cd R3);
+    - its log records are single lines of at most 1024 bytes with the newline, each appended as one `os.write` to an `O_APPEND` descriptor, with no lock (row 188; r5 plat R4, cd R3; r22). The 1024-byte bound is the plan's own, kept so the field maxima's sum stays a testable limit and `TestShimLogConcurrency`'s maximal lines are a known size. No platform buffer rests on it any more (r23 be R7);
     - the log line's field grammar, stated once, is the plan's choice: a line is `name=value` fields separated by one ASCII space, ending in the newline. A value holds only characters of `[0-9A-Za-z._:+-]`, so a field splits at the next space. No field holds free text. A value outside that set is replaced by the overflow token, as a value past its maximum is, and a generate-time assertion checks every registration label `generate` emits against the set;
     - each log field has a stated maximum length, and the maxima with their separators sum to under 1024 bytes, so no line reaches the cap. A value past its field's maximum is replaced by a fixed overflow token, never cut (r6 plat R4);
-    - the maxima live in one table in the shim's lib, which the sum assertion and `TestShimLogConcurrency` both read. A generate-time assertion checks that every generated registration label fits its field, and `status` names the overflow token as an anomaly rather than counting it as a registration (r7 plat R5). The run-mode field's row is in the block Phase 2 creates in `_cursor-adapter-lib.sh`, and Phase 3 first writes the field, in `cursor-adapter.py`. It holds a closed label, not the line's text: `unreadable`, or `unreadable+acceptance-only` while Phase 3's acceptance-only record holds. The full text stays on the channels that print it, `additional_context` and the terminal. The field's maximum covers the longer label, which a Phase 3 row asserts (r21);
-    - the table and the overflow token are a fixed-format block of plain `NAME=value` assignments in `_cursor-adapter-lib.sh`. Bash reads them as variables with no jq, and `cursor-adapter.py` parses the block with one fixed pattern. `TestLogFieldTableParity`, in Phase 3 beside `cursor-adapter.py`, sources the lib and compares its values with Python's parse, as `TestSessionIdGrammarParity` does for the id grammar (r8 plat R6; r9 plat R6). It enumerates the names from the bash side, fails on any line in the block the pattern does not match, and asserts the two name sets equal as well as the values (r10 sdet R7). A further Phase 3 `TestLogFieldTableParity` row runs the sessionStart `check --hook-env` entry with the acceptance-only record present and reads the line with `status`'s reader. It asserts the run-mode field equals `unreadable+acceptance-only`, that value fits the field's maximum, and the line stays under 1024 bytes. The row also asserts the overflow token consists only of characters in `[0-9A-Za-z._:+-]`. A second assertion drives the Python writer, which writes the run-mode field, with the longest run-mode label and every other field at its maximum, asserts each field's value, and asserts the whole line, newline included, stays under 1024 bytes (r21). Phase 4 adds the host-walk field's and the `cursor_version` field's rows to the block and a sibling `TestLogFieldTableParity` row in `test_cursor_adapter_install.py`. That row runs the same entry once for each of `found`, `not-found` and `claude-first`, and once with a 64-character version and once with `other`. It reads each line with `status`'s reader, and asserts each field equals its value, each value fits its field's maximum, and the line stays under 1024 bytes. The Python-writer assertion then sets both fields to their maximum as well (r21 sdet R7; r21 plat R9);
-    - the Python writer appends each of its lines as one `os.write` to an `O_APPEND` descriptor, as the shim's single `printf` does (r9 plat R6);
+    - the log-field table (r23 cd R8):
+      - the maxima, the overflow token and the one log writer live in `hook-shim.py`. `cursor-adapter.py`, the sum assertion and `TestShimLogConcurrency` all load them from it, so no second copy exists to compare (r22; r24);
+      - a generate-time assertion checks that every generated registration label fits its field (r7 plat R5);
+      - `status` names the overflow token as an anomaly rather than counting it as a registration (r7 plat R5);
+      - the `fault` field holds an exception's class name on a `shim-fault` line (requirement 3; r23 plat R2);
+      - the `py` field holds the interpreter's `major.minor` on a conversation's first shim line and on every `shim-fault` line, and `status` shows each fault's class beside its `py` (r24 prod R2; r25);
+      - the run-mode field's row is in the table Phase 2 creates, and Phase 3 first writes the field, from `cursor-adapter.py`. It holds a closed label, not the line's text: `unreadable`, or `unreadable+acceptance-only` while Phase 3's acceptance-only record holds. The full text stays on the channels that print it, `additional_context` and the terminal. The field's maximum covers the longer label, which a Phase 3 row asserts (r21);
+    - `TestLogFieldTable`, beside `cursor-adapter.py` (r25 cd R11):
+      - Phase 3's row runs the sessionStart `check --hook-env` entry with the acceptance-only record present and reads the line with `status`'s reader. It asserts the run-mode field equals `unreadable+acceptance-only`, that value fits the field's maximum, and the line stays under 1024 bytes. The row also asserts the overflow token consists only of characters in `[0-9A-Za-z._:+-]`. Its writer assertion drives the log writer, which writes the run-mode field, with the longest run-mode label and every other field at its maximum. It asserts each field's value, and asserts the whole line, newline included, stays under 1024 bytes (r21);
+      - Phase 4 adds the host-walk field's and the `cursor_version` field's rows to the table and a sibling row in `test_cursor_adapter_install.py`. That row runs the same entry once for each of `found`, `not-found` and `claude-first`, and once with a 64-character version and once with `other`. It reads each line with `status`'s reader, and asserts each field equals its value, each value fits its field's maximum, and the line stays under 1024 bytes. Its writer assertion then sets both fields to their maximum as well (r21 sdet R7; r21 plat R9);
     - fire counts come from those lines, never from a read-modify-write counter (requirement 19);
     - no byte of a payload field that carries file, tool or conversation text (such as a read file's `content`, `tool_input` values, a Shell `command`, `tool_output`, `error_message`, and prompt and response text), and no byte of a hook's stdout or stderr within one call, is ever at a path name, because a beforeReadFile payload holds the read file's `content` and a postToolUse payload holds the tool's output (row 156). A named copy would be a credential at rest that no credential gate's path match covers (r21):
-      - the shim holds Cursor's payload in memory and gives the hook a pipe as stdin, as `printf '%s' "$payload" | <hook> &`, so the hook stays a background child it can kill on TERM;
-      - the call's outcome reads the hook's own exit status. `pipefail` is off from that pipeline's launch to its `wait`, so `printf`'s SIGPIPE, when a hook exits without reading all its stdin, never turns an exit 0 into a deny;
-      - it never passes a payload through a here-string or a heredoc, because bash can write a large one to a temporary file;
-      - the hook's stdout and stderr go to files the shim creates in the state dir and unlinks before the hook starts, reading them back through descriptors it opened first. A SIGKILL, as on Cursor's timeout, leaves at most an empty file;
+      - the shim holds Cursor's payload in memory and writes it to the hook's stdin pipe. The call's outcome reads the hook's own exit status, and a broken pipe, when a hook exits without reading all its stdin, never turns an exit 0 into a deny (r22);
+      - the hook's stdout and stderr come back through pipes into memory, never a file (r22; r23);
       - requirement 33's held text and the stored commit-stall reason (Twins) are the persisted hook output. A hook composes it, and it may carry values the hook derived from the payload, such as a repo path or a skill name. Requirement 33 bounds the held text. The Twins commit-stall bullet clears the stored reason when its `stop` emits it. This rule covers neither;
     - whether Cursor itself saves hook input to disk is [unverified]. An architect review relayed that the hooks doc names a "Hooks output channel" for debugging, which this plan has not checked against the saved copy. One search of Cursor's log and state directories for a canary after a denied read would settle it, and no acceptance cell runs it (r21);
     - the sessionStart `check --hook-env` entry, once per conversation, and `check` maintain the state dir, so no shim call does:
       - they rotate the log past 16 MiB by renaming it to the one older file kept. A shim still holding the old descriptor writes its line there;
       - a rotator takes a non-blocking exclusive `fcntl.flock` on a fixed lock file in the state dir, skips rotation when another rotator holds it, and checks the size only once it holds the lock (r6 plat R4; r7 plat R4);
       - the sessionStart entry alone sweeps first-call marks older than 7 days. `check` does not sweep marks, because it writes no check line and a swept mark would then leave a live conversation's next first line unpaired (r11 plat R3);
-    - every jq and ps call runs under a capped call of `_lib_capped`'s shape (`_lib.sh:50`);
+    - the shim starts no program but the wrapper, which starts the hook, so no capped call wraps a step of its own (r22; row 364);
     - Tests (plat R7; r2 plat R10, chr 7, chr 8; r3 plat R4, sdet R8, cd R2; r4 plat R5, cd R3; r5 cd R3):
-      - `TestCappedCallParity`: behavioral, over a sleeping child's cap-fire statuses 124, 143 and 137, with neither `timeout` nor `gtimeout` on PATH, and with a `timeout` that rejects `-k`;
-      - `TestShimLogConcurrency`: 40 concurrent shims, or the number of shim entries one Shell call starts if OD5's count is higher, writing lines with every field at its maximum length, lose and tear no log line. From Phase 3 the writers include one Python-written heartbeat at the maximum lengths (r9 plat R6). 40 concurrent first calls for one conversation write exactly one first line (r9 plat R5);
-      - `TestShimPrologue`: a missing `jq` and an unreadable record each take requirement 3's install-record outcome;
-      - `TestShimPrologue`'s canary row covers the payload's pass to the hook, and the per-call hook-output arm while the hook runs and after a SIGKILL to the shim mid-call, by two checks (r21). The no-here-string rule on the shim's own steps is reviewed, not tested, because a here-string's temporary file exists at a name only during the write, a window too short for any search to hit reliably. The shim's own steps after the hook exits are likewise reviewed, not tested. A beforeReadFile fixture's `content` and a postToolUse fixture's `tool_output` each carry a canary string, in a fixture of at least 1 MiB, larger than a pipe's capacity:
+      - `TestShimHookRun`, through the real shim and the recorded wrapper, tests its steps from the hook's start to the call's outcome (r23 ciso R1, be R1, plat R1, plat R4, sdet R2; r24 cd R9; r26). A row that reaches the deadline runs at `--deadline 2`. A row whose pass needs the hook to finish runs at `--deadline 10`, so a loaded `-n auto` worker cannot flip it (r26 sdet R5):
+        - the rows fail, never skip, when no GNU `timeout` resolves (r27 plat R6);
+        - CI runs them on Linux. On macOS, the adapter's one target, the recorded wrapper is tested only by the self-check under `install` and `check` and by acceptance step 4's case 3 (r27 be R6);
+        - every row that asserts elapsed time carries `@pytest.mark.timing`, so it runs in the serial pass (`tests.yml:186`), not under `-n auto`. Its bound is the shim's worst-case wall-time function for the row's `--deadline`, plus the margin, both read from the module (r25 sdet R3; r26 sdet R5);
+        - a hook that prints a deny and exits at once, run several hundred times under CPU contention in the serial `timing` pass (`pyproject.toml:31`), denies every time;
+        - a hook that writes more than a pipe's capacity on stdout and on stderr before it reads a stdin of at least 1 MiB finishes under the deadline;
+        - a hook that exits 0 without reading 8 MiB of stdin gives exit 0's outcome;
+        - a hook that never reads a 1 MiB stdin and sleeps past the deadline takes the timeout outcome by the worst-case wall time (r24 be R11);
+        - a Cursor sender that writes a payload and never closes stdin takes the timeout outcome, and no hook starts (r24 be R11);
+        - the bound ends a call that a child outside the hook's group holds open, with the timeout outcome within the timing bound above, even after the hook has exited (r24 sdet R3, be R10; r25 sdet R3; r29 be R1). The holders:
+          - a child in its own session that holds both pipes, beside a hook that prints a valid allow and exits 0 at once;
+          - a child started under GNU `timeout`, as `_lib_capped` starts one, that holds stderr past the deadline;
+        - a hook that closes stdout and stderr and sleeps past the deadline takes the timeout outcome within the same bound (r25 be R3);
+        - on a fail-closed entry, a hook still running at the deadline that prints a valid allow and exits 0 on the TERM takes the timeout outcome (r24 ciso R1, be R6; r25 cd R6; r28 sdet R3; r29 sdet R5);
+        - the deadline ends the hook's own child, in its group (r24 be R8, ciso R5; r26; r27 sdet R2, sdet R7; r28 sdet R1):
+          - the child is its own `sh -c` process, so the `$$` it writes to a started-marker is its own pid, not the hook's. It then writes a result file after a sleep past the deadline and the grace period;
+          - the row runs with a hook that exits 0 on the wrapper's TERM (`trap 'exit 0' TERM`), and with a TERM-ignoring hook, whose group the wrapper's KILL ends after the grace period. Each asserts the timeout outcome (r29 sdet R5);
+          - the row fails when the marker is absent, or when the marker's pid has not ended after a wait longer than the child's sleep. It checks for the result file only once that pid has ended (r29 sdet R4);
+          - a pid counts as ended once its process state reads as gone or a zombie, by `ps -o stat= -p <pid>` printing nothing or a state that begins `Z` [unverified: that form on both hosts]. An orphan no init has reaped yet then counts as ended, which signal 0 alone would not show (r30 sdet R5);
+          - one control run, with the deadline above the sleep and the child command defined once for every run, must write the result file (r29 sdet R5);
+        - output at the cap passes, and output one byte past it takes the output-cap deny, on stdout and on stderr separately (r25 sdet R2);
+        - a hook that writes without end on stdout, and one whose child under GNU `timeout` writes without end on stderr, each take the output-cap deny. The shim's peak resident memory stays within 16 MiB of a no-output control run's (r24 be R3, ciso R3, plat R2). The measurement (r25 sdet R2, plat R5):
+          - it is per child: `os.wait4` on the shim's pid returns that process's own `ru_maxrss`, never the test process's running maximum over every child it has reaped;
+          - the row runs on Linux only, where `ru_maxrss` is in KiB, and skips elsewhere, so it holds no unrun macOS branch (r27 be R6, plat R4);
+          - a seeded control runs the same writer through a wrapper that raises the output cap to 64 MiB, and must exceed the bound, so the row can fail;
+        - unit rows, in-process with a recording stand-in for `Popen` (r26):
+          - the argv is the recorded wrapper's path, `-k`, the grace period, the time left and the script, with no `--foreground`;
+          - with a stand-in clock, a time left of 0, a negative one and one just below the floor each take the timeout outcome with no `Popen` call, and one at the floor reaches the argv as `0.100` (r27 be R1, ciso R2, plat R1, sdet R1);
+          - with the clock at the deadline, the status map gives the timeout outcome for 124, 137 and death by SIGKILL, `start-failed` naming `status:125` for 125, the signal outcome for 143 and death by SIGTERM, and the hook's own outcome for 0, 1, 2, 126 and 127;
+          - with the clock before the deadline, 124 gives the hook's own outcome, and 137 and death by SIGKILL the signal outcome. Death by a signal number outside `signal.Signals` gives the signal outcome naming `signal:<number>` (r27 be R3, be R5, prod R4);
+          - the bound-arm row brings a recording stand-in to the shim's bound in each of the two arms, and each takes the timeout outcome (r27 be R2, sdet R7; r28 sdet R2; r29 sdet R1, ciso R3; r30 sdet R2, ciso R5, cd R7):
+            - in the read loop, the stand-in's stdout and stderr are pipe ends whose write ends the row holds open, and the stand-in clock reaches the bound;
+            - in the wait after EOF, the stand-in's every timed wait raises `subprocess.TimeoutExpired`;
+            - the stand-in records each `kill`, `terminate`, `send_signal`, wait with no timeout and `__exit__`, and returns from each at once. Its `__exit__` counts as a wait with no timeout, because `Popen.__exit__` ends with one;
+            - the row also replaces `os.kill`, `os.killpg`, `os.waitpid`, `os.wait4` and `os.waitid` through `monkeypatch` with functions that record and return. The shim never binds them by `from os import`, so any call it makes reaches the replacement;
+            - it asserts none of those calls in either arm, one timed wait in the wait arm and none in the read-loop arm. A broad handler that swallows an error then cannot hide a signal or a reap. No recorded call hangs a worker, because each returns at once;
+          - the output-cap arm's exit without a wait is reviewed, not tested, because its writer rows' hooks end on `SIGPIPE` either way (r28 be R2);
+      - `TestShimInterpreterIsolation` runs a probe script in the shim's place through `_cursor_payloads.py`'s argv builder, so each row tests the flags the generated command uses (row 330; r23 sdet R3; r24 sdet R1, sdet R5, ciso R4):
+        - a literal row pins the builder's flags as `-I` then `-S`, so dropping either one alone fails Phase 2. Phase 3's generator row compares the generated command with the builder;
+        - the probe reports `sys.flags.isolated`, `sys.flags.no_site` and whether `site` is in `sys.modules`, and the row requires 1, 1 and absent;
+        - each vector that fires without the flags has its own canary file, and a control run without `-I -S` must write it. The vectors are a `PYTHONPATH` directory holding a `json.py`, and a `json.py` beside the probe;
+        - a scratch environment made with `python3 -m venv --without-pip` holds a `.pth` file and a `sitecustomize.py` in its site directory, each writing its own canary. Its interpreter writes both under `-I` alone, the control, and neither under the builder's flags;
+        - `PYTHONHOME` set to an empty directory stops the interpreter at start-up in the control run without `-I`, and leaves the probe's normal output under the builder's flags;
+        - a `json.py` in the working directory leaves no canary. This row has no control, so it counts as no protection;
+        - `PYTHONSTARTUP` is not a vector of these rows, because only an interactive session reads it;
+        - a scan of `hook-shim.py`'s `import` and `from` statements, function-local ones included, finds only names in `sys.stdlib_module_names`. A seeded non-standard import is its control;
+      - `TestShimTextRules` (row 339; r23 ciso R5, be R5, sdet R5, sdet R9; r24 be R4, sdet R8, sdet R11, prod R7):
+        - each parser edge in the text rules takes the payload-malformed outcome, or passes intact, never a shim fault, and the bytes the hook receives parse under `jq`;
+        - one corpus, a list in `_cursor_payloads.py`, holds NBSP, U+2028, U+2029, U+0085, CR, VT, FF, U+001C to U+001F, NUL, a trailing newline, a Unicode digit, U+212A (Kelvin sign), U+017F (long s), `é`, a fullwidth Latin letter, U+3000, and a lone surrogate in a value and in an object key;
+        - each classifier the first text rule lists runs the corpus in-process, with each value embedded at the start, middle and end of an otherwise valid input. It expects the ASCII rule's outcome: a deny, a non-match or the overflow token (r25 sdet R7). Those outcomes are written by hand per classifier and value, never computed by a reference pattern (r26 sdet R6);
+        - the consumers' ids come from one module-level list, which a test asserts equal to the first text rule's classifier list (r25 sdet R7). Where each runs:
+          - the log grammar, through the log writer, which gives the overflow token, and from Phase 3 in `TestLogFieldTable`;
+          - the pin-prefix recognition, the leading `cd` exception's syntax and the taint word match, in `TestDirectoryPin`;
+          - the session-id grammar, in `TestSessionIdGrammarParity`;
+          - requirement 7's matcher re-check on the Cursor tool name, in `TestWriteTranslation`;
+          - from Phase 5a, requirement 39's case-insensitive name compare, in `TestSelfProtection`;
+        - the session-id grammar and the log grammar also sweep every BMP code point outside their allowed sets, surrogates included, at a valid value's start, middle and end;
+        - a NUL in each path field the text rules name takes that field's outcome, never a shim fault;
+        - a leading `cd` into a root with a non-ASCII name, and into a directory with one inside a root, takes the exception, in `TestDirectoryPin`;
+        - a translated Write whose path holds U+001F runs through the real shim and a scratch hook that sources `_lib.sh` and calls `_lib_parse_tool_input_or_deny`. It takes that function's field-shift deny, and the hook's saved stdin shows the translated payload (requirement 22; row 342);
+        - a payload whose command and path hold non-ASCII text, run under the C, POSIX and an ISO-8859-1 locale, reaches the probe as byte-identical UTF-8;
+      - `TestShimLogConcurrency`: 40 concurrent shims, or the number of shim entries one Shell call starts if OD5's count is higher, writing lines with every field at its maximum length, lose and tear no log line. 40 concurrent first calls for one conversation write exactly one first line (r9 plat R5);
+      - `TestShimPrologue`: an unreadable record takes requirement 3's install-record outcome, and a `jq` absent from the inherited PATH changes no shim outcome (r22). An in-process row reads the install record under two temporary homes in turn, and each read returns its own home's record (r24 sdet R9);
+      - `TestShimPrologue`'s canary row covers the payload's pass to the hook, and the per-call hook-output arm while the hook runs and after a SIGKILL to the shim mid-call, by two checks (r21). A beforeReadFile fixture's `content` and a postToolUse fixture's `tool_output` each carry a canary string, in a fixture of at least 1 MiB, larger than a pipe's capacity:
         - the probe hook saves nothing and prints the canary on both stdout and stderr. It stays alive until a live search of the test's fresh `TMPDIR`, home and config dir and a second search after a SIGKILL to the shim mid-call have both run. Neither search finds the canary at a name;
-        - the probe also asserts that its stdin is a pipe (`[ -p /dev/stdin ]`), because a here-string's temporary file exists at a name only during the write, so a search for a name cannot reliably see it, and a here-string or heredoc payload of that size makes stdin a regular file;
+        - the probe also asserts that its stdin is a pipe (`[ -p /dev/stdin ]`), because a payload staged in a file would make stdin a regular file, and a file that existed at a name only briefly could escape both searches;
       - `TestLogRotationAndSweep`, in Phase 3 (r6 plat R4; r7 sdet R3, sdet R4, cd R11):
         - a rotation under concurrent appends loses no line;
         - with the test itself holding the lock and the log past the threshold, a rotator skips, and the older file keeps its full content. A rotator that takes no lock fails this case;
@@ -1607,13 +2028,13 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
     - Its coverage test derives the set of fields the hooks read by scanning their jq field reads, `_lib_parse_tool_input_or_deny`'s and the raw-stdin hooks' (row 12), never from a hand list (r5 sdet R5).
     - The scan joins backslash-continued lines. A self-test runs it over the hooks' known multi-line reads, such as `announce-approved-plan-path.sh:104-105`, and every hook that reads `$INPUT` must yield at least one field (r6 sdet R6).
     - The scan's output for `_lib_parse_tool_input_or_deny` must equal the field list `test_lib.py:403` and `:438-445` already pin, an independent oracle. The self-test pins, by literal, what the scan extracts from the piped `announce-approved-plan-path.sh:104-105` program and from one hook with several field reads (r7 sdet R8).
-    - It carries Repo resolution's rule and the Write-to-Edit rule, and drops every key of requirement 38's predicate set (Translation).
-    - `translate-output.jq` holds Translation step 5's table, which writes `agent_message` and `user_message` for every deny and defines non-JSON stdout (be R11; r3 be R1).
+    - It carries Repo resolution's rule and drops every key of requirement 38's predicate set (Translation). The Write-to-Edit rule is a `stat` test in the shim's code (Translation step 2), so neither this table nor the recorded tool map holds a rename datum such as the first pass's `claude_existing_file`. The recorded map still holds its `Write` entry (r40 ciso R2, be R4).
+    - The output table in the shim holds Translation step 5's table, which writes `agent_message` and `user_message` for every deny and defines non-JSON stdout (be R11; r3 be R1).
     - It lists as dropped a `systemMessage` on postToolUse, stop and sessionEnd, which have no `user_message` (r2 be R11).
 18. Install and uninstall are atomic and idempotent, and adopt their own earlier files (Installer; plat R6, sdet R15, chr; plat R17; r2 chr LOW; r3 plat R2; r4 plat R1, sdet R9; r5 plat R3, plat R6, cd R9; r6 plat R1, plat R6; r9 ciso R1, ciso R2, ciso R6, be R1):
     - a refusal names the conflicting path and the remedy;
     - the pre-image is durable before `hooks.json` changes, is never written while an adapter-owned entry exists, and is replaced when none does;
-    - adapter ownership is the Installer's command grammar, whatever the contract version or recorded bash, and an entry that holds the shim path outside it is foreign (r9 ciso R2);
+    - adapter ownership is the Installer's command grammar, whatever the contract version or recorded python3, and an entry that holds the shim path outside it is foreign (r9 ciso R2);
     - `uninstall` removes the entries first and the state last, runtime state included;
     - with no edit since install, `uninstall` restores a merged file's pre-install bytes;
     - a second install with another config dir refuses;
@@ -1632,7 +2053,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - `uninstall` with an agent file unparseable, and with a rule file unparseable, still removes the entries, the runtime state and the record. A generated file that matches the manifest's hash is removed, and one that fails it is named and kept (r9 be R1; r10 be R1);
       - `uninstall` with a live `hooks.json` that does not parse, or whose `hooks` member has an unexpected shape, refuses naming it, with `~/.cursor` byte-identical (r10 be R1);
       - an edit to `hooks.json` between `install`'s merge and its step-4 rename, injected at the crash-injection seam, aborts the rename, names the file, and leaves the edit in place (r10 be R1);
-      - install with one recorded bash path, then another, then `uninstall`;
+      - install with one recorded python3 path, then another, then `uninstall`;
       - `uninstall` removes a manifest candidate for an agent the harness no longer has, and keeps one that is a symlink, is not a regular file, lies outside the fixed directories, reaches them only through a `..` component or a sibling-prefix directory such as `agents-x/`, or fails its hash (r7 ciso R6);
       - install, remove an agent from the harness, install again: the agent's file is gone after the second install, and a later `uninstall` leaves the original bytes (r6 plat R1);
       - install, remove an agent from the harness, then edit its generated file so its hash fails, or replace it with a symlink, and install again: the file is kept, the new manifest still lists it, and `uninstall` names it without removing it (r7 sdet R9);
@@ -1705,23 +2126,26 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
         - its `timeout` altered;
         - its `command` given a `|| true` suffix;
         - its `command` given a changed argument;
-        - its `command` given a changed recorded bash path;
+        - its `command` given a changed recorded python3 path;
+        - its fail-closed tail's deny document replaced by an allow document (r26 ciso R4; r27 sdet R8);
+        - its fail-closed tail's `exit 2` changed to `exit 0`;
         - the entry moved to another event;
         - an unknown key added;
+      - the two tail cases apply to fail-closed entries only, because an informational tail already prints `{}` and exits 0. Every case asserts that its mutation changed the entry, so a no-op cannot pass (r27 sdet R6);
       - `status` and `check` name each case;
       - `check --hook-env` names each case on another entry. Its own entry's cases are asserted through `status` and `check` only, because the entry cannot report its own removal;
       - a foreign entry that holds the shim path but not the grammar, and a duplicated owned entry, are each named by `status`, `check` and `check --hook-env`;
       - an intact file is named by none.
     - Print tests, one row per item of the Installer's print set, each printed by `install` and by `uninstall` before they act (r10 ciso R2, sdet R3):
-      - a foreign entry;
+      - a foreign entry, once as an entry whose fault tail's `exit 2` was changed to `exit 0`, which `uninstall` also keeps (r27 sdet R6);
       - a duplicated owned entry;
-      - an owned entry with its matcher, its `failClosed`, its `timeout`, its key set or its recorded bash path changed;
+      - an owned entry with its matcher, its `failClosed`, its `timeout`, its key set, its recorded python3 path or its tail document changed (r26 ciso R4);
       - a non-owned entry the pre-image does not hold, when `install` replaces the pre-image and when `uninstall` skips its restore;
       - with every owned entry removed and one non-owned entry added, `status` and `check` print it by event and position;
       - a `type: "prompt"` entry with no `command` is kept as non-owned and, when the pre-image does not hold it, printed (r11 be R3).
     - Print exclusions, each printing nothing from `install` and from `uninstall` (r11 sdet R4):
       - an entry that differs only by the contract-version token;
-      - an entry that differs only by the prior install record's bash path;
+      - an entry that differs only by the prior install record's python3 path;
       - an intact file;
       - a non-owned entry the pre-image holds.
     - Report-content tests (r9 ciso R3, sdet R6; r10 ciso R3, sdet R3; r11 ciso R4, sdet R3, cd R13):
@@ -1772,13 +2196,32 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
     - it includes a check that no output auto-approves;
     - it includes one forced failure per requirement 3 class;
     - it uses the stowed checkout, so the imported copies and the shim load the same `_lib.sh`.
-22. The Delete, Write, `if:`, selection, portability and PR-record rules hold, one theme per bullet (r3 cd R3; r5 cd R11):
+22. The Delete, Write, `if:`, selection, portability, PR-record and Cursor-update checklist rules hold, one theme per bullet (r3 cd R3; r5 cd R11):
     - Delete: a Delete becomes `rm` only with a quoting matrix that the production splitter checks. In Phase 2, `TestDeleteTranslation` asserts argument identity by running the translated command under a real shell parse, with `rm` stubbed to print its argv, and comparing the one argument to the original path. It asserts per case id the fragment count `_lib_split_fragments` yields and the command word `_lib_fragment_command_word` returns: `rm`, one fragment, except the `$(...)`, backtick and newline ids, which the quote-blind splitter over-splits, an accepted over-split. It feeds the shim's recorded payload, with a review-only `agent_type` added by the test, to `deny-reviewer-tree-mutation.sh` and expects allow, because that hook's Bash arm does not inspect `rm` (its header, Known gaps). The same payload with `command` replaced by `sed -i s/a/b/ x` must deny, as the control that the hook parsed the payload. The reviewer-Delete window stays disclosed until Phase 5a. Phase 5a's `TestAgentAttribution` runs the same case ids through `gate-agent-tools.sh` (r21). The case ids come from one module-level list that a test asserts equal to this set: a path holding a space, a single quote, a double quote, `$(...)`, a backtick, a newline, a leading `-`, glob characters, and non-ASCII text (sdet R11; r2 sdet R12; r4 sdet R5; r5 sdet R3).
-    - Writes: multi-file writes translate every path, create and edit map distinctly, and the U+001F field-shift deny holds after translation (sdet R11; r2 sdet R12).
+    - Writes: multi-file writes translate every path, and create and edit map distinctly (sdet R11; r2 sdet R12):
+      - the U+001F field-shift deny of `_lib_parse_tool_input_or_deny` (`_lib.sh:545-550`), a hook-side deny the port leaves alone, still fires on a translated Write whose path holds U+001F, which the shim passes through. `TestShimTextRules` holds that row, through the real shim and a real hook, because an in-process mapping cannot observe a hook's deny (row 342; r23 be R6; r24 sdet R11);
+      - in `TestWriteTranslation`, by Translation step 2 (r27 cd R8):
+        - the name rows, none of which reads the target (row 381; r38 ciso R1):
+          - on preToolUse under an `Edit`-selecting matcher, a regular file, a symlink to one and a file of mode 000 each become `Edit`, and under a `Write`-alone matcher a regular file keeps `Write` (r41 be R1). Each `Edit`'s `tool_input` is Cursor's `file_path` and `content`, with no `old_string` and no `new_string` (r39 be R2, sdet R2);
+          - a FIFO, a directory, a path through a regular file, a missing target and a target that is not absolute each keep `Write`, and the FIFO row must not block (r39 ciso R5);
+          - an in-process stand-in `os.stat` that raises a `ValueError`, and one that raises an `OSError` whose `errno` has no symbol, each keep `Write`;
+          - on postToolUse, a Write over a regular file keeps `Write`, its `tool_input` Cursor's `file_path` and `content` (row 383; r39 be R2, sdet R2);
+          - in each row, a test fails if the shim opens the target by any call form, `io.open` and pathlib included. How a test observes that, how the FIFO row bounds a hang, and what the mode-000 row does under root are the Phase 2 PR's (row 384; r39 sdet R5);
+        - the parity row: each file of a newline corpus is an existing `requirements.txt`, a line-oriented manifest, that the Write replaces with a version adding a dependency (r39 sdet R4):
+          - each row first asserts that the untranslated Write's result is the non-degraded ask naming the added dependency, so the equality below compares two real results (r39 sdet R4, be R3);
+          - the dependency hook's result on the translated `Edit` equals its result on the untranslated Write;
+          - the translated payload's `content` equals the Write's `content` byte for byte, for each corpus file (r39 sdet R4);
+          - the corpus holds LF, CRLF, a lone CR, `\r\r\n`, a CR at end of file, a BOM before CRLF, and U+2028 inside a comment line (row 381; r26 be R1, ciso R2; r27 be R4; r38 ciso R1; r39 sdet R4).
     - `if:` entries: all four get a non-matching-command test (row 14; chr).
     - Test selection: Phase 2 adds a reverse row so that any path under `claude/.claude/scripts/cursor-adapter/` selects the hooks tests, and rows for the builder module, each with a `test_select_tests.py` case (row 180; r4 sdet R3, sdet R4). `select-tests.py` gains the reverse rules in the phase whose scripts test first reads agents, rules, `CLAUDE.md` or docs (row 25; plat R12).
     - Portability: macOS-only assertions skip elsewhere and run locally (plat R18).
-    - PR record: each phase's PR body records its CI time delta. The Phase 2 and Phase 4 PR bodies also record a local macOS run of `TestDirectoryPin`'s shell rows, with the shells run as `pytest -rA` prints them and each candidate's probe result, because CI runs those rows under bash alone unless its image has `zsh` (r20). The Phase 5a PR body also records a local macOS run of `TestWorkspaceSandboxReport`'s symlink rows, showing the literal `/tmp` and `/var` rows passed, not skipped, as `pytest -rA` prints them, because Ubuntu CI's `/tmp` is a real directory and those rows skip there. The `$TMPDIR` and non-symlink `/tmp` rows run on Ubuntu CI against the `/var/tmp` base, and the macOS run shows none skipped for `absent: no base outside /tmp`. Each PR body that adds a row skipping on Ubuntu CI records its local macOS run, and Phase 4's body names requirement 38's macOS-only host-walk row in `TestCursorPayloadDecline`. The doc carries a Cursor-update regression checklist, which includes acceptance step 8's observations 1, 2 and 6 and its Control, step 10's cells 1, 5, 6, 7 and 8, step 16, and the sessionStart entry's host-walk report (r2 plat R10; r10 ciso R4; r13; r16; r17 plat R2). This checklist is the one list, and each step that says it joins the checklist points here. The sessionStart entry names it when `cursor_version` changes (Installer).
+    - PR record: each phase's PR body records its CI time delta, and these local macOS runs as `pytest -rA` prints them (r26 cd R3):
+      - Phases 2 and 4: `TestDirectoryPin`'s shell rows, with the shells run and each candidate's probe result, because CI runs those rows under bash alone unless its image has `zsh` (r20);
+      - Phase 3: `TestLaunchGuard`, with `/bin/sh`, bash and zsh all run and none skipped, because CI's `/bin/sh` is dash and macOS's is bash in POSIX mode (r26 plat R4);
+      - Phase 4: requirement 38's macOS-only host-walk row in `TestCursorPayloadDecline`;
+      - Phase 5a: `TestWorkspaceSandboxReport`'s symlink rows, showing the literal `/tmp` and `/var` rows passed, not skipped, because Ubuntu CI's `/tmp` is a real directory and those rows skip there. The `$TMPDIR` and non-symlink `/tmp` rows run on Ubuntu CI against the `/var/tmp` base, and the macOS run shows none skipped for `absent: no base outside /tmp`;
+      - any PR that adds a row skipping on Ubuntu CI: that row.
+    - Cursor-update checklist: the doc carries a Cursor-update regression checklist, which includes acceptance step 8's observations 1, 2 and 6 and its Control, step 10's cells 1, 5, 6, 7 and 8, step 16, and the sessionStart entry's host-walk report (r2 plat R10; r10 ciso R4; r13; r16; r17 plat R2). This checklist is the one list, and each step that says it joins the checklist points here. The sessionStart entry names it when `cursor_version` changes (Installer).
 23. Removed with the guard (row 148).
 24. Removed with the guard (row 148). The manifest stays as `uninstall`'s record of the files the install wrote (Installer).
 25. Removed with the guard (row 148). `docs/hooks.md` gains no adapter text.
@@ -1790,7 +2233,13 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
     - `cursor-tool`: a Cursor tool name absent from `tool-map.json`, with reason `unsupported` or `declined` (Recovery), which requirement 37's equality test checks.
 
     `TestParityExceptions` fails an entry with no kind or a kind outside the set, a key that does not resolve for its kind, a duplicate kind-and-key pair, and a reason outside the set. No artifact holds the import's maps, so no cross-check against them exists (row 148; r21).
-28. Per-launch cost stays low: one jq program per direction and no `_lib.sh` source in the shim. A test counts the shim's exec calls and jq invocations per call rather than timing it, so it needs no budget and cannot flake on wall time (plat R9, chr 8; r3 sdet R10). OD5's fan-out benchmark measures wall time outside the suite.
+28. Per-launch cost stays low: each entry starts one interpreter, and the shim starts one process per call in `hook` mode, the recorded `timeout`, which starts the hook, and none in `classify`, `pin` and `pin-check` modes (row 364). `TestShimExecCount` counts the shim's process starts per call rather than timing it, so it needs no budget and cannot flake on wall time (plat R9, chr 8; r3 sdet R10; r22). OD5's fan-out benchmark measures wall time outside the suite. Its harness (r23 sdet R7, plat R10):
+    - a wrapper, `python3 -I -S -c`, installs an audit hook on the `subprocess.Popen`, `os.exec`, `os.fork`, `os.posix_spawn`, `os.spawn` and `os.system` events and then runs the real shim with `runpy.run_path` as `__main__`. The hook is never installed in the pytest process, because an audit hook cannot be removed;
+    - a seeded start per event family counts 1, so a missing hook or family fails;
+    - `hook` mode counts 1 and the other modes count 0. The launch guard's `sh`, the hook and the hook's own children fall outside the count;
+    - the same wrapper asserts that the modules loaded after a `hook`-mode call are a subset of an allow-list, which guards the import cost between benchmark runs;
+    - it asserts that no `__pycache__` entry appears beside a scratch copy of the shim after a `hook`-mode call or after the tests' loader runs (rows 332, 345);
+    - run with empty argv, a poisoned environment and an audit hook that also counts `open` events, it loads the shim without calling `main`. It counts no open, exec or spawn event and no new descriptor, which holds requirement 15's no-load-effects rule (r24 sdet R9).
 29. **Invariant.** Marker and bypass writes accept an identity only from an anchor the agent cannot set, unless the engineer accepts OD7's downgrade. An adapter gate that denied a Shell command setting `CLAUDE_CONFIG_ADAPTER_*`, `CLAUDE_CONFIG_DIR` or `CLAUDE_PID` itself would be a second layer, not the control. No phase builds one, because a Shell-text matcher cannot be made safe (Alternatives set aside; r20 ciso R3, sdet R1; r20; r21 be R9, plat R6).
 
     So OD7's downgrade has no second layer. Hook context overrides the variable, and an index file's PID must be all digits (ciso R5; r2 ciso R11).
@@ -1918,8 +2367,10 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - `~/.cursor/hooks.json`;
       - `~/.cursor/cursor-adapter/`, which holds the install record, the pre-image and the manifest;
       - the adapter state dir;
-      - `hook-shim.sh` at its stable stow path;
+      - the adapter's script directory, `claude/.claude/scripts/cursor-adapter/` at its stable stow path, which the walk below matches by directory identity, because the shim reads `field-table.json` and `parity-exceptions.json` there on every call (rows 337, 346; r23 ciso R3);
+      - `hook-shim.py`, `field-table.json` and `parity-exceptions.json` in it, also as protected files, so a hard link to any of them matches by file identity (r23 ciso R3; r24);
       - a workspace's `.cursor/hooks.json`, `.cursor/mcp.json` and `.cursor/sandbox.json` at any depth, as `Edit(//**/.claude/settings*.json)` matches at any depth (row 202; r8 ciso R2; r9 cd R7; r10 cd R6; r16).
+    - `tool-map.json` is not a protected path. It reaches the shim only through the install record, which `install` copies it into, so the record's protected path covers it (requirement 37; r21; r24 cd R1; r25 cd R10).
     - Cursor loads the workspace files with no Shell call, so the run mode never prompts for what they run or, for `sandbox.json`, what they make writable (r9 ciso R4; r10 ciso R5, cd R6; r16).
       - The list of such workspace files comes from the fetched hooks and MCP docs and OD9's checks, not from these names alone. C6 added `sandbox.json`, which wins over the user-level file, so a Write of one could widen the sandbox for the agent's next conversation (OD11(e); r16).
       - Unobserved, and not protected (rows 214, 221; r11 cd R6):
@@ -1951,7 +2402,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - a target that cannot be resolved: a dangling link, a `..` after a part that does not exist, a walk step that cannot be read, a walk past 64 directories, or the workspace leg's `_lib_realpath_m` returning 1, as on a cap kill (r7 be R1; r11 ciso R1).
     - That deny's text lists those causes. It tells the agent to retry with an absolute, `..`-free path, and to ask the engineer in chat when the path already is one.
     - These two denies and requirement 3's unenterable-directory deny are the exceptions to Repo resolution's rule that a file tool never denies for resolution (r21).
-    - The entry's `timeout` is 10 seconds, the harness's explicit-timeout precedent (`settings.json:178`, `:207`, `:218`). A filesystem stalled past it takes requirement 3's timeout deny, not the unresolvable text (r9 be R3).
+    - The entry's deadline is 10 seconds, the harness's explicit-timeout precedent (`settings.json:178`, `:207`, `:218`), so its `timeout` is 15 seconds by requirement 15's rule. A filesystem stalled past the deadline takes requirement 3's timeout deny, not the unresolvable text (r9 be R3; r24).
     - No shim deny text names `uninstall` or the log path, and the retry and ask-in-chat text above goes in both fields, by requirement 3's rule (r13).
     - Requirement 19's tamper comparison, which the sessionStart entry, `status` and `check` run, is the detection, with that requirement's stated limit and the Installer's report channels (r7 ciso R2, ciso R4).
     - `docs/cursor-adapter.md` records the tier as `untrusted-input`. It states that Cursor's run mode, under requirement 5's precondition, is the only layer in front of a Shell route, as Claude Code's permission prompts are for the harness's own root. Under Auto-Review (with Sandbox) that layer is Auto-review's own approval and its sandbox, not a prompt (OD11(e); r16). It also states that the vendor calls its allowlist and auto-run settings "Not a security boundary" (G7; r8 ciso R6). Its residuals:
@@ -1964,7 +2415,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - a workspace `.cursor/sandbox.json` that exists before the conversation, checked into the repository or written outside the agent's write tools. It wins over the adapter's file (C6) and loads with no Shell call, so no deny sees it. The sessionStart entry's count is its only report, and that count reaches the model only through `additional_context`, which reached the agent in 2 of 3 attempts in Phase 1 (Phase 1 observations, Decisions). `check` cannot count it, because it runs in no workspace (OD11(b); r20 ciso R2). So the count reaches the model only, never the engineer directly, and content that steers the agent can keep it from the engineer (r20);
       - a workspace `.cursor/sandbox.json` entry inside a root is judged once, at sessionStart, and the agent can swap that path afterward. Whether Cursor re-resolves entries per command is unobserved (r21);
       - the sessionStart report reads the hook's `$TMPDIR`. That it equals the agent Shell's is [unverified], though C6 observed the Shell's writable (r21);
-      - `parity-exceptions.json`, the translators and the shim's lib run from the user-writable checkout, as the hook scripts do under Claude Code. `tool-map.json` reaches the shim only through the install record, which `install` copies it into (requirement 37; r21);
+      - the adapter's script directory sits in the user-writable checkout, as the hook scripts do under Claude Code, so a Shell write can change `hook-shim.py` or a file it reads there, as it can any protected path (r22; r23; r24);
       - the system-level managed hooks file is outside the adapter's control (Alternatives set aside).
     - Tests (r7 ciso R1, ciso R3, be R1, sdet R5; r8 ciso R2, ciso R4, ciso R7, be R2, sdet R8, cd R6; r9 ciso R4, ciso R8, be R3, sdet R5, cd R10; r10 ciso R1, be R4, sdet R4, cd R12; r11 ciso R1, ciso R2, ciso R3, sdet R1, sdet R2, sdet R8, sdet R9, cd R5, cd R15):
       - for each class of protected path, a user-level file, a member of a protected directory and the workspace files, each denied:
@@ -1976,11 +2427,12 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - creates of `.cursor/Hooks.json`, `.cursor/MCP.JSON` and `.cursor/Sandbox.json` where `.cursor` exists with none of the three, and of `.CURSOR/hooks.json` where no `.cursor` exists, each denied (r16);
       - for each workspace name, a symlink named as the protected file that points elsewhere, which only the as-sent leg matches, and an innocently named symlink that points at the protected file, which only the resolved leg matches, each denied;
       - the same two shapes for a symlinked `.cursor`, each denied. `-ef` follows a directory link, so both also match on the as-sent leg, and the file-symlink row above is the resolved leg's only isolating row;
-      - `hook-shim.sh` built as a stow-style symlink into a checkout, with a Write through the stow name and one through the target name, both denied;
+      - `hook-shim.py` and `field-table.json` built as stow-style symlinks into a checkout, each with a Write through the stow name and one through the target name, all denied, and a create of a new file in the adapter's script directory, denied (r23 ciso R3; r24);
+      - a Write to `hook-shim.py` in another checkout or a linked worktree, and to a file beside the adapter's script directory, each passing (r23 ciso R3; r24);
       - a Write through a symlink outside `~/.cursor` that points into it, and one through a symlink outside it that points at the install record, each denied;
       - a Write through a symlinked directory followed by `..`, denied;
-      - a hard link to `~/.cursor/hooks.json` and to `hook-shim.sh`, made outside `~/.cursor`, written through, each denied;
-      - a Write spelled through `/System/Volumes/Data` into `~/.cursor`, into the state dir and at `hook-shim.sh`, each denied. These rows run on macOS only, per requirement 22's portability bullet, and skip where the volume has no such prefix;
+      - a hard link to `~/.cursor/hooks.json`, to `hook-shim.py` and to `parity-exceptions.json`, made outside `~/.cursor`, written through, each denied (r24);
+      - a Write spelled through `/System/Volumes/Data` into `~/.cursor`, into the state dir and at `hook-shim.py`, each denied. These rows run on macOS only, per requirement 22's portability bullet, and skip where the volume has no such prefix;
       - a case variant of each user-level protected path, denied. These rows run on macOS only and skip where `[ a -ef A ]` is false on the fixture volume;
       - a two-path Write whose protected path is second, denied;
       - a relative target, a `~/`-led target and a target holding `$HOME`, each taking the not-absolute deny;
@@ -2032,12 +2484,17 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - payload: for every builder spec, the shim runs a recording probe script in place of the hook, and the stdin the probe saves equals the spec's twin (requirement 20) as parsed objects:
         - the fields the table renames or transforms, `hook_event_name`, `session_id`, `cwd`, `tool_name`, `tool_input` and `tool_response`, are compared by value;
         - the allowed key drops and additions are a literal per-event list in the test, so a `field-table.json` edit alone cannot make it pass;
+        - a spec whose command and path hold U+001F, U+001E and NUL reaches the probe equal to its twin (requirement 15's text rules; r23 sdet R4);
       - envelope: the same probe, run once under the shim and once directly, from one fixed starting environment, reports:
         - equal cwd and umask;
         - equal stdin bytes (r9 cd R9, sdet R8):
           - under the shim, stdin is a pipe the shim writes from memory (requirement 15), which the check asserts;
           - in the direct run it is a pipe. Each kind is recorded as a regular file, a FIFO, a socket or a character device, by step 1's tests, rather than required equal, because Claude Code's own kind is unverified until acceptance step 1 records it (row 207; r10 sdet R5);
-        - equal environment names and values, apart from bash's own `_`, `SHLVL`, `PWD` and `OLDPWD` and the exceptions below;
+        - equal environment names and values, apart from the exceptions below;
+        - the C-locale pairs, which `docs/cursor-adapter.md`'s Limitations section discloses (row 333; r22; r23 sdet R9, be R6, cd R4):
+          - three pairs start with `LANG`, `LC_ALL`, `LC_CTYPE` and `__CF_USER_TEXT_ENCODING` deleted from the starting environment, then with `LC_CTYPE=C` alone, then with `LANG=C` alone;
+          - each requires, under the shim, `LC_CTYPE` holding one of `C.UTF-8`, `C.utf8` and `UTF-8`, and on macOS `__CF_USER_TEXT_ENCODING` too;
+          - any other new or changed name fails the pair;
         - the exceptions (r9 cd R2):
           - the three scrubbed names are absent under the shim;
           - PATH equals the install record's PATH;
@@ -2050,7 +2507,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - a shim arm's effects outside the adapter state dir, which the shim itself writes, equal those of a reference run: the same script run directly on the trigger spec's twin (requirement 20; r6 sdet R2; r8 sdet R1; r9 cd R1). That twin is the object the payload check takes, and its `session_id` equals the spec's `conversation_id`. Equality, not a subset, so a mistranslated field that makes a hook exit early fails;
       - both runs execute in the same absolute roots, each from a pristine copy, so hashed state names and printed paths agree. The compared unit is each write's root-relative path and content. Only time values and PIDs are masked, by named patterns, and no id is normalized;
       - from Phase 4, the reference run for an identity-keyed row seeds a registered `claude`-named ancestor whose `sessions/` entry carries a `session_id` equal to the shim arm's `conversation_id`, so the compared lock content differs only by the masked PID (r7 sdet R2);
-      - a shim arm's output equals `translate-output.jq`'s mapping of the reference run's exit and stdout, under the same masks;
+      - a shim arm's output equals the shim's output mapping of the reference run's exit and stdout, under the same masks;
       - an import arm lists no effect, except the two session hooks' `sessions/` and `session-end-records/` writes until Phase 4. Phase 4 removes that listing, so their decline is checked here too (requirement 38).
     - `bootstrap-project-plugins.sh` (row 187):
       - its arms and reference run use a scratch copy of the hooks tree whose `../scripts/reconcile-project-plugins.sh` is a recording stub, because the hook launches it by script-relative path, which no PATH stub sees. The reference run's launch record waits on the stub's sentinel under a deadline, as `test_bootstrap_project_plugins.py:10-18` does (r7 cd R9, sdet R10);
@@ -2072,8 +2529,13 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - Phase 4: the two worktree gates' rows, linked-worktree ones included;
       - Phase 5: the twins' and adapter gates' rows.
 41. **Invariant.** A generated-matcher test, parametrized over every `settings.json` registration, checks requirement 7 (r3 sdet R4):
-    - for each Claude tool name the registration's matcher selects, the mapped Cursor name matches the generated regex under `re.search`, and the shim does not print `{}` for it;
-    - for each name it does not select, the shim prints `{}`;
+    - for each Claude tool name the registration's matcher selects, the mapped Cursor name matches the generated regex under `re.search`, and the shim does not print `{}` for it. An `Edit`-only PostToolUse registration fails this bullet until `parity-exceptions.json` lists it `unsupported` (r41 ciso R2). A postToolUse Write keeps the name `Write` (row 383);
+    - for each name it does not select, the shim prints `{}`, except as the next bullet states;
+    - a preToolUse Write over a regular file is selected when the matcher selects `Write` or `Edit` (r40 ciso R1; r41 ciso R1):
+      - the test runs a synthetic registration matching `Write` alone with an overwrite target, and checks that a stub hook script recorded stdin whose `tool_name` is `Write`;
+      - this row is its own fixture, not one of the `settings.json` registrations;
+      - it runs in Phase 2's `TestWriteTranslation`;
+      - an `Edit`-only registration with an overwrite target and a failed-`stat` target go to Phase 2's code review, under row 384's hand-off of Phase 2's test rows (r40 be R2);
     - each generated beforeShellExecution matcher selects a command's pin-prefixed form whenever it selects the command (r13; r19 cd R2);
     - both arms of the four `if:` entries and the dedupe run.
 
@@ -2086,7 +2548,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
 The classes, by phase:
 
 - Phase 2:
-  - `TestOutputTable` (2, 3, 17), covering every event, exit class and stdout class.
+  - `TestOutputTable` (2, 3, 17), covering every event, exit class and stdout class, through the shim's output mapping called in-process (r22).
     - Its properties, per cell, by Translation step 5 (r21):
       - no cell yields a Cursor allow, and no cell on an event with a block or deny channel yields `{}` when the hook asked or denied. Those events are the pre-call events and the Stop and postToolUse channels step 5 names;
       - exit 2 on an event step 5 sends to the informational catch-all yields `{}` and a log line;
@@ -2100,16 +2562,18 @@ The classes, by phase:
   - `TestDirectoryPin` (2, 36), in `test_cursor_adapter_shim.py` (r17 plat R9)
   - `TestUnknownToolsAndCap` (37)
   - `TestParityExceptions` (27, 37)
-  - `TestDeleteTranslation` and `TestWriteTranslation` (22)
+  - `TestDeleteTranslation` and `TestWriteTranslation` (7, 22, 41)
   - `TestShimFailureOutcomes` (3)
   - `TestShimPrologue`, `TestShimLogConcurrency` and `TestShimExecCount` (15, 19, 28)
+  - `TestShimHookRun` (3, 15), `TestShimFaults` (3, 15), `TestShimInterpreterIsolation` (15) and `TestShimTextRules` (15), in `test_cursor_adapter_shim.py` (r23 sdet R10; r24; r25)
   - `TestCursorPayloadBuilders` (10, 20), in the gate-matrix file
   - `TestGateMatrix` (40)
   - `TestTranslatedPayload` and `TestShimEnvelope` (17, 40), requirement 40's two checks, in the gate-matrix file
-  - `TestSessionIdGrammarParity`, `TestCappedCallParity` and `TestRealpathParity` (10, 15, 36), with `TestRealpathParity` running each of `_lib_realpath_m`'s three branches
+  - `TestSessionIdGrammarParity` (10), comparing the shim's pattern with the live `_lib.sh` function (r22)
+  - `TestRealpathParity` (36), comparing the shim's resolution with `_lib_realpath_m` over a corpus, run where `realpath -m` or `grealpath -m` works. It pins agreement on a missing tail and a `..` after a missing part, and lists by id each case expected to differ, such as a symlink loop and an unreadable part (row 329; r23 sdet R8)
   - `TestCursorAdapterSelection` (22), in `test_select_tests.py`
 - Phase 3:
-  - `TestLaunchGuard` (3) (r19 cd R1)
+  - `TestLaunchGuard` (3), with the fault tail's rows (r19 cd R1; r24)
   - `TestGeneratedMatcherCoverage` (7, 22, 41)
   - `TestPrerequisitesAndContract` (9, 12, 13)
   - `TestHooksJsonVocabulary` (20)
@@ -2118,9 +2582,12 @@ The classes, by phase:
   - `TestInstallCrashInjection`, `TestUninstallOwnership` and `TestInstallRecordRoundTrip` (18)
   - `TestStatusAndCanary` (19, 39), the tamper check included
   - `TestRunModeWarning` (5), in `test_cursor_adapter_install.py`
-  - `TestLogFieldTableParity` (15), with the run-mode field's size row, in `test_cursor_adapter_install.py` (r21)
+  - `TestLogFieldTable` (15), with the run-mode field's size row, in `test_cursor_adapter_install.py` (r21; r22)
   - `TestLogRotationAndSweep` (15, 19)
-  - `TestRecoverySectionResolves` (3), in the gate-matrix file, which a `docs/` edit selects (row 180). It also asserts that the Recovery section holds the `pin-check` deny's entry and the unenterable-directory deny's entry (r21)
+  - `TestRecoverySectionResolves` (3), in the gate-matrix file, which a `docs/` edit selects (row 180). It asserts that (r21; r23 prod R2, prod R6; r26 prod R3, prod R6, sdet R8, cd R7; r27 prod R3, sdet R8):
+    - the Recovery section holds the `pin-check` deny's entry, the unenterable-directory deny's entry, each shim-fault entry, the one for a hook's 126 or 127 included, the by-design and deadline entry, and the `start-failed` entry (r28 plat R3; r29 prod R2);
+    - the set of `errno` symbols the `start-failed` entry's transient item names equals the shim's constant for the transient set, not only contains it (r30 sdet R7);
+    - the shim-fault entry's heading quotes the fault text's diagnosis clause.
 - Phase 4:
   - `TestClaudePathSnapshot` (14)
   - `TestAdapterIdentity` and `TestIdentityConsumers` (29, 30, 31)
@@ -2131,7 +2598,7 @@ The classes, by phase:
   - `TestDirectoryPin`'s Phase 4 rows (36), in `test_cursor_adapter_shim.py` (r17 sdet R3, plat R9)
   - `TestSessionStartReports` (19, 22), in `test_cursor_adapter_install.py` (r19 sdet R8)
   - `TestRunModeWarning`'s Phase 4 row (5), in `test_cursor_adapter_install.py` (r21 sdet R7)
-  - `TestLogFieldTableParity`'s Phase 4 row (15), the host-walk and `cursor_version` fields' size row, in `test_cursor_adapter_install.py` (r21 sdet R7; r21 plat R9)
+  - `TestLogFieldTable`'s Phase 4 row (15), the host-walk and `cursor_version` fields' size row, in `test_cursor_adapter_install.py` (r21 sdet R7; r21 plat R9)
 - Phase 5a:
   - `TestSettingsPermissionsGate` (4, 5)
   - `TestAgentAttribution` and `TestActiveSetDoubleFire` (8, 35), in `test_cursor_adapter_gates.py` (r21 sdet R6). `TestAgentAttribution` also holds the Delete quoting-matrix rows through `gate-agent-tools.sh` (22; r21)
@@ -2201,9 +2668,9 @@ The classes, by phase:
     - `send-back-skipped-self-review`'s PreToolUse arm, on `SubagentHandback`, a tool Cursor lacks.
     - `require-review-orchestrator-routing` (`Skill`) and `track-permission-prompts` (Notification). Their keys default to off (row 18), so the gap reaches only an account that turns them on.
     - `require-plan-review`'s ExitPlanMode arm, already a parity exception (row 37).
-- **OD5: the per-call budget.** Decided: 1 s at the 95th percentile of added hook time, per Shell, Read and Write call (row 184; r5 cd R5).
-  - The anchor is Nielsen's response-time limits, which the staff-platform-engineer round-1 review relays as 0.1 s feeling instant and 1 s keeping the user's flow of thought. B6 and requirement 28 apply it.
-  - The engineer fixed the budget before any benchmark ran, so it is not fitted to the result (r4 plat R6).
+- **OD5: the per-call budget.** Decided: 2 s at the 95th percentile of added hook time, per Shell, Read and Write call (row 340, which supersedes row 184's 1 s; r5 cd R5; r23 prod R1, sdet R11, plat R6).
+  - The first budget, 1 s, was anchored on Nielsen's response-time limits, which the staff-platform-engineer round-1 review relays as 0.1 s feeling instant and 1 s keeping the user's flow of thought. B6 and requirement 28 apply the budget.
+  - The engineer fixed the 1 s budget before any benchmark ran (r4 plat R6). The engineer restated it at 2 s after the bash and jq first pass's benchmark and before the Python shim's, so it is not fitted to the Python result (row 340).
   - A class's added hook time is the installed arm's 95th percentile minus the uninstalled arm's, where the uninstalled arm runs the import's copies alone (r5 plat R5).
   - S8 is cut (row 75), so two checks apply the one budget:
     - the fan-out benchmark (r3 plat R5; r6 cd R4):
@@ -2211,10 +2678,17 @@ The classes, by phase:
       - for each class it runs one shim-and-hook process per registration that selects the class, counted from `settings.json`, and per adapter-only entry the phase has built, beside the import's copies;
       - each class runs with a small payload and with 1.4 MB, the largest observed payload (Payload), carried as postToolUse output and as Write content;
       - over 100 runs per case it records wall time, CPU time and each entry's 99th-percentile hook duration;
+      - it runs each entry as the generated command does: the launch guard's `sh`, holding the shim's stdout, around the recorded python3 with `-I -S`, which runs the hook under the recorded `timeout` (r23 plat R5; r24; r26);
+      - its numbers include the wrapper's one added process start per hook call, whose cost row 365 leaves [unverified] until this run measures it;
+      - it needs no cold and warm arms, because no entry reads a bytecode cache (row 345);
+      - it records the interpreter version, the core count, the load average and each entry's peak resident memory (r23 plat R5, be R7);
+      - the Write class's 1.4 MB case writes over an existing regular file, so each preToolUse entry whose matcher selects `Edit` receives the translated `Edit` (row 381; r38 ciso R2; r39; r41 be R1);
       - Phase 2 runs it. Phases 4, 5a and 5b re-run it, 5a and 5b with the adapter-only entries each adds (r5 plat R5). Phase 4's re-run takes its uninstalled arm's `_lib.sh` from Phase 4's merge-base, so the import copies' new per-call work shows in the difference (r6 plat R3). It also runs, per class, a gated call into a linked worktree of a scratch repo with worktree enforcement on, under a process chain as deep as C8 recorded, and reports it apart, because a call from outside every repo exits before the identity walk (r19 plat R2);
+      - Phase 3, which adds the launch guard and the pin entries, does not re-run it but records one wall-time sample of a generated command (r23 plat R5);
     - acceptance step 12, from Cursor's hooks log.
-  - A benchmark run misses when a class's added hook time exceeds the budget, or when a 99th-percentile hook duration exceeds half the smallest inner deadline, which under contention would make a fail-closed entry deny (requirement 3). Step 12 applies the first condition only.
+  - A benchmark run misses when a class's added hook time exceeds the budget, or when a 99th-percentile hook duration exceeds half the smallest `--deadline` among the entries it runs, which under contention would make a fail-closed entry deny (requirement 3). At the 10-second default deadline that line is 5 s (row 350; r24 plat R3). Step 12 applies the first condition only.
   - A miss on Phase 2's run stops Phase 3 from merging, and a miss on a re-run stops its own phase from merging. On any miss, step 12's included, the session takes the per-class numbers to the engineer with two options: raise the budget, or have `plan-architect` revise the plan to cut per-call work.
+  - The baseline moved in r22. Phase 2's bash and jq first pass missed the 1 s budget then in force, a claim that rests on the relayed, unverified figures of row 327. The engineer chose the Python shim, which cuts the per-call process count (rows 326 to 328). Phase 2's dispatch runs the benchmark on the Python shim, and the per-class numbers it reports replace the first pass's. The miss route stands as written (r22; r23).
 - **OD6: a consuming repo's hooks, or an untested source, beat the harness.** Decided: the trigger is not met (row 117). The item was to be asked when O17, O20(b) or O20(c) showed a project-level source's output beating or erasing a harness deny or follow-up, or when O20(b) showed rank precedence rather than "deny wins regardless of source".
   - No tested source beat or erased a harness deny or follow-up. A native user-level deny beat every native project, imported project and imported local output. An imported project-level deny beat every native project output. A Stop follow-up survived the other source's `neutral` in both directions (O20.b, O20.c).
   - Neither result shows rank precedence, so deny-wins extends to managed and plugin hook sources as documented (G5), not observed. A Stop follow-up stays open for them, because it is last-response-wins.
@@ -2421,6 +2895,7 @@ For the adapter:
 - **A brace wrapper, `cd -- '<dir>' && {`, the agent's command, then `}`.** It also runs none of the command on a failed `cd`, until the command closes the group with its own `}`, which the ciso-reviewer's round-10 scratch run showed (row 267). The group also changes how the agent's lines parse: a last line ending in a backslash joins the closing `}`, and a `shopt -s extglob` or alias line no longer applies to the lines after it in the same group (the staff-platform-engineer's round-10 runs). The `|| exit 1` line groups nothing, so it needs no enterability pre-check and leaves the agent's lines parsed as with no adapter. The session chose the `|| exit 1` line (r18; r19 cd R11).
 - **The leading-`cd` exception by repository identity, a path with the same git common dir as a root.** It admits every member of a root's worktree set, the main checkout and sibling worktrees included, so a two-`cd` command can start a gate that resolves once in a tree the engineer did not open (the ciso-reviewer's round-11 R1). It also runs `git` on a path the agent named. The engineer chose containment in a root instead (row 292).
 - **Mapping every Cursor Write to Claude `Write`.** `deny-plan-writer-off-plan-writes.sh` denies a plan-writer agent every tool but `Edit` (row 143), so a plan-writer could not edit its plan under Cursor.
+- **Filling the translated `Edit`'s `old_string` with the target's current text.** The one hook that reads `old_string` takes a `content` key first and reads the file itself, so the read changed no hook's result. It cost a deny on every fail-closed Write entry for the targets row 381 lists, where Claude Code's hooks allow the Write (row 381; r38 ciso R1; r39 cd R7).
 - **A keeper process per conversation (I2), OD7's option (c).** No signal marks a conversation's end (O28.b), so a keeper lives until its window closes or leaks. It still needs the `updated_input` rewrite to reach Shell calls, and it stacks a keeper, a heartbeat, respawn and an index on one mismatch.
 - **Host-neutral identity on Claude Code's path too, OD7's option (d).** It changes every marker and lock path Claude Code uses, against row 114.
 - **A sessionStart `env` value, or `launchctl setenv`, to route agent Shell calls.** The first reaches hooks but no agent Shell call (O5). The second sets the variable for every GUI app, and for Claude Code started in Cursor's integrated terminal.
@@ -2437,6 +2912,38 @@ For the adapter:
 - **A workspace-level `sandbox.json`.** C6 showed one works, but it puts an adapter artifact in a consuming repo's tree, which row 2 bars.
 - **The whole routed config dir in `additionalReadwritePaths`.** It would make every state file there, `settings.json` and `sessions/` included, writable from every sandboxed conversation's Shell, where the scripts' own directories suffice.
 - **A hook relay through a temp dir, OD11(b)'s third option.** Agent scripts would write a request there for the next hook event to apply. It redesigns Phase 4's routing, and makes a directory any process of the user can write an enforcement input. A gate can read before a parallel entry of the same event applies the request (O22.a). The carrier is lost where a hook's `TMPDIR` differs from the agent's, or where `disableTmpWrite`, a key the sandbox reference lists, is set.
+- **The bash and jq shim this plan first specified.** Built as Phase 2's first pass, it missed the 1 s budget then in force (OD5 is now 2 s, row 340). That claim rests on the relayed, unverified figures of row 327. At the small payload, a reviewer's timings fit a process-count cost rather than an outlier [unverified: relayed] (row 327; r37).
+- **That shim with fewer processes.** Its per-step `timeout` caps are 7 of the 17 processes it starts with a hook, and dropping a cap drops the bound it gives. A reviewer's timings fit a process-count cost rather than an outlier [unverified: relayed] (row 327).
+- **A launcher, `hook-shim.py`, beside an imported module, `_cursor_adapter_lib.py`.** r23 planned it. Its one stated gain was the imported module's bytecode cache, about 4 to 8 ms a call by the staff-backend-engineer and staff-product-engineer reviews' `compile()` timings [unverified: relayed], against a 33 ms interpreter floor (row 327) and a 2 s budget. It cost a second failure domain with its own import guard and argv scan, a protected module, and a planted-`.pyc` residual that survives a pull. A Python-level handler also cannot run when the file it lives in does not compile. The engineer chose one file with the shell handling faults (row 345).
+- **A Python-level last-resort handler as the fault decision.** It cannot cover a shim that does not compile, an interpreter crash, a signal death or a failed flush at exit. The launch guard's fault tail, outside the interpreter, covers each, and the shim's own handler keeps only the log line (rows 345, 346).
+- **A launch guard that `exec`s the interpreter.** Cursor's signal would then reach the shim directly, but no shell would remain to read a fault's status (row 346).
+- **A launch-guard test ahead of the call, with its own exit 127.** Every case it tested, a missing or unreadable shim and a missing or non-executable python3, reaches the fault tail through the call's status, so a second text and exit code would decide nothing new (row 346).
+- **The shim writing straight to Cursor's pipe.** A shim that wrote part of a document before a fault would leave that part ahead of the tail's own document. The launch guard holds the output and prints it only after a clean exit (row 346).
+- **A fixed `NAME=value` block that `cursor-adapter.py` parses.** It is a second copy of the log-field table that needs its own parity test, and one imported table removes both.
+- **Running the shim without `-I -S`.** A `PYTHONPATH` set by a repo's `env` block, which may reach Cursor's hooks (row 179), or a `.pth` file in a site directory, would run code on every call in the enforcement path, and `-I` cost no measurable time (row 330).
+- **A loop that stops reading at the hook's exit.** r22's loop did, so a deny still in a pipe could be lost and read as `{}`. The shim's loop reads to EOF (row 348; r23 ciso R1).
+- **`subprocess.run`, or `Popen.communicate` called by the shim.** Both keep every byte a hook writes until both pipes reach EOF (`subprocess.py:2173-2177`, CPython 3.14.7), so the output cap could apply only after the run, and a flooding hook grows the shim's memory until the deadline. The shim drives `Popen` on the wrapper with `communicate`'s own POSIX loop and a retention cap (rows 347, 348).
+- **Validating the bytecode cache.** Row 337 set it aside, and row 345's one file, which no loader caches, leaves no cache to validate.
+- **Holding the shim to the toolkit's 3.11 floor.** It took a parse test, an in-shim floor check and a spelling rule against ruff's `UP036`. The engineer chose a 3.14 floor for the adapter (row 356; r26 cd R10).
+- **A deadline and group kill hand-rolled in the shim, r23 to r25's design.** The shim led the hook's process group, sampled the hook with `os.waitid(WNOWAIT)` before each signal, and woke a TERM handler through a wakeup fd. Each round added a layer to close a gap the one before opened, which is the compounding-layers pattern:
+  - the `si_code` rule for Darwin's early return (row 357);
+  - the `PermissionError` carve-out for a zombie-only group (row 362);
+  - a non-reaping 50 ms poll in place of `Popen.wait`;
+  - an exception-path KILL-then-reap order;
+  - the TERM-state unit rows;
+  - a self-check `waitid` probe;
+  - a local macOS run of the real-process rows (r27 cd R5).
+
+  Its one gain over the wrapper was a KILL for a child an exited hook leaves in its group. The engineer's typed request to simplify (row 356) and those layers set it aside, and the engineer chose `timeout -k` (rows 364, 365; r26 ciso R1).
+- **`timeout --foreground`.** In that mode the hook's own children are not timed out, so they would outlive the deadline (row 365).
+- **A signal from the shim to a wrapper still running at its bound.** A TERM-ignoring hook does not keep the wrapper running, because `-k`'s KILL reaches the wrapper too (row 365, the page's exit-137 line). The wrapper is still running at the bound only when it is stopped, stuck in uninterruptible I/O, or started more than the 1 s drain bound late, which puts its own KILL past the bound. For those cases (row 368; r27 be R2; r28 be R1, ciso R2):
+  - a SIGKILL ends the wrapper and not the hook, which it leaves unbounded, and the reap after it has no bound of its own;
+  - a TERM ends the hook sooner than the wrapper's own KILL only when the wrapper started more than the grace period plus the drain bound late (r29 be R3);
+  - a TERM to a stopped wrapper stays pending until the wrapper is resumed, and the hook's bound waits with it (r30 cd R9);
+  - a group KILL brings back the shim's own group signal and the zombie-only-group error case that row 362 records.
+
+  Left alone, a late or resumed wrapper still ends the hook by its own timer.
+- **A TERM child in the self-check.** A second wrapper child, at a 2 s deadline, installed a TERM handler that exits 0 and had to give the timeout outcome. BusyBox, the one wrapper the plan names that fails it, already fails the `--version` GNU test, so the child re-tested by behavior what that test settles. It made every accepting `install` and `check` wait about 2 s. Later rounds added a ready token, a stub with no timer and a sleep tied to the grace period and the drain bound, each closing a gap the round before left, which is the compounding-layers pattern. A wrapper that lies in its `--version` already runs as every hook's parent, so a behavior probe is no defense against it. The engineer chose to drop it (row 375; r30 plat R1).
 - **The nearest `Cursor Helper (Plugin)` ancestor as identity's liveness anchor.** A conversation's nearest helper changed between events (row 228), and helper lifetimes were bounded, not measured (row 251), so a helper's exit could make a live conversation's markers and locks read as dead (OD11(d)).
 
 ### Assumption ledger
@@ -2690,7 +3197,7 @@ For the adapter:
 164. `sessions/` in bare `~/.claude` gained entries matching a Cursor ancestor during Phase 1 (O28.b), and `_lib_registered_live_sid` rejects an entry whose recorded start time differs from the live process's (`_lib.sh:3084-3085`). [verified] That a relaunch's new extension hosts never reuse an old host's PID within the same second, the residual that `lstart`'s resolution leaves (`_lib.sh:3072-3074`), is [unverified].
 165. A Cursor hook's or Shell call's nearest `Cursor Helper (Plugin)` ancestor is its window's extension host, and once the two session hooks decline, no Cursor process is a registered live ancestor. [unverified] O4 records that ancestry, but not that a hook's `$PPID` is the host itself, which is why the adapter walks for the basename rather than reading `$PPID`. A window has more than one such host: a hook's nearest host changes between events in one conversation, across five variants, and it is the same process as its Shell leg's in all but one observed leg. [verified: OD9 run, C5] "Its window's extension host" therefore names no single process (OD11(d); r12). OD11(d) anchors the walk on the `Cursor` main process instead (row 255; r15).
 166. When C1 and C2 both fail, the taint rule is this revision's choice under row 115's split, which allows a documented gap only where Cursor lacks the tool, the event or the channel. [unverified: the consult leaned to the taint rule and left the choice to the engineer]
-167. `test_bash_floor.py` scans fixed regions and not a script's pre-source region (`:12-24`), and `test_no_other_shipped_file_defines_the_floor` (`:262`) fails any other shipped file that defines the floor. [verified] A shim that sources `_config.sh` defines no floor of its own.
+167. `test_bash_floor.py` scans fixed regions and not a script's pre-source region (`:12-24`), and `test_no_other_shipped_file_defines_the_floor` (`:262`) fails any other shipped file that defines the floor. [verified] A shim that sources `_config.sh` defines no floor of its own. Row 326's Python shim sources nothing from `hooks/`, so the tripwire gains no shim region (r22).
 168. Claude Code gives an agent with no `tools:` list every tool, and an agent name the harness does not list meets none of its agent-keyed gates. [unverified]
 
 169. The hooks-log-derived O28.b bullets are checked by the clean scan, not by an engineer read. [engineer-verified: "Scan is enough (Recommended)"] The label answered the session's question on the security review's request for a read. The session's option descriptions are its wording.
@@ -2705,14 +3212,14 @@ For the adapter:
 178. No hook reads `CLAUDECODE`. `CLAUDE_PID` is read only by `_lib_hook_claude_pid` (`_lib.sh:3048`), whose callers are the two session hooks (row 159), which get no shim entry. `bootstrap-project-plugins.sh` exits unless `CLAUDE_CODE_ENTRYPOINT` is `cli` (`:202`). [verified: grep over `hooks/*.sh`, this revision] The shim's removal of the three names therefore changes only bootstrap's twin, which it stops.
 179. Whether a repo's `.claude/settings.json` `env` block reaches Cursor's native or imported hooks is [unverified]: O15(c) observed only Claude Code.
 180. `select-tests.py`'s `docs/` row selects the hooks and skills tests (`:862`). `HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS` (`:228`) and `SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES` (`:270`) carry the hooks-tree modules a scripts test imports. `claude/.claude/hooks/tests/_lib_sh_helpers.py` is a non-test helper module in that tree. [verified: read, this revision]
-181. `_lib_realpath_m` tries `realpath -m`, then `grealpath -m`, and walks to the nearest existing ancestor only when neither returns a non-empty resolved path, whether the command is missing, rejects `-m`, is cap-killed or fails (`_lib.sh:177-188`). [verified: read, this revision]
+181. `_lib_realpath_m` tries `realpath -m`, then `grealpath -m`, and walks to the nearest existing ancestor only when neither returns a non-empty resolved path, whether the command is missing, rejects `-m`, is cap-killed or fails (`_lib.sh:177-188`). [verified: read, this revision] The shim no longer copies it, and requirement 39's self-protection entry still uses it (row 329; r22).
 182. A Cursor deny's `user_message` reaches the model, contrary to this row's earlier premise that it reaches the user only: asked to repeat what it was shown about a block, the model repeated the `user_message` text, and the `agent_message` text appeared nowhere on screen or in the reply. [verified: OD9 run, one observation] Whether Cursor drops `agent_message` or the model left it out is [unverified]. Requirement 3's rule, which puts one deny text in both fields, rests on this row, and acceptance step 14's trigger 4 observes it again (r12; r13).
 183. Whether a preToolUse explicit allow from one source suppresses a same-call beforeShellExecution `ask` from another is [unverified]. Requirement 2's suppression of the copies' allow makes the design independent of it. Acceptance step 3's cell 5 records the answer from scratch entries. `TestCopyAllowSuppressed` and the gate matrix's raw and import arms check that no copy gives an allow (r6 ciso R3).
-184. The per-call budget is 1 s at the 95th percentile for each of Shell, Read and Write calls. [engineer-verified: "1 s at p95 (Recommended)"] The label answered the session's OD5 question. The option descriptions, including the Nielsen anchor and the hook-body counts, are the session's and the architect's wording.
+184. The per-call budget is 1 s at the 95th percentile for each of Shell, Read and Write calls. [engineer-verified: "1 s at p95 (Recommended)"] The label answered the session's OD5 question. The option descriptions, including the Nielsen anchor and the hook-body counts, are the session's and the architect's wording. Row 340 supersedes this row's 1 s with 2 s, and this row's quote stays as the record of the first choice (r23).
 185. This revision applies plan-review round 3's findings and goes back to `/plan-review`. [engineer-verified: "Yes, revise and re-review (Recommended)"] The label answered the session's question whether to dispatch this revision pass. The option description is the session's wording.
 186. `_lib_worktree_lock_is_mine` returns 0 on a PID match before it reads a session id or the config dir (`_lib.sh:3291`). `TestWorktreeLockIsMine` calls the four-argument form directly with the test process's own, unregistered PID and an empty registry, and expects 0 for a lock under another session id, an old-format lock and a relative config dir (`test_lib_worktree_collision_guard.py:1968`, `:1973`, `:2070`). [verified: read, this revision] A fifth argument the existing rows never pass therefore leaves them green.
 187. `bootstrap-project-plugins.sh` launches the reconciler by the script-relative path `${0%/*}/../scripts/reconcile-project-plugins.sh`, in the background, only when that path is executable (`:107`, `:234-235`). [verified: read, this revision]
-188. macOS's `BUFSIZ` is 1024 (the Command Line Tools SDK's `_stdio.h:203`). [verified: read, this revision] That bash's `printf` builtin emits a line no longer than that as one `write` to an append-mode descriptor is [unverified], and `TestShimLogConcurrency`'s lines at the cap check it.
+188. macOS's `BUFSIZ` is 1024 (the Command Line Tools SDK's `_stdio.h:203`). [verified: read, this revision] That bash's `printf` builtin emits a line no longer than that as one `write` to an append-mode descriptor is [unverified], and `TestShimLogConcurrency`'s lines at the cap check it. No log line goes through `printf` once the shim is Python, so the [unverified] half no longer applies. Each line is one `os.write`. The 1024-byte bound stays as the field table's own, for the reason requirement 15 states (r22; r23 cd R6, be R7).
 189. Requirement 39 first took a bounded Shell matcher with tamper detection, a choice row 190 replaced. [engineer-verified: "Bounded matcher plus tamper detection (Recommended)"] The label answered the session's question on how requirement 39 should end.
 190. Requirement 39 has no Shell ask. [engineer-verified: "Drop the Shell ask (Recommended)"] The label answered the session's next question on requirement 39. The engineer's typed words with it were [engineer-verified: "when we're doing shell matching to try to harden, we've encountered this problem already with hooks where you can't make that safe. You just end up with compounding defensive engineering. So what I'm wondering is, why are we adding more infrastructure there for Cursor?"]
 191. The option descriptions behind rows 189 and 190 are the session's wording, and so is the reading this revision implements. Requirement 39 keeps the write-tool deny, requirement 3's Recovery-only `user_message` and the sessionStart tamper check, and names Cursor's run mode as the boundary. [unverified]
@@ -2909,7 +3416,7 @@ For the adapter:
 299. Phase 4's doc states that agent marker writes fail under Auto-Review (with Sandbox) until Phase 5a writes the grant, and names Allowlist with the sandbox off for marker-gated work until then. The pending row builds its own exceptions tree, and Phase 5a's `TestSandboxGrantWritten`, in a file 5a now lists, tests the real flip (r19 be R2, sdet R5). [unverified: this revision's choice]
 300. Step 16 gains a pass condition that the prompt shows the agent's command in full (cell 3), an allowlist cell (cell 8) and a non-default-option cell (cell 9). The rewrite copies the payload's whole `tool_input` and changes only `command`, and a row checks the key set (r19 be R4, be R5, plat R4). [unverified: Cursor's merge-or-replace of `updated_input` is unobserved]
 301. "Carries `parent_agent_id`" has one definition: absent, `null` or empty takes `conversation_id`, and any other value must pass the grammar or the call denies. A child Write without the field takes its own id and fails closed. Acceptance step 5 records which child tools carry it, and a differential row runs the three resolvers over the edge values (r19 be R1, sdet R7). [verified: `parent_agent_id` on child Shell and Read records only, as the backend review read C5 and the Payload section] The rule's outcome for Write is this revision's reading [unverified].
-302. The sessionStart entry's workspace `sandbox.json` report moves last, after the mark, through `additional_context` only, under one 3-second deadline. It resolves each entry to a canonical absolute path and counts an unresolvable or non-absolute one as widening. The host-walk and version reports stay in step 3 and gain `TestSessionStartReports` (r19 plat R5, ciso R5, sdet R8). [unverified: this revision's choice. The 3 seconds is the plan's]
+302. The sessionStart entry's workspace `sandbox.json` report moves last, after the mark, through `additional_context` only, under one 3-second deadline. It resolves each entry to a canonical absolute path and counts an unresolvable or non-absolute one as widening. The host-walk and version reports stay in step 3, step 2 from r35 (row 380), and gain `TestSessionStartReports` (r19 plat R5, ciso R5, sdet R8). [unverified: this revision's choice. The 3 seconds is the plan's]
 303. OD5's Phase 4 re-run and acceptance step 12 run gated calls in a linked worktree with worktree enforcement on, so the identity walk's cost is measured (r19 plat R2). [verified: the platform review's round-11 timing of about 25 ms per `ps -o comm=` call on this Mac]
 304. `TestSandboxWritableDirs` drives every kind in `marker.sh`'s `WRITE_SKILLS` and `ACTIVE_BYPASS_SKILLS`, runs `pr-diff-against-base.sh` with both artifact flags, asserts each artifact exists, and makes root-level files read-only. Step 10's cell 8 states its layout and a positive confirmation, and names its network call in the doc. Cell 1's uninstalled run is called a baseline. `status`'s `pin-check` count moves to `TestStatusAndCanary` (r19 sdet R3, sdet R9, sdet R10, sdet R11). [verified: `pr-diff-against-base.sh:104-107` as the staff-sdet review read it]
 305. The macOS-only host-walk row runs a copied non-system bash named `Cursor` under a spaced path, with the copy's PID as its oracle, and row 275's claim is narrowed to system binaries (r19 plat R6, sdet R12). [verified: the platform review's round-11 run]
@@ -2994,7 +3501,7 @@ For the adapter:
      Row 322 withdraws the rule, and the tier applies to its Phase 4 re-plan (r21).
 322. The detailed CLI-coexistence launcher rule is withdrawn, and the Installer's CLI-coexistence block states what the Phase 4 re-plan must do. [engineer-verified: "Shrink to requirement + C9, design in Phase 4 (Recommended)"] The label answered the session's question after each review round from 48 to 51 found new seams in the rule's added text. The option description is the session's wording. The session reads the choice as a net reduction that adds no mechanism, and that reading is the session's (r21):
      - withdrawn: the launcher block and everything that served it alone. That is `_lib_cursor_host_pid`'s three-outcome contract and its tokens, start-PID argument and recorded `ps`; the walk's deadline, cap and exec arithmetic; `cli_stand_down`; the `launcher` field and its tokens; `--needs-identity`; `TestLauncherRule` and `TestCliStandDownRecord`; acceptance step 17; requirement 3's exception; the gate matrix's identity-unresolved arms; the walk's chain-builder module and its select-tests rows; and the stand-down's costs, residuals, Recovery and report text;
-     - restored to their pre-r20 contracts: `_lib_cursor_host_pid`, the allow emitter, the session hooks' decline, requirement 38's text and rows, the sessionStart host-walk report (which keeps the field Installer step 3 gives it in requirement 15's log-field table), `TestSessionStartReports`, and requirement 28;
+     - restored to their pre-r20 contracts: `_lib_cursor_host_pid`, the allow emitter, the session hooks' decline, requirement 38's text and rows, the sessionStart host-walk report (which keeps the field that Installer step 3, step 2 from r35 (row 380), gives it in requirement 15's log-field table), `TestSessionStartReports`, and requirement 28;
      - kept: the root record with beforeSubmitPrompt as its one creator, which OD9's attribution follow-up later retires (r21), the `tool_input.cwd` refusal (its text is Repo resolution's; row 323 fixes it), the sandbox report's widening and canonical-root rules, requirement 29 and OD7, the Phase 3 acceptance-only install, the capability shell matrix, the pre-Phase-5a check, C9, and requirement 15's log-field grammar with the run-mode field's closed label (`unreadable`, `unreadable+acceptance-only`), which replace row 320's "the run-mode log field holds text";
      - the gate: a CLI session beside an installed adapter meets its denies until the re-plan states the rule, and Phase 4 does not merge before then.
 
@@ -3009,6 +3516,355 @@ For the adapter:
      - the sandbox rows' placement precondition is one sentence, rows 320 and 322 point to Repo resolution, Recovery's CLI-deny entry applies from Phase 3, the CLI block names a CLI subagent's case 1, step 8 counts subagentStart's id fields, requirement 15 names the `cursor_version` field, and the invalid-id deny is a named resolution deny;
      - each phase's dispatch owns its section's test rows and message texts, and step 17's `CLAUDECODE` premise is [unverified], as row 40 states;
      - Phase 4's file list naming `TestAdapterIdentity`, and the further requirement 36 rows, wait for those phases' code reviews.
+326. The shim and its translation are written in Python, not bash and jq. [engineer-verified: "let's go with python"] The quote answered the session's report of row 327's measurements, and it covers the shim's language only. That the hook scripts and the Phase 5a gate scripts stay bash and source `_lib.sh`, and that the shim runs them with the payload on a pipe, is the dispatching session's scope. The shim's shape, its interpreter flags and requirement 15's mechanisms are the architect's design (r22).
+327. Phase 2's bash and jq first pass started about 4 processes per translate-only run and about 17 counted processes per run with a hook, 7 of them per-step `timeout` caps. Against a Python version of the common allow path, run interleaved on one machine, the medians were [verified: `docs/design-decisions/hook-translation-shim-in-python.md`, read this revision]:
+     - translate only, a small payload, 100 runs: 106.8 ms against 46.1 ms;
+     - with a trivial hook, a small payload, 100 runs: 252.1 ms against 62.9 ms;
+     - with a trivial hook, a 1.4 MB payload, 20 runs: 1326.9 ms against 88.7 ms;
+     - the interpreter alone: 32.2 ms, and 32.9 ms with `-I`.
+
+     A benchmark of the bash and jq first pass's installed entry set against the imported hooks alone gave a Shell call 1.65 s of added time at p95 with a small payload and 2.22 s with 1.4 MB of output, both past the 1 s budget then in force [unverified: relayed; its command and output are not kept in this repository]. A reviewer's timings of the first pass fit a process-count cost rather than an outlier [unverified: relayed; those timings are not kept in this repository]. The doc records that the gap between the two shims, including its growth with payload size and Python's higher p99 on one 1.4 MB row, was not profiled. The doc's limits are two. The Python version covered the common allow path only, so its figures are optimistic. The comparison was one pass on one machine under load (r37).
+328. [engineer-verified: "The extra added time, not extending beyond about 2 seconds is perfectly fine"] The engineer said this about the adapter's added time per call, before row 326's choice. r22 changed no budget on it, and row 340 records the engineer's later restatement of OD5 at 2 s (r22; r23).
+329. `os.path.realpath`, in its default non-strict mode, resolves each symlink in the part of a path that exists and applies `..` to the resolved path. It appends unresolved a part it cannot `lstat`, missing or unreadable, and a symlink loop. [verified: CPython 3.14's `posixpath.realpath` source, read this revision] That this equals `realpath -m`'s result for a missing tail is [unverified]. The staff-backend-engineer review that r23 answers reports 11 paths with no link agreeing with `grealpath -m` on Python 3.15. `TestRealpathParity` checks the rest against `_lib_realpath_m` where `realpath -m` or `grealpath -m` works. On a loop or an unreadable part the two can differ. `_lib_realpath_m` walks to the nearest existing ancestor instead. That test lists those cases by id (r24 cd R3). A difference changes only which root a file tool's hook starts in, never a deny, because Repo resolution's file-tool rule never denies on the resolved form. Row 356's 3.14 floor leaves no older implementation to compare (r22; r23 sdet R8; r25).
+330. `python3 -I` is this repo's form for Python on a gate's path (`marker.sh:952`, `review-pr-checkout.sh:357`), and `_lib.sh:2153` runs `python3 -I -S`. Tests in `test_marker_script.py:1019` and `test_review_pr_diff.py:1209` state that `-I` keeps `PYTHONPATH` out. [verified: grep, this revision] That `-S` skips the `site` module, and with it every site directory and `.pth` file, is [unverified: the CPython command-line docs, not read]. The staff-backend-engineer review that r23 answers reports `site` unloaded under `-I -S` on Python 3.15. Phase 2's interpreter probe settles it (Verification 6), and `TestShimInterpreterIsolation`'s standing rows hold the flags between probe runs (r24 ciso R4, sdet R5, cd R4). `-I` cost no measurable time (row 327).
+331. The first pass bounded the hook with `timeout -k` and waited on that child alone before reading its output back from files (`hook-shim.sh:469`, `:486-494`, in the working tree before Phase 2's PR deletes it). [verified: read, r22] Its `timeout` child also kept bounding the hook after a SIGKILL to the shim. r22 to r25 replaced the wrapper with the shim's own group signals. Row 364 supersedes that choice: the shim runs each hook under `timeout -k` again, with its own read loop in place of the files (r22; r23 plat R4, cd R3; r26 ciso R1).
+332. Python caches an imported module's compiled bytecode under `__pycache__`, which `.gitignore` lists (`.gitignore:1`), and recompiles the script it runs directly on every start. [unverified: the CPython tutorial's section on compiled files, not read this revision] r22 and r23 split the shim on the first half. Row 345 removes the split, so only the second half bears on the design: it grounds requirement 15's no-cache rule, which requirement 28's harness checks by running the shim (r22; r23; r24).
+333. Under a C locale with `LC_ALL` unset, the interpreter's locale coercion (PEP 538) sets `LC_CTYPE` in its own environment. A child the shim starts inherits it. `-I` does not turn the coercion off. On macOS the interpreter also adds `__CF_USER_TEXT_ENCODING`. [unverified: PEP 538 as recalled] The staff-backend-engineer review that r23 answers reports both on Python 3.15 under `-I -S`, from an empty environment and with `LC_CTYPE=C` or `LANG=C`. Phase 2's interpreter probe settles it (Verification 6; r24 cd R4). So a hook started under a C locale may run with a UTF-8 `LC_CTYPE`. The plan discloses that residual in `docs/cursor-adapter.md`'s Limitations section rather than have the shim remove the variables, because the shim cannot tell a coerced value from one the engineer set (r22). That choice was the architect's. Requirement 40's C-locale pairs require the difference by name, so a change in the interpreter's behavior fails them (r23 sdet R9, be R6, prod R6, cd R4).
+334. This plan is not split further at plan-review. Its `Projected diff:` line stated about 27,000 changed lines across all phases when the engineer answered, and each phase already merges as its own PR. [engineer-verified: "Proceed anyway"] The label answered `/plan-review`'s question on whether to split into smaller PRs now or proceed. The option description was the session's proposal (r22). The line's later figures (r24 be R12, prod R5; r25 prod R1, cd R9):
+     - at r24 it stated about 28,750. The growth had two causes: in the shim's code, the bounded hook run, the TERM states, the existing-file rules, the NUL outcomes and `self_check` added more than the r23 launcher file's removal took out, and about 1,600 Phase 2 test lines were added;
+     - at r25 it stated about 29,450. r25's fixes add about 450 Phase 2 lines and about 250 Phase 3 lines, net of the test rows row 356 removes (r26 cd R11);
+     - at r26 it stated about 29,200. Row 364 takes about 150 lines from the shim, row 364 and row 367's trims take about 300 net from Phase 2's tests, and r26's fixes add about 20 Phase 2 doc lines and about 150 Phase 3 lines (r26);
+     - at r27 it stated about 29,500, about 50 above the 29,450 that the label below answered. r27's fixes add about 150 Phase 2 lines and about 150 Phase 3 lines, net of row 372's trims (r27);
+     - at r28 it stated about 29,600. r28's fixes add about 100 Phase 3 lines, and Phase 2's change nets to about 10, after row 374's trim (r28);
+     - at about 29,450 the engineer answered again. [engineer-verified: "Proceed anyway"] The label answered the session's question on whether to re-affirm at about 29,450 lines or trim test rows first. The option description was the session's proposal. r26 and r27 together netted about 50 above that figure, and r28 adds about 100. The label set no ceiling, and the plan sets none (r28 prod R5).
+     - at about 29,600 the engineer answered a third time. [engineer-verified: "Proceed anyway"] The label answered the session's question on whether to re-affirm at about 29,600 lines or trim test rows first. The option description was the session's proposal.
+     - at r29 it stated about 29,600. r29's fixes add about 35 Phase 3 lines and take about 15 from Phase 2, so the unrounded phase parts rise about 20 (r29).
+     - at r30 it stated about 29,800, about 200 above the 29,600 of the third answer. r30's fixes add about 150 Phase 3 lines, net of the dropped TERM child, and about 30 Phase 2 lines, so the unrounded phase parts rise about 180 (r30).
+     - at r31 it stated about 29,650, about 50 above the 29,600 of the third answer. Row 377's cut takes about 150 Phase 3 lines, the work-tree parts of r28's to r30's Phase 3 additions, and leaves Phase 2 unchanged (r31).
+     - at r32 it stated about 29,650, unchanged. r32 is a text-only fix, so it changes no phase's figure. The figure excludes `.claude/plans/`, where its 0 to 5 lines fall (r32; r33 cd R10).
+     - at r33 it states about 29,800, about 200 above the 29,600 of the third answer. r33's fixes add about 150 Phase 3 lines, net of the dropped null-stdin stub and text-builder row. Its one Phase 2 parameter, about 3 lines, falls under that phase's rounding (row 378; r33).
+     - at r34 it stated about 29,900, about 300 above the 29,600 of the third answer. r34's fixes add about 100 Phase 3 lines net and change no other phase's figure (row 379; r34).
+     - at r35 it stated about 29,800, about 200 above the 29,600 of the third answer. Row 380's cut takes about 100 Phase 3 lines and changes no other phase's figure. Restating the test rows as obligations changes no figure, because the Phase 3 PR still writes those tests (row 380; r35).
+     - at r36 it stated about 29,800, unchanged. r36 is a text-only fix, so it changes no phase's figure (r36).
+     - at r38 it states about 29,800, unchanged. Row 382's cut takes about 30 Python lines from Phase 2's shim, and the name rows replace the read's rows at about their size. Both fall under that phase's rounding (estimate; row 382; r38).
+335. The shim runs each hook through `subprocess`. [engineer-verified: "Use subprocess.run (Recommended)"] The label answered the session's question on how the shim runs a hook, after r22's reviews found the hand-written read loop could lose a deny printed just before exit. Row 347 records the engineer's later answer that the label covers `Popen` with a process-group kill, and row 348 the read loop r24 puts in place of `communicate`. The rest of this row is the architect's (r23; r24):
+     - `subprocess.run` calls `Popen.communicate`, and on a timeout it kills only the hook and reaps it before it re-raises. [verified: CPython 3.14's `subprocess.py:555-571`, read r23] So the shim drives `Popen` itself. Under row 364 it starts the `timeout` wrapper and sends no group signal of its own (r26);
+     - `communicate` reads stdout and stderr until end-of-file and then waits for the process. [verified: its docstring, `subprocess.py:1178-1180`, read r23]
+     - its POSIX loop writes the payload in `PIPE_BUF` chunks, drops the stdin pipe on a broken pipe, and appends each read of up to 32 KiB to a list with no bound. [verified: CPython 3.14.7's `subprocess.py:2159-2177`, read r24]
+     - requirement 15 states the wrapper, the bound and the status map.
+336. The launcher, outside the module, handles every shim fault. [engineer-verified: "Launcher handles it (Recommended)"] The label answered the session's question on where a fault in the Python shim is handled. The handler's scope, its fixed text naming only an exception's class, its argv scan, the `uninstall` that runs without the module (row 344), the Recovery entries and the canary rows are the architect's design (requirement 3; r23). Row 345 supersedes this row's mechanism: no launcher or module exists, and the launch guard's fault tail decides every shim fault (r24).
+337. The self-protection covers the module and the adapter's script directory, and the bytecode cache is a disclosed residual. [engineer-verified: "Protect module, disclose cache (Recommended)"] The label answered the session's question on the review's finding that the protected launcher now holds almost no logic. Requirement 39's protected-path entries, test rows and residual text are the architect's (r23). Row 345 removes the module and the cache. `hook-shim.py` and the two JSON files it reads are now the protected files, the script directory stays protected, and no cache remains to disclose (r24; r25 cd R8).
+338. The shim inherits the toolkit's Python floor. [engineer-verified: "Inherit the toolkit floor (Recommended)"] The label answered the session's question on how the shim's floor was held, when that floor was the toolkit's 3.11 (r23; r24). Row 356 supersedes this row's mechanism, because the engineer later chose a 3.14 floor for the adapter (r25). The fact that stands:
+     - `README.md:111` names stock macOS `/usr/bin/python3` as 3.9.6 and Debian 11's as 3.9. CI runs 3.14 only and says it exercises no older minor. [verified: `README.md:111`, `.github/workflows/tests.yml:105-106`]
+339. Classifiers over agent-influenced text follow one ASCII rule, and one corpus tests them. [engineer-verified: "ASCII rule + one test corpus (Recommended)"] The label answered the session's question on the Python text-semantics findings. Requirement 15's text rules and the corpus's rows are the architect's. The staff-backend-engineer review that r23 answers reports that Python's `json` accepts `NaN`, `Infinity`, `1e999` and a lone surrogate escape where jq 1.8.2 differs, and that invalid UTF-8 raises a decode error where jq substitutes U+FFFD [unverified: relayed, not run in this revision] (r23).
+340. OD5's budget is 2 s at the 95th percentile. [engineer-verified: "2 s p95 (Recommended)"] The label answered the session's question on which budget governs OD5 after rows 184 and 328 diverged. Reading it as OD5's existing measure, added hook time at the 95th percentile per Shell, Read and Write call, is the architect's. It supersedes row 184's 1 s, both rows keep their quotes, and OD5's miss route is unchanged (r23).
+341. Every other finding of the round that r23 answers is applied as a fix. [engineer-verified: "Apply all as fixes (Recommended)"] The label answered the session's question on the findings that held no design choice. Each fix's form is the architect's, and row 342 records the one finding whose premise the code did not bear out (r23).
+342. Requirement 22's U+001F field-shift deny is `_lib_parse_tool_input_or_deny`'s, a hook-side deny at `_lib.sh:545-550`, and not the first pass's facts line. [verified: grep and read of `_lib.sh`, r22] The staff-backend-engineer finding that the port removed its subject therefore did not hold, and the bullet is restated rather than deleted, which that finding allowed (r23 be R6).
+343. Phase 1's run went on only past a payload record (Run order step 3), and `probe.sh` writes one only when `python3` reports 3.11 or later (the probe's steps 3 to 5). [verified: read, this revision] So the run machine's hook-PATH `python3` met the floor. That is evidence for one machine, not for stow consumers, and r22's statement that Phase 1 recorded no version is corrected (r23 prod R5).
+344. `uninstall` runs without loading shim code, so `cursor-adapter.py` holds the generated command grammar, the shim's argument vocabulary included (row 345; r24). The shim's parser accepts that vocabulary with abbreviations off. It builds the parser from module data that lists its flags and modes. Phase 3's round trip reads that data (r25 sdet R4, cd R4; r26 cd R5). The staff-backend-engineer review asked for one definition in the shim, which an `uninstall` that loads no shim code rules out. Two files therefore name the flags, a small duplicated value under `CLAUDE.md`'s single-source exceptions.
+     - The r23 launcher file's literal `--fail-open` scan, a third copy, went with that file. The generator writes the flag and the fault tail's kind from the one `failClosed` field (r24 sdet R7).
+     - Two copies still have to agree, so Phase 3's round trip stays. It runs in both directions, with non-vacuity controls. It also checks that the kind the shim's parser reads, the fault tail's kind and the entry's `failClosed` field agree (Critical files, Phase 3).
+     - A Phase 3 row runs `uninstall` with `hook-shim.py` replaced by one holding a syntax error.
+     - This design is the architect's (r23 be R2, prod R4; r24 cd R6).
+345. The shim is one Python file, `hook-shim.py`, and the generated shell command decides every shim fault. [engineer-verified: "One file, shell handles faults (Recommended)"] The label answered the session's question on the shim's shape, which the session asked after an architect consult on the round-2 reviews of r23. Those reviews found that the launcher-and-module split's only stated ground was the module's bytecode cache (staff-backend-engineer R1, staff-product-engineer R1). The row supersedes row 336's mechanism, and it removes (r24):
+     - the launcher file, its import guard, its `sys.path` append and its `--fail-open` argv scan;
+     - the imported module, its bytecode cache and that cache's residual;
+     - OD5's cold and warm arms, the launcher's 3.9 parse requirement and the launcher's import-fault rows.
+346. The design under row 345's label came to this revision as the session's summary of the option and the consult. That summary is the session's wording, not the engineer's, and these choices within it are the architect's [unverified: no engineer words beyond the label] (r24):
+     - the launch guard holds the shim's stdout with `out=$(…)` and prints it only after a clean exit, so a fault never leaves a partial document ahead of the tail's `{}`;
+     - the guard's own readability test and exit 127 go, because each case they caught reaches the fault tail through the call's status;
+     - the shell does not `exec` the interpreter, because it must read the status;
+     - `hook-shim.py` keeps one top-level handler, for the `shim-fault` log line and to keep a traceback's payload text off stderr. The block decision stays the tail's;
+     - `cursor-adapter.py`, its self-check included, and the tests load `hook-shim.py` by compiling its source, so no loader reads or writes a bytecode cache. The adapter's loader and the tests' loader in `_cursor_payloads.py` are two copies of a few lines, a small duplicated value under `CLAUDE.md`'s single-source exceptions. The copies exist because Phase 2's tests come before `cursor-adapter.py` exists, and the adapter imports no test helper (r25 cd R5);
+     - the script directory stays protected, because the shim reads `field-table.json` and `parity-exceptions.json` there on every call. Those two files join `hook-shim.py` as protected files, as sibling inputs of the same run.
+     The consult's grounds: the hooks doc calls exit 2 a block (row 154), and Phase 1 saw a native preToolUse exit 2 block and show its stderr (Phase 1 observations, Decisions). The consult's unverified items are row 351's. Row 358 adds the deny document beside exit 2 (r25).
+347. Row 335's label covers `Popen` with a process-group kill. [engineer-verified: "Yes, Popen is fine (Recommended)"] The label answered the session's question on whether "Use subprocess.run (Recommended)" covers `Popen.communicate` with the shim's own process-group kill. Row 364 removes the process-group kill, and the shim still drives `Popen`, now on the `timeout` wrapper (r24; r26). Row 364's later label, "Use timeout -k (Recommended)", covers that change, by the question it answered (r27 ciso R3, plat R7).
+348. The shim reads the hook's pipes in its own loop, `communicate`'s POSIX loop with a retention cap, and does not call `communicate` (requirement 15; r24 be R3, ciso R3, plat R2):
+     - `communicate` keeps every byte until both pipes reach EOF (row 335), so no output cap could hold while the hook runs;
+     - the dispatching session listed the retention cap among the round's fixes, not its choices;
+     - [engineer-verified: "Yes, own read loop (Recommended)"] The label answered the session's question on whether rows 335 and 347 cover a loop over `Popen`'s pipes in place of `communicate`. The other course, `communicate` with a Limitations entry that sizes the unbounded buffer, was set aside.
+349. The shim's grammar was held to the 3.11 floor by one parse test. [engineer-verified: "Add one 3.11 parse test (Recommended)"] The label answered the session's question on how row 338's floor is held (r24). Row 356 supersedes this row's test, so `TestPythonFloor` goes (r25). Row 356's later label, "Adapter requires 3.14 (Recommended)", covers that removal (r27 ciso R3). The record (r24; r25 cd R3; r26 cd R1):
+     - [engineer-verified: "I don’t want to add more tests to support 3.11"] The quote answered the session's question on adding a PEP 701 f-string check to the shim's parse test, which was declined. Under row 356 no 3.11 test remains.
+350. The hook run's constants are the plan's choice, and no vendor document fixes them (requirement 15; r24 be R11, plat R3, sdet R3):
+     - the 10-second default deadline and the 2-second grace period, now the wrapper's `-k`, are the first pass's (`hook-shim.sh:37-38`, `_cursor-adapter-lib.sh:45`, in the working tree before Phase 2's PR deletes them). Its header set the default against Cursor's default `timeout` of about 60 s (O22). [verified: read, r24]
+     - the output cap of 1 MiB per stream is also the first pass's (`_cursor-adapter-lib.sh:40`). [verified: read, r24; re-read r38] The first pass's existing-file cap (`:38`) has no Python counterpart (row 382; r38 ciso R1).
+     - the 1-second drain bound and the 2-second margin are new. The margin covers interpreter start-up, about 33 ms (row 327), which falls before the deadline's clock starts, with room for a loaded machine;
+     - the harness registrations that state a `timeout` hold 10 or 20 seconds, and none of them carries `onFailure` [verified: grep of `claude/.claude/settings.json`, r24]. Each takes its own `timeout` as its deadline.
+351. What Cursor does with a shim entry it ends, and what it shows for a fail-closed one, is [unverified]. Phase 3's run records the first two items in acceptance step 4, and no case records the third (r24 sdet R4, plat R3; r26 cd R2; r28 cd R1):
+     - which signal Cursor sends on its timeout, to which process, and in which shell it runs a hook command, in case 3 (r25 ciso R4);
+     - whether Cursor shows a hook command's stderr beside an exit-2 block on beforeShellExecution and beforeReadFile, which Phase 1 saw on preToolUse only, in cases 9 and 10. No generated entry is fail-closed on beforeSubmitPrompt (r25 prod R6);
+     - what Cursor does with a signal death of a fail-closed command it did not send. The doc claims no fail-open for it. Phase 1 saw Cursor's own timeout kill of a `failClosed` entry block (Phase 1 observations, "Hook execution contract"; r26 ciso R3; r27 sdet R3; r28 cd R2).
+
+     The plan's decisions on these items (r27 cd R7):
+     - `TestLaunchGuard` runs the command under `/bin/sh`, `bash` and `zsh`. A shell outside that set goes to the engineer as a plan revision, and until then the doc names the three as the tested shells (r25 ciso R4);
+     - the design expects that, whichever process Cursor's signal reaches, the wrapper keeps bounding the hook unless the signal is a SIGKILL to the wrapper itself. Case 3 checks that expectation (requirement 15; row 364; r26 be R2).
+352. The round's findings outside rows 345 to 349 are applied as fixes, by the dispatching session's sort. [unverified: no engineer label covers the sort] Each fix's form is the architect's (r24).
+353. The first pass's NUL rows that r23 placed in `TestDirectoryPin` sit in `TestPayloadValidation` (`test_cursor_adapter_shim.py:1060-1084`), and its `loop_count` spelling row at `:1105-1111`. [verified: read, r24] Python's `json` reads `100.0`, `1E2`, `1e2`, `0.0` and `-0.0` as floats and `-0` as the integer 0 [unverified: the staff-sdet review's run, relayed]. Critical files states each row's disposition (r24 be R4, sdet R2).
+354. Superseded by row 364. It recorded relayed runs of `Popen`'s start errors on a script and of `os.waitid` with `WNOWAIT` [unverified: relayed]. Under the wrapper, a script's start error reaches the shim as the wrapper's 126 or 127, so the shim tests the script first (requirement 3), and no `waitid` call remains. `Popen`'s error naming the working directory for a failed `chdir` still gives the unenterable-directory outcome (r24 be R6, be R7; r26).
+355. `claude/.claude/settings.json` holds 35 `"onFailure"` registrations, each `"block"`. [verified: grep -c, r24] Registration states that count (r24 cd FYI).
+356. The adapter requires python3 3.14 or later, and the toolkit's documented 3.11 floor stays unchanged elsewhere. [engineer-verified: "Adapter requires 3.14 (Recommended)"] The label answered the session's question on the adapter's Python floor, which the session asked after the engineer typed [engineer-verified: "The Claude config toolkit only supports 3.14 can you confirm? So why are we trying to support a different version with the cursor adapter. Let’s simplify this please"] (r25 be R5, plat R2, plat R8, prod R5):
+     - the repository's own floors (r26 cd R9):
+       - the toolkit documents python3 3.11 or later (`README.md:111`, `install.sh:83`);
+       - ruff targets `py312` (`pyproject.toml:3`);
+       - CI runs only 3.14 (`.github/workflows/tests.yml:106`);
+       - no `requires-python` key or `.python-version` file exists.
+
+       [verified: the dispatching session's reads, r25; `tests.yml:106` re-read by plan-architect] The typed sentence's premise, a toolkit that supports only 3.14, differs from that evidence, and the ledger does not record whether the engineer saw it before choosing. The label carries the decision (r26 ciso R6);
+     - `install` and `check` compare the version they already read from the recorded python3 with 3.14, and refuse below it. The shim carries no floor check and no `interpreter-floor` outcome. These are the architect's design;
+     - the bare-name `python3` the hooks call keeps the toolkit's 3.11 floor, because the hooks are the toolkit's code. That reading is the architect's [unverified: no engineer words on the hooks' interpreter]. `check` and `status` print that interpreter beside the recorded one (Installer; r26 ciso R6, plat R3);
+     - this row supersedes row 338's mechanism and row 349's test. `TestPythonFloor`, `TestShimFaults`' below-floor row, the self-check's floor check, the floor check's spelling rule and the `UP036` discussion go;
+     - [engineer-verified: "Keep both (Recommended)"] The label answered the session's question on whether row 349's typed sentence covers `TestShimFaults`' below-floor row and `TestPrerequisitesAndContract`'s failing-self-check row. The label is moot for the first row, which is removed with the floor check it tested. The second stays with a failing condition other than the floor, a malformed `field-table.json`, because the self-check's other checks need one real-interpreter row (r25 sdet R5; r26 prod R7);
+     - the staff-platform-engineer R8 and staff-product-engineer R5 findings went to the engineer as these questions, and the labels above resolve them;
+     - the "or later" in this row's first sentence rests on row 366's later label, "3.14 or later (Recommended)" (r27 plat R7).
+357. Superseded by row 364: no `os.waitid` call remains, so its macOS availability and Darwin's early return for a stopped child no longer bear on the design. It recorded `os.waitid` as present on macOS from Python 3.13 [verified: CPython's 3.13.0a3 changelog, issue 113536, as the dispatching session read it, r25] (r25 be R5, ciso R2, plat R2; r26).
+358. On a fail-closed entry the fault tail prints the entry's own deny document, which carries the fixed fault text, and still writes that text to stderr and exits 2. [engineer-verified: "Print deny JSON too (Recommended)"] The label answered the session's question on the fault text on beforeShellExecution and beforeReadFile. Phase 1 saw a deny document block on those events and show its message, and recorded no exit-2 block there (Phase 1 observations, Decisions; r25 ciso R1, prod R3):
+     - the tail prints the document on preToolUse entries too, so every fail-closed entry has one tail shape. [engineer-verified: "All events, one shape (Recommended)"] The label answered the session's question on extending the document past the two events;
+     - `generate` renders the document with the shim's own output mapper, so no second copy of the output table exists. That is the architect's design;
+     - Phase 3's run still observes the block on each fail-closed event class (acceptance step 4, cases 9 and 10).
+359. A hook slower than its entry's deadline is denied with the timeout outcome under Cursor. The plan records that in the doc's Limitations section, with no measurement or per-hook deadline. [engineer-verified: "Limitation note only"] The label answered the session's question on the staff-platform-engineer finding that the 10-second default deadline is shorter than a registered gate's documented bound. The engineer also typed [engineer-verified: "I feel like the correct fix is to make the hook more performant for both harnesses"], which the plan records as context and leaves out of scope (r25 plat R1):
+     - Claude Code's default hook timeout is 600 s (`docs/hooks.md:458`), and `require-diff-size-prompt` allows on its own cap kill (`require-diff-size-prompt.sh:39-41`). [verified: read, r25]
+     - the diff-size gate is the known candidate. Its state read documents about 8 capped git processes and an upper bound of 102 s (`_lib.sh:4780-4782`), so a slow repository can pass 10 s without a very large diff. [verified: read, r26] (r26 plat R5);
+     - the repo holds no measured runtime for that gate, so nothing shows it exceeds 10 s [unverified: the dispatching session's search, relayed];
+     - `status` gains no slowest-hook report, because none was planned.
+360. The round's findings outside rows 356 to 359 are applied as fixes, by the dispatching session's list. [unverified: no engineer label covers that list] Each fix's form is the architect's (r25).
+361. Superseded by row 381: the shim fills no `old_string`, so no decode of its own has to match the dependency helper's read. It recorded that the helper reads the manifest with `Path.read_text(encoding="utf-8")` [verified: read, r26; CPython 3.14.7's `pathlib/__init__.py:780-788`, read r27]. Under that call's universal newlines, a byte-exact `old_string` from a file holding a CR was no substring of the pre-state (r25 ciso R5; r26 be R1, ciso R2; r27 be R4; r38 ciso R1; r39 cd R6).
+362. Superseded by row 364: the shim sends no group signal, so no `killpg` error case remains (r25 ciso R2; r26).
+363. Under macOS `/bin/sh` and zsh, `echo` turns `\n` into a newline and `\\` into one backslash, and bash's `echo` does not [unverified: the staff-sdet review's run, relayed]. dash's `echo` also interprets backslashes [unverified: the reviews' recall, not run]. That a redirection on the interpreter call also takes the shell's own "not found" text for that command, under `/bin/sh`, bash and zsh, is [unverified]. `TestLaunchGuard`'s byte-for-byte and exact-stderr rows settle both under each shell (Registration; r25 sdet R1, be R2, be R7).
+364. The shim runs each hook under the recorded `timeout -k`. [engineer-verified: "Use timeout -k (Recommended)"] The label answered the session's question on the ciso-reviewer's round-4 finding that the shim's deadline and group-kill machinery was hand-rolled where a required binary gives the same outcome. It supersedes rows 354, 357 and 362, and row 331's group-signal choice. Rows 347 and 348 stand: the shim drives `Popen` on the wrapper with its own read loop (r26 ciso R1).
+365. The design under row 364's label is the architect's, from the session's option description [unverified: no engineer words beyond the label] (r26):
+     - GNU `timeout`'s behavior, as the hooks' wrapper header records it (r27 cd R4):
+       - it exits 124 when its cap fires, even when the hook traps TERM and exits 0;
+       - it exits 137 when `-k` escalates to SIGKILL;
+       - it gives 125, 126 and 127 for its own failures;
+       - it puts its child in a new process group unless run with `--foreground`;
+       - its `-k` acts only while that child lives.
+
+       [verified: `_lib.sh:69-120`, `_lib_capped_for`'s header]
+     - GNU coreutils 9.12's `timeout(1)` page states (r27 be R1, sdet R1):
+       - "DURATION is a floating point number", so a fractional time left is accepted;
+       - "A duration of 0 disables the associated timeout", which row 368's floor answers;
+       - under `--foreground`, "children of COMMAND will not be timed out";
+       - exit 137 means "COMMAND (or timeout itself) is sent the KILL (9) signal".
+
+       [verified: the man page Homebrew's coreutils 9.12 installs, read r27]
+     - BusyBox returns the hook's own status when it traps TERM and exits cleanly (`_lib.sh:113-114`), so `install` refuses a `timeout` that is not GNU's;
+     - through `Popen` on macOS `gtimeout` 9.12, the staff-backend-engineer review's run saw (r27 be R3, sdet R7; r28 cd R3):
+       - a TERM-ignoring hook that `-k` escalates arrive as death by SIGKILL, not exit 137;
+       - a negative time left give 125.
+
+       [unverified: relayed] That fits the page's "(or timeout itself)". The Linux build is unmeasured. So the real rows observe death by SIGKILL, and only the status-map unit row holds exit 137;
+     - the wrapper adds one process start per hook call (r27 cd R4):
+       - the nearest measured figure is the design-decision file's `jq -n .` floor, 8.2 ms at the median;
+       - for scale, the Python-with-hook p95 is 87.5 ms, and OD5's budget is 2 s.
+
+       [verified: `hook-translation-shim-in-python.md:20`, `:23`, read r26] The wrapper's own cost is [unverified] until Phase 2's benchmark measures it;
+     - the removed machinery is listed in Alternatives set aside, under the deadline and group kill hand-rolled in the shim. Its `terminated` log line went with it (r27 cd R5; r28 cd R4);
+     - the doc names the hook run's residuals, which Critical files' Phase 3 doc list states (r27 be R2; r28 cd R4).
+366. The adapter's floor reads "3.14 or later". [engineer-verified: "3.14 or later (Recommended)"] The label answered the session's question on the staff-platform-engineer finding that the engineer's typed "only supports 3.14" and the plan's "or later" differ. CI tests only 3.14, so a later minor is allowed but untested, and the Installer and Limitations say so. That Homebrew's `python3` already resolves to 3.15.0 is [unverified: the staff-platform-engineer review's run, relayed] (r26 plat R1).
+367. Round 4's other findings are applied as fixes, by the dispatching session's list. [unverified: no engineer label covers that list] Each fix's form is the architect's. Findings that tested removed machinery are moot, not fixed: staff-sdet R1 and R2, and the `waitid` half of R4. The staff-sdet R8 trims apply only where the row guards no fail-closed deny or data-loss path (r26):
+     - `TestShimFaults`' closed-reader pair, its unwritable-state-dir row, and the newline clause of its short-count row;
+     - the `os.stat` `PermissionError` row, which the closed-vocabulary canary row replaces;
+     - three of `TestWriteTranslation`'s four unreadable ids, keeping mode 000 and a path through a regular file;
+     - the guard's no-trailing-newline rule, and the `-n` document in `TestLaunchGuard`'s pass-through row;
+     - `TestLaunchGuard`'s top-process TERM row. Row 364 removes its process-group TERM row;
+     - `TestRecoverySectionResolves`' r25 Limitations assertions.
+368. The hook run's deadline edges are the architect's design, and no vendor document fixes their values (requirement 15; r27 be R1, be R2, ciso R2, plat R1, sdet R1, sdet R7; r28 be R1, ciso R2; r29 be R1, cd R7):
+     - the 0.1 s time-left floor keeps a three-decimal rendering from ever reaching 0, which GNU reads as no timeout (row 365). A shortest round-trip decimal would avoid 0 too, but with the floor the fixed format is enough;
+     - waiting on the wrapper after an output-cap deny or at the bound would hold the deny until the hook ends, while the wrapper's timer still bounds the hook (requirement 15's hook run). The shim sends the wrapper no signal there either, and Alternatives set aside says why;
+     - the bound takes the timeout outcome without a look at the wrapper's status, because that outcome still denies on a fail-closed entry;
+     - the cost of skipping that look falls only on an exited hook whose pipes a child still holds, which the bound then denies. No shipped hook leaves such a child: the one detached child the staff-backend-engineer review found, at `bootstrap-project-plugins.sh:235`, holds no pipe [verified: read, r29] (r30 cd R8).
+369. The timeout outcome needs the shim's clock to have reached the deadline at the wrapper's exit (requirement 15; r27 be R3, prod R4, plat R3):
+     - 124 is also the hook's own status when the hook exits 124, and 137 also arises as a child's own signal death, so a status alone cannot prove the cap fired. [verified: `timeout(1)`'s "the exit status of COMMAND otherwise", and `_lib.sh:111-112`, read r27]
+     - the wrapper starts after the shim reads its clock, so a cap that fired leaves that clock past the deadline. A misread label still denies on a fail-closed entry;
+     - the log gains no raw-status field, which the staff-platform-engineer review asked for, because the clock test already tells a cap from a crash.
+370. Every tool's `command -v` path, the wrapper's and python3's included, meets one path rule at `install`, and the wrapper also meets a behavior check. `install` does not judge the `sys.executable` it records for python3 again (row 377). The Installer states the rule and the check, and this row keeps their grounds (r27 ciso R1, prod R1, plat R6; r28 cd R3, cd R4; r32):
+     - a relative recorded path would resolve against the hook's workspace directory [unverified: the ciso-reviewer's scratch run of `subprocess.run` with `cwd` set, relayed];
+     - the order in which `install` judges the two names is `_lib_capped_for`'s (`_lib.sh:132-135`) [verified: read, r27]. A chosen wrapper that fails the exit-3 child is refused, with no fallback to the other name (r30 plat R1);
+     - the GNU-only rule is stricter than `README.md:110`, which also accepts BusyBox 1.35.0 or newer. It is also stricter than `install.sh:1038-1046`, which only warns when neither name exists. [verified: read, r27]
+     - `_lib.sh:115-116` bars a capped child from exiting 0 on TERM, so BusyBox serves the hooks' own caps;
+     - no rule bars a gate the shim runs from exiting 0 on TERM, which requirement 15's TERM rows cover;
+     - these rules are the architect's design.
+371. The `start-failed` split by cause, which requirement 3's deny rule and the Recovery entry state, and the sessionStart entry's re-test of the recorded wrapper's path, which its step 7 states, are the architect's design (Installer; r27 prod R3, plat R2, sdet R7; r28 prod R3; r29 cd R7; r35).
+372. Round 5's other findings are applied as fixes, by the dispatching session's list. [unverified: no engineer label covers that list] Each fix's form is the architect's (r27):
+     - the trims, each of a row that guards no fail-closed deny or data-loss path (r27 sdet R2, sdet R3, sdet R8):
+       - acceptance step 4's case 11, which had no control and on whose result no code depends;
+       - `TestShimHookRun`'s SIGKILL-to-the-shim row. The wrapper is a separate process with its own timer, which the shim's death does not reach, and that is reviewed, not tested;
+       - the gate-matrix dependency row. `ask-new-dependency-disclosure.sh` never denies (`:12-14`), and the hooks tree's Edit-with-`content` row pins the hook's result on the translated payload (row 381). The trim still stands (r39 sdet R3);
+       - the tamper case that replaces the tail document by `{}`, beside the allow-document case;
+       - the per-refusal `check` repeats, leaving one `check` row;
+       - the errno-less `OSError` input of the canary row;
+       - `TestRecoverySectionResolves`' locale-residual assertion;
+     - the memory row runs on Linux only, so its `ru_maxrss` handling has no unrun macOS branch (r27 be R6, plat R4);
+     - declined (r27 plat R5, be R1, ciso R1):
+       - rows for the bare-name `python3` below 3.11 and `bash` below 5.2. A below-floor tool there makes a hook fail, which a fail-closed entry denies;
+       - a real-wrapper row at the deadline's edge. The unit row with a stand-in clock holds the floor without a timing race;
+       - a workspace-file canary for a relative recorded wrapper. The shim takes the install-record outcome before any process starts;
+     - the self-check row's recorded python3 is a scratch symlink to the test's own interpreter (r27 sdet R5):
+       - a Python started through a symlink reports that path as `sys.executable`, as a virtual environment's does [unverified];
+       - an exec stub would not serve, because `install` resolves through it to the real interpreter, as it does for a pyenv shim;
+     - row 356's "Keep both" note stands unchanged (r27 sdet R9).
+373. Superseded by row 377, which records the engineer's later label and removes the work-tree condition (r31; r33 prod R4, be R5). The tool-path rule's work-tree condition refused a path only inside the work tree of the directory `install` ran from. [engineer-verified: "Only the repo install runs from (Recommended)"] The label answered the session's question on how `install` decides a recorded tool or python3 path is unsafe. The session asked after a staff-platform-engineer finding. Homebrew's prefix is a git work tree [verified: `ls -d` of the prefix's `.git` entry on the engineer's machine, r28], and its `bin` entries link into it [unverified: the staff-platform-engineer review's `ls -l`, relayed]. r27's rule, which refused any path in a work tree, would therefore have refused every Homebrew tool, by the session's reading. The option description was the session's proposal. Row 375 records the engineer's reading of the label. What the label chose, and the architect's remainder:
+     - Homebrew, pyenv and system paths pass, and no package manager's prefix is hardcoded;
+     - python3's virtual-environment refusal stays;
+     - the test's form and its place before `install` runs the file, which the Installer states, are the architect's design (r28 plat R1, ciso R3; r29 be R2, cd R8; r30 cd R2).
+374. Rounds 6 and 7's other findings are applied as fixes, by the dispatching session's lists. [unverified: no engineer label covers those lists] Each fix's form is the architect's (r28; r29):
+     - trimmed: `TestShimHookRun`'s TERM variants "exits 2", "an `EXIT` trap that ends `exit 0`" and "exits 0 with empty stdout", the child row's second control, and the real-process plain `check` run of the removed-wrapper row (r28 sdet R3; r29 sdet R5, sdet R6, cd R9). The shim sees the wrapper's 124 for every TERM behavior, so the kept variant runs the same fail-closed timeout deny as the trimmed ones. On the recorded wrapper, the `--version` GNU test and the statuses row 365 cites from GNU's page stand in for that contract (row 375). An in-process plain `check` call holds the removed-wrapper row's plain `check` case (row 378; r33 be R3; r34 cd R6). It replaced r30's in-process row of the child-failure text builder (r30 be R3, plat R3, prod R3).
+375. Superseded by row 377 in its third label and its work-tree fixes, all but the listed-order rule. Row 377 records the engineer's later label, which removes the work-tree condition (r31; r33 cd R1, prod R4). Round 8's findings are applied as fixes, by the dispatching session's list, with no Limitations line for what stays unfixed. [engineer-verified: "Fix but I don’t want to just give a blanket statement in limitations. I need to know what those are before we move on"] The engineer typed those words in answer to the session's question on how to handle round 8's findings. [engineer-verified: "Drop it (Recommended)"] The label answered the session's question on the staff-platform-engineer finding that the self-check's TERM child re-tests by behavior what the `--version` GNU test settles. [engineer-verified: "Work tree of install's cwd"] The label answered the session's question on row 373's two readings, which the ciso-reviewer raised: the work tree of `install`'s working directory, or the work tree holding the checkout `install` runs from. The option descriptions were the session's proposals. The rest of this row is the architect's design (r30):
+     - the TERM child goes, and these go with it (Installer; Alternatives set aside; r30 plat R1; r33 cd R2):
+       - its no-timer stub;
+       - its refusal text;
+       - its in-process failure row;
+       - the sleep tied to the shim's constants;
+       - its 2 s deadline;
+       - row 374's ground for it;
+       - the 2 s wait every accepting `install` and `check` made, and the PR body's record of that wait;
+     - the exit-3 child stays, because no version string shows that the real hook-run function runs under the recorded python3;
+     - the probe bound gets its own stall text, stdin from `/dev/null` and a row per entry point, and the sessionStart entry's step 1 gets a 4 s total deadline. The 4 s, the row's 0.5 s and 1.5 s values and its 1 s margin are the plan's choice. Step 1's 4 s and step 8's 3 s leave 3 s of the entry's 10 s `timeout` (r30 be R1, be R2, plat R2, prod R1, sdet R4). Row 378 sets the row's deadline to 1.0 s, production's ratio, and narrows the 3 s to probes that start (r33). Row 379 leaves the row's deadline at production's 4 s and moves its arithmetic to a unit row (r34 sdet R1). Row 380 moves the step to step 7, after the first-call mark, and removes the 4 s deadline, its arithmetic and that unit row (r35);
+     - superseded by row 377, all but the listed-order rule: the work-tree refusal's remedy changes what PATH resolves, and never advises a change of directory. The rule's conditions are judged in their listed order, and a walk error refuses. Its row gains python3's two passes, a raw-inside value, an allow canary, a no-`.git` allow value and a walk-error value, and every `install` and `check` row sets its working directory (r30 ciso R1, ciso R2, ciso R4, sdet R1, sdet R3, sdet R8);
+     - plain `check` prints the wrapper-path report whether or not its self-check fails, and runs the self-check only under a recorded python3 whose floor probe passed. The child-failure text carries a start cause (r30 be R3, plat R3, prod R3);
+     - the bound-arm row records `__exit__` and the `os` signal and reap calls, and runs in the read-loop arm too (r30 sdet R2, ciso R5);
+     - the FYIs applied: staff-sdet R5 to R7, staff-product-engineer R2 and R4, and comment-discipline R1 to R9. Comment-discipline R6 is moot with the TERM child gone;
+     - closed by row 377, which finds it no reach left to state: the ciso-reviewer's R3, a Limitations line on the work-tree rule's reach, which r30 held for the engineer by the typed words above. r30 adds no Limitations line for any residual. The dispatching session takes the list of residuals to the engineer first.
+376. Superseded by row 377 in its work-tree part only, which row 377 removes. The tier answer stands for the rest of the rule (r33 prod R4, plat R5). The Installer's tool-path rule, its work-tree condition included, is held to the cooperative tier. [engineer-verified: "The tier is cooperative"] The engineer typed those words in answer to the session's question on whether to hold the tool-path and work-tree rule to that tier. The session asked after round 8 reviewed the rule under a declared tier of `production, untrusted-input`. The rest of this row is the session's reading [unverified: no engineer words beyond the quote] (r31):
+     - `docs/hooks.md` § "Threat-model tiers" says a cooperative gate guards a cooperative agent's honest mistakes. The hooks' own wrapper choice trusts the bare PATH. `_lib_capped_for` runs the first of `timeout` and `gtimeout` that `command -v` finds, with no version, GNU, path or work-tree test, and runs the command uncapped when it finds neither (`_lib.sh:129-140`) [verified: read, r31];
+     - out of tier under this reading: round 8's ciso-reviewer R1 and R2, its foundation note, and residuals 1 to 3 of the residual list that row 375 sends to the engineer. They rest on an agent that repo content steers to plant or replace a binary on PATH. The per-call containment option the session offered is not adopted (r33 cd R5);
+     - the session inferred that the same tier covers the rest of the Installer's wrapper validation. Row 378 records the engineer's answer, which keeps that rest as the architect's design, and lists it (r33 ciso R1, prod R4; r34 cd R2);
+     - this row changes no rule, row, refusal or Limitations text.
+377. The Installer's tool-path rule loses its work-tree condition. [engineer-verified: "Drop A2-A4 (Recommended)"] The label answered the session's question on whether to drop from the Installer the work-tree condition and its test rows, which the question called items A2 to A4 of the architect's r31 inventory. That inventory is not in this plan, so the removed list below is the session's reading of what A2 to A4 held (r33 ciso R1, prod R4). The option description was the session's proposal. Row 376 records the tier answer the question followed [engineer-verified: "The tier is cooperative"]. By the session's reading, the label supersedes the engineer's earlier choices on how the work-tree condition works, row 373's [engineer-verified: "Only the repo install runs from (Recommended)"] and row 375's [engineer-verified: "Work tree of install's cwd"] (r33 be R5). The rest of this row is the session's reading [unverified: no engineer words beyond the quotes] (r31):
+     - removed from the Installer (r33 cd R2):
+       - the condition, with its refusal text and remedy;
+       - the `.git` walk, with its `samefile` test;
+       - the walk-error refusal;
+       - the work-tree values of the `TestInstallerTargets` path row;
+       - the shared fixture that set every `install` and `check` row's working directory;
+       - python3's second pass on its `sys.executable`;
+     - kept, as the Installer now states them. The plan does not hold the r31 sort, so this list is the Installer's text, not a copy of the sort (r33 cd R2, ciso R1, prod R4):
+       - the rule's other three conditions, judged in their listed order with the first one failed named. The `..`, `:`, newline and NUL bans are among them;
+       - the relative-PATH-entry value and its positive control;
+       - the virtual-environment refusal;
+       - requirement 3's `install.json` read-time checks;
+       - the rest of the Installer's wrapper validation, which row 378 lists and keeps as the architect's design (r34 cd R2);
+     - the relative value's no-canary assertion keeps a positive control, the same stub recorded through an absolute PATH entry, in place of the removed prefix and no-`.git` values;
+     - python3's recorded `sys.executable` is not judged on its own, as before r30. The rule judges python3 by its `command -v` path from `~/.cursor/`, and that is the path row 370's "python3's included" covers;
+     - [engineer-verified: "Accept the path for the cooperative tier"] The engineer answered in those words the session's question on whether to accept the bullet above or to apply the rule once to python3's `sys.executable` in place of its `command -v` path. That the answer chose the first option is the session's reading [unverified: no engineer words beyond the quote] (r32; r33 cd R6; r34 cd R5);
+     - the findings row 376 puts out of tier close as removed with the rule, with no Limitations line added for them. The ciso-reviewer's round-8 R3, which row 375 held for the engineer as a Limitations line on the rule's reach, has no reach left to state (r33 cd R5);
+     - row 375's typed words asked to see the residual list before the work moves on. The plan's rows record a disposition for residuals 1 to 3 only: row 376 puts them out of tier, and the bullet above closes them. The list itself is not in this plan, so whether it held a fourth item, and what became of one, cannot be checked here [unverified]. Row 378 names round 9's residuals in the plan itself (r33 ciso R1, prod R4).
+378. Round 9's findings are applied as fixes, by the dispatching session's list, and what stays unfixed is named below, with no Limitations line added. [engineer-verified: "Fix once as r33, then a narrow re-check (Recommended)"] The label answered the session's question on how to handle round 9's findings. [engineer-verified: "Narrow the claim, accept it (Recommended)"] The label answered the session's question on the staff-platform-engineer's R1, a probe whose spawn the OS holds. [engineer-verified: "Keep it as the architect's design (Recommended)"] The label answered the session's question on what row 376 should record about the rest of the Installer's wrapper validation. The option descriptions were the session's proposals. The tier is cooperative (row 376). The rest of this row is the session's reading [unverified: no engineer words beyond the quotes] (r33):
+     - the rest of the Installer's wrapper validation stays as the architect's design, by the third label. That rest is the GNU `--version` test, the exit-3 child, the recorded python3's 3.14 floor, the probe bound and the record of each path as found, which row 376 called the recorded-path machinery (r34 cd R2). Row 376's pending inference closes on it;
+     - the probe bound covers a started probe, by the second label, and the sessionStart entry's step 7 states the narrowed claim (r35);
+     - applied (r34 cd R3):
+       - staff-platform-engineer R1 as narrowed, and R2 to R4;
+       - staff-backend-engineer R1 to R5;
+       - staff-product-engineer R1 to R5;
+       - staff-sdet R1 to R6;
+       - the ciso-reviewer's R1 to R5;
+       - comment-discipline R1 to R10.
+
+       Each is applied in part where a bullet below says so. Staff-platform-engineer R5 asks for no change;
+     - accepted residuals, named for the engineer:
+       1. a probe whose exec the OS holds, or a killed probe the kernel does not release, is not bounded (r33 plat R1, be R2, ciso R5; r34 cd R1):
+          - the cause: the bound starts after `Popen` returns, and the reap has no timeout (step 7's probe bound; r35; r36 cd R1);
+          - in the sessionStart entry, step 7 then never returns, and Cursor kills the entry at its 10 s `timeout`, the cost residual 3 states (row 380; r35; r36 cd R1);
+          - in a terminal, `install`, `check` and `status` wait with no stall text;
+          - whether a macOS exec is held for 2 s or more is [unverified];
+          - a daemon thread joined with a timeout could abandon such a spawn. It is not adopted, under the second label;
+       2. requirement 3's read-time check rejects python3's recorded `sys.executable` when it is relative, holds `:`, a newline or NUL, or has `..`, and `install` does not judge it (row 377; r33 ciso R4, be R1; r34 cd R7):
+          - the effect: `install` can write a record whose python3 entry the shim calls malformed, and every fail-closed call then denies with the install-record outcome;
+          - the way out: `uninstall`, which Recovery's lead names, because re-running `install` records the same value;
+       3. a run of stalled probes in the sessionStart entry's step 7 can reach the entry's 10 s `timeout`, and Cursor then kills the entry after the first-call mark. Row 380 put this residual in place of r33's `unfinished` one (r35):
+          - the cost: that conversation loses all of the entry's `additional_context`, step 7's stall text, the reports of steps 1 and 2 and step 8's report included. The tamper comparison, log line and mark have already run;
+          - the count: with the plan's 3 s for start-up and steps 1 to 6, it takes about four probes reaching the 2 s bound before Phase 5a, and about two from Phase 5a, when step 8's 3 s is also spent. Neither count is measured. Phase 3's PR records the entry's wall time (Installer);
+          - what still reaches the engineer: step 2's run-mode label in the log line, and the tamper and run-mode findings that `install` and `check` print in the terminal. `check` from the terminal prints the stall text for each stalled tool;
+     - skipped, each judged disproportionate at the cooperative tier or settled another way:
+       - staff-sdet R1's pipe on fd 0 and its stub control: the probe-wiring row asserts the argument every probe passes, so no real-process stdin cell remains to pipe;
+       - staff-sdet R2's newline and NUL entries at `install` and its parity assertion: `install` and the read-time check share one function, whose shapes the shim's read-time rows hold;
+       - staff-sdet R3's link-to-directory value on the `install` run: the unit table holds it, because `shutil.which`, the lookup the Installer names, skips a directory [verified: `shutil.py:1546-1548`, read r33], so no `install` run hands one to the rule (r34 sdet R4);
+       - staff-sdet R6's observed form for a `.` PATH entry: the row asserts refusal as relative, which holds for any relative form;
+       - staff-platform-engineer R1's spawn-blocking row and a bound that covers the spawn: the second label accepts that case as residual 1;
+       - staff-platform-engineer R3's and staff-product-engineer R2's log field, tokens and `TestLogFieldTable` row: step 7 reports through `additional_context` only, the other option each finding offered, and no log field holds a tool outcome (step 7; r35; r36 cd R11);
+       - the ciso-reviewer's R5 second half, placing the tamper comparison clear of step 1: skipped at r33, when step 1 stayed first. Row 380 resolves it (r35; r36 cd R10);
+       - the ciso-reviewer's R4 Recovery entry of its own for residual 2: Recovery's lead already names `uninstall` as every entry's way out.
+379. Round 10's findings, the narrow re-check of r33, are applied as fixes, all 13 on the dispatching session's list. [engineer-verified: "Go ahead and do all 13 I’m just worried that there will be more fixes but let’s see"] The engineer typed those words in answer to the session's question on whether to fix all 13 round 10 items as r34, comment-discipline R1 to R8 and staff-sdet R1 to R5. The tier is cooperative (row 376). The rest of this row is the session's reading [unverified: no engineer words beyond the quote], and each fix's form is the architect's (r34):
+     - applied, each in full:
+       - comment-discipline R1 to R8;
+       - staff-sdet R1 to R5;
+     - the architect's choices the fixes needed:
+       - superseded by row 380, which removes the deadline and the start rule this bullet chose (r34 sdet R1; r35; r36 cd R11);
+       - `install`'s lookup is `shutil.which`, called for python3 inside `contextlib.chdir` into `~/.cursor/`. A shell `command -v` run from `~/.cursor/` in a child was set aside, because the empty-element value would then rest on a form that is [unverified]. A child Python that calls `shutil.which` there was set aside as one more process for the probe bound to cover (r34 sdet R4);
+       - the python3 `install` value now runs with `install`'s `cwd` outside the scratch `~/.cursor/`, in place of a second value, because that one value holds both the rule's order and the lookup's directory (r34 sdet R4);
+       - `install`'s query of python3 also gives the two prefixes the virtual-environment test compares, so `install`'s probe list is one fixed literal (r34 sdet R5);
+       - the probe-wiring row also asserts the `cwd` of `install`'s query of python3, which the pyenv and asdf case needs as much as the lookup's directory (r34 sdet R4);
+       - row 378's list keeps row 376's "recorded-path machinery" as the record of each path as found (r34 cd R2);
+     - moved to the schedule row at r34, and removed with it by row 380 (r34 sdet R1; r35):
+       - the probe-bound row's `unfinished` assertion on `check --hook-env`;
+       - that row's every-tool-stalled cell, whose start records the stand-in's call record replaced.
+
+       The probe-bound row dropped row 378's 1.0 s deadline and left step 1's at 4 s, which row 380 removes;
+     - row 378's skipped list and three residuals stand, and r34 adds no residual. The link-to-directory skip now names `shutil.which` as the lookup that skips a directory (r34 sdet R4).
+380. The sessionStart entry's tool re-test runs after the first-call mark with no deadline of its own, and the Installer's test rows become obligations, with their mechanics handed to the Phase 3 PR. [engineer-verified: "Reorder and drop the deadline (Recommended)"] The label answered the session's question on whether to take the structural cut, the reorder the first bullet below records. [engineer-verified: "Adopt it (Recommended)"] The label answered the session's question on whether to adopt the stopping rule (Installer, the lead test-obligations bullet). The option descriptions were the session's, relaying the architect's consult after round 11. The tier is cooperative (row 376). The rest of this row is the session's reading [unverified: no engineer words beyond the labels], and each change's form is the architect's (r35; r36 cd R3):
+     - the reorder, under the first label:
+       - the re-test, step 1 through r34, is now step 7, after the mark. Steps 2 to 7 through r34 are now steps 1 to 6, and step 8 keeps its number. Rows 302 and 322 give the host-walk report's step by both numbers;
+       - removed: the step's 4 s deadline, its start rule, its `unfinished` text for tools, the 4 + 3 + 3 = 10 s arithmetic, and the schedule and constants rows;
+       - kept: the 2 s probe bound, its null stdin, its scope and the stall text, and step 8's 3 s check, now one line under step 8's rules. Row 378's third label keeps the bound (r36 cd R5, cd R9);
+       - row 378's residual 3 now names the lost-`additional_context` cost, and residual 1's sessionStart half narrows to that cost. No Limitations line is added;
+       - resolved by the reorder: round 11 staff-sdet R1, and R5's `check --hook-env` half, because the tamper comparison, log line and mark now run before any probe. Round 9's ciso-reviewer R5 second half closes with them (row 378);
+     - the obligations, under the second label:
+       - the Installer's lead bullet on test obligations holds the three cross-cutting constraints, the hand-off and the stopping rule;
+       - the `TestInstallerTargets` rows, `TestPrerequisitesAndContract`'s floor, wrapper, removed-wrapper and self-check rows, and the probe-bound and probe-wiring rows now state behaviors and the bug a test must fail on. Rows 374, 377, 378 and 379 name the r33 and r34 rows, such as the unit table, the `install` run and the probe-bound and probe-wiring rows, and those names now point to these obligations;
+       - each entry point's probe set stays a behavior. `install`'s set now names each wrapper candidate it judges, in the tool record's order, in place of `timeout` alone;
+       - round 11 staff-sdet R6 is applied as its own one-line scope, not by the reorder: Phase 4's PR adds the host walk's call to the sessionStart entry's set and says whether the bound covers it;
+       - the lookup stays a pinned behavior: `shutil.which`, with python3's call inside `contextlib.chdir` into `~/.cursor/` (row 379);
+     - handed to the Phase 3 PR under the stopping rule, each as code-review input:
+       - round 11 staff-sdet R2: a PATH layout for the probe-set test that does not follow the host's tools;
+       - round 11 staff-sdet R3: a value that holds the other tools' lookup directory, which the Installer states;
+       - round 11 staff-sdet R4: telling plain `check`'s wrapper-path report apart from the child-failure text's start sentence;
+       - round 11 staff-sdet R5, but for its `check --hook-env` half: holding the other stall outcomes with an in-process stand-in, and which python3 stalls in each entry point's test;
+       - row 379's python3 `install` value with a `cwd` outside `~/.cursor/`, and r33's and r34's stand-ins, timing values, per-value `cwd` and cell lists.
+381. A translated Write needs only the name `Edit`. No harness hook needs the target's current text or a `new_string` in the payload. This row supersedes row 361 (r38 ciso R1; r39 be R2, sdet R2). The grounds:
+     - row 143's plan-writer gate needs the name `Edit` and reads no file text. In `deny-plan-writer-off-plan-writes.sh`, `content`, `old_string` and `new_string` match only a comment (`:7`) [verified: grep, r38];
+     - the translated `Edit`, which keeps `content`, gives `ask-new-dependency-disclosure.sh` the untranslated Write's result [verified: read, r38] (r39 cd R3):
+       - the hook passes `Edit` and `Write` alike (`:112-114`) and pipes the whole payload to its helper (`:210`);
+       - the helper reads the manifest's pre-state from disk itself (`parse-manifest-dependencies.py:445-458`, called at `:487`);
+       - a `content` key selects the Write branch, which takes `content` verbatim as the post-state before `old_string` or `new_string` is read (`:396-398`);
+       - the module docstring states that dispatch by key (`:25-26`);
+     - a grep of `claude/.claude/hooks` for `old_string` and `new_string`, tests excluded, finds two other files, and neither reads either key from a PreToolUse payload [verified: grep and read, r38; re-run r39]:
+       - `nudge-transcript-toolkit.sh` reads `new_string` only from a PostToolUse `Edit` (`:103-104`; `settings.json:604-608`);
+       - `evaluate-code-writer-self-review.py` reads both from the transcript's tool-use blocks (`:166-178`, `:293`), which the shim does not translate;
+     - so no PreToolUse hook needs `new_string` on an `Edit`, and the translated payload is Cursor's `file_path` and `content` alone. It carries `content` once, as Claude Code's Write does (r39 be R2, sdet R2);
+     - the rule applies on preToolUse only (row 383). A postToolUse Write keeps the name `Write` with Cursor's `file_path` and `content`, so each PostToolUse hook gets the payload Claude Code sends. `nudge-transcript-toolkit.sh` reads that Write's `content` (`:100-101`) [verified: read, r39];
+     - the read's removal ends a deny on every fail-closed Write entry for a target past 8 MiB, of mode 000, not a regular file or reached through a regular file, where Claude Code's hooks allow the Write. It also ends the shim's read of files the `Read` deny entries protect;
+     - row 372's trim of the gate-matrix dependency row stands, because `test_ask_new_dependency_disclosure.py`'s Edit-with-`content` row pins the hook's result on the translated payload in the hooks tree, which a hooks edit selects (Critical files). `TestWriteTranslation`'s parity row stays as the integration check of the shim and the hook together, which CI's full run covers (r39 sdet R3).
+382. The shim reads no Write target. [engineer-verified: "Drop the read (Recommended)"] The label answered the session's question on how to settle two ciso-reviewer code-review findings. The option description was the session's. The design under the label is the architect's, from its consult before the question [unverified: no engineer words beyond the label] (r38 ciso R1, ciso R2; r39 cd R1):
+     - the two findings:
+       - R1 is the existing-file read, raised as a foundation concern;
+       - R2 is OD5's Write-class memory sum, which no miss rule reads;
+     - the Write rule is Translation step 2's, and row 381 gives the grounds. The copy of `content` into `new_string` that r38 stated here is superseded by row 383 (r39 cd R8);
+     - removed (r39 cd R2):
+       - the open and its flags;
+       - the `fstat`;
+       - the device-swap residual;
+       - the existing-file cap;
+       - the decode;
+       - the `existing-file-kind`, `existing-file-unreadable` and `existing-file-cap` outcomes, with their Recovery and Limitations text;
+       - OD5's 8 MiB Write-class run, with its memory sum;
+     - closed: R2, with that run;
+     - changed: the stand-in `stat` cells at the Write's `stat` now assert that the name stays `Write`;
+     - kept: the newline corpus, as a parity row of the dependency hook's result on the translated `Edit` against the untranslated Write. OD5's Write class runs its 1.4 MB case over an existing file, so the timed path is the rename's (r39);
+     - superseded: every earlier fix to the read, under the round tags the removed text carried (r24 be R2, be R3, ciso R3; r25 be R1, ciso R5, ciso R6; r26 be R1, be R3, ciso R2, sdet R8; r27 be R4, be R5).
+383. Translation step 2's Write rule applies on preToolUse only, and the translated `Edit` carries no `new_string`. [engineer-verified: "preToolUse only (Recommended)"] The label answered the session's question on whether the Write-to-Edit rule applies at postToolUse. The option description was the session's. The disposition under the label is the session's, and each change's form is the architect's [unverified: no engineer words beyond the label] (r39 be R2, sdet R2):
+     - the grounds:
+       - after a Write has run, the `stat` finds a regular file for a create too, so a postToolUse name could not tell a create from an edit, where Claude Code names a create `Write`;
+       - row 143's name dependency is a PreToolUse gate (`deny-plan-writer-off-plan-writes.sh:99`), and no PostToolUse hook needs the name `Edit` (row 381);
+     - the changes:
+       - a postToolUse Write keeps the name `Write`, with Cursor's `file_path` and `content`, and the shim makes no `stat` (Translation step 2; Registration);
+       - no reader then needs `new_string` from a translated `Edit`, so the payload is `file_path` and `content` alone (row 381);
+       - the first pass's postToolUse Write test and its `write_post` twin pass as written (Critical files);
+     - closed with the second change: the translated payload carries `content` once, so row 381's accepted residual for a manifest Write of about 1 MiB to 2 MiB past the helper's 2 MiB stdin cap is gone. Its wording, which called the result an ask where row 36 makes the adapter deny, goes with it (r39 be R4, ciso R2, sdet R6).
+384. The round's test mechanics go to Phase 2's code review as inputs, under row 380's stopping rule, which Critical files extends to Phase 2's test rows. [engineer-verified: "Hand to Phase 2 code review (Recommended)"] The label answered the session's question on the round's test-mechanics findings. The option description was the session's. The sorting below is the session's, from an architect consult the session relayed, and its wording is the architect's [unverified: no engineer words beyond the label] (r39):
+     - handed, as Critical files' Phase 2 stopping-rule bullet names them: staff-sdet R5's mechanics, and the ciso-reviewer's R1 (r39 sdet R5, ciso R1);
+     - kept in the plan as obligations: staff-sdet R5's call-form obligation, which requirement 22's name rows state (r39 sdet R5);
+     - not handed, as a plan-level gap: staff-sdet R3. Critical files adds the hooks tree's Edit-with-`content` row, which row 381 cites for row 372's trim. No `select-tests` edge is added, because a hooks edit already selects that row (r39 sdet R3);
+     - closed, not handed: staff-sdet R6, moot under row 383.
 
 **Mechanisms.** M15 to M33 are Phase 1's, and M34 on are the adapter's. Where a mechanism is heavier than the lightest option, it names the lighter primitives it beat, and Alternatives set aside says why each fails.
 
@@ -3026,7 +3882,7 @@ For the adapter:
 - M30. The kit's source in a `mktemp -d` directory under `~/.cache`, outside any work tree, which the engineer deletes by hand after the run. anchors: row66, row68, row98. It is the lighter primitive to a committed kit.
 - M31. `/code-review` on the kit files by path before `init`. anchors: row69, row73.
 - M33. The engineer's private pre-`init` checks, and the stop point, read by `summarize` through `--approval-pinned` and the `run-stopped` note. anchors: row84, row86, row109.
-- M34. One generated native entry per harness registration, running the unchanged hook through `hook-shim.sh` on a translated payload, with a Write to an existing file translated to `Edit`. anchors: row113, row116, row119, row123, row124, row125, row143. Lighter primitives: import-only, translation inside `_lib.sh`'s shared parser, and per-hook Cursor branches.
+- M34. One generated native entry per harness registration, running the unchanged hook through `hook-shim.py` on a translated payload, with a preToolUse Write whose target is a regular file renamed `Edit` on an entry whose matcher selects `Edit`, and no read of the target. anchors: row113, row116, row119, row123, row124, row125, row143, row381, row382, row383. Lighter primitives: import-only, translation inside `_lib.sh`'s shared parser, and per-hook Cursor branches.
 - M35. The import's copies running beside the shim's entries, with the two session hooks declining on the payload predicate and the host walk. anchors: row121, row148, row165, row177, row179. It is the lighter primitive to the `_lib.sh` guard Alternatives sets aside.
 - M36. `failClosed: true` on every gate entry, with a hook's no-opinion and allow mapped to `{}`, and a total output table that maps exit 2 and `ask` per event. anchors: row120, row121, row154, row157.
 - M37. Repo resolution: a directory per event, with each agent Shell call pinned by one `updated_input` rewrite, a `builtin cd -- '<dir>' || exit 1` pin prefix, to the first workspace root, or a leading `cd` into a root or a directory inside one, a `pin-check` entry denying a command that lacks the expected pin prefix, a file tool's target root, the first root otherwise, a deny only for a Shell call with no absolute directory to pin, the directory-input refusal for a Shell directory input other than the pinned directory, and row 170's taint rule as the fallback if the rewrite proves unusable. anchors: row114, row133, row136, row137, row150, row166, row230, row244, row266, row267, row286, row288, row292, row312. Lighter primitives: rewriting `tool_input.cwd` through `updated_input`, and the taint rule while the rewrite applies.
@@ -3044,8 +3900,9 @@ For the adapter:
 - M49. Twins withheld in `parity-exceptions.json` until acceptance confirms their premise. anchors: row140, row141.
 - M50. `_lib_emit_allow_with_context` printing nothing on an untranslated Cursor payload under a `Cursor` host, so no import copy gives an explicit allow. anchors: row155, row175, row183. Lighter primitive: observing whether the allow suppresses an `ask` before acting, which Alternatives sets aside.
 - M51. An installer that writes a durable pre-image first and its manifest last, owns entries by the Installer's command grammar, and uninstalls entries first and state last. anchors: row114, row171.
-- M52. Lock-free single-line log appends under the stdio buffer, fire counts derived from the log, and rotation under a non-blocking `fcntl.flock`, with the sessionStart entry alone sweeping first-call marks. anchors: row134, row188. It is the lighter primitive to a locked append and a read-modify-write counter.
+- M52. Lock-free single-line log appends, one `os.write` each, fire counts derived from the log, and rotation under a non-blocking `fcntl.flock`, with the sessionStart entry alone sweeping first-call marks. anchors: row134, row188. It is the lighter primitive to a locked append and a read-modify-write counter.
 - M53. A user-level `~/.cursor/sandbox.json` that `install` merges and `uninstall` restores, listing only the agent-run scripts' directories in the routed config dir, so their writes land under a sandboxed mode. anchors: row2, row258, row260, row262. Lighter primitives: Allowlist with the sandbox off as the only mode, and a workspace-level `sandbox.json`.
+- M54. A Python shim in one file, `hook-shim.py`, run by the recorded python3 with `-I -S` inside the launch guard, a shell command that holds the shim's stdout and maps every fault to its entry kind's block or `{}`. `cursor-adapter.py` loads the file for the contract version, the log-field table and writer, the session-id grammar, the tool-path rule's shared function and the hook run's constants (r33 sdet R2). The hook runs under the recorded `timeout -k`, started through `Popen`, with its stdin, stdout and stderr on in-memory pipes read to EOF under a retention cap. anchors: row326, row327, row330, row335, row345, row346, row347, row348, row350, row356, row364, row368, row369. Lighter primitives: the bash and jq shim, that shim with fewer processes, `subprocess.run`, `Popen.communicate`, and a Python-level last-resort handler as the fault decision.
 
 ## Critical files
 
@@ -3068,32 +3925,156 @@ If a fetch is denied, the session reports the denial. A denied hooks-doc fetch s
 
 **Phases 2 to 6.** A new script sits under `claude/.claude/scripts/cursor-adapter/`, and a new test under `claude/.claude/scripts/tests/`, unless its line names another directory. Each dispatch verifies with Verification 6's commands, and the PR's file limit is its phase's list plus this plan where a revision changes it.
 
-- Phase 2, one dispatch, after the OD9 results Run order and recording's Phase exit paragraph names are in the observations section (Repo resolution; r13). Create `tool-map.json`, `field-table.json`, `parity-exceptions.json`, `translate-input.jq`, `translate-output.jq`, `hook-shim.sh`, `_cursor-adapter-lib.sh`, `test_cursor_adapter_translate.py`, `test_cursor_adapter_shim.py`, `claude/.claude/hooks/tests/_cursor_payloads.py`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` and `claude/.claude/hooks/tests/test_cursor_adapter_lib_parity.py`. Modify `claude/.claude/hooks/tests/test_bash_floor.py`, `claude/.claude/scripts/select-tests.py`, `claude/.claude/scripts/tests/test_select_tests.py` and `docs/scripts.md`.
-  - `_cursor_payloads.py` is the one Cursor payload builder both test trees import, a non-test module as `_lib_sh_helpers.py` is (requirement 20, row 180).
-  - The shim does not source `_lib.sh` (requirement 28). It sources `claude/.claude/hooks/_config.sh` for the bash floor (requirement 15), and `test_bash_floor.py` gains the shim's pre-source region in its tripwire. If that file's list of scripts that source `_config.sh` is not discovered by glob, the shim joins it (row 167).
-  - The lib copies the session-id grammar of `claude/.claude/hooks/_lib.sh:2852-2854`, the capped-call shape of `_lib_capped` (`_lib.sh:50`) and all three branches of `_lib_realpath_m` (`_lib.sh:177-188`, row 181). Each has a behavioral parity test in `test_cursor_adapter_lib_parity.py` (requirements 10, 15, 36). The lib also holds the log-field `NAME=value` block, with the run-mode field's row, whose parity test with Python's parse lands in Phase 3, where `cursor-adapter.py` first exists (requirement 15; r9 plat R6; r21).
+- Phase 2, one dispatch, after the OD9 results Run order and recording's Phase exit paragraph names are in the observations section (Repo resolution; r13). Create `tool-map.json`, `field-table.json`, `parity-exceptions.json`, `hook-shim.py`, `test_cursor_adapter_translate.py`, `test_cursor_adapter_shim.py`, `claude/.claude/hooks/tests/_cursor_payloads.py`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`, `claude/.claude/hooks/tests/test_cursor_adapter_lib_parity.py` and `docs/design-decisions/hook-translation-shim-in-python.md`. Modify `claude/.claude/scripts/select-tests.py`, `claude/.claude/scripts/tests/test_select_tests.py`, `claude/.claude/hooks/tests/test_ask_new_dependency_disclosure.py` (r39 sdet R3) and `docs/scripts.md`.
+  - The dispatch deletes the bash and jq first pass from the working tree, where it sits uncommitted, and builds the Python shim in its place (row 326; r22; r23 plat R9):
+    - the PR holds no `hook-shim.sh`, `_cursor-adapter-lib.sh`, `translate-input.jq` or `translate-output.jq`, and `claude/.claude/hooks/tests/test_bash_floor.py` ends equal to `origin/main`;
+    - the first pass never reaches `main`. Until this PR merges, `main` carries only this plan's earlier revision, which still specifies bash and jq, and no `~/.cursor/` entry exists to migrate;
+    - the kept files' first-pass prose goes too: `docs/scripts.md`'s shim contract, the `select-tests.py` rule comment, which reads "JSON, jq and shell files" (`select-tests.py:38`), and `test_select_tests.py`'s file names;
+    - `docs/scripts.md`'s shim bullet is written from requirement 15, not edited from the first pass's text, because Verification 6's residue grep checks names and phrases, not meaning (r24 plat R5, sdet R10, prod R6).
+  - These first-pass mechanisms have no Python counterpart:
+    - the pre-source region and its `test_bash_floor.py` tripwire rows, because the shim sources nothing from `hooks/` (row 167);
+    - the U+001F and U+001E facts line between the jq and bash steps, because translation stays in one process;
+    - the per-step `timeout` wrappers, because the shim starts one wrapper, the hook's parent (requirement 15);
+    - the hook-output temp files, which pipes read to EOF replace (requirement 15);
+    - the `_lib_capped` and `_lib_realpath_m` copies, which the recorded wrapper and `os.path.realpath` replace (rows 329, 348, 364).
+  - `hook-shim.py` keeps the scripts' `#!/usr/bin/env python3` convention and holds the whole shim (requirement 15; row 345):
+    - the top-level handler requirement 3 states, and `self_check`;
+    - argument parsing, built from module data that lists the shim's flags and modes, and the install record (row 344);
+    - translation, Repo resolution and the directory pin;
+    - the hook run and its constants;
+    - the output table, the log writer and its field table;
+    - the contract version and the session-id grammar.
+  - `test_cursor_adapter_lib_parity.py` holds two classes: `TestSessionIdGrammarParity`, for the one copy of the grammar left, a Python pattern as `author_outcome.py:286`'s (requirement 10; row 50), and `TestRealpathParity` (requirement 36; row 329).
+  - The first pass's tests carry over as the shim's contract, with these changes (r22; r23):
+    - every test starts the shim through one argv builder in `_cursor_payloads.py`: the test's interpreter, `-I -S`, then `hook-shim.py`, as the generated command does. A literal row pins its flags (requirement 15). `SHIM` names `hook-shim.py`, and `run_lib` and the `.sh` and `.jq` path constants go;
+    - `_cursor_payloads.py` also holds the one loader both test trees use to load the shim. It compiles `hook-shim.py`'s source into a module registered under one fixed name, because the file name holds a hyphen, and so that no `__pycache__` file is written (r23 sdet R10; r24);
+    - `TestOutputTable`, `TestHookOutputKeyCoverage`, `TestRepoResolution`, `TestLibHelpers`, and the rows of `TestShimFailureOutcomes`, `TestShimLogConcurrency` and `TestDirectoryPin` that sourced the lib or ran `jq`, call the shim's functions in-process;
+    - `TestShimExecCount` counts process starts by requirement 28's harness, not `jq` starts;
+    - `TestShimPrologue`'s `jq` rows assert requirement 15's no-`jq` outcome;
+    - `TestSessionIdGrammarParity` and `TestRealpathParity` compare the shim's pattern and resolution, and `TestCappedCallParity` is deleted with the copy it compared;
+    - the module-level test that the shim runs in a tree whose hooks directory holds only `_config.sh` is deleted, because the shim reads nothing under `hooks/` (r23 cd R6);
+    - `TestBootstrapProjectPluginsRow` runs the shim from the checkout rather than through its scratch tree, because the shim no longer resolves `hooks/_config.sh` beside itself (r23 cd R6);
+    - each row that asserts a bash- or jq-only mechanism takes the disposition below, and the PR body names any other such row it finds, with its reason (row 353; r23 sdet R4; r24 be R4, sdet R2, cd R2):
+      - `TestPayloadValidation`'s `separator-byte` rows are inverted to pass-through rows, in which the hook receives the escape. `TestShimTextRules`' U+001F row holds the hook-side deny, and the session-id grammar's separator row is kept;
+      - its `nul-byte` rows are inverted to requirement 15's NUL outcomes. The `command` field passes the escape, `cwd-value` takes the directory-input refusal, `path` resolves under the first root and its Write keeps the name `Write` (r39 sdet R7), `root` takes the payload-malformed outcome, and `tool-name` takes requirement 37's unclassified-tool deny;
+      - its pin-shaped first line holding a NUL is agent text. `pin` mode prefixes it again, `pin-check` denies it, and `hook` mode passes it with the escape;
+      - its `hook-nul-output` row is inverted to the non-JSON-stdout outcome, and the row that a NUL does not hide a hook's exit 2 is kept;
+      - its integer-spelling `loop_count` row is inverted: `100.0`, `1E2`, `1e2`, `0.0` and `-0.0` take the payload-malformed outcome by requirement 15's `type(x) is int`, and `-0` is accepted as 0. Its rejected-value row, with `True`, `False`, a string and a negative number, is kept;
+      - the rows that compare against the bash builder (`test_cursor_adapter_translate.py:504`, `:1301`) are deleted with the builder;
+      - the `--deadline` rows (`test_cursor_adapter_shim.py:883-905`) gain `60` accepted and `61` taking the `usage` outcome, for requirement 15's range of 2 to 60. The worst-case rows (`:906-910`) call the shim's worst-case function with its constants in place of `run_lib`'s (r25 sdet R8);
+    - the first pass's existing-file rows and fixtures give way to `TestWriteTranslation`'s name rows (rows 382, 383; r38 ciso R1; r39 be R1, sdet R1):
+      - `test_cursor_adapter_translate.py:1260-1273` asserts the name `Edit` and a `tool_input` equal to the `write_edit` twin's, with no `old_string` and no `new_string`, in place of its `old_string` and `new_string` assertions;
+      - `:1275-1286`, the awkward-bytes `old_string` row, is deleted;
+      - `:1115-1117` stops reading the `claude_existing_file` key, which goes from `tool-map.json:7`. The rename is Translation step 2's rule, and both harness matchers that select a Write name `Write` (`settings.json:428`, `:604`), so the row still finds a mapped tool for each;
+      - in `test_cursor_adapter_shim.py`, these go (r39 cd R9):
+        - the `existing-file-cap` row (`:456-467`) and its id at `:517`, `:584` and `:625`;
+        - the symlink-past-the-cap row (`:723-735`);
+        - the at-cap row (`:965-975`);
+        - the `EXISTING_FILE_CAP` constant (`:56`);
+        - `_translate_failed_row` (`:435-453`), its id at `:513` and `:580`, and its log token at `:623`. Its mode-000 target now becomes `Edit` and the hook runs, which `TestWriteTranslation`'s mode-000 name row holds;
+      - `_cursor_payloads.py`'s `write_edit` twin (`:322-331`) becomes the literal `Edit` for an `Edit`-selecting matcher, with a `tool_input` of `file_path` and `content` and no `old_string`, `new_string` or `replace_all`. It keeps its `setup_files`. The payload check probes `write_edit` under an `Edit`-selecting `--matcher`, so the twin literal and the probe's matcher form one pinned pair (r42 sdet R1). The twin is a literal pinned to row 381, not a payload Claude Code sends, because Claude Code never sends an `Edit` that carries `content` (requirement 20);
+      - the gate matrix's overwrite trigger takes the same shape for its reference run. `_claude_twin_for`'s overwrite branch (`test_cursor_adapter_gate_matrix.py:1043-1051`) passes the trigger's `tool_input` (`file_path` and `content` only), so its `old_string` and `replace_all` go. It takes the rest of the twin from the builder module's `write_edit` twin, so requirement 40's one object stays one (r42 sdet R2). It names the overwrite as Translation step 2 does, per the row's Claude matcher (r42 ciso R1):
+        - `Edit` for a registration whose matcher tokens include `Edit`, which is every current one;
+        - `Write` for a `Write`-alone one;
+        - the choice uses the same whole-token selection as requirement 7's re-check, so a `MultiEdit`-alone matcher is not an `Edit` selector (r42 sdet R3);
+        - `Trigger.overwrites` (`:727`, set at `:798`) still names the `Write-overwrite` class (`:732`);
+      - the postToolUse Write test (`test_cursor_adapter_gate_matrix.py:283-288`) and the `write_post` twin (`_cursor_payloads.py:338-361`) stay as written and pass, because a postToolUse Write keeps its name and `content` (row 383);
+    - requirement 3's module-level id list drops the first pass's bash-only ids, `separator-byte`, `nul-byte` and `hook-nul-output` among them, and its `existing-file-cap` and `translate-failed` (r39 sdet R1). It gains the start-fault ids, `start-failed`, `usage` and `shim-fault`, because a test asserts the list equal to requirement 3's (r23 sdet R4; r24 cd R2; r25 be R1; r38 ciso R1);
+    - the new classes are `TestShimHookRun`, `TestShimFaults`, `TestShimInterpreterIsolation` and `TestShimTextRules` (Test map).
+  - `claude/.claude/hooks/tests/test_ask_new_dependency_disclosure.py` gains one hook-run row. A full payload with `tool_name` `Edit` and a `tool_input` of `file_path` and `content` alone, with no `old_string` and no `new_string`, gets the same ask, naming the added dependency, as the same payload under `Write`. `TestHookRecognizesNewManifestFormats`' `requirements.txt` row (`:1170-1175`) is its model. A hooks edit selects the row, so it needs no `select-tests` edge (row 381; r39 sdet R3).
+  - Phase 2's test rows take row 380's stopping rule (row 384; r39):
+    - the plan pins every behavior and obligation that requirement 22 and these Phase 2 bullets state, and nothing the next item hands to the Phase 2 PR;
+    - the Phase 2 dispatch and its code review take as inputs staff-sdet R5's mechanics and the ciso-reviewer's R1, in the files `agent-reviews/staff-sdet-1794257496-cursor-adapter-phase.md` and `agent-reviews/ciso-reviewer-1794257496-cursor-adapter-phase.md`. `.gitignore` lists `agent-reviews/`, so those files exist only in the checkout that ran the round [verified: `.gitignore:41`, read r39]. The mechanics are:
+      - the stand-in that meets requirement 22's any-call-form obligation, and which call forms it covers;
+      - the FIFO row's bound, so a blocking `open` fails the row instead of hanging it;
+      - the mode-000 row under root, where a read succeeds;
+      - one allow and one deny row per name outcome through the real plan-writer gate and `require-memory-skill.sh`'s class (b) on the shim's output, and the phase that adds the plan-writer row if agent attribution blocks it;
+    - a plan-review finding on a handed item goes to Phase 2's code review as an input, not into a plan revision.
+  - The PR body records its CI job time against the 25-minute cap at `tests.yml:34` before it merges, with the gate matrix, `TestShimLogConcurrency`'s 40 processes and `TestShimHookRun`'s contention row in that job (r23 plat R10). A job time past 20 minutes, four fifths of the cap, has the PR re-derive the cap in the same PR, as that file's comment at `:26-33` asks (r24 plat R4).
+  - The dispatch edits `docs/design-decisions/hook-translation-shim-in-python.md` twice more (requirement 15; r24 cd R6; r26 prod R5, ciso R1):
+    - its "Limits of the comparison" says the hook's `timeout` wrapper, which its timing omitted, now runs on every hook call (row 365);
+    - it records the adapter's 3.14 floor and why (row 356).
+  - The doc as committed with this plan already states OD5's 2 s budget (row 340) and says, as requirement 15 does, that the inner deadline bounds only the read from Cursor and the hook run (r37).
   - The gate matrix and the parity test sit under `claude/.claude/hooks/tests/`, so a hooks edit selects them (requirements 10, 40).
   - The two `select-tests` files take these rows, each with a `test_select_tests.py` case (requirement 22; r4 sdet R3, sdet R4):
-    - a domain row so that any path under `claude/.claude/scripts/cursor-adapter/` selects the hooks tests, because the matrix and parity tests read the adapter's JSON, jq and shell files through a subprocess, which `TestCrossDomainReadCompleteness` cannot see;
+    - a domain row so that any path under `claude/.claude/scripts/cursor-adapter/` selects the hooks tests, because the matrix and parity tests read the adapter's JSON and Python files through a subprocess or a path import, which `TestCrossDomainReadCompleteness` cannot see;
     - `_cursor_payloads.py` in `HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS`, and each scripts test that imports it in `SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES`;
     - any reverse row `TestCrossDomainReadCompleteness` requires for a path those tests read (row 25).
   - The dispatch fetches cursor.com/docs/hooks for the per-event input and output schemas that `field-table.json` and requirement 20's vocabulary pin, and builds fixtures from C5's key paths.
-  - It also runs OD5's fan-out benchmark from a scratch directory outside the repo, and reports the per-class numbers against OD5's budget.
-- Phase 3, one dispatch, whose generator emits the directory pin's entry (Repo resolution; r13). Create `cursor-adapter.py`, `test_cursor_adapter_generate.py`, `test_cursor_adapter_install.py` and `docs/cursor-adapter.md`. Modify `parity-exceptions.json`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` (requirement 41's arm and the Recovery-section test), `docs/scripts.md`, `README.md` (the "Updating after git pull" step) and `.gitignore` (the adapter state dir). The Recovery-section test needs no `select-tests` row, because the `docs/` row and Phase 2's domain row already select the hooks tests (row 180).
-- Phase 4, one dispatch. OD11(b), OD11(d) and OD11(e) are decided (r15; r16). Create `claude/.claude/hooks/tests/test_lib_cursor_identity.py`, which holds requirement 14's snapshot as a literal and `TestCursorPayloadDecline`, and requirement 31's two env-scrub files, `claude/.claude/hooks/tests/test_cursor_adapter_hooks_env_scrub.py` and `claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py`. Modify `claude/.claude/hooks/_lib.sh`, `claude/.claude/hooks/capture-session-id.sh`, `claude/.claude/hooks/record-session-end.sh`, `claude/.claude/hooks/tests/conftest.py`, `claude/.claude/scripts/tests/conftest.py`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` (the linked-worktree rows), `hook-shim.sh`, `_cursor-adapter-lib.sh`, `cursor-adapter.py`, `test_cursor_adapter_install.py` (the `sandbox.json` merge and its behavioral test, OD11(b); `TestRunModeWarning`'s Phase 4 row; `TestLogFieldTableParity`'s Phase 4 row; `TestSessionStartReports`), `test_cursor_adapter_shim.py` (`TestDirectoryPin`'s Phase 4 rows), `parity-exceptions.json` and `docs/cursor-adapter.md` (r13; r15; r17 sdet R3, plat R9; r21 sdet R7).
+  - It also runs OD5's fan-out benchmark on the Python shim from a scratch directory outside the repo, and reports the per-class numbers against OD5's budget, with the peak memory OD5 lists and the interpreter's `major.minor` (OD5; r22; r23; r24; r27 plat R4).
+- Phase 3, one dispatch, whose generator emits the directory pin's entry (Repo resolution; r13). Create `cursor-adapter.py`, `test_cursor_adapter_generate.py`, `test_cursor_adapter_install.py` and `docs/cursor-adapter.md`. Modify `parity-exceptions.json`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` (requirement 41's arm and the Recovery-section test), `docs/scripts.md` (the shim bullet's pointer to the adapter doc's prerequisites line for the 3.14 floor), `README.md` (the "Updating after git pull" step, and the same pointer on the Python and `timeout` bullets) and `.gitignore` (the adapter state dir) (r26 prod R5; r27 prod R1). The Recovery-section test needs no `select-tests` row, because the `docs/` row and Phase 2's domain row already select the hooks tests (row 180).
+  - `cursor-adapter.py` loads `hook-shim.py` with its own loader and takes from it the contract version, the log-field table and its writer, the session-id grammar, and the grace period, drain bound and margin, so the generator holds no copy of them (requirements 10, 13, 15; r22; r24). It loads the shim only in the subcommands that need it, so `uninstall` runs without it (Installer; row 344; r23).
+  - `test_cursor_adapter_generate.py` asserts (rows 330, 344, 345; r23 sdet R3, be R2, plat R4; r24 sdet R7, cd R7):
+    - the generated command's interpreter flags equal `_cursor_payloads.py`'s argv builder's;
+    - every generated command's arguments parse under the shim's parser;
+    - for every generated command, the kind the shim's parser reads, its fault tail's kind and the entry's `failClosed` field agree. `TestLaunchGuard` runs each tail (requirement 3);
+    - the shim parser's accepted flags and modes equal the command grammar's, in both directions. The row reads the module data the shim builds its parser from, so neither direction scrapes source or `--help` text (row 344; r25 sdet R4);
+    - the scanned set holds every mode, `hook`, `classify`, `pin` and `pin-check` among them, and a seeded unknown flag fails both the grammar and the parser, so the round trip cannot pass empty;
+    - each entry's `--deadline` follows requirement 15's rule, and its worst-case wall time is below every fail-closed entry's `timeout`;
+    - `uninstall` runs with `hook-shim.py` holding a syntax error, and prints the load failure's class, the owned entries' count and a foreign entry in full (r27 prod R5).
+  - `docs/cursor-adapter.md` gains (rows 333, 345, 351, 356, 359; r23 prod R2, prod R5, prod R6; r24 plat R1, plat R7, cd R7; r25 prod R2, prod R7, plat R1, plat R5, plat R7):
+    - the shim-fault Recovery entries, the by-design and deadline entry, and the `start-failed` entry (r26 prod R3; r27 prod R3);
+    - a prerequisites line naming the recorded python3's floor, 3.14 or later, above the toolkit's 3.11 because CI exercises no other minor. It gives the Installer's fix for a lower `python3` on PATH, which serves the refusal and a `SyntaxError` alike (rows 356, 366; r26 prod R1, prod R5);
+    - a prerequisites line naming GNU coreutils' `timeout` or `gtimeout`, stricter than README's `timeout` bullet, with the reason and fix of the Installer's GNU refusal (row 370; r27 prod R1);
+    - a prerequisites line naming `/bin/sh`, bash and zsh as the shells the launch guard is tested under;
+    - a Limitations section;
+    - in it, the locale residual in plain terms: under a C locale, a hook the adapter runs may see a UTF-8 `LC_CTYPE` that the import's copy of it does not. The sessionStart entry's report says whether Cursor's hook environment carries `LANG` or an `LC_` variable, which tells the engineer whether the case applies;
+    - in it, that CI runs the shim's tests on Linux under Python 3.14 only. macOS runs them only on a contributor's machine, and a later minor that `install` accepts is untested (row 366);
+    - in it, the by-design denies, each naming its cause and none a fault:
+      - a payload past 8 MiB;
+      - a hook stream past 1 MiB (r38 ciso R1);
+    - in it, the deadline (row 359; r26 plat R5, prod R3):
+      - any gate whose work passes its entry's deadline, 10 s by default, is denied with the timeout outcome under Cursor, and a retry on the same input repeats the deny;
+      - Claude Code's default hook timeout is 600 s;
+      - `require-diff-size-prompt` is the known case, because its state read can take up to about 102 s;
+      - the way out is the engineer's own terminal;
+    - in it, which shim faults `status` shows (r25 plat R7; r26 prod R2):
+      - a fault the shim's handler logs shows by class;
+      - a missing or unparseable shim, an unusable python3, a signal death or an unwritable state dir leaves no log line on either tail;
+      - an informational entry's `{}` after such a fault leaves none either;
+      - `check` is the first step for those;
+    - in it, the hook run's residuals (row 365):
+      - a child the hook leaves in its process group when it exits gets no signal, and a child outside that group gets none from the wrapper. Each runs on until it exits, or until its own cap where it has one (r29 be R5);
+      - a SIGKILL to the `timeout` wrapper itself from outside, or a stop of it that is never resumed, leaves the hook unbounded (r29 ciso R3);
+      - the hook runs on under the wrapper's timer until it ends, after an output-cap deny or after a timeout at the shim's bound. A wrapper that started late gives the second (r27 be R2; r28 be R1; r30 cd R4).
+  - The dispatch records one wall-time sample of a generated command (OD5; r23 plat R5).
+- Phase 4, one dispatch. OD11(b), OD11(d) and OD11(e) are decided (r15; r16). Create `claude/.claude/hooks/tests/test_lib_cursor_identity.py`, which holds requirement 14's snapshot as a literal and `TestCursorPayloadDecline`, and requirement 31's two env-scrub files, `claude/.claude/hooks/tests/test_cursor_adapter_hooks_env_scrub.py` and `claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py`. Modify `claude/.claude/hooks/_lib.sh`, `claude/.claude/hooks/capture-session-id.sh`, `claude/.claude/hooks/record-session-end.sh`, `claude/.claude/hooks/tests/conftest.py`, `claude/.claude/scripts/tests/conftest.py`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` (the linked-worktree rows), `hook-shim.py`, `cursor-adapter.py`, `test_cursor_adapter_install.py` (the `sandbox.json` merge and its behavioral test, OD11(b); `TestRunModeWarning`'s Phase 4 row; `TestLogFieldTable`'s Phase 4 row; `TestSessionStartReports`), `test_cursor_adapter_shim.py` (`TestDirectoryPin`'s Phase 4 rows), `parity-exceptions.json` and `docs/cursor-adapter.md` (r13; r15; r17 sdet R3, plat R9; r21 sdet R7).
   - The `_lib.sh` functions are the ones Identity and routing lists, and `_lib_parse_tool_input_or_deny` is not among them (row 174). The identity test drives every consumer that section lists, through `marker.sh clear-stale` among them, under an adapter pair and under Claude Code with adapter variables set (row 159).
   - The existing identity tests stay unedited: `test_lib.py`, `test_lib_emit.py`, `test_lib_worktree_collision_guard.py`, `test_marker_script.py`, `test_capture_session_id.py`, `test_record_session_end.py`, `test_lib_markers.py`, `test_marker_worktree_keying.py` and `test_review_ledger_script.py` under `claude/.claude/hooks/tests/`, and `test_marker_clear_stale.py`, `test_handoff_record_conversion.py`, `test_pr_diff_against_base.py` and `test_review_pr_lib.py` under `claude/.claude/scripts/tests/` (requirement 14).
   - `claude/.claude/scripts/marker-clear-stale.py` needs no edit (Identity and routing, row 161).
   - The dispatch re-runs OD5's benchmark, its uninstalled arm on the merge-base `_lib.sh` (OD5; r6 plat R3).
   - Its PR merges only after the Phase 4 re-plan states the CLI-coexistence rule (Installer's CLI-coexistence block; r21).
-- Phase 5a, the first of three sequenced PRs, after OD9's C4 and its attribution follow-up (r21). Create `gate-settings-permissions.sh`, `gate-agent-tools.sh`, `gate-credential-exposure.sh` and `test_cursor_adapter_gates.py`. Modify `_cursor-adapter-lib.sh`, `hook-shim.sh`, `cursor-adapter.py`, `parity-exceptions.json`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`, `test_cursor_adapter_install.py` (`TestSandboxGrantWritten`, the grant's first real write, and `TestWorkspaceSandboxReport`, the workspace report's rows), `claude/.claude/scripts/select-tests.py`, `claude/.claude/scripts/tests/test_select_tests.py` and `docs/cursor-adapter.md` (r5 cd R11; r19 be R2, sdet R5).
+- Phase 5a, the first of three sequenced PRs, after OD9's C4 and its attribution follow-up (r21). Create `gate-settings-permissions.sh`, `gate-agent-tools.sh`, `gate-credential-exposure.sh` and `test_cursor_adapter_gates.py`. Modify `hook-shim.py`, `cursor-adapter.py`, `parity-exceptions.json`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`, `test_cursor_adapter_install.py` (`TestSandboxGrantWritten`, the grant's first real write, and `TestWorkspaceSandboxReport`, the workspace report's rows), `claude/.claude/scripts/select-tests.py`, `claude/.claude/scripts/tests/test_select_tests.py` and `docs/cursor-adapter.md` (r5 cd R11; r19 be R2, sdet R5).
   - The gates test and Phase 5c's agents test read `claude/.claude/agents/*.md`. The two `select-tests` files therefore gain a reverse row from that directory that selects `SCRIPTS_TESTS_DIR` as a directory, so Phase 5c needs no row of its own (row 25; r5 sdet R6).
   - The credential gate sources `_lib.sh` as a gate does and reuses `_lib_redact_credential_shaped_strings` and `_LIB_CREDENTIAL_PATH_REGEX` (`_lib.sh:3912`).
   - The permissions gate reuses `_lib_split_fragments` and `_lib_fragment_command_word` (`_lib.sh:2086`, `:2109`).
   - The dispatch re-runs OD5's benchmark with the adapter-only entries this phase adds.
-- Phase 5b. Create `test_cursor_adapter_twins.py`. Modify `hook-shim.sh`, `_cursor-adapter-lib.sh`, `field-table.json`, `cursor-adapter.py`, `parity-exceptions.json`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` and `docs/cursor-adapter.md`. The dispatch re-runs OD5's benchmark with the twins' entries.
+- Phase 5b. Create `test_cursor_adapter_twins.py`. Modify `hook-shim.py`, `field-table.json`, `cursor-adapter.py`, `parity-exceptions.json`, `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` and `docs/cursor-adapter.md`. The dispatch re-runs OD5's benchmark with the twins' entries.
 - Phase 5c. Create `model-map.json`, `templates/claude-vocabulary.mdc` and `test_cursor_adapter_agents.py`. Modify `cursor-adapter.py`, `docs/cursor-adapter.md`, and `parity-exceptions.json` with acceptance step 6's withheld-twin outcomes from Phase 5b's run (r5 plat R2).
 - Phase 6. Modify `docs/cursor-adapter.md`, `field-table.json` with the paths acceptance observed (requirement 6), and this plan with the acceptance results under the admission rule's Phase 6 clause. Acceptance step 7's MCP fixture, the scratch entries of step 3's cell 5, step 4 and step 6, and step 14's scratch deny entry live in the scratch root, outside the repo, as Phase 1's kit did.
+
+Projected diff: about 29,800 changed lines across all phases (estimate), excluding `.claude/plans/`, the sum of the phase figures below (r24 be R12; r25 prod R1; r26; r27; r28; r29; r30; r31; r33; r34; r35; r38). Row 334 records each revision's figure:
+
+- Phase 2 about 9,100 (estimate), against the bash and jq first pass's about 7,900:
+  - the 186 JSON lines kept;
+  - about 1,450 Python lines in one file, in place of about 1,530 bash and jq lines. Row 364 takes about 150 out, r27's fixes add about 70 and r28's about 10 (r25 cd R9; r26; r27; r28);
+  - about 5,600 of the about 6,200 test and fixture lines kept. The about 600 shed are `TestCappedCallParity`, the `test_bash_floor.py` additions, `run_lib`, the `_config.sh`-tree test and the bash-only rows;
+  - about 1,745 test lines added, by origin (r25 prod R1):
+    - from r23, the classes `TestShimHookRun`, `TestShimFaults`, `TestShimInterpreterIsolation` and `TestShimTextRules`, the re-pointed `TestRealpathParity`, the exec-count harness and the C-locale pairs;
+    - from r24, rows in those classes and in `TestWriteTranslation` and `TestShimPrologue`, which the dispatching session sorted as fixes (row 352);
+    - from r25, about 400 lines of rows in `TestShimHookRun`, `TestShimFaults`, `TestShimTextRules`, `TestWriteTranslation` and the start-fault and `--deadline` rows, also sorted as fixes (row 360). `TestPythonFloor` and the below-floor row go (row 356);
+    - at r26, about 300 lines fewer net: row 364 and row 367's trims remove about 500, and the status-map, CRLF and self-check rows add about 200 (rows 364, 367);
+    - at r27, about 80 lines more net: the time-left, bound-kill, clock, tool-path, `start-failed`, newline-oracle and control rows add about 190, and row 372's trims remove about 110 (rows 368 to 372);
+    - at r28, no net change: the token, control and no-process assertions add about 30, and row 374's trim removes about 30;
+    - at r29, about 15 fewer net: the stand-in's call record, the pid-wait failure and the status-text and tool-carrier assertions add about 15, and the trimmed TERM variant, the second control and the held-pipe variants that row 368's bound rule replaced remove about 30 (rows 368, 374; r30 cd note);
+    - at r30, about 30 more net: the bound-arm row's `__exit__` and `os` records and its read-loop arm, the zombie-aware pid test, the wrapper's relative shape and the transient-set parameters add about 30 (row 375);
+  - about 120 lines of docs, the design-decision file included;
+- Phase 3 about 8,350 (estimate), with the launch guard's fault tail and its deny documents, the self-check and the round trip's added rows. r25 adds about 250 of those lines, most of them `TestLaunchGuard` rows. r26 adds about 150, for the floor and GNU refusals, the tamper rows, the quoted-path parameter and the new Recovery and Limitations text. r27 adds about 150 net, for the tool-path rule, the wrapper children, the GNU refusal text and its stubs, the 3.15 stub and the `start-failed` Recovery entry (rows 370 to 372). r28 adds about 100, for the work-tree test and its rows, the child-failure text, `check`'s wrapper-path test and the Recovery additions (rows 373, 374). r29 adds about 35, for the work-tree row's parameters and file-identity test, the no-timer wrapper stub, the probe bound, the Recovery and Limitations text and the transient-set assertion, net of the dropped `check` assertion (row 374). r30 adds about 150 net. The probe bound's stall text, step 1's deadline and their row, the work-tree remedy, walk-error arm and added row values, the working-directory rule, the child-failure text's start cause and its in-process row, and the Recovery edits add about 190. The dropped TERM child, its no-timer stub, its in-process failure row and its refusal text remove about 40 (row 375). r31 takes out about 150, for the work-tree condition, its walk, refusal and remedy, python3's second pass, the work-tree row values and the working-directory fixture (row 377). r33 adds about 150 net. The probe-wiring row, the tool-path unit table and added `install` values, the non-GNU stub values, the in-process `check` call, the held-pipe, start-record and `unfinished` assertions, `status`'s bounded probes, the `unfinished` text and the tool-path fix sentence add about 175. The null-stdin stub and the text-builder row remove about 25 (row 378). r34 adds about 100 net. The schedule and constants rows, the `status` cell, the removed-wrapper and refusal-text assertions, the literal probe lists and the stand-in's unknown-call raise add about 130. The every-tool-stalled cell and the moved `unfinished` assertion remove about 30 (row 379). r35 takes out about 100, for the tool re-test's deadline, its `unfinished` text and the schedule and constants rows. Restating the test rows as obligations changes no figure, because the Phase 3 PR still writes those tests (row 380);
+- Phase 4 about 4,000 (estimate);
+- Phase 5a about 5,100 (estimate);
+- Phase 5b about 2,000 (estimate);
+- Phase 5c about 1,100 (estimate);
+- Phase 6 about 150 (estimate).
 
 ## Verification
 
@@ -3127,6 +4108,15 @@ If a fetch is denied, the session reports the denial. A denied hooks-doc fetch s
    - Phase 4's dispatch waits on no OD11 item: OD11(b), OD11(d) and OD11(e) are decided and written in (OD11; r13; r15; r16). Phase 4's PR merges only after the Phase 4 re-plan states the CLI-coexistence rule (the Installer's CLI-coexistence block; r21).
    - From Phase 3 on, after the phase merges, the engineer runs the attended steps Phases assigns it (row 171). The next phase's PR body records only pass or fail per step.
    - The Phase 2, 4, 5a and 5b dispatches report OD5's benchmark numbers per class in the session, and a miss takes OD5's miss route.
+   - Phase 2's interpreter probe, a named step on macOS and on Linux, runs `env -i <python3> -I -S -c` with a program that prints the sorted environment names, `sys.flags`, `sys.version_info` and whether `site` is in `sys.modules`, once with no locale variable and once each with `LC_CTYPE=C` and `LANG=C`. The PR body records the output. Rows 330 and 333 become [verified] on it, or the session takes a contradiction to the engineer as a plan revision (r23 ciso R7, plat R8). Between probes, `TestShimInterpreterIsolation`'s standing rows hold `-S` (r24 ciso R4).
+   - Phase 2's residue grep (r23 plat R9; r24 plat R5, sdet R10, prod R6; r25 sdet R9; r26 sdet R7):
+     - `git diff --name-only origin/main...HEAD` names none of `hook-shim.sh`, `_cursor-adapter-lib.sh`, `translate-input.jq` and `translate-output.jq`;
+     - `git grep -n -E` searches the content of the files that list names, less this plan and the design-decision file, for `\.jq([^[:alnum:]_]|$)`, `hook-shim\.sh`, `_cursor-adapter-lib\.sh`, `_cursor_worst_case_wall_seconds`, `_cursor_adapter_lib` and `TestShimLauncher`;
+     - the added lines of `select-tests.py`, `test_select_tests.py` and `docs/scripts.md` are also searched for `(^|[^[:alnum:]_])jq([^[:alnum:]_]|$)`, `\.sh([^[:alnum:]_]|$)`, `hook-out`, `hook-err`, `_config\.sh`, `bash below`, `999999` and `launcher`;
+     - the patterns use POSIX classes in place of `\b`, which POSIX ERE does not define;
+     - each search also runs `hook-shim\.py` over the same set, which must match, so an empty result is told apart from a dead search;
+     - the PR body records each command and its output, an empty result included, and gives every match its reason;
+     - the grep checks names and phrases, not meaning, so Critical files has the `docs/scripts.md` shim bullet written from requirement 15.
    - `git diff --name-only origin/main...HEAD` names only that phase's Critical files, plus this plan where a revision changed it.
    - Phase 6: each acceptance step passes, or is recorded with its reason and the engineer's decision to fix or accept. Step 12's record is checked against OD5's budget.
 
@@ -3148,6 +4138,8 @@ If a fetch is denied, the session reports the denial. A denied hooks-doc fetch s
   - O20(e), whether a lone allow suppresses the prompt, which requirement 2 bars whatever the answer (row 51);
   - O22(e), user-level hot reload, with S6's hot-reload cell. I3 stays unmet (Phases 2 to 6, I3), and the doc discloses hot reload as untested (r21).
 - The Cursor CLI as an adapter target (row 5), its `~/.cursor/cli-config.json` deny list included (G7). The follow-up run (row 112) uses the CLI only as a probe launcher, and its smoke test observes whether hooks load there. The adapter does not support the CLI. Running a CLI session beside the installed adapter is a requirement the Phase 4 re-plan designs, from the Installer's CLI-coexistence block (r20 be R2; r21).
+- Making a slow gate faster for both harnesses, which the engineer named as the correct fix for a deadline deny, and a per-registration deadline or a measured gate runtime, which the engineer chose not to add (row 359). Gate performance is the hooks' own work, outside the adapter (r25 plat R1).
+- Ending a child that a hook leaves in its process group when it exits. The `timeout -k` wrapper does not, and the engineer chose the wrapper over the shim's own group kill (rows 364, 365).
 - Cursor cloud agents (G4).
 - Managed and plugin hook sources, which are out of scope and unobserved. OD6 states how an O20 result would reach them (row 84).
 - A second IDE launch method. The observations name the one launch method every IDE relaunch used (row 70), and the other is a post-spike observation, not a second run. The CLI launcher (row 112) is not an IDE launch method.
@@ -3167,3 +4159,4 @@ If a fetch is denied, the session reports the denial. A denied hooks-doc fetch s
 - Claude-Code-only UI settings with no gate behind them: `statusLine`, `skillOverrides`, and `sessionTitle`. Prompt suppression through `permissions.allow` is also out, because Cursor's own approval settings govern prompts. Its role as `enforce-marker-script-shape.sh`'s backstop is not out, and requirement 5 carries it.
 - Adapting `~/CLAUDE.local.md` and other machine-private files.
 - Self-regeneration of `~/.cursor` artifacts from a hook. The staleness check warns instead.
+- Porting the hook scripts or the adapter gate scripts to Python. The shim runs them unchanged. The process-count reading behind the Python shim is about a wrapper that starts many processes per call, not a hook that starts one or two [unverified: relayed] (row 327; r37).
