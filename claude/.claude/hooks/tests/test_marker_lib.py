@@ -27,6 +27,7 @@ from helpers import (
     require_normalized_cumulative_review_text,
     scaled_shim_sleep,
     set_gitlink,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -1310,13 +1311,13 @@ class TestLibRepoRoot:
         fake_bin.mkdir()
         write_scaled_timeout_shim(fake_bin)
         fake_git = fake_bin / "git"
-        fake_git.write_text(
+        write_prewarmed_stub(
+            fake_git,
             "#!/bin/sh\n"
             # Well past _lib_capped's 5s cap -- avoids a race against
             # the cap firing at the same instant a shorter sleep would end.
-            f'if [ "$1" = "rev-parse" ]; then sleep {scaled_shim_sleep(30)}; fi\n'
+            f'if [ "$1" = "rev-parse" ]; then sleep {scaled_shim_sleep(30)}; fi\n',
         )
-        fake_git.chmod(0o755)
 
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
         with assert_cap_engaged(fake_bin, production_cap=5):
@@ -1857,14 +1858,14 @@ class TestLibAdvanceOffsetPastCompleteLines:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "tail"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-c" ] && [[ "$2" == +* ]]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_tail} "$@"\n'
+            f'exec {real_tail} "$@"\n',
         )
-        stub.chmod(0o755)
 
         offset = 0
         size = transcript.stat().st_size
