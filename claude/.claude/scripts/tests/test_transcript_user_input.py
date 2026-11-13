@@ -175,13 +175,14 @@ class TestCmdUserInput:
         [
             {"isMeta": True},
             {"isSidechain": True},
+            {"isCompactSummary": True},
             {"toolUseResult": {"stdout": "x"}, "sourceToolUseID": "t1", "sourceToolAssistantUUID": "u1"},
         ],
-        ids=["isMeta", "isSidechain", "tool_result_keys"],
+        ids=["isMeta", "isSidechain", "isCompactSummary", "tool_result_keys"],
     )
     def test_exclusion_guards_exclude_from_fresh_prompt_count(self, extra_fields, fake_projects, capsys):
-        """isMeta=True, isSidechain=True, and toolUseResult/sourceToolUseID/sourceToolAssistantUUID
-        records are excluded from total_fresh_prompts."""
+        """isMeta=True, isSidechain=True, isCompactSummary=True, and
+        toolUseResult/sourceToolUseID/sourceToolAssistantUUID records are excluded from total_fresh_prompts."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _ui_user("genuine prompt", branch="feat"),
             _ui_user("excluded record", branch="feat", **extra_fields),
@@ -190,6 +191,39 @@ class TestCmdUserInput:
         out = capsys.readouterr().out
         assert "- Fresh prompts: 1" in out
         assert "excluded record" not in out
+
+    def test_compact_summary_with_a_correction_phrase_before_the_typed_prompt_leaves_it_initial(self, fake_projects, capsys):
+        """A summary record ahead of the first typed prompt takes neither the INITIAL slot nor an
+        EXPLICIT_CORRECTION count, so the typed prompt classifies INITIAL."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("You hallucinated the earlier answer.", branch="feat", isCompactSummary=True),
+            _ui_user("typed prompt", branch="feat"),
+        ])
+        user_input.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "**[? · INITIAL · unknown]**\n~~~text\ntyped prompt\n~~~" in out
+        assert "- Fresh prompts: 1" in out
+        assert "- Explicit corrections (struggle-phrase match): 0" in out
+        assert "EXPLICIT_CORRECTION" not in out
+
+    def test_compact_summary_with_a_correction_phrase_after_the_typed_prompt_is_not_a_correction(self, fake_projects, capsys):
+        """A summary record after the typed prompt reaches the correction classifier when the
+        exclusion fails, so it is counted and listed by --corrections-only."""
+        summary_text = "You hallucinated the earlier answer."
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("typed prompt", branch="feat"),
+            _ui_user(summary_text, branch="feat", isCompactSummary=True),
+        ])
+        user_input.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "- Explicit corrections (struggle-phrase match): 0" in out
+        assert summary_text not in out
+        assert "- Fresh prompts: 1" in out
+
+        user_input.cmd_user_input(_user_input_args(corrections_only=True))
+        out_corrections_only = capsys.readouterr().out
+        assert summary_text not in out_corrections_only
+        assert "EXPLICIT_CORRECTION" not in out_corrections_only
 
     def test_empty_string_plain_content_included_no_strip_guard(self):
         """Pin actual behavior: the plain-string content path has no .strip() guard,

@@ -34,6 +34,42 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`<config-dir>/projects/*/*.jsonl`, unioned by default across every root declared in `~/.claude/transcript-config-dirs`, with single-account exceptions listed in `docs/transcript-analysis.md` § "Corpus scope: the declared-roots file"; single-account scope alone does not make a figure publishable, see `docs/private-project-redaction.md` § "Publishing a tooling measurement"); local-only reads except the subcommands `docs/transcript-analysis.md` lists as calling `gh` or writing to disk. Invoked directly: `python3 ~/.claude/scripts/transcript-analysis.py <subcommand>`. See [`docs/transcript-analysis.md`](transcript-analysis.md) for per-subcommand reference; the `/transcript-analysis` skill documents which subcommand answers which question. For where each piece of its logic lives (the `transcript_analysis/` package vs. the script itself), see [`docs/transcript-analysis-architecture.md`](transcript-analysis-architecture.md).
 
+- **`compaction-context.py`** — derives the facts a compaction must keep verbatim from one session transcript. `state --transcript PATH` prints a block of three things:
+
+  - The skills loaded this session, each with its SKILL.md path, most recently loaded first.
+  - The branch's plan file.
+  - The engineer's five newest prompts, quoted from the transcript, oldest first. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
+
+  The plan line names the absolute `<checkout root>/.claude/plans/<slug>.md`. It carries a sentence saying the block does not check who wrote the file or whether the session used it. The script reads the file `PATH` names and checks the checkout's `.git` and plan file on disk. It makes no network call and writes nothing.
+
+  The plan line is silently left out when:
+
+  - the plan file does not exist;
+  - the plan path, which holds the checkout root and the branch slug, has a character outside `[A-Za-z0-9._/@+-]` or a `..` segment;
+  - the recorded `cwd` is relative or has no `.git` ancestor;
+  - the plan file is a symlink;
+  - `.claude` or `plans` is a symlink, or the plan otherwise resolves outside `<root>/.claude/plans`;
+  - no main-thread record carries both a branch and a cwd, or the branch is detached HEAD;
+  - a filesystem probe raises an error.
+
+  ```bash
+  python3 ~/.claude/scripts/compaction-context.py state --transcript <path-to-session>.jsonl
+  ```
+
+  Limits and omissions:
+
+  - **Output limits:** the block stays within 9,000 characters. Over that it drops older prompts first, then the least recently loaded skills, and never drops the newest prompt or the plan line. The one exception is a block whose framing text, plan line and newest prompt alone exceed 9,000 characters. That takes a newest prompt made almost entirely of `~` characters, whose fences grow with it, together with a plan path near the longest the filesystem accepts. Each prompt is also cut to the per-message limit above.
+  - **Exit codes:** it prints nothing and exits 0 when the transcript holds no skill, prompt or plan file. It exits 1 with one stderr line when the file cannot be opened. Exit 1 is also the interpreter's default code for an import-time or other uncaught failure outside `main`, with a traceback and no `compaction-context:` stderr line, so exit 1 alone does not show the transcript was the problem. An argparse usage error exits 2. It exits 3 with one stderr line naming the exception type on an unexpected internal error, a failed write of the block included. A record or line it cannot interpret costs that record or line, not the block.
+  - **Silent omissions:** a skill directory holding a space, a non-ASCII letter, another character outside `[A-Za-z0-9._/@+-]` or a `..` segment yields no skill line. The plan line has its own omission list above. The block also omits AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token.
+  - **Redaction limit:** do not paste a hand-run block into a PR, issue or channel: it carries the engineer's prompts and absolute paths and is not safe to publish, whatever the channel.
+    - Quoted text is not redacted.
+    - Leaving the quoted prompts unredacted holds only while the block reaches the model as SessionStart `additionalContext` after the summary, never as PreCompact stdout.
+    - Once a compaction hook injects the block, a secret pasted into one of the five newest prompts returns to context at each compaction that quotes it and is copied into later transcript records.
+    - The quoted set is the last five admitted prompts by transcript file order, so a prompt from a rewound branch that remains in the file may be quoted.
+    - A secret can also persist in later compaction summaries beyond the five-prompt window, with no lifetime the script controls.
+    - The output can contain raw terminal control bytes, so view a hand-run block through something that escapes them.
+  - **Verified build and Python target:** the record shapes it reads were verified on one Claude Code build, which `docs/precompact-hook-behavior.md` § "What survives compaction — survival probe findings" names alongside the re-verify-by date. It targets Python 3.14, the version CI pins and the README's floor.
+
 - **`post-crash-sessions.py`** — enumerates Claude Code sessions orphaned by an unclean shutdown, including a same-day crash that never rebooted the machine, and prints a `cd <cwd> && claude --resume <id>` command for each one that's recoverable. Cross-references the session registry (`<config-dir>/sessions/<pid>.json`), scheduled-task lock files (`<project>/.claude/scheduled_tasks.lock`), the transcript corpus, capture-session-id.sh's `<config-dir>/sessions/<pid>` lookup files, and record-session-end.sh's `<config-dir>/session-end-records/<pid>` SessionEnd records — see the script's module docstring for the per-source evidence-weighting rationale. `--config-dir DIR` (repeatable) also scans an additional Claude Code config profile; absent this flag, every root declared in `~/.claude/transcript-config-dirs` is scanned by default too, and passing `--config-dir` explicitly overrides that default. `--redact` maps project directories and session ids to ordinals and drops git branch names, for pasting into a public issue or channel — unredacted is the default, and the text report always carries a not-publish-safe footer either way. Stdlib-only, no `requirements-dev.txt` dependency. Complements `resume-context.sh` below: this discovers *which* sessions are recoverable at all and prints the raw `claude --resume` invocation, while `resume-context.sh` handles the deliberately-authored `/handoff`/`/brief` continuity-file path. Read-only — writes no file, ever.
 
   ```bash
@@ -448,3 +484,54 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   find-consumed-continuity-file <slug>   # resolve a consumed continuity file's /tmp destination
   find-consumed-continuity-file          # list every still-live consumed destination
   ```
+
+- **`cursor-adapter/`** — the translation core that lets this repo's hooks run under Cursor's local IDE, with no file in a consuming repo. The installer and generator that wire it to Cursor are specified in `.claude/plans/cursor-adapter.md`. Its files:
+  - `hook-shim.py` runs one unchanged hook on a Cursor payload and prints Cursor's hook output. The adapter supports python3 3.14 or later, the version CI runs. The shim imports only the standard library. A generated command is to run it as `python3 -I -S hook-shim.py` with the recorded python3, so no `PYTHON*` variable, user site directory, `.pth` file or neighbouring module reaches it. The shim has a command-line contract, a record it reads and a set of faults it hands to its caller:
+    - Arguments:
+      - An argument the parser rejects, an abbreviated flag included, ends the run with exit 1 and no output.
+      - `--claude-event` (the Claude Code event) is required, and so is `--script` in `hook` mode, where it is an absolute path with no `:`, newline, NUL or `..` component.
+      - Every generated command carries `--contract-version` equal to the shim's `CONTRACT_VERSION`. An absent or different value, and a record of a different version, deny as `stale-install`.
+      - `--mode` is `hook`, `pin`, `pin-check` or `classify`.
+      - `--matcher` is a Claude matcher the shim re-checks.
+      - `--label` names the registration in the log and takes characters of `[0-9A-Za-z._:+-]` only. Any other label is logged as `unlabeled`.
+      - `--deadline` is a whole number of seconds from 2 to 60 (10 by default).
+      - `--fail-closed` (the default) or `--fail-open` picks the entry kind.
+    - Record: `$HOME/.cursor/cursor-adapter/install.json` holds `routed_config_dir` (an absolute path), `contract_version`, `tool_paths` and `tool_map`, the content of `tool-map.json` at install. Every tool path is absolute with no `:`, newline, NUL or `..` component, and the record names `timeout` or `gtimeout` for a `hook`-mode entry. A record that is missing or unreadable denies as `install-record` on a fail-closed entry.
+    - Input: the payload arrives on stdin under an 8 MiB cap and the deadline, and must be a strict UTF-8 JSON object. These each take the `payload-malformed` outcome:
+      - invalid UTF-8 or a top level that is not an object;
+      - `NaN`, `Infinity` or a float past the range;
+      - an integer past Python's digit limit;
+      - nesting past the recursion limit;
+      - a lone surrogate.
+
+      A NUL, U+001F or U+001E inside a payload string reaches the hook as the JSON escape.
+    - Hook run:
+      - The shim runs the hook under the recorded `timeout` wrapper in the resolved directory, with the translated payload on stdin.
+      - The hook gets `CLAUDE_CONFIG_DIR` set to the routed dir, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID` removed, and a `PATH` of the recorded tool directories followed by `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`.
+      - The shim opens no file the agent names.
+      - Under Cursor, a whole-file overwrite of an existing plan file reaches the plan-writer gate as `Edit` and passes it. Claude Code names it a Write and denies it. See the Limitations bullet on subagent bars.
+      - A hook output stream past 1 MiB takes the output-cap refusal at once. The hook keeps running until it ends or its time left runs out.
+    - Output: exit 0 with one JSON document on stdout. A hook's allow maps to `{}`, so Cursor's own approval flow decides. A fail-closed entry denies on a crash, a timeout, a missing or non-executable script, a non-zero exit other than 2, unusable output and the shim's own refusals, and an informational entry (`--fail-open`) prints `{}` for those.
+    - Faults: a fault of any kind ends the run with exit 1 and empty stderr. The generated launch guard around the interpreter call is to turn that into the entry's deny document or `{}`.
+    - Timing: `worst_case_wall_seconds` and `entry_timeout_seconds` in `hook-shim.py` define the entry timeout.
+  - `tool-map.json`, `field-table.json` and `parity-exceptions.json` are the data the shim and the generator read. `tool-map.json` is the source of the `tool_map` in the install record, and the shim maps only from the record.
+    - `field-table.json` holds the payload fields and required key paths. Each carries a `status`: `observed` (seen in a recorded Cursor payload), `doc-only` (listed in Cursor's hooks documentation and not yet seen in a recorded payload) or `unverified` (neither).
+    - `parity-exceptions.json` lists each `settings.json` registration, permission deny, adapter gate or Cursor tool name that the adapter does not carry, declines, or delivers later, with a reason (`unsupported`, `declined`, `pending-phase` or `withheld-premise`).
+    - A `pending-phase` row also names a `phase` of `.claude/plans/cursor-adapter.md`.
+  - `classify` mode runs the facts step only. It denies a Cursor tool name that neither the recorded tool map (its `MCP:` prefix class included) nor a `cursor-tool` entry in `parity-exceptions.json` lists. `pin` mode rewrites an agent Shell command to start with `builtin cd -- '<dir>' || exit 1`, so every Shell call starts in the directory the gates evaluate, and `pin-check` mode denies a command that lacks that prefix.
+  - Log: each call with a usable `cursor-adapter-state` directory in the routed config dir appends one line to `shim.log`. The line grammar and the field maxima are the log-field table in `hook-shim.py`. A call writes no line when the state directory is missing, a link or unwritable, and the `install-record` deny is always such a call. The call that wins the conversation's first-call mark also records the interpreter's `major.minor` in a `py` field, and a subagent's calls find their parent's mark.
+    - The installer owns the 16 MiB log rotation and the 7-day sweep of first-call marks. The shim does neither, so no Cursor entry may be wired to it before the installer provides both.
+  - Limitations:
+    - The subagent bars of `enforce-marker-script-shape.sh`, `deny-reviewer-tree-mutation.sh` and `deny-plan-writer-off-plan-writes.sh` key on `agent_type` (and, for the first, `agent_id`). The roster bar of `require-diff-size-prompt.sh` also keys on `agent_type`. The shim forwards neither on tool events, so a subagent those bars would stop is not stopped through the shim until agent attribution lands in Phase 5a.
+    - Engineer-facing `systemMessage` text is dropped on every event, and so is `hookSpecificOutput.sessionTitle`.
+    - Context with no Cursor channel (any event other than `postToolUse` and `sessionStart`) is dropped until the Cursor-side hooks of Phase 5b carry it.
+    - Output replacement (`updatedToolOutput`) is delivered for `MCP:` tools only, so `redact-credential-values.sh` does not redact tools' output under Cursor. The dropped replacement shows in the log's `drop` count.
+    - A hook whose stdout or stderr exceeds 1 MiB takes the `hook-output-cap` outcome, which prints `{}` on a `postToolUse` entry. A replacement tool output larger than that cap is therefore not applied, the original output reaches the model, and the log records `out=hook-output-cap`.
+    - A hook's deny, block or ask on an event with no channel for it delivers nothing. On `stop` and `subagentStop`, `continue: false` wins over a block decision, so no follow-up is sent.
+    - A `--fail-open` entry prints `{}` on every refusal, including `payload-malformed` and `payload-over-cap`, which a payload's author can cause, for example with a lone-surrogate escape in a Write's `content`. A Cursor entry that turns a hook's ask into a deny on a write tool must therefore be wired `--fail-closed`, or its targets covered by an independent fail-closed gate. Phase 3's generator is to wire such entries that way.
+    - A fail-closed deny reaches Cursor only on an event with a block channel: `preToolUse`, `beforeShellExecution`, `beforeReadFile`, `beforeSubmitPrompt` and `subagentStart`. Cursor does not enforce `subagentStart`'s deny. Every other event prints `{}`.
+    - A child that a hook leaves in its process group when it exits gets no signal from the wrapper, and a child outside the group gets none either. Each runs on until it exits. A call whose pipes such a child holds open ends at the shim's bound with the timeout outcome.
+    - A workspace root of `/` makes the leading-`cd` exception accept every existing directory, because nothing lies outside `/`.
+    - Under a C locale the interpreter gives the hook a UTF-8 `LC_CTYPE` that a hook run directly would not see.
+    - Every shim deny ends with a pointer to the Recovery section of `docs/cursor-adapter.md`, which Phase 3 starts.
+  - Tests: `claude/.claude/scripts/tests/test_cursor_adapter_translate.py` and `test_cursor_adapter_shim.py`, and under `claude/.claude/hooks/tests/` the shared payload builder `_cursor_payloads.py`, `test_cursor_adapter_gate_matrix.py` and `test_cursor_adapter_lib_parity.py`. All run without Cursor.

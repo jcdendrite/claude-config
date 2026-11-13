@@ -434,26 +434,35 @@ _HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
 class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
         """TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also selected: this is a
-        .py file under claude/, which that test statically scans."""
+        .py file under claude/, which that test statically scans.
+        The helper HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS names also selects
+        SCRIPTS_TESTS_DIR, which runs it through the hook that calls it."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
             _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
+        assert _mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS, "an empty tuple would let the loop below pass vacuously"
+        for helper_path in _mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS:
+            helper_result = _mod.select_pytest_targets([helper_path])
+            assert helper_result.is_full_suite is False
+            assert {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR} <= set(helper_result.target_paths), helper_path
 
     def test_hooks_dir_shell_script_change_also_selects_scripts_tests(self):
         """test_default_branch_resolution_is_shared.py (SCRIPTS_TESTS_DIR)
         recursively globs claude/.claude/ for *.sh files, picking up
         claude/.claude/hooks/.
         Without this cross-domain exception, that check goes unrun on a
-        hooks-dir shell script change."""
-        result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
-        assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
-            _mod.SCRIPTS_TESTS_DIR,
-        }
+        hooks-dir shell script change. _lib.sh is covered because
+        test_cursor_adapter_translate.py runs its fragment splitter."""
+        for changed_path in ("claude/.claude/hooks/deny-example.sh", "claude/.claude/hooks/_lib.sh"):
+            result = _mod.select_pytest_targets([changed_path])
+            assert result.is_full_suite is False
+            assert set(result.target_paths) == {
+                _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+                _mod.SCRIPTS_TESTS_DIR,
+            }, changed_path
 
     def test_scripts_change_also_selects_ticket_reference_discipline_test(self):
         """test_ticket_reference_discipline.py statically scans every
@@ -1771,6 +1780,86 @@ class TestSelectPytestTargets:
         assert "claude/.claude/scripts/tests/test_diff_size_ack.py" in result.target_paths
 
 
+class TestCursorAdapterSelection:
+    """The Cursor adapter's files are read by tests in a tree the blanket domain rules do not reach."""
+
+    @pytest.mark.parametrize(
+        "changed_path",
+        [
+            "claude/.claude/scripts/cursor-adapter/hook-shim.py",
+            "claude/.claude/scripts/cursor-adapter/field-table.json",
+            "claude/.claude/scripts/cursor-adapter/tool-map.json",
+            "claude/.claude/scripts/cursor-adapter/parity-exceptions.json",
+        ],
+    )
+    def test_any_path_under_the_adapter_directory_selects_the_two_reading_hooks_tests_and_the_scripts_tests(self, changed_path):
+        """The whole hooks tests tree is not selected. The scripts tests come from the blanket SCRIPTS_DIR domain rule."""
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        assert set(_mod.CURSOR_ADAPTER_READING_TESTS) <= set(result.target_paths)
+        assert _mod.SCRIPTS_TESTS_DIR in result.target_paths
+        assert _mod.HOOKS_TESTS_DIR not in result.target_paths
+
+    def test_a_path_under_a_sibling_directory_with_the_same_prefix_does_not_select_the_reading_tests(self):
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/cursor-adapter-notes/readme.txt"])
+        assert not set(_mod.CURSOR_ADAPTER_READING_TESTS) & set(result.target_paths)
+        assert _mod.HOOKS_TESTS_DIR not in result.target_paths
+
+    def test_the_adapter_directory_constant_names_a_real_directory(self):
+        assert (_REPO_ROOT / _mod.CURSOR_ADAPTER_DIR).is_dir()
+
+    def test_the_shared_payload_builder_selects_the_scripts_tests_that_import_it(self):
+        """_cursor_payloads.py is imported by name from the scripts tests, which a path-constant scan cannot see."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/_cursor_payloads.py"])
+        assert result.is_full_suite is False
+        assert "claude/.claude/scripts/tests/test_cursor_adapter_translate.py" in result.target_paths
+        assert "claude/.claude/scripts/tests/test_cursor_adapter_shim.py" in result.target_paths
+        assert _mod.HOOKS_TESTS_DIR in result.target_paths
+
+    @staticmethod
+    def _undeclared_payload_builder_importers(sources: dict[str, str], declared: set[str]) -> set[str]:
+        """The keys of `sources` whose code imports the payload builder in any form and are not in `declared`."""
+
+        def imports_the_builder(source: str) -> bool:
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.Import) and any(alias.name.endswith("_cursor_payloads") for alias in node.names):
+                    return True
+                if isinstance(node, ast.ImportFrom) and (
+                    (node.module or "").endswith("_cursor_payloads")
+                    or any(alias.name == "_cursor_payloads" for alias in node.names)
+                ):
+                    return True
+            return False
+
+        return {name for name, source in sources.items() if imports_the_builder(source) and name not in declared}
+
+    def test_every_scripts_test_importing_the_payload_builder_is_a_declared_importer(self):
+        sources = {
+            f"claude/.claude/scripts/tests/{path.name}": path.read_text()
+            for path in (_REPO_ROOT / _mod.SCRIPTS_TESTS_DIR).glob("test_*.py")
+        }
+        declared = set(_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES)
+        assert self._undeclared_payload_builder_importers(sources, declared) == set()
+        assert self._undeclared_payload_builder_importers(sources, set()), "no scripts test imports the builder"
+
+    @pytest.mark.parametrize(
+        "import_line",
+        [
+            "from hooks.tests._cursor_payloads import SHIM",
+            "import hooks.tests._cursor_payloads",
+            "from hooks.tests import _cursor_payloads",
+        ],
+    )
+    def test_the_importer_scan_flags_an_undeclared_fixture_in_each_import_form(self, import_line):
+        fixture = {"claude/.claude/scripts/tests/test_fixture.py": f"{import_line}\n"}
+        assert self._undeclared_payload_builder_importers(fixture, set()) == set(fixture)
+        assert self._undeclared_payload_builder_importers(fixture, set(fixture)) == set()
+        assert self._undeclared_payload_builder_importers({"x.py": "import os\n# _cursor_payloads\n"}, set()) == set()
+
+    def test_the_payload_builder_is_a_declared_hooks_tests_module(self):
+        assert "claude/.claude/hooks/tests/_cursor_payloads.py" in _mod.HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
+
+
 class TestResolveTargetPaths:
     """resolve_target_paths turns a selection's target_paths into the
     concrete argv pytest receives: globs expanded, then any path another
@@ -2163,6 +2252,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.REVIEW_PR_SKILL_MD,
     _mod.PERIOD_COST_REPORT_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
+    *_mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS,
     _mod.RESUME_CONTEXT_SKILL_MD,
     _mod.PLAN_IT_SKILL_MD,
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
@@ -2173,6 +2263,9 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,
     _mod.STATUSLINE_COMMAND_SH,
+    _mod.CONFIG_KEYS_PSV,
+    _mod.CHANGELOG_MD,
+    _mod.SKILL_EVALS_RUNNER,
     _mod.REVIEW_BENCH_RUNNER,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
@@ -2198,6 +2291,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
+    *_mod.CURSOR_ADAPTER_READING_TESTS,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
     *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
