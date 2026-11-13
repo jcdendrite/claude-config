@@ -1,11 +1,7 @@
 """Shared scaffolding for every test that exercises the branch-records archive.
 
-`build_archive_env` is the one function through which archive cases build their
-per-command environment, and `run_lib` fails any call whose HOME or CLAUDE_CONFIG_DIR sits
-outside `tmp_path`, so no case can resolve the engineer's real archive root.
-`run_lib` sources `_branch-records-lib.sh` in `bash -c`, and `archive_successfully` is the
-only way a case turns an archive result into a path it may modify.
-The cleanup-script tests share the worktree, manifest and output assertions at the end of the module.
+`run_lib` fails any call whose HOME or CLAUDE_CONFIG_DIR sits outside `tmp_path`,
+so no lib case can resolve the engineer's real archive root.
 """
 from __future__ import annotations
 
@@ -79,17 +75,14 @@ requires_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores t
 
 
 def archive_root(env: dict[str, str]) -> Path:
-    """The archive root the scripts resolve from `env`'s HOME."""
     return Path(env["HOME"]) / ARCHIVE_ROOT_RELATIVE_PATH
 
 
 def account_component(config_dir: Path) -> str:
-    """The account directory name the archive derives from a config directory."""
     return str(config_dir.resolve()).replace("%", "%25").replace("/", "%2F")
 
 
 def account_directory(env: dict[str, str]) -> Path:
-    """The account directory the scripts resolve from `env`'s HOME and CLAUDE_CONFIG_DIR."""
     return archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"]))
 
 
@@ -107,12 +100,9 @@ def build_archive_env(
 ) -> dict[str, str]:
     """An environment whose HOME and CLAUDE_CONFIG_DIR sit under `tmp_path`.
 
-    `base_env` is layered under the two overrides, so a script test keeps the `gh` and
-    `direnv` shims of the environment it passes. `key_line` is written to
-    `claude-config.toml` verbatim; None writes an empty file. The root exists on request,
-    and the sentinel inside it exists on request. `root_symlink_target` makes the root a symlink to
-    that directory, which holds the sentinel instead of the root. `create_symlink_target=False`
-    leaves that directory uncreated, so the root dangles and no sentinel can exist.
+    `base_env` is layered under the two overrides.
+    `root_symlink_target` holds the sentinel instead of the root.
+    `create_symlink_target=False` leaves the root dangling, so no sentinel can exist.
     """
     home = tmp_path / home_name
     resolved_config_dir = config_dir if config_dir is not None else tmp_path / "archive_config"
@@ -460,7 +450,6 @@ def porcelain_paths(main: Path, branch: str) -> tuple[str, str]:
 
 
 def complete_snapshots(env: dict[str, str], ledger_key: str) -> list[Path]:
-    """Every snapshot under `ledger_key`'s key directory that holds a manifest."""
     directory = key_directory(env, ledger_key)
     if not directory.is_dir():
         return []

@@ -497,16 +497,23 @@ Column legend:
 - Fail direction on a malformed or unreadable enabling line: **keep every
   item**. When `_config_enabled` reads the key as off, `branch_records_status`
   makes the archive `unavailable` unless `claude-config.toml` provably does not
-  exist or was read and holds no line containing the text `agent_branch_records`
-  that `_config.sh` skips, and no line for the key that reads as other than
-  `true` or `false`. A file that cannot be read, a directory on its path that
-  cannot be searched, a non-directory above it on its path, a dangling or
-  self-looping link, and a non-file at its path all refuse. A directory that
-  can be searched but not read does not refuse. A misspelled key name, the
-  hyphenated `agent-branch-records` included, still reads as off, and only
-  `_config.sh`'s stderr warning marks that line.
-  The check does not run when `_config_enabled` reads the key as on, so a
-  `= true` line followed by a malformed duplicate still archives.
+  exist or was read and holds no offending line. These states refuse:
+  - the file cannot be read;
+  - a directory on its path cannot be searched;
+  - a non-directory sits above it on its path;
+  - a dangling or self-looping link sits on its path;
+  - a non-file sits at its path;
+  - a line containing the text `agent_branch_records` is one `_config.sh` cannot parse;
+  - a line for the key reads as other than `true` or `false`.
+
+  A directory that can be searched but not read does not refuse.
+  `docs/agent-branch-records.md` § "Fail direction" holds the full condition
+  list.
+- Check scope: the check does not run when `_config_enabled` reads the key as
+  on, so a `= true` line followed by a malformed duplicate still archives.
+- Misspelled key name: a misspelled name, the hyphenated `agent-branch-records`
+  included, reads as off and is not detected. Only `_config.sh`'s stderr
+  warning marks that line.
 - Residuals: the config reader's own read of the file swallows a transient
   read failure, so that failure can still read as off. A stat error under a
   searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE,

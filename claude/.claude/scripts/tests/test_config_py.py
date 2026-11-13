@@ -28,6 +28,8 @@ _PER_ACCOUNT_OPT_IN_KEYS = [
     "review_orchestrator_routing",
     "architect_disposition_challenge_pilot",
     "agent_branch_records",
+    "test_selection_tracking",
+    "round_consult_round2_pilot",
 ]
 
 
@@ -98,21 +100,22 @@ class TestSchema:
         }
 
     @pytest.mark.parametrize("key", _PER_ACCOUNT_OPT_IN_KEYS)
-    def test_opt_in_pilot_key_resolves_per_account(self, key):
-        """A widening to config-dir-or-home would make a home-level file enable
-        the key for every account."""
+    def test_per_account_opt_in_key_resolves_from_the_config_dir_only(self, key):
+        """A per-account opt-in key resolves from the config dir only: a widening
+        to config-dir-or-home would let a home-level file enable it for every
+        account."""
         assert schema()[key].resolution == "config-dir"
 
     @pytest.mark.parametrize("key", _PER_ACCOUNT_OPT_IN_KEYS)
-    def test_opt_in_pilot_key_is_bool_typed(self, key):
-        """config-get.sh's exit-0 gate compares against the literal "false",
-        which holds for a bool only."""
+    def test_per_account_opt_in_key_is_bool_typed(self, key):
+        """A per-account opt-in key is a bool: config-get.sh's exit-0 gate
+        compares against the literal "false", which holds for a bool only."""
         assert schema()[key].type == "bool"
 
     @pytest.mark.parametrize("key", _PER_ACCOUNT_OPT_IN_KEYS)
-    def test_opt_in_pilot_key_has_no_prompt_description(self, key):
-        """A non-empty prompt_description would offer the key in install.sh's
-        opt-in prompt to every consumer."""
+    def test_per_account_opt_in_key_is_not_offered_in_the_install_prompt(self, key):
+        """A per-account opt-in key stays out of install.sh's opt-in prompt: a
+        non-empty prompt_description would offer it to every consumer."""
         assert schema()[key].prompt_description == ""
 
     def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):

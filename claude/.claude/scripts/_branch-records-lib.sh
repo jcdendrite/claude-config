@@ -65,8 +65,9 @@ _branch_records_mark_unavailable() {
 }
 
 # _branch_records_toml_confirms_off CONFIG_DIR
-# Returns 0 only when CONFIG_DIR's claude-config.toml provably does not exist, or was read and holds no line naming the key
-# that _config.sh skips or reads as other than true or false. Every other outcome returns 1, except the two residuals below.
+# Returns 0 only when CONFIG_DIR's claude-config.toml provably does not exist, or was read and holds no line containing the text
+# agent_branch_records that _config_line_key_value cannot parse, and no line for the key whose value is other than true or false.
+# Every other outcome returns 1, except the three residuals below.
 # A failed lookup proves absence only when the nearest existing ancestor is a searchable directory, because EACCES, ELOOP and ENOTDIR also fail it.
 # A stat error such as EIO, ESTALE or ETIMEDOUT under a searchable parent still reads as absence and returns 0.
 # A transient read failure inside the config reader's own read is not detected here.

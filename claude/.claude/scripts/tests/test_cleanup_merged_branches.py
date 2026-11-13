@@ -4894,3 +4894,60 @@ class TestBranchRecordsArchive:
         assert not _remote_branch_exists(local, "feat/reviewed")
         assert not (Path(env["HOME"]) / ".local" / "state").exists()
         assert_output_never_mentions_the_archive(result.stdout + result.stderr, tmp_path)
+
+    def test_all_projects_gates_each_repo_on_its_own_account_and_archives_into_that_account_directory(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        repo_a_dir = root / "repo-a"
+        repo_a_dir.mkdir()
+        repo_b_dir = root / "repo-b"
+        repo_b_dir.mkdir()
+        local_a, _ = _make_repo_with_remote(repo_a_dir)
+        local_b, _ = _make_repo_with_remote(repo_b_dir)
+        tree_a = tmp_path / "reviewed-tree-a"
+        tree_b = tmp_path / "reviewed-tree-b"
+        worktree_holding_reviews(local_a, "feat/a-reviewed", tree_a)
+        worktree_holding_reviews(local_b, "feat/b-reviewed", tree_b)
+        _, porcelain_a = porcelain_paths(local_a, "feat/a-reviewed")
+        _, porcelain_b = porcelain_paths(local_b, "feat/b-reviewed")
+        config_a = tmp_path / "account_a_config"
+        config_b = tmp_path / "account_b_config"
+        for config_dir, key_line in ((config_a, "agent_branch_records = true"), (config_b, "agent_branch_records = false")):
+            config_dir.mkdir()
+            (config_dir / "claude-config.toml").write_text(key_line + "\n")
+        direnv_source = _direnv_shim_source_by_cwd({
+            str(local_a.resolve()): {"CLAUDE_CONFIG_DIR": str(config_a)},
+            str(local_b.resolve()): {"CLAUDE_CONFIG_DIR": str(config_b)},
+        })
+        gh_shim_source = _gh_shim_source({
+            "feat/a-reviewed": _MERGED_PR,
+            "feat/b-reviewed": {"number": 901, "mergedAt": "2026-05-01"},
+        })
+        # The invoking account has the key on too. The Archive: ready line is the oracle for a gate evaluated before
+        # the repo's environment loads, because the archive call re-reads the key.
+        # The snapshot-location assertions defend against the repo's environment never reaching the archive call.
+        invoking_env = build_archive_env(tmp_path, _shimmed_env(tmp_path, gh_shim_source, direnv_source=direnv_source))
+        env_a = {**invoking_env, "CLAUDE_CONFIG_DIR": str(config_a)}
+        env_b = {**invoking_env, "CLAUDE_CONFIG_DIR": str(config_b)}
+        # assert_script_env_confined sees only the environment before direnv exports,
+        # so each exported account is checked here.
+        for account_env in (invoking_env, env_a, env_b):
+            assert_script_env_confined(account_env)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+
+        result = _run_all_projects(tmp_path, invoking_env, roots_file)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Archive: ready ({account_directory(env_a)})" in result.stdout
+        (snapshot_a,) = complete_snapshots(env_a, expected_ledger_key(porcelain_a, "feat/a-reviewed"))
+        assert read_tree(snapshot_a / "agent-reviews") == (REVIEW_FILES, {"round1"})
+        assert not tree_a.exists()
+        assert not _local_branch_exists(local_a, "feat/a-reviewed")
+        assert not tree_b.exists()
+        assert not _local_branch_exists(local_b, "feat/b-reviewed")
+        ledger_key_b = expected_ledger_key(porcelain_b, "feat/b-reviewed")
+        assert complete_snapshots(env_b, ledger_key_b) == []
+        assert complete_snapshots(invoking_env, ledger_key_b) == []
+        assert not account_directory(env_b).exists()
+        assert not account_directory(invoking_env).exists()

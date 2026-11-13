@@ -56,7 +56,9 @@
 # No interactive prompt (unlike cleanup-merged-branches.sh's Tier B): once a
 # worktree passes every check above, there's no comparable judgment call to
 # prompt about, and the cost of a wrong call is a `git worktree add` +
-# reinstall, not lost work. `--dry-run` covers "review before acting".
+# reinstall, not lost committed work. `--dry-run` covers "review before acting".
+# The gitignored agent-reviews/ directory survives a removal only as an archive snapshot (key on, archive succeeded).
+# A recreated worktree does not get that snapshot back.
 #
 # Branch-records archive: with the `agent_branch_records` key on, each
 # candidate's agent-reviews/ is copied into a snapshot before its removal, and
