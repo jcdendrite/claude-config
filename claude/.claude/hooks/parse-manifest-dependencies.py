@@ -4,14 +4,6 @@ state, for ask-new-dependency-disclosure.sh. Recognized manifests:
 package.json, requirements*.txt, go.mod, Gemfile, Cargo.toml, and
 pyproject.toml.
 
-Requires Python >= 3.11 — this repo's stated floor (see README.md's setup
-section and install.sh's preflight check) — because `Cargo.toml`/
-`pyproject.toml` parsing needs stdlib `tomllib`, added in 3.11. `ruff`'s
-`target-version = "py312"` governs lint style repo-wide, not this file's
-actual runtime floor — a 3.12-only construct here would lint clean and
-only fail on a stow user's 3.11 interpreter, silently, since the calling
-hook fails open on any helper error.
-
 Reconstruction semantics (mirrors the table in
 ask-new-dependency-disclosure.sh's header):
   Edit      — pre-state text, `old_string` -> `new_string`, honoring
@@ -65,6 +57,7 @@ import json
 import re
 import signal
 import sys
+import tomllib
 import unicodedata
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -301,12 +294,8 @@ def _parse_toml_manifest(text: str, basename: str) -> dict[str, str]:
     pyproject.toml's PEP 621 [project] dependencies/
     [project.optional-dependencies] groups plus Poetry's
     [tool.poetry.dependencies] and [tool.poetry.group.*.dependencies]
-    (unioned across every group). `tomllib` is imported here, not at
-    module top, so an interpreter below the 3.11 floor still parses every
-    other recognized format -- see module docstring's Python floor note.
+    (unioned across every group).
     """
-    import tomllib
-
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:

@@ -697,13 +697,13 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
-        """Also selects REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
-        MEASURE_EXPLORE_RECALL_TEST (see the SKILL_EVALS_RUNNER comment on CROSS_DOMAIN_EXCEPTIONS)."""
+        """Also selects REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        and MEASURE_EXPLORE_RECALL_TEST (see the SKILL_EVALS_RUNNER comment on CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_evals_readme_change_selects_skills_tests_rather_than_falling_open(self):
@@ -716,14 +716,16 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
         result = _mod.select_pytest_targets([_mod.REVIEW_BENCH_RUNNER])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
@@ -731,7 +733,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_FIXTURES_DIR}/normal-success/session-1.jsonl"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_review_bench_test_glob_member_change_selects_itself(self):
@@ -739,7 +742,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets(["evals/test_review_bench_mining.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_explore_recall_fixture_change_selects_review_bench_measure_subagent_and_explore_recall_tests(self):
@@ -751,7 +755,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_FIXTURE])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_measure_subagent_model_resolution_test_change_also_selects_test_select_tests(self):
@@ -761,8 +766,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
-            _mod.SELECT_TESTS_TEST_PATH,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST, _mod.SELECT_TESTS_TEST_PATH,
         }
 
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
@@ -772,16 +777,18 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_evals_conftest_change_selects_every_test_it_applies_to(self):
-        """evals/conftest.py applies to the review_bench tests, the
-        measure_subagent test, and the recall scorer's test."""
+        """evals/conftest.py applies to the review_bench tests, the replay_bench
+        tests, the measure_subagent test, and the recall scorer's test."""
         result = _mod.select_pytest_targets([_mod.EVALS_CONFTEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
@@ -791,7 +798,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_measure_explore_recall_change_selects_its_own_test_and_the_sibling_pair(self):
@@ -801,7 +809,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
     def test_review_bench_scripts_dependency_change_also_selects_review_bench_tests(self):
@@ -813,6 +822,26 @@ class TestSelectPytestTargets:
             result = _mod.select_pytest_targets([dependency])
             assert result.is_full_suite is False, dependency
             assert _mod.REVIEW_BENCH_TEST_GLOB in result.target_paths, dependency
+
+    def test_replay_bench_package_change_selects_the_replay_tests_and_test_select_tests(self):
+        """test_select_tests.py reads the replay package's files by path from a function body, which
+        TestCrossDomainReadCompleteness cannot see."""
+        result = _mod.select_pytest_targets([f"{_mod.REPLAY_BENCH_DIR}/tasks.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
+
+    def test_replay_bench_test_glob_member_change_selects_itself(self):
+        result = _mod.select_pytest_targets(["evals/test_replay_bench_tasks.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB}
+
+    def test_replay_bench_scripts_dependency_change_also_selects_replay_bench_tests(self):
+        """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REPLAY_BENCH_TEST_GLOB:
+        evals/replay_bench imports review_bench, which imports each of them."""
+        for dependency in sorted(_mod._REVIEW_BENCH_SCRIPTS_DEPENDENCIES):
+            result = _mod.select_pytest_targets([dependency])
+            assert result.is_full_suite is False, dependency
+            assert _mod.REPLAY_BENCH_TEST_GLOB in result.target_paths, dependency
 
     def test_config_dir_module_change_also_selects_the_measure_subagent_test(self):
         """measure_subagent_model_resolution.py reaches _config_dir.py through
@@ -862,6 +891,7 @@ class TestSelectPytestTargets:
             evals_dir / "run_review_bench.py",
             evals_dir / "measure_subagent_model_resolution.py",
             evals_dir / "measure_explore_recall.py",
+            *(evals_dir / "replay_bench").glob("*.py"),
         ]
         reached: set[Path] = set()
         while pending:
@@ -882,6 +912,25 @@ class TestSelectPytestTargets:
             "expected the walk to reach the transcript_analysis package"
         )
         assert reached_scripts_files == _mod._REVIEW_BENCH_SCRIPTS_DEPENDENCIES
+
+    @staticmethod
+    def _relative_import_line_numbers(source: str) -> list[int]:
+        return [
+            node.lineno for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ImportFrom) and node.level > 0
+        ]
+
+    def test_replay_bench_files_import_by_absolute_path(self):
+        """The import-closure test above maps every relative import to review_bench, so a relative
+        import in the replay package would be attributed to the wrong package."""
+        replay_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
+        assert {path.name for path in replay_files} >= {"tasks.py", "comment_metrics.py"}
+        for replay_file in replay_files:
+            assert self._relative_import_line_numbers(replay_file.read_text()) == [], replay_file.name
+
+    def test_the_relative_import_scan_flags_a_seeded_relative_import(self):
+        assert self._relative_import_line_numbers("import os\nfrom . import sibling\n") == [2]
+        assert self._relative_import_line_numbers("from replay_bench import tasks\n") == []
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's
@@ -1591,7 +1640,7 @@ class TestSelectPytestTargets:
         - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope -> _config_dir
         - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
         A fifth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
-        REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
+        REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
         MEASURE_EXPLORE_RECALL_TEST.
         A sixth contributor, the TRANSCRIPT_ANALYSIS_SCRIPT row, adds NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH.
         """
@@ -1603,7 +1652,8 @@ class TestSelectPytestTargets:
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.MEASURE_EXPLORE_RECALL_TEST,
             _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
         }
 
@@ -2250,7 +2300,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
     _mod.PLAN_SHAPE_TEST_PATH,
-    _mod.TRANSCRIPT_REVIEW_TRACE_TEST_PATH,
+    _mod.TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH,
     _mod.ROUTING_GUARD_CAPTURE_TEST_PATH,
 })
 
@@ -2301,9 +2351,9 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_resume_context_same_session.py",
      "claude-skills/skills/resume-context/SKILL.md"),
-    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+    ("claude/.claude/scripts/tests/test_transcript_review_trace_spawn_rounds.py",
      "claude-skills/skills/plan-review/SKILL.md"),
-    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+    ("claude/.claude/scripts/tests/test_transcript_review_trace_spawn_rounds.py",
      "claude-skills/skills/ready-for-review/SKILL.md"),
 )
 
@@ -2512,7 +2562,7 @@ class TestRuleTablePathFidelity:
             assert list(_REPO_ROOT.glob(target)), f"{target} matched no files on disk"
 
     def test_review_bench_directory_constants_exist_on_disk(self):
-        for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR):
+        for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR, _mod.REPLAY_BENCH_DIR):
             assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
 
     def test_root_scripts_dir_constant_exists_on_disk(self):

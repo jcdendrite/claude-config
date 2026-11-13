@@ -10,7 +10,6 @@ TestSkillContract ties the keys and codes Step 5 names to the script's.
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
 import os
 import re
@@ -21,8 +20,6 @@ from pathlib import Path
 
 import pytest
 from helpers import SKILLS_DIR
-
-from .test_plan_push_preflight import _fstring_offenders
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[1] / "plan-shape.py"
 _SKILL_MD = SKILLS_DIR / "plan-it" / "SKILL.md"
@@ -1330,19 +1327,6 @@ class TestContract:
 
     def test_the_script_is_executable(self) -> None:
         assert os.access(_SCRIPT_PATH, os.X_OK)
-
-
-class TestPythonFloor:
-    def test_script_parses_under_python_311_grammar(self) -> None:
-        """Covers 3.11 grammar except PEP 701 f-strings, which parse accepts."""
-        ast.parse(_SCRIPT_PATH.read_text(), feature_version=(3, 11))
-
-    @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 701 f-strings only parse on 3.12+")
-    def test_script_has_no_fstring_that_only_python_312_accepts(self) -> None:
-        """Covers the PEP 701 f-string forms that feature_version=(3, 11) accepts."""
-        assert _fstring_offenders('f"{d["k"]}"') != [], "the check must flag a nested string literal"
-
-        assert _fstring_offenders(_SCRIPT_PATH.read_text()) == []
 
 
 _STEP5_START = "\n## Step 5 — Architecture design\n"

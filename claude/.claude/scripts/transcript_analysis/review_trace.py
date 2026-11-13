@@ -559,7 +559,7 @@ def _runs_plan_review_deactivate(rec: dict) -> bool:
     """True iff an assistant record's Bash tool_use has a line with a segment that opens as `marker.sh deactivate plan-review`.
 
     Each line of the command is lexed on its own, and a call counts only when it opens a segment of a line;
-    the known-miss tests in test_transcript_review_trace.py pin which shapes that misses or over-reads.
+    the known-miss tests in test_transcript_review_trace_spawn_rounds.py pin which shapes that misses or over-reads.
     Every line up to _MAX_LEXED_LINE_CHARS is lexed, and a call on a longer line is not read, so that window stays open.
     """
     if rec.get("type") != "assistant":
@@ -899,3 +899,40 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
 
 
+def _add_review_trace_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_review_trace = subparsers.add_parser(
+        "review-trace",
+        help=(
+            "Ordered review-event timeline per session: skill invocations, hook denials,"
+            " and reviewer-agent spawns."
+        ),
+    )
+    scope._add_project_scope_args(p_review_trace)
+    p_review_trace.add_argument("--branches", metavar="B1,B2,...")
+    p_review_trace.add_argument("--since", metavar="DATE", type=scope._iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_review_trace.add_argument("--until", metavar="DATE", type=scope._iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_review_trace.add_argument(
+        "--deny-only", action="store_true",
+        help="Restrict output to sessions that contain at least one hook denial.",
+    )
+    p_review_trace.add_argument(
+        "--deny-summary", action="store_true",
+        help=(
+            "Replace the per-session event listing with grouped denial-count"
+            " tables — by originating hook/gate, by attempted command shape"
+            " (git commit / git checkout / git push / other), and a cross-tab"
+            " of the two — plus the corpus date window covered."
+        ),
+    )
+    p_review_trace.add_argument(
+        "--skill", metavar="NAME", choices=sorted(REVIEW_TRACE_SKILLS),
+        help="Restrict skill-invocation matching to one skill name.",
+    )
+    p_review_trace.add_argument(
+        "--omit-plan-review-spawns", action="store_true",
+        help=(
+            "Leave out reviewer spawns made inside a /plan-review round, and print reviewer rows without round=. "
+            "Applies to the default timeline only; --deny-summary ignores it."
+        ),
+    )
+    p_review_trace.set_defaults(func=cmd_review_trace)

@@ -504,9 +504,8 @@ class TestBashInPlaceEditFamily:
         ["--add-noqa", "--add-noqa=legacy", '--add-noqa="legacy code"'],
     )
     def test_reviewer_ruff_check_add_noqa_denied(self, add_noqa_flag):
-        # --add-noqa inserts `# noqa` comments into the linted files in place.
-        # The `=REASON` cases use newer ruff syntax that the repo's pinned
-        # ruff rejects, and the gate must still deny them.
+        # --add-noqa inserts suppression comments into the linted files in place.
+        # The `=REASON` cases are ruff's `--add-noqa[=<REASON>]` form, which the gate must also deny.
         command = f"ruff check {add_noqa_flag} src/x.py"
         assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "deny"
 
@@ -1047,7 +1046,7 @@ class TestCommandWordResolution:
             "echo x | scripts/venv-run.sh ruff format x.py",
             # A mutating flag on a tool the wrapper otherwise allows.
             "scripts/venv-run.sh ruff check --fix x.py",
-            # --add-noqa writes `# noqa` comments in place, so the wrapper does not hide it.
+            # --add-noqa writes suppression comments in place, so the wrapper does not hide it.
             "scripts/venv-run.sh ruff check --add-noqa x.py",
             # The bare wrapper spelling, with no directory prefix.
             "venv-run.sh ruff format x.py",

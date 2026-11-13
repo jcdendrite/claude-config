@@ -758,3 +758,34 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     print("\n  (Active/Edited count edits inside subagent transcripts too. A reviewer agent's own writes are excluded.)")
     if transcript_read_errors:
         print(f"\n  ({transcript_read_errors:,} reviewer transcripts failed to read, excluded from Cited)")
+
+
+def _add_reviewer_yield_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_reviewer_yield = subparsers.add_parser(
+        "reviewer-yield",
+        help=(
+            "Per-reviewer-agent-type dispatch-to-verdict yield: findings-found vs."
+            " zero-finding vs. unclassified, joined via each dispatch's subagents/*.meta.json."
+        ),
+    )
+    scope._add_project_scope_args(p_reviewer_yield)
+    p_reviewer_yield.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with timestamp in the last N days (e.g. 35d).",
+    )
+    p_reviewer_yield.add_argument(
+        "--until", metavar="DATE", type=scope._iso_date,
+        help=(
+            "Inclusive end date (YYYY-MM-DD). Bounds dispatch detection (table 1) only —"
+            " the cited-path edit-overlap table (table 2) is not date-windowed."
+        ),
+    )
+    p_reviewer_yield.add_argument(
+        "--redact", action="store_true",
+        help=(
+            "No-op: reviewer-yield's output is aggregate-only per agent type and"
+            " carries no project-label or session-id field to redact. Kept for CLI"
+            " parity with cost/audit-routing."
+        ),
+    )
+    p_reviewer_yield.set_defaults(func=cmd_reviewer_yield)

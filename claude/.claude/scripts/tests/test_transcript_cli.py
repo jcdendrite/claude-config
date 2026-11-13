@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 import pytest
-from transcript_analysis import cli, review_cost_by_size, scope
+from transcript_analysis import cli, scope
 
 from .conftest import _asst, _write_jsonl
 
@@ -302,9 +302,10 @@ class TestBuildParser:
         otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
         parser = cli.build_parser()
         both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
-        # One subcommand per registration path: `cli.py`'s `_add_project_scope_args` call, the
-        # hand-rolled group in skill_invocation.py, and a module-registered subparser.
-        assert {"subagents", "skill-invocation", "skill-pair"} <= set(both_flags)
+        # The walk below skips any subcommand that loses either flag, so each name here guards its
+        # own registrar: cost via `cli.py`'s `_add_project_scope_args` call, skill-invocation via
+        # its hand-rolled group, skill-pair and subagents via their modules' registrars.
+        assert {"cost", "skill-invocation", "skill-pair", "subagents"} <= set(both_flags)
         not_refused = []
         for name in both_flags:
             try:
@@ -322,21 +323,6 @@ class TestBuildParser:
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
-
-    def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
-        parser = cli.build_parser()
-        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
-        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
-        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert with_flag.all_accounts is True
-        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert without_flag.all_accounts is False
-
-    def test_review_trace_parses_omit_plan_review_spawns(self):
-        """The flag is registered, and the default timeline keeps every row without it."""
-        parser = cli.build_parser()
-        assert parser.parse_args(["review-trace", "--omit-plan-review-spawns"]).omit_plan_review_spawns is True
-        assert parser.parse_args(["review-trace"]).omit_plan_review_spawns is False
 
 
 class TestProjectsFlagHasNoArgparseType:

@@ -329,9 +329,7 @@ dependency names against the on-disk pre-state — the
 union for `package.json`, a per-format parser for each other recognized
 manifest — and asks — naming each `name@constraint` pair, capped at 10 with
 an "…and N more" marker — only when that diff is non-empty.
-`parse-manifest-dependencies.py` requires Python >= 3.11 (this repo's
-stated floor; see its own module docstring), needed for `Cargo.toml`/
-`pyproject.toml` parsing via stdlib `tomllib`. It covers six manifest
+It covers six manifest
 formats: `package.json`, `requirements*.txt`, `go.mod`, `Gemfile`,
 `Cargo.toml`, and `pyproject.toml` (see residuals below).
 
@@ -347,10 +345,11 @@ basename isn't one of the six recognized names (case-sensitive), sits under
 `node_modules/`/`fixtures/`/`__fixtures__/`/`test-data/`, or is evaluated
 with `python3` absent/unusable (e.g. the Xcode Command Line Tools shim)
 allows silently, since none of those is reachable by crafting the
-manifest's own content. An on-disk pre-state over 5 MB, the helper
-erroring/timing out/emitting unparseable output, or a present-but-usable
-`python3` below the 3.11 floor (a broken install, not an expected runtime
-state) instead degrades to a generic ask naming no packages — manifest
+manifest's own content. The `python3` case has a residual: a pin file
+(such as `.python-version`) or other cwd-resolved interpreter selection can
+make a version-manager shim fail, and a repository or one agent `Write` can
+set it. In that case this hook allows silently. `docs/hooks.md` § "Python version" states the unverified working-directory premise this rests on, what each other `python3` hook does in the same condition, and when the SessionStart notice reports it. An on-disk pre-state over 5 MB, or the helper
+erroring/timing out/emitting unparseable output, instead degrades to a generic ask naming no packages — manifest
 content is agent-authored, so silence there would be a one-step-suppressible
 reminder. No repo-scoped opt-out sentinel: a `.claude/*-optout` file this
 hook would be the sole reader of is agent-writable with one `Write` call and
@@ -549,16 +548,19 @@ Configure the default branch so that direct pushes are blocked for the credentia
 - Or a repository ruleset that targets the default branch, requires a pull request with at least one approving review and lists no bypass actor for the credential.
 
 Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
-Block force pushes and branch deletion on the default branch as well.
+
+- Block force pushes and branch deletion on the default branch as well.
+- Give a `main`, `master` or `develop` branch that is not the default branch the same protection, whatever a given clone's remote HEAD names. The hook protects `main` and `master` always and `develop` where the remote HEAD does not resolve.
 
 The approving review is a requirement because `deny-default-branch-push.sh` does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
 The agent's credential must not be able to supply the approval.
+Keep ["Allow GitHub Actions to create and approve pull requests"](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) off for the repository and for any policy above it that sets it, because a workflow that a feature-branch push starts could otherwise approve with `GITHUB_TOKEN`.
 
 Give the agent a credential without repository-administration rights.
 `deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
 
-Restrict the scope of any repository secret that can push to the default branch or deploy.
-The hook allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
+Restrict the scope of any credential that can deploy, approve pull requests, administer the repository, or push to the default branch or to a `main`, `master` or `develop` branch.
+The hook allows a feature-branch push, and that push can change a workflow file or the code a workflow runs, so the run acts with a credential the pull-request rule does not bind.
 
 The hook reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The Known gaps in its header list them, so protection on the remote is the only barrier for steered input.
 
@@ -580,10 +582,11 @@ Check rulesets by listing them with `gh api repos/<owner>/<repo>/rulesets`, then
 - No bypass actor for the credential.
 
 Confirm any of these that the API output does not show in the repository settings page.
+Repeat the branch-protection and ruleset checks for each non-default branch that the `main`, `master` or `develop` rule above covers.
 
 Run these protection reads with the engineer's own credential, not the agent's. The agent's credential is the one the protection must bind and holds no repository-administration rights, so the reads may be refused to it or show less than the full configuration.
 
-Then verify the three credential properties the rules above depend on:
+Then verify the credential properties the rules above depend on:
 - **No administration rights.** In the repository's collaborator and permission settings, confirm the agent's account holds a role below administrator, is on no bypass list and owns no token or app installation with administration scope.
 - **Cannot supply the approval.** Open a pull request from a throwaway branch with the agent's credential. Confirm it stays blocked from merging while the agent's account is the only one that has reviewed it.
 - **Solo owner.** When the engineer is the only reviewer, the rule must still require an approval that the agent's credential cannot give.
@@ -629,7 +632,7 @@ Claude can do without a prompt. The `review-permissions` skill in this repo
 covers the checklist — over-broad globs, command chaining, and shell-
 expansion surface.
 
-**Server-side branch protection.** Verify the default branch's protection, the agent credential's rights and the scope of repository secrets that can push or deploy, as `docs/security-hardening.md` § "Required server-side branch protection" describes.
+**Server-side branch protection.** Verify every requirement in `docs/security-hardening.md` § "Required server-side branch protection", and run every check it lists.
 
 ## Private-fork guidance
 
