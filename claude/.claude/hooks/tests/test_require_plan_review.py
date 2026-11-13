@@ -35,6 +35,7 @@ from helpers import (
     scaled_shim_sleep,
     write_input,
     write_plan_review_marker,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -2316,8 +2317,7 @@ class TestRequirePlanReviewPlanMode:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "sha256sum"
-        stub.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_sha256sum} "$@"\n')
-        stub.chmod(0o755)
+        write_prewarmed_stub(stub, f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_sha256sum} "$@"\n')
 
         plan_mode_file = tmp_path / "slow-plan.md"
         plan_mode_file.write_text("# plan\n")
@@ -2363,14 +2363,14 @@ class TestRequirePlanReviewPlanMode:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             "#!/bin/bash\n"
             'case "$*" in\n'
             f'  *planFilePath*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
-            "esac\n"
+            "esac\n",
         )
-        stub.chmod(0o755)
 
         sid = "session-planmode-hung-jq"
         with assert_cap_engaged(stub_dir, production_cap=5):

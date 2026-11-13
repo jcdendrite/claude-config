@@ -32,6 +32,7 @@ from helpers import (
     scaled_cap,
     scaled_shim_sleep,
     scaled_under_cap_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -53,14 +54,14 @@ def _install_recording_real_timeout(monkeypatch, tmp_path: Path) -> None:
     fake_real_timeout_dir = tmp_path / "fake-real-timeout"
     fake_real_timeout_dir.mkdir()
     fake_timeout = fake_real_timeout_dir / "timeout"
-    fake_timeout.write_text(
+    write_prewarmed_stub(
+        fake_timeout,
         "#!/bin/bash\n"
         "printf '%s\\n' \"$1\"\n"
         'last="${@: -1}"\n'
         '[ "$last" = "__KILL__" ] && exit 124\n'
-        "exit 0\n"
+        "exit 0\n",
     )
-    fake_timeout.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_real_timeout_dir}{os.pathsep}{os.environ['PATH']}")
 
 
@@ -137,7 +138,8 @@ def _install_argv_echoing_real_timeout(monkeypatch, tmp_path: Path) -> None:
     fake_real_timeout_dir = tmp_path / "fake-real-timeout"
     fake_real_timeout_dir.mkdir()
     fake_timeout = fake_real_timeout_dir / "timeout"
-    fake_timeout.write_text(
+    write_prewarmed_stub(
+        fake_timeout,
         "#!/bin/bash\n"
         "printf '%s\\n' \"$@\"\n"
         'last="${@: -1}"\n'
@@ -145,9 +147,8 @@ def _install_argv_echoing_real_timeout(monkeypatch, tmp_path: Path) -> None:
         '[ "$last" = "__BUSYBOX_KILL__" ] && exit 143\n'
         '[ "$last" = "__SIGKILL__" ] && exit 137\n'
         '[ "$last" = "__PLAIN_NONZERO__" ] && exit 128\n'
-        "exit 0\n"
+        "exit 0\n",
     )
-    fake_timeout.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_real_timeout_dir}{os.pathsep}{os.environ['PATH']}")
 
 
