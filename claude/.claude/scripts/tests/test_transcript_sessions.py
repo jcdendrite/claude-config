@@ -2,7 +2,7 @@
 import pytest
 from transcript_analysis import cli
 
-from .conftest import _asst, _write_jsonl
+from .conftest import _asst, _write_jsonl, _write_subagent_jsonl
 
 
 def test_sessions_without_paths_exits_2_and_emits_no_path(fake_projects, capsys):
@@ -17,3 +17,32 @@ def test_sessions_without_paths_exits_2_and_emits_no_path(fake_projects, capsys)
     assert exit_info.value.code == 2
     assert "--paths is required" in captured.err
     assert captured.out == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_relative_paths"),
+    [
+        (["sessions", "--paths"], ["sess.jsonl"]),
+        (["sessions", "--paths", "--include-subagents"], ["sess.jsonl", "sess/subagents/agent-probe.jsonl"]),
+    ],
+    ids=["paths", "paths-include-subagents"],
+)
+def test_sessions_paths_emits_subagent_paths_only_under_include_subagents(
+    fake_projects, capsys, argv, expected_relative_paths
+):
+    """Plain --paths must not print subagent paths, and --include-subagents prints transcripts only, not sidecars.
+
+    The --include-subagents case shows the seeded subagent file would print, so the plain case cannot pass vacuously.
+    The orphan subagent directory has no main transcript, so it must not print in either case.
+    """
+    _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-5")])
+    _write_subagent_jsonl(fake_projects, "sess", "agent-probe", [_asst("claude-sonnet-5", sidechain=True)])
+    (fake_projects / "sess" / "subagents" / "agent-probe.meta.json").write_text("{}")
+    _write_subagent_jsonl(fake_projects, "orphan", "agent-orphan", [_asst("claude-sonnet-5", sidechain=True)])
+    args = cli.build_parser().parse_args(argv)
+
+    args.func(args)
+
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [str(fake_projects / path) for path in expected_relative_paths]
+    assert "SESSIONS SOURCES (*; " in captured.err
