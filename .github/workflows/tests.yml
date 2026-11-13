@@ -38,7 +38,7 @@ jobs:
     # runs one shellcheck process over every discovered file, so more xdist
     # workers cannot shorten it. Re-derive this cap whenever the parallel
     # pass grows.
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
       # during a flake incident) without a PR. Unset/empty falls through to

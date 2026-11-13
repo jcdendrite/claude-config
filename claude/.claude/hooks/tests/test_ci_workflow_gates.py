@@ -8,11 +8,13 @@ The invariants:
 - both jobs' keys equal one expected literal, apart from `test-slice`'s steps and the aggregate step's `run:` body;
 - each pytest step's `if:` is the install step's condition plus its own leg test, because conftest.py's
   require_direnv() hard-fails a pytest step that runs without the install step;
-- the four work steps, the install step keyed by its name and the pytest and Lint steps keyed by their
-  command, equal one expected literal, so a changed command, `shell:` or `env:` cannot turn a failed pass green;
+- the four work steps, the install step keyed by its name, the pytest steps keyed by their `-m` marker
+  expression and the Lint step keyed by `ruff check`, equal one expected literal, so a changed command,
+  `shell:` or `env:` cannot turn a failed pass green;
 - the install step's `run:` is the one exemption from that literal, so an install-command edit needs no test
   edit, while its `name`, `if:` and every other key stay pinned;
 - exactly one step has the id `detect` and it carries no `if:`, so no leg can skip its change detection;
+- every step whose `if:` reads `steps.detect` comes after the detect step, so the condition sees its output;
 - Lint runs in the `timing` leg only, so it reports once;
 - the legs named across the steps' `if:` conditions equal the matrix legs;
 - no `test-slice` step carries `continue-on-error`;
@@ -58,6 +60,7 @@ _SCHEMA_MESSAGE = "jobs differ from the expected literal"
 _FAIL_FAST_MESSAGE = "test-slice must set fail-fast to the boolean false"
 _WORK_STEPS_MESSAGE = "work steps differ from the expected list"
 _DETECT_STEP_MESSAGE = "the detect step must be the only step with its id and must carry no `if:`"
+_DETECT_ORDER_MESSAGE = "every step whose `if:` reads steps.detect must come after the detect step"
 _LEG_SET_MESSAGE = "legs named by step conditions differ from the matrix legs"
 _CONTINUE_ON_ERROR_MESSAGE = "test-slice steps must not set continue-on-error"
 
@@ -66,7 +69,7 @@ _EXPECTED_JOBS_WITHOUT_STEP_BODIES = {
     CI_TEST_SLICE_JOB_ID: {
         "runs-on": "ubuntu-24.04",
         "strategy": {"fail-fast": False, "matrix": {"slice": ["parallel", "timing"]}},
-        "timeout-minutes": 25,
+        "timeout-minutes": 30,
         "env": {"PYTEST_XDIST_AUTO_NUM_WORKERS": "${{ vars.PYTEST_XDIST_AUTO_NUM_WORKERS }}"},
     },
     _AGGREGATE_JOB_ID: {
@@ -84,8 +87,7 @@ _EXPECTED_JOBS_WITHOUT_STEP_BODIES = {
     },
 }
 
-# (identity, step), sorted by identity. The install step's identity is its name; the others' is their command.
-# The install step's entry omits `run:`; the comparison drops it from the actual step (`_step_as_compared`).
+# (identity, step), sorted by identity.
 _EXPECTED_WORK_STEPS = [
     (
         _INSTALL_STEP_NAME,
@@ -201,6 +203,12 @@ def _assert_work_steps_gate_their_legs(test_slice_job: dict) -> None:
         f"{_DETECT_STEP_MESSAGE}: found `if: {detect_steps[0]['if']}`. "
         "A leg that skips detection runs none of its gated steps and finishes green."
     )
+    detect_position = next(position for position, step in enumerate(steps) if step.get("id") == _DETECT_STEP_ID)
+    for step in steps[:detect_position]:
+        assert "steps.detect" not in str(step.get("if", "")), (
+            f"{_DETECT_ORDER_MESSAGE}: step {step.get('name', step.get('id'))!r} runs before the "
+            f"step with id {_DETECT_STEP_ID!r}. An output read before its step runs is empty, so the gated step skips."
+        )
 
     legs_named_by_conditions = {
         leg
@@ -256,6 +264,19 @@ def _rename_detect_step_id(job: dict) -> None:
 def _add_second_step_with_the_detect_id(job: dict) -> None:
     # No `run:` and no install name, so the work-step pair list ignores it and the detect assertion is reached.
     job["steps"].append({"name": "Second detect", "id": _DETECT_STEP_ID})
+
+
+def _move_detect_step_to_the_end(job: dict) -> None:
+    job["steps"].append(job["steps"].pop(job["steps"].index(_step_with_id(job, _DETECT_STEP_ID))))
+
+
+def _move_detect_step_after_the_first_gated_step(job: dict) -> None:
+    steps = job["steps"]
+    detect_step = steps.pop(steps.index(_step_with_id(job, _DETECT_STEP_ID)))
+    first_gated_position = next(
+        position for position, step in enumerate(steps) if "steps.detect" in str(step.get("if", ""))
+    )
+    steps.insert(first_gated_position + 1, detect_step)
 
 
 def _set_shell_on_install_step(job: dict) -> None:
@@ -327,6 +348,10 @@ def test_the_real_test_slice_job_gates_each_work_step_to_its_leg() -> None:
         pytest.param(_gate_detect_step_to_the_parallel_leg, _DETECT_STEP_MESSAGE, id="detect-step-gains-an-if"),
         pytest.param(_rename_detect_step_id, _DETECT_STEP_MESSAGE, id="detect-step-id-renamed"),
         pytest.param(_add_second_step_with_the_detect_id, _DETECT_STEP_MESSAGE, id="detect-step-id-duplicated"),
+        pytest.param(_move_detect_step_to_the_end, _DETECT_ORDER_MESSAGE, id="detect-step-moved-after-its-readers"),
+        pytest.param(
+            _move_detect_step_after_the_first_gated_step, _DETECT_ORDER_MESSAGE, id="detect-step-moved-one-step-too-late",
+        ),
         pytest.param(_add_third_leg_without_a_step, _LEG_SET_MESSAGE, id="matrix-leg-without-a-gated-step"),
         pytest.param(
             _set_continue_on_error_on_pin_git_step, _CONTINUE_ON_ERROR_MESSAGE, id="continue-on-error-on-a-setup-step",
@@ -396,4 +421,5 @@ def test_the_aggregate_step_exits_one_naming_any_result_other_than_success(tmp_p
 def test_the_aggregate_step_fails_when_the_slice_result_is_unset(tmp_path: Path) -> None:
     result = _run_aggregate_step(tmp_path, None)
 
-    assert result.returncode != 0
+    assert result.returncode == 1
+    assert "SLICE_RESULT" in result.stderr

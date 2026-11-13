@@ -322,7 +322,7 @@ class TestMinimumVersionMatchesTheDocumentedRequirement:
 
 
 def _pin_step() -> dict:
-    """The `pin-git` step of tests.yml's `test-slice` job, located by id through yaml.safe_load."""
+    """The `pin-git` step of tests.yml's `test-slice` job, located by id."""
     steps = ci_test_slice_job()["steps"]
     pin_steps = [step for step in steps if step.get("id") == _PIN_STEP_ID]
     assert len(pin_steps) == 1, (

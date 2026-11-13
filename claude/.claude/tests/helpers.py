@@ -51,7 +51,7 @@ TASK_NOTIFICATION_TEXT = (
     "</task-notification>"
 )
 
-_CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_CI_TESTS_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -2710,8 +2710,7 @@ CI_TEST_SLICE_JOB_ID = "test-slice"
 
 
 def ci_tests_workflow_jobs() -> dict:
-    """The parsed `jobs` mapping of tests.yml."""
-    return yaml.safe_load(_CI_DETECT_STEP_WORKFLOW.read_text())["jobs"]
+    return yaml.safe_load(_CI_TESTS_WORKFLOW_PATH.read_text())["jobs"]
 
 
 def ci_test_slice_job() -> dict:
