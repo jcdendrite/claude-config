@@ -1520,8 +1520,8 @@ A failed attempt retries once on a fresh fixture, then the run is recorded
 missing with its reason.
 
 - `fixture-error` (building the fixture or generating its exclude or Read
-  allow list raised) and `analysis-error` (the diff or a post-run git call
-  failed) never retry.
+  allow list raised) and `analysis-error` (the diff, the classifier or a
+  check raised after the launch, or a post-run git call failed) never retry.
 - `launch-error`: a launch call that raises `OSError`. The attempt is charged
   at the per-run cap and retried once. It is not an instrument reason.
 - The instrument reasons are `arm-leak`, `instrument-missing`,
@@ -1529,14 +1529,17 @@ missing with its reason.
   `account-hooks-missing`. An attempt that ends under one never retries, since
   a clean second attempt would hide evidence about the instrument.
 - One attempt can meet several reasons, and precedence has two tiers:
-  - `arm-leak` and `fixture-instruction-load` outrank the non-instrument
-    reasons, so a timed-out attempt whose log shows a `bare` leak records
+  - Of the reasons that reach the checks, `arm-leak` and
+    `fixture-instruction-load` outrank every non-instrument reason, so a timed-out attempt whose log shows a `bare` leak records
     `arm-leak`.
   - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing`
     outrank them only when the run reached its end, because a run that never
     finished leaves a log that is often absent or torn.
-  - A timeout, `launch-no-output`, `launch-error`, `no-result-event` and
-    `session-store-not-found` keep their own reasons.
+  - `launch-no-output` and `launch-error` return before the instrument checks
+    run, so they keep their own reasons. So does `analysis-error` when a check
+    raises before the instrument reasons are computed.
+  - A timeout, `no-result-event` and `session-store-not-found` yield only to
+    `arm-leak` and `fixture-instruction-load`.
   - `result-error`, `budget` and `api-error-final-record` count as reaching the
     end.
 

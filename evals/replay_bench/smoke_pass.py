@@ -1,7 +1,8 @@
 """The account's smoke-pass record, which `run` requires before any paid block on that account.
 
 A record that is absent, unparseable, lacks a key, or whose account key does not hash to its file name reads
-as absent, and so does one for another environment reading, model ID or arm set.
+as absent, and so does one for another environment reading or model ID, or one whose arms do not cover every
+requested arm.
 """
 from __future__ import annotations
 

@@ -289,13 +289,13 @@ Each run also records how many calls were denied, which a hook denial and a perm
   - `analysis-error`: the diff, the classifier or a check raised after the launch, or a post-run git call failed or timed out. The run keeps the attempt's cost.
 - Neither reaches `main()` as an exit 2. A task-specific one costs its own block, and the per-arm stop (Campaign) halts the campaign with exit 1 only after two such blocks in a row.
 - When `fixture-error` or `analysis-error` comes from a git timeout, its `missing_detail` reads `git timed out after <limit> s; raise --fixture-git-timeout-s`, naming the limit in force.
-- One attempt can meet several reasons. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`. All five sit in one constant, and the precedence between them is:
-  - `arm-leak` and `fixture-instruction-load` outrank every other reason, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`. The one exception is the next bullet;
-  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` outrank the non-instrument reasons only when the run reached its end, and then they also outrank `arm-leak`. `arm-leak` and these three reasons all halt the campaign, so the order changes the recorded reason and not the outcome;
-  - a timeout, `launch-no-output`, `launch-error`, `no-result-event` or a missing session store keeps its own reason, because a run that never finished leaves a log that is often absent or torn;
-  - `result-error`, `budget` and `api-error-final-record` count as reaching the end.
+- One attempt can meet several reasons. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`. All five sit in one constant and all five halt the campaign, so the precedence changes the recorded reason and not the outcome.
+  - Among the instrument reasons, the recorded one is the first of: the load check's reasons in its own order (`instrument-missing`, `arm-leak`, `fixture-instruction-load`, or only the log's own reason when the log is unreadable), then an `arm-leak` found by a tool call that reached a toolkit file, then `account-hooks-missing`. A `fixture-instruction-load` therefore outranks a reach-only `arm-leak`;
+  - `launch-no-output` and `launch-error` return before the instrument checks run, so they keep their own reason. `analysis-error` also keeps its own reason when a check raises before the instrument reasons are computed;
+  - Of the reasons that reach the checks, `arm-leak` and `fixture-instruction-load` outrank every non-instrument reason, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`;
+  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` outrank the non-instrument reasons only when the run reached its end, meaning anything except a timeout, `no-result-event` or a missing session store (`result-error`, `budget` and `api-error-final-record` all count as reaching it). Otherwise they are dropped and the validity reason is recorded (except where the bullet above applies), because a run that never finished leaves a log that is often absent or torn.
 
-  [unverified] An auth or API error reported as a result event before the hooks fire would then record the absence reasons and halt the campaign instead of retrying. Whether the hooks fire before the first model call is unchecked.
+  [unverified] An auth or API error reported as a result event before the hooks fire would then record those three reasons and halt the campaign instead of retrying. Whether the hooks fire before the first model call is unchecked.
 - A launch call that raises `OSError` records `launch-error`, charged at the cap and retried once. It is not an instrument reason. Its detail carries no argv or environment value.
 - Neither `run` nor `smoke` retries an instrument reason. The attempt's run ends missing under that reason. A clean second attempt would hide it, because such a reason is evidence about the instrument. `run` then halts at the block's end (Campaign).
 - Each attempt's cost reaches the spend file as the attempt ends (Campaign).
@@ -1211,7 +1211,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - the hook-log read that waits for the log's size to hold across two polls, as Instruction-load check states;
   - one attempt: fixture, launch, validity, checks, diff, metrics, and cleanup in a `finally`. The checks step calls `check_tool_call_paths` with `config_dir` on the subagent sidecar. The dispatcher transcript stays `evaluate_run_validity`'s. The step fails the run on `transcript-unreadable` (Validity, the Bash-check contract);
   - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included with its path in `missing_detail`, and `analysis-error` and every instrument reason without a retry;
-  - the instrument reason outranking every other reason on one attempt;
+  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` losing to a validity reason when the run did not reach its end;
   - every config-tree path and variable name it prints, in `!r` form;
   - the spend file and its torn-tail repair at resume;
   - the block and campaign loop with its pinned environment, smoke gate, spend guards, per-arm stop with its instrument halt and in-memory count of failed blocks in a row, per-block progress line, halt messages and exit codes, and `ReplayRunRecord`;
@@ -1504,7 +1504,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - the residual that a hook line can be lost only when its append takes longer than the model turn that follows its load (row 121);
   - that Bash commands outside `acceptEdits`' auto-approved set and the account's allow rules are denied in both arms, so a replay agent cannot run, for example, a test suite the account does not allow, and the permission-denial count shows how often (row 122);
   - the reason `launch-error`: a launch call that raises `OSError` is charged at the cap, retried once, and not an instrument reason;
-  - the Retry section's two-tier precedence rule, with the reached-the-end exception for the three absence reasons;
+  - the Retry section's two-tier precedence rule, with the reached-the-end exception for `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing`;
   - accepted residuals, which the README states:
     - the run-check residuals of row 161: heredoc and quoted-pattern false hits, which fail a `bare` run `arm-leak` and halt `run` at the block's end (row 160); `grep -r x ~` and `bash -c` text; denied Read, Grep and Glob calls; a Read of `<live>/.git` and of a linked worktree's common git dir; and the single CLI build the denial marker was verified on;
     - the eight environment names step 1b left unverified (row 164);

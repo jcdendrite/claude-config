@@ -247,6 +247,21 @@ class TestInstrumentReasons:
         assert outcome.record.missing_reason == checks.REASON_ARM_LEAK
         assert len(launch_stub.calls) == 1
 
+    @pytest.mark.parametrize("run_end", [{"timed_out": True}, {"omit_result_event": True}], ids=["timeout", "no-result-event"])
+    def test_a_fixture_instruction_load_outranks_a_run_that_did_not_complete(self, world, run_end):
+        fixture_load = Scenario(
+            log_lines=lambda session_id, fixture_dir: [
+                claude_md_line(world, session_id),
+                _line(str(fixture_dir / "src" / "app.py"), "path_glob_match", agent_id=AGENT_ID, session_id=session_id),
+            ],
+            **run_end,
+        )
+
+        outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name, lambda _n, _a: fixture_load)
+
+        assert outcome.record.missing_reason == checks.REASON_FIXTURE_INSTRUCTION_LOAD
+        assert len(launch_stub.calls) == 1
+
     def test_a_missing_account_session_file_is_account_hooks_missing_without_a_retry(self, world):
         outcome, launch_stub, _settings = run(
             world, arms.TOOLKIT.name, lambda _n, _a: Scenario(write_account_session_file=False),
@@ -766,12 +781,15 @@ class TestTheCommandLine:
         monkeypatch.setattr(review_runner, "default_live_checkout_roots", lambda: ())
         return directory
 
-    def test_run_without_its_required_flags_exits_two(self):
+    def test_run_without_its_required_flags_exits_two_with_the_parsers_own_message(self, capsys):
         assert main_run("run", "--tasks", "x", "--cumulative-stop-usd", "10") == 2
+        assert "the following arguments are required: --k" in capsys.readouterr().err
         assert main_run("run", "--tasks", "x", "--k", "1") == 2
+        assert "the following arguments are required: --cumulative-stop-usd" in capsys.readouterr().err
 
-    def test_smoke_takes_no_k(self):
+    def test_smoke_takes_no_k(self, capsys):
         assert main_run("smoke", "--tasks", "x", "--task-id", "00000000-000000000000", "--k", "2") == 2
+        assert "unrecognized arguments: --k" in capsys.readouterr().err
 
     def test_a_task_id_breaking_its_grammar_exits_two_with_the_id_in_the_message(self, capsys):
         assert main_run("smoke", "--tasks", "x", "--task-id", "not-an-id") == 2

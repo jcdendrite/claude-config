@@ -1,9 +1,8 @@
 """What a replay attempt launches: the allowlisted environment behind `/usr/bin/env -i`, the `--settings`
 JSON that carries the instruction-load hook, and the exact-path Read allow entries on the command line.
 
-The child's environment is built from a named allowlist instead of inherited, so the subagent's Bash
-sees none of the runner's other session variables. Each allowlisted value sits in `env`'s argv until `env`
-execs `claude`, so the runner assumes a single-user machine.
+The `claude` process's environment is built from a named allowlist instead of inherited. Each allowlisted
+value sits in `env`'s argv until `env` execs `claude`, so the runner assumes a single-user machine.
 """
 from __future__ import annotations
 

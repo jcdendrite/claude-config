@@ -1,5 +1,5 @@
 """Account preflight: which Claude Code account a source repo launches under, and whether that account can run
-a replay. Every refusal is a `HarnessInvalidatedError` that names the repo and one failure shape, and never
+a replay. Every refusal is a `HarnessInvalidatedError` that names one failure shape, and never
 carries the child's stdout, stderr, argv or an environment value.
 """
 from __future__ import annotations
