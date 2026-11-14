@@ -707,6 +707,19 @@ class TestToolkitReach:
         assert reaches.paths == (f"{checks_world.config_dir}/agents/reviewer.md",)
         assert len(reaches.unparsed) == 1
 
+    @pytest.mark.parametrize("command_for, unparsed_count", [
+        pytest.param(lambda path: f'cat "{path}"  # don\'t', 1, id="unsplittable-line"),
+        pytest.param(lambda path: f"bash -c 'cat \"{path}\"'", 0, id="double-quotes-inside-a-single-quoted-word"),
+    ])
+    def test_a_double_quoted_toolkit_path_is_reached_whether_or_not_the_line_splits(
+        self, checks_world, tmp_path, command_for, unparsed_count,
+    ):
+        reviewer = str(checks_world.config_dir / "agents" / "reviewer.md")
+        transcript = _transcript(tmp_path, _call_and_result("toolu_1", "Bash", {"command": command_for(reviewer)}))
+        reaches = checks.find_toolkit_file_reaches(transcript, toolkit=checks_world.toolkit, fixture_dir=checks_world.fixture_dir)
+        assert reaches.paths == (reviewer,)
+        assert len(reaches.unparsed) == unparsed_count
+
     @pytest.mark.parametrize("tool_name, tool_input", [
         ("Bash", {"command": "ls /usr/bin"}),
         ("Bash", {"command": "cat src/app.py"}),
@@ -832,6 +845,7 @@ class TestBashPaths:
         pytest.param(lambda leak: f"cat {leak}  # don't", id="comment-with-an-apostrophe"),
         pytest.param(lambda leak: f"cat {leak} \\", id="trailing-backslash"),
         pytest.param(lambda leak: f"cat '{leak}'  # don't", id="single-quoted-path-beside-a-comment"),
+        pytest.param(lambda leak: f'cat "{leak}"  # don\'t', id="double-quoted-path-beside-a-comment"),
         pytest.param(lambda leak: f'cat "{leak}" <<\'EOT\'\nit\'s here\nEOT', id="double-quoted-path-beside-a-heredoc"),
     ])
     def test_an_unsplittable_command_holding_a_guarded_path_is_scanned_and_fails(self, checks_world, tmp_path, command_for):
@@ -840,6 +854,13 @@ class TestBashPaths:
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (leak,)
         assert len(result.unparsed) == 1
+
+    def test_a_double_quoted_guarded_path_inside_a_single_quoted_word_is_seen_and_fails(self, checks_world, tmp_path):
+        leak = str(checks_world.live_checkout / "src" / "app.py")
+        result = _path_check(checks_world, _bash_transcript(tmp_path, f"bash -c 'cat \"{leak}\"'"))
+        assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
+        assert result.out_of_fixture_tokens == (leak,)
+        assert result.unparsed == ()
 
     @pytest.mark.parametrize("command_for", [
         pytest.param(lambda leak: f"cat {leak};true", id="semicolon"),

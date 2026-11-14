@@ -19,7 +19,7 @@ Command-text scan. A Bash command is scanned for guarded paths as text, not exec
   - each `FIXTURE_DIR_PREFIX` directory other than the run's own.
 
   A directory above a tree is never a hit, so `/`, `~`, `$HOME` and a division operator in a heredoc fail
-  nothing. `ls ~/.claude` fails when `~/.claude` is the config dir, because it names the config tree's root.
+  nothing. `ls ~/.claude` fails when `~/.claude` is the config dir and holds the projects root.
 
 The scan cannot see these shapes, which are illustrative, not exhaustive:
 - a command run on a directory above a guarded tree, as in `grep -r x ~`;
