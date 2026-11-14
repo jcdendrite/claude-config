@@ -365,16 +365,15 @@ A retry starts only after the failed attempt's `finally` has run.
   - The cap is a nominal figure, not a proven bound on one attempt's spend (row 65).
 
 A resume does these things, in order, before its first launch:
+- it takes the store's lock with `RunStore.acquire_lock`, which every later step runs under (row 156);
 - it exits 2 naming the repo when the probe resolves a source repo to an account key other than the manifest's;
 - it compares each account's current environment reading with the manifest's pinned one, and exits 2 naming the account and the field that differs;
-- it takes the store's lock with `RunStore.acquire_lock`, which every later step runs under (row 156);
+- it exits 2, naming the path, when `attempts/` is a symlink, before any sweep or delete;
 - it repairs the spend file's torn tail;
 - it runs `sweep_abandoned` once for each account projects root in the campaign. Each call returns the whole store's pending entries (row 85), so the resume merges them into one set and reruns each swept task's block once. It charges no swept entry (Spend file);
 - it prints the count of swept entries that carry a session ID and have no spend line, as `<N> logged attempts with a session ID have no spend line and were not charged`, since an attempt killed before its launch counts too. When N is above zero, the resume's total line below and its ceiling line (spend guards) each say they leave those attempts out;
 - it prints the spend file's total for blocks not yet complete;
-- it deletes the campaign's `attempts/` directory whole with `remove_tree_reporting_failure`:
-  - an `attempts/` that is a symlink makes `run` refuse with exit 2, naming the path, before any delete;
-  - an absent `attempts/` is no failure, so the resume checks that it exists first and prints nothing.
+- it deletes the campaign's `attempts/` directory whole with `remove_tree_reporting_failure`. An absent `attempts/` is no failure, so the resume checks that it exists first and prints nothing.
 
 The attempt-dir creator creates `attempts/` when it is absent. It refuses a same-named attempt dir that already exists, and that attempt records `fixture-error` with the path in `missing_detail`, before any launch.
 
@@ -382,7 +381,10 @@ The attempt-dir creator creates `attempts/` when it is absent. It refuses a same
 - `--k` and `--cumulative-stop-usd` are required, with no default for either.
 - `--account-stop-usd` caps each account's spend, and defaults to the cumulative stop.
 - `--campaign-id` must pass `identifiers.validate_campaign_id`.
-- The first start pins a manifest of the task-set hash, arms, k, seed, model ID, each source repo's account key, and each account's environment reading, read before the first launch. A resume whose task-set hash, arms, k, seed or model ID differs exits 2.
+- The first start pins a manifest of these fields:
+  - the task-set hash, arms, k, seed, model ID, per-run budget cap and per-run timeout. A resume that differs in any of these exits 2;
+  - each source repo's account key, which the resume list above checks in its own step;
+  - each account's environment reading, read before the first launch and checked in its own step of that list.
 - `--fixture-git-timeout-s` stays out of the manifest and its comparison, since it changes no result.
 
 `run` exits 2 before its first launch for any account in the task set that has no smoke pass. An account has none in each of these cases:
@@ -464,12 +466,13 @@ A denied Read of a toolkit file off the list prints by name and fails nothing. A
 Otherwise the line names the first failed condition, `smoke` prints every failed condition it computed, and `smoke` exits 2. On `instrument: ok`, `smoke` writes the account's smoke-pass record with `defects.atomic_write_text` to `.local/smoke-passes/<account digest>.json`. The record holds the account key, its environment reading, the model ID and the arms `smoke` validated. The digest is the first 16 hex digits of the account key's sha256.
 
 `main()` starts in this order:
-- it exits 2 on a Python older than 3.12 (row 59);
 - it exits 2 on a git older than 2.32, read from `git --version` (row 71);
 - it sets an owner-only umask;
+- it routes SIGHUP and SIGTERM into `KeyboardInterrupt`, as `msmr.main()` does, leaving SIGHUP alone when it was already ignored at start;
 - it exits 2 unless the local dir passes the check below;
-- it calls `run_review_bench._restrict_local_dir_to_owner` on the local dir (row 42);
-- it routes SIGHUP and SIGTERM into `KeyboardInterrupt`, as `msmr.main()` does.
+- it calls `run_review_bench._restrict_local_dir_to_owner` on the local dir (row 42).
+
+The 3.12 floor is documentation only: `def _without_child_output[ResultT]` in `evals/replay_bench/runner.py` uses PEP 695 syntax, and `evals/run_replay_bench.py` imports that module at the top, so an older interpreter fails at import before `main()` runs.
 
 On an interrupt, `main()` calls `msmr.abort_launches()` and prints the resume command. The message says two things:
 - wait at least `--timeout-s` after a hard kill before resuming, since a surviving `claude` child can still be writing (row 56);
@@ -637,7 +640,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 56. [verified: `evals/README.md:1010-1017`] A killed runner's `claude -p` children can keep running. The bench's guidance is to wait at least the command's timeout before resuming.
 57. [verified: `evals/review_bench/runner.py:1194-1203,1285`] `record_directory` with an empty session ID logs a directory before any launch, and the sweep then deletes that directory alone.
 58. [verified: `evals/review_bench/runner.py:1048-1061`] `_read_environment_field`'s error text carries the command and the child's stderr.
-59. [verified: `evals/review_bench/runner.py:1298`] `remove_tree_reporting_failure` calls `shutil.rmtree` with `onexc`. [unverified: Python docs not read this session] `onexc` first appears in Python 3.12, so an older interpreter raises at the first post-capture delete, after a paid run.
+59. [verified: `evals/review_bench/runner.py:1298`] `remove_tree_reporting_failure` calls `shutil.rmtree` with `onexc`. [unverified: Python docs not read this session] `onexc` first appears in Python 3.12, so an older interpreter raises at that delete. The replay runner never reaches it, because its import fails first (see the `main()` start order).
 60. [verified: `evals/review_bench/identifiers.py:8,17`] `validate_campaign_id`'s grammar admits no `/`, so it refuses a `../` name.
 61. [unverified] The trusted-author filter narrows the task source and does not prove it trusted. A commit's author email is a fair proxy for row 45's trust bar within these limits:
     - an author email is a string the committer sets;
@@ -1227,7 +1230,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - `HarnessInvalidatedError`, `TaskSourceError` (an out-of-range selection limit included), `TaskFileError`, or `identifiers.InvalidIdentifierError`, which `tasks.py` raises for a task-set name that breaks its grammar;
   - a preflight, spend, smoke-gate or local-dir refusal, or a resume's refusal of a symlinked `attempts/`;
   - an environment-pin mismatch;
-  - a Python or git below its floor.
+  - a git below its floor.
 - `run` returns 1 on every halt, a failed spend append included, and 0 when it completes every task.
 - `evals/test_replay_bench_arms.py` (new). Cases:
   - a `bare-writer.md` generated from a `tmp_path` `code-writer.md` and parsed with `msmr.agent_frontmatter_tools`, `msmr.agent_frontmatter_model` and the `effort` reader has that file's `tools`, `model` and `effort`, plus `name: bare-writer` and `omitClaudeMd: true`. That `code-writer.md` mirrors the real file's keys, with a multi-line `description` and distinctive non-default `tools`, `model` and `effort` values. No case reads this checkout's agents directory (row 158);
@@ -1380,7 +1383,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a record whose stored account key does not hash to its file name's digest;
   - a crash between record writes and `mark_block_complete`, then a rerun, leaves exactly one file set;
   - a two-account resume sweeps each account root and reruns each swept block once;
-  - the manifest-mismatch exit, one case per field: task-set hash, arms, k, seed and model ID.
+  - the manifest-mismatch exit, one case per field: task-set hash, arms, k, seed, model ID, budget cap and timeout.
 - Spend cases:
   - a block ceiling over a stop exits 2 before any launch;
   - a campaign ceiling over the cumulative stop exits 2 without `--allow-early-stop`. With it, the campaign runs until the cumulative stop halts it before the block that would pass it;
@@ -1413,7 +1416,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a pre-existing 0755 local dir is restricted to 0700;
     - a file the runner writes under it is 0600;
   - this checkout's `git check-ignore` reports the default local dir ignored;
-  - Python below 3.12, through a monkeypatched `sys.version_info`, and git below 2.32, through a fake `git` on `PATH`, each exit 2 before preflight;
+  - git below 2.32, through a fake `git` on `PATH`, exits 2 before preflight;
   - an interrupt calls `abort_launches` and prints the resume command with its wait and its `TMPDIR` line.
 - `summarize` cases, on synthetic records, each asserting printed values parsed back as numbers:
   - the ratio-of-sums primary;

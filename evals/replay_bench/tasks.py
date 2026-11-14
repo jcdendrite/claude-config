@@ -49,7 +49,7 @@ BARE_WRITER_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "agents" / "
 FIXTURE_SETTINGS_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "settings.json"
 _PROJECT_CONFIG_EXCLUDE_LINE = f"/{fixture_repo._PROJECT_CONFIG_DIR_NAME}/\n"
 
-_TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
+TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
 _TASK_KEYS = (
     "id", "source_repo", "base_commit", "commit", "brief", "changed_paths", "author_email", "committer_email",
     "reference_metrics", "base_density", "base_tree_bytes", "base_tree_entries",
@@ -193,7 +193,7 @@ class ReplayTask:
         missing_keys = [key for key in _TASK_KEYS if key not in data]
         if missing_keys:
             raise ValueError(f"task lacks keys {missing_keys}")
-        if not isinstance(data["id"], str) or not _TASK_ID_RE.fullmatch(data["id"]):
+        if not isinstance(data["id"], str) or not TASK_ID_RE.fullmatch(data["id"]):
             raise ValueError(f"task ID {data['id']!r} does not match <8 hex>-<12 hex>")
         for string_field in ("source_repo", "base_commit", "commit", "brief", "author_email", "committer_email"):
             if not isinstance(data[string_field], str):

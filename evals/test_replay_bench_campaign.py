@@ -121,8 +121,7 @@ def failing_tasks_launch(env, failing_briefs):
 
 
 def brief_of(env, index):
-    """The commit subject of the task at `index` in task-file order (newest first)."""
-    return f"Add module {len(env.world.tasks) - 1 - index}"
+    return env.world.tasks[index].brief
 
 
 class TestACompletedCampaign:
@@ -385,9 +384,15 @@ class TestThePerArmStop:
 
     def test_one_failing_task_that_is_last_after_a_passing_one_exits_zero(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
-        launch_stub = failing_tasks_launch(env, [brief_of(env, 1)])
+        first_task, last_task = env.world.tasks
+        launch_stub = failing_tasks_launch(env, [last_task.brief])
 
         assert env.run(launch_stub) == 0
+
+        assert env.completed() == {first_task.id, last_task.id}
+        assert {record.missing_reason for record in records.read_block_records(env.campaign_dir, first_task.id)} == {None}
+        last_block = {record.arm: record for record in records.read_block_records(env.campaign_dir, last_task.id)}
+        assert last_block[arms.BARE.name].missing_reason == "model-mismatch"
 
     @pytest.mark.parametrize("failing_agents", [{"code-writer"}, {"code-writer", "bare-writer"}], ids=["toolkit", "both"])
     def test_a_failing_toolkit_arm_or_both_arms_count_as_failed_blocks(self, env, failing_agents):
@@ -398,14 +403,17 @@ class TestThePerArmStop:
 
         assert env.run(env.world.launch(by_call=by_call)) == 1
 
-    def test_a_block_with_k_two_where_one_arm_has_one_valid_run_is_not_a_failed_block(self, env):
+    def test_two_blocks_in_a_row_each_with_one_arm_holding_one_valid_run_and_one_missing_run_exit_zero(self, env):
+        briefs = [brief_of(env, 0), brief_of(env, 1)]
         env.world.tasks[:] = env.world.tasks[:2]
-        attempts_seen = {"bare": 0}
+        bare_attempts_seen_per_task = dict.fromkeys(briefs, 0)
 
         def by_call(call):
-            if call.agent_name == "bare-writer":
-                attempts_seen["bare"] += 1
-                if attempts_seen["bare"] <= 2:
+            if call.agent_name == arms.BARE.agent_name:
+                brief = next(brief for brief in briefs if brief in call.inner_prompt)
+                bare_attempts_seen_per_task[brief] += 1
+                # A failed attempt retries once, so both of run 0's attempts fail.
+                if bare_attempts_seen_per_task[brief] <= review_runner.ATTEMPTS_PER_RUN:
                     return Scenario(observed_model="other-model")
             return Scenario()
 

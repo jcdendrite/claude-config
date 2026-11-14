@@ -43,7 +43,6 @@ DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"
 LOCAL_DIR_NAME = ".local"
 MIN_GIT = (2, 32)
 TASKS_DIR_NAME = "tasks"
-_TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
 _GIT_VERSION_RE = re.compile(r"git version (\d+)\.(\d+)")
 DEFAULT_SEED = 0
 
@@ -166,7 +165,7 @@ def cmd_preflight(args: argparse.Namespace, local_dir: Path) -> int:
 
 
 def cmd_smoke(args: argparse.Namespace, local_dir: Path) -> int:
-    if not _TASK_ID_RE.fullmatch(args.task_id):
+    if not tasks.TASK_ID_RE.fullmatch(args.task_id):
         raise HarnessInvalidatedError(f"--task-id {args.task_id!r} does not match <8 hex>-<12 hex>")
     task_list = tasks.read_task_set(local_dir / TASKS_DIR_NAME, args.tasks)
     matching = [task for task in task_list if task.id == args.task_id]

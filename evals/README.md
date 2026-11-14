@@ -1472,10 +1472,10 @@ detached run's redirected output shows them as they happen.
 
 After each block `run` prints one progress line: the task, each arm's `ok` and
 `missing` counts, the arms with no valid run and their reasons, the tasks
-dropped so far per arm, the block's spend, and the cumulative and per-account
-spend against their stops. A halt prints `halted: <reason>` and exits 1. Before
-each block `run` halts if the block's ceiling would carry the cumulative total
-or the block's account past its stop.
+dropped per arm since this invocation started, the block's spend, and the
+cumulative and per-account spend against their stops. A halt prints
+`halted: <reason>` and exits 1. Before each block `run` halts if the block's
+ceiling would carry the cumulative total or the block's account past its stop.
 
 A block's end environment reading that fails is read once more. A reading that
 still cannot be read halts `run` as a failed read, not as drift. A block whose
