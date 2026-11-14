@@ -9,14 +9,8 @@ Steered agents are out of scope, so these checks detect an honest agent's leak a
 not contain a hostile one.
 
 Command-text scan. A Bash command is scanned for guarded paths as text, not executed or parsed as shell:
-- A backslash-newline is removed first, as bash does. Then each line is tokenized on its own: its words are
-  `shlex`'s, or whitespace-separated when `shlex` cannot split the line.
-- Each word is a candidate whole, and again as the pieces left by splitting it on shell operators and quotes.
-  A quoted word is never split on whitespace, but a quoted string that spans lines is split at each line break.
 - A candidate longer than `MAX_PATH_CHARS` is skipped and recorded, so a guarded path inside a long word is
   still found through its shorter pieces.
-- `~`, `$HOME` and `${HOME}` at the start of a candidate expand to the home directory, and `$PWD` and
-  `${PWD}` to the fixture. No other variable expands.
 - A candidate hits a guarded location when it names the location, is below it, or is a directory holding it
   that is still inside the location's own tree. The trees are:
   - the config dir (the toolkit and the projects root);

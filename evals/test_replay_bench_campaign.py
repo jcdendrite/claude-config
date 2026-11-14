@@ -8,6 +8,7 @@ import errno
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -223,7 +224,7 @@ class TestTwoAccounts:
         assert "1 logged attempts with a session ID have no spend line" in capsys.readouterr().out
         assert env.completed() == {task.id for task in env.world.tasks}
 
-    def test_the_account_stop_counts_only_that_accounts_spend_while_the_cumulative_stop_counts_both(self, env, capsys):
+    def test_the_account_stop_counts_only_that_accounts_spend(self, env, capsys):
         env.add_second_account(lambda first, second: [second, first])
         env.spend().append(SpendLine(env.world.tasks[1].id, "bare", 0, 1, env.world.account.key, "s", 9.0, False))
 
@@ -233,6 +234,21 @@ class TestTwoAccounts:
         assert env.completed() == {env.world.tasks[0].id}, "the second account's block ran, the first account's did not"
         assert f"account stop for {env.world.account.key!r}" in capsys.readouterr().err
         assert env.spend().totals().total_usd == 9.0 + 1.0
+
+    def test_the_cumulative_stop_counts_both_accounts_spend_when_each_account_is_under_its_own_stop(self, env, capsys):
+        env.add_second_account(lambda first, second: [first, second])
+        launch_stub = env.world.launch()
+        # The first block spends $1.00 on the first account. The second account has spent nothing, so $0.00 + $4.00
+        # clears its stop, while $1.00 + $4.00 across both accounts passes the cumulative stop.
+        stop_usd = BLOCK_CEILING + 0.5
+
+        code = env.run(launch_stub, cumulative_stop_usd=stop_usd, account_stop_usd=stop_usd, allow_early_stop=True)
+
+        assert code == 1
+        assert env.completed() == {env.world.tasks[0].id}, "the first account's block ran, the second account's did not"
+        assert len(launch_stub.calls) == 2, "only the first block's two runs launched"
+        error = capsys.readouterr().err
+        assert "the cumulative stop" in error and "account stop" not in error
 
     def test_a_drift_on_the_second_accounts_environment_halts_at_its_block_and_names_that_task(self, env, capsys):
         second_task = env.add_second_account(lambda first, second: [first, second])
@@ -582,6 +598,33 @@ class TestTheManifestAndTheSmokeGate:
     def test_a_record_for_another_reading_refuses_at_the_campaign_level(self, env):
         env.pass_smoke(reading=dataclasses.replace(READING, ambient_config_commit="other-commit"))
         assert "no passing smoke" in self.smoke_gate_refusal(env)
+
+    @pytest.mark.parametrize(
+        "second_accounts_record",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param({"reading": dataclasses.replace(READING, cli_version="2.9.9")}, id="stale-reading"),
+            pytest.param({"model_id": "claude-other"}, id="stale-model"),
+            pytest.param({"arm_names": ("toolkit",)}, id="stale-arms"),
+        ],
+    )
+    def test_a_campaign_over_two_accounts_is_refused_when_only_the_second_accounts_smoke_is_missing_or_stale(
+        self, env, second_accounts_record,
+    ):
+        env.add_second_account(lambda first, second: [first, second])
+        second_key = env.second_account.key
+        if second_accounts_record is None:
+            smoke_pass.smoke_pass_path(env.world.local_dir, second_key).unlink()
+        else:
+            record = {"reading": READING, "model_id": MODEL_ID, "arm_names": ("toolkit", "bare"), **second_accounts_record}
+            smoke_pass.write_smoke_pass(
+                env.world.local_dir, second_key, record["reading"], record["model_id"], record["arm_names"],
+            )
+        launch_stub = env.world.launch()
+
+        with pytest.raises(HarnessInvalidatedError, match=f"account {re.escape(repr(second_key))} has no passing smoke"):
+            env.run(launch_stub)
+        assert launch_stub.calls == []
 
     @pytest.mark.parametrize(
         ("field_name", "stale"),

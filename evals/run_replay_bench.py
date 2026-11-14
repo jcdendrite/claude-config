@@ -321,7 +321,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _check_git() -> int | None:
-    """Exit code 2 when git is below its floor or not runnable, else None."""
     try:
         _refuse_old_git()
     except HarnessInvalidatedError as exc:

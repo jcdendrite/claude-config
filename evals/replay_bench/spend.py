@@ -77,7 +77,6 @@ class SpendFile:
         review_runner._repair_torn_tail(self.path)
 
     def append(self, line: SpendLine) -> None:
-        """Raises SpendAppendError when the write fails."""
         encoded = (json.dumps(asdict(line)) + "\n").encode()
         with self._lock:
             payload = b"\n" + encoded if self._tail_is_torn else encoded
