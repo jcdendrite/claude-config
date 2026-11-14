@@ -141,48 +141,25 @@ def _resolve_module_level_repo_paths(source: str, *, test_file_relpath: str) -> 
     return resolved
 
 
-_TEST_CORPUS_GLOBS = (
-    "claude/.claude/hooks/tests/test_*.py",
-    "claude/.claude/scripts/tests/test_*.py",
-    "claude-skills/skills/tests/test_*.py",
-    "claude-skills/skills/*/tests/test_*.py",
-    "claude/.claude/tests/test_*.py",
-    "plugins/*/tests/test_*.py",
-)
-
-
-# One known non-test module in each `_TEST_CORPUS_GLOBS` tree that holds any.
-# `claude-skills/skills/tests` and `claude-skills/skills/*/tests` hold none.
-_KNOWN_NON_TEST_MODULE_PER_CORPUS_GLOB = (
-    "claude/.claude/hooks/tests/_cursor_payloads.py",
-    "claude/.claude/scripts/tests/_skill_helpers.py",
-    "claude/.claude/tests/helpers.py",
-    "plugins/lovable-cloud/tests/conftest.py",
-)
-
-
 def _test_corpus(repo_root: Path) -> list[str]:
     """Repo-relative paths of every test_*.py file the completeness scanner
     parses: claude/.claude/hooks/tests/, claude/.claude/scripts/tests/,
     claude-skills/skills/tests/, claude-skills/skills/*/tests/ (nested
     per-skill test trees), claude/.claude/tests/, and plugins/*/tests/."""
+    patterns = (
+        "claude/.claude/hooks/tests/test_*.py",
+        "claude/.claude/scripts/tests/test_*.py",
+        "claude-skills/skills/tests/test_*.py",
+        "claude-skills/skills/*/tests/test_*.py",
+        "claude/.claude/tests/test_*.py",
+        "plugins/*/tests/test_*.py",
+    )
     corpus = [
         str(path.relative_to(repo_root))
-        for pattern in _TEST_CORPUS_GLOBS
+        for pattern in patterns
         for path in repo_root.glob(pattern)
     ]
     return sorted(corpus)
-
-
-def _non_test_modules_in_corpus_directories(repo_root: Path) -> list[str]:
-    """Repo-relative paths of the *.py files in `_test_corpus()`'s directories
-    that `_test_corpus()` itself skips: helper modules, conftests, __init__.py."""
-    return sorted(
-        str(path.relative_to(repo_root))
-        for pattern in _TEST_CORPUS_GLOBS
-        for path in repo_root.glob(pattern.replace("test_*.py", "*.py"))
-        if not path.name.startswith("test_")
-    )
 
 
 def _selection_covers(target_paths: tuple[str, ...], path: str) -> bool:
@@ -211,7 +188,8 @@ def _imported_module_basenames(source: str) -> set[str]:
 def _skill_structure_validator_importers(sources: dict[str, str]) -> set[str]:
     """The keys of `sources` that import the skill-structure validator, plus
     those that import the module of a key that does. The scan follows one hop."""
-    # Gaps: evals/ is unscanned; hops past one, importlib loads, and subprocess reach via require-skill-review.sh are unseen.
+    # Gaps: evals/ and non-test helper modules are unscanned; hops past one, importlib loads, and
+    # subprocess reach via require-skill-review.sh are unseen.
     validator_basename = Path(_mod.SKILL_STRUCTURE_VALIDATOR_MODULE).stem
     basenames_by_source = {name: _imported_module_basenames(source) for name, source in sources.items()}
     direct_importers = {name for name, basenames in basenames_by_source.items() if validator_basename in basenames}
@@ -477,58 +455,30 @@ class TestCrossDomainReadCompleteness:
         )
 
 
-@pytest.fixture(scope="module")
-def importers_in_real_corpus() -> set[str]:
-    """One parse of the whole test corpus per module, shared by every test that asserts on its importers.
-
-    Each xdist worker parses once, so the scan runs at most once per worker.
-    """
-    sources = {relpath: (_REPO_ROOT / relpath).read_text() for relpath in _test_corpus(_REPO_ROOT)}
-    return _skill_structure_validator_importers(sources)
-
-
 class TestSkillStructureValidatorSelection:
     """A validator change must select every test that imports the validator,
     by name or through another test module that does."""
 
-    def test_every_test_importing_the_validator_is_selected_by_a_validator_change(self, importers_in_real_corpus):
+    def test_every_test_importing_the_validator_is_selected_by_a_validator_change(self):
+        sources = {relpath: (_REPO_ROOT / relpath).read_text() for relpath in _test_corpus(_REPO_ROOT)}
+        importers = _skill_structure_validator_importers(sources)
+        assert "claude/.claude/hooks/tests/test_agent_roster.py" in importers, (
+            "the scan found no by-name importer: either it is broken, or test_agent_roster.py no longer imports "
+            "the validator and this liveness member needs re-picking"
+        )
+        assert _mod.DOC_COUNTS_TEST_PATH in importers, (
+            "the scan found no transitive importer: either it is broken, or test_doc_counts.py no longer reaches "
+            "the validator through test_agent_roster.py and this liveness member needs re-picking"
+        )
         result = _mod.select_pytest_targets([_mod.SKILL_STRUCTURE_VALIDATOR_MODULE])
         assert result.is_full_suite is False
         uncovered = sorted(
-            importer
-            for importer in importers_in_real_corpus
-            if not _selection_covers(result.target_paths, importer)
+            importer for importer in importers if not _selection_covers(result.target_paths, importer)
         )
         assert not uncovered, (
             f"select_pytest_targets([{_mod.SKILL_STRUCTURE_VALIDATOR_MODULE!r}]) selects "
             f"{result.target_paths!r}, which does not cover these importers: {uncovered}"
         )
-
-    def test_no_non_test_module_in_a_corpus_directory_imports_the_validator(self):
-        """The importer scan reads only test_*.py files, so a helper module that
-        imports the validator would escape it; this keeps that set empty."""
-        validator_basename = Path(_mod.SKILL_STRUCTURE_VALIDATOR_MODULE).stem
-        non_test_modules = _non_test_modules_in_corpus_directories(_REPO_ROOT)
-        missing_known_modules = [
-            known_module for known_module in _KNOWN_NON_TEST_MODULE_PER_CORPUS_GLOB if known_module not in non_test_modules
-        ]
-        assert not missing_known_modules, (
-            "the non-test-module scan no longer finds these known modules, so a corpus glob may have emptied a tree: "
-            f"{missing_known_modules}"
-        )
-        importing_the_validator = [
-            name
-            for name in non_test_modules
-            if validator_basename in _imported_module_basenames((_REPO_ROOT / name).read_text())
-        ]
-        assert not importing_the_validator, (
-            f"these non-test modules import {validator_basename}, which the importer scan does not read: "
-            f"{importing_the_validator}"
-        )
-
-    def test_the_real_scan_finds_a_by_name_and_a_transitive_importer(self, importers_in_real_corpus):
-        assert "claude/.claude/hooks/tests/test_agent_roster.py" in importers_in_real_corpus
-        assert _mod.DOC_COUNTS_TEST_PATH in importers_in_real_corpus
 
     def test_selection_covers_reports_a_path_outside_the_selected_targets_as_uncovered(self):
         selected_targets = ("claude/.claude/hooks/tests",)

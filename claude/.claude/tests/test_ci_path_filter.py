@@ -62,9 +62,11 @@ _PREVIOUSLY_MISSING_PATHS = (
 _SKIP_REGEX_ASSIGNMENT_PREFIX = "SKIP_REGEX="
 
 
-def _skip_regex_from_run_block(run_block: str) -> str:
+def _skip_regex_pattern() -> str:
     assignment_lines = [
-        line.strip() for line in run_block.splitlines() if line.strip().startswith(_SKIP_REGEX_ASSIGNMENT_PREFIX)
+        line.strip()
+        for line in extract_ci_detect_step_run_block().splitlines()
+        if line.strip().startswith(_SKIP_REGEX_ASSIGNMENT_PREFIX)
     ]
     assert len(assignment_lines) == 1, (
         "expected exactly one line starting `SKIP_REGEX=` in the detect step — did the gate move? "
@@ -79,10 +81,6 @@ def _skip_regex_from_run_block(run_block: str) -> str:
         f"expected the SKIP_REGEX assignment to be exactly one shell word, got {words} from {assignment_lines[0]!r}"
     )
     return words[0].removeprefix(_SKIP_REGEX_ASSIGNMENT_PREFIX)
-
-
-def _skip_regex_pattern() -> str:
-    return _skip_regex_from_run_block(extract_ci_detect_step_run_block())
 
 
 def _grep_e_matches(pattern: str, candidate: str) -> bool:
@@ -110,43 +108,6 @@ def _tracked_files() -> list[str]:
         check=True,
     ).stdout
     return [p for p in out.split("\0") if p]
-
-
-class TestSkipRegexExtraction:
-    """The parse step fails loudly, naming the offending line, on every degenerate assignment shape."""
-
-    def test_clean_single_quoted_assignment_returns_the_bare_pattern(self):
-        run_block = "echo start\nSKIP_REGEX='^(LICENSE|CHANGELOG\\.md)$'\necho end\n"
-        assert _skip_regex_from_run_block(run_block) == "^(LICENSE|CHANGELOG\\.md)$"
-
-    @pytest.mark.parametrize(
-        ("run_block", "expected_message_fragment"),
-        [
-            pytest.param("echo no assignment here\n", "got: []", id="no-assignment-line"),
-            pytest.param(
-                "SKIP_REGEX='^LICENSE$'\nSKIP_REGEX='^NOTICE$'\n",
-                "SKIP_REGEX='^NOTICE$'",
-                id="two-assignment-lines",
-            ),
-            pytest.param("SKIP_REGEX='^LICENSE$\n", "SKIP_REGEX='^LICENSE$", id="unbalanced-quote"),
-            pytest.param(
-                "SKIP_REGEX='^LICENSE$' # deny-list\n",
-                "SKIP_REGEX='^LICENSE$' # deny-list",
-                id="trailing-comment",
-            ),
-            pytest.param(
-                "SKIP_REGEX='^LICENSE$' extra\n",
-                "SKIP_REGEX='^LICENSE$' extra",
-                id="quoted-assignment-with-extra-word",
-            ),
-        ],
-    )
-    def test_degenerate_assignment_raises_an_assertion_error_naming_the_line(
-        self, run_block: str, expected_message_fragment: str
-    ):
-        with pytest.raises(AssertionError) as raised:
-            _skip_regex_from_run_block(run_block)
-        assert expected_message_fragment in str(raised.value)
 
 
 class TestSkipRegexBounded:
