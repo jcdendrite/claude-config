@@ -46,7 +46,6 @@ ISSUE_QUOTE_QUESTION = (
 ISSUE_QUOTE_NONQUESTION = "Per your standing instruction, I haven't committed."
 assert len(ISSUE_QUOTE_QUESTION) == 64, "pin drifted from the issue's own 64-char quote"
 
-# The modal commit ask the hook must fire on, and an accepted miss (see CORPUS).
 MODAL_CASE = (
     "Fixed the failing test in the parser. "
     "Want me to commit this, or do you want to review the diff first?"
