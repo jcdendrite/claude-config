@@ -165,8 +165,10 @@ def _fields_for_row_of_bytes(row_bytes: int, session_id: str = SID, **row_overri
     """(finding, rationale, third) within the per-field character caps whose
     built row is exactly `row_bytes` long. U+0001 costs six bytes in a jq
     string (\\u0001) and `x` one, so a mix reaches any size the caps allow.
-    `third` is an ADDRESS row's source by default, and an engineer SETTLED's
-    quote when row_overrides describe one (both cap at 200 characters)."""
+    `third` is a row's source by default, and an engineer SETTLED's quote when
+    row_overrides describe one (both cap at 200 characters). A source is a
+    normalized path and rejects a control character, so a mix that needs the
+    control characters must size an engineer SETTLED's quote."""
     field_bytes = row_bytes - _row_envelope_bytes(session_id, **row_overrides)
     assert field_bytes > 0
     # The mix has to fit the total per-field character budget: 6k + m == field_bytes, k + m <= budget.
@@ -176,6 +178,10 @@ def _fields_for_row_of_bytes(row_bytes: int, session_id: str = SID, **row_overri
     text = "\x01" * control_count + "x" * filler_count
     finding_cap, rationale_cap, _third_cap = _ROW_FIELD_CAPS
     return text[:finding_cap], text[finding_cap:finding_cap + rationale_cap], text[finding_cap + rationale_cap:]
+
+
+# An ADDRESS row requires a source, so an ADDRESS append that names none cites this one.
+_ADDRESS_SOURCE = "foo.py:12"
 
 
 def _append_args(
@@ -196,6 +202,8 @@ def _append_args(
     reviewers: Sequence[str] = ("staff-sdet",),
     relog: bool = False,
 ) -> list[str]:
+    if source is None and disposition == "ADDRESS":
+        source = _ADDRESS_SOURCE
     args = [
         "append",
         "code-review",
@@ -229,6 +237,11 @@ def _append_args(
     if relog:
         args.append("--relog")
     return args
+
+
+def _without_source(args: list[str]) -> list[str]:
+    source_index = args.index("--source")
+    return args[:source_index] + args[source_index + 2:]
 
 
 # A DEFER criterion and a range-form source are required, so every DEFER append
@@ -335,11 +348,61 @@ class TestReviewLedgerAppendHappyPath:
         # UTC, second-resolution, Z-suffixed -- e.g. 2026-08-01T10:00:00Z.
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time), event_time
 
-    def test_append_defaults_source_to_n_a(self, isolated_home, git_repo):
+    def test_an_address_append_without_source_exits_2_naming_the_flag_and_disposition(self, isolated_home, git_repo):
+        """An ADDRESS row's source is what the contradiction route's two-rewrites count reads."""
         _seed_session(isolated_home, SID)
-        _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        result = _run(_without_source(_append_args()), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "--source" in result.stderr and "--disposition ADDRESS" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_an_address_source_naming_an_absent_file_is_stored_repo_relative_with_no_site_hash(
+        self, isolated_home, git_repo
+    ):
+        """A fix that creates a file cites a path that need not exist, and no hash reads an ADDRESS source."""
+        _seed_session(isolated_home, SID)
+
+        result = _run(_append_args(source="./absent.py:3"), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
         record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
-        assert record["source"] == "n/a"
+        assert (record["source"], record["site_hash"]) == ("absent.py:3", "")
+
+    def test_an_address_source_holding_a_control_character_is_rejected_by_normalization(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_append_args(source="a\x01b.py:3"), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "control character" in result.stderr
+        assert "4095-byte limit" not in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_show_out_prints_each_address_rows_repo_relative_source_for_the_sites_path_grep(
+        self, isolated_home, git_repo
+    ):
+        """The contradiction route Greps a `show --out` copy for the finding's path, so a spelled-out
+        `./` or absolute source must print as the repo-relative path."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
+        absolute_source = f"{git_toplevel(git_repo)}/foo.py:30-40"
+        for source, round_number in (("./foo.py:12", "1"), (absolute_source, "2")):
+            appended = _run(_append_args(source=source, round=round_number), cwd=git_repo, home=isolated_home)
+            assert appended.returncode == 0, appended.stderr
+        out_path = git_repo / "agent-reviews" / "review-history-sites.md"
+
+        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        shown_rows = [json.loads(line) for line in out_path.read_text().splitlines()]
+        # Both rows can land in the same second, so their event_time may tie and
+        # the order between them is not pinned.
+        assert sorted(row["source"] for row in shown_rows) == ["foo.py:12", "foo.py:30-40"]
 
     def test_repeat_identical_line_is_deduped(self, isolated_home, git_repo):
         """A retried /code-review round re-emitting an unchanged
@@ -648,11 +711,11 @@ class TestReviewLedgerCleanDisposition:
         assert result.returncode == 2
         assert not _ledger_path(isolated_home, git_repo).exists()
 
-    def test_invalid_disposition_message_lists_clean(self, isolated_home, git_repo):
+    def test_invalid_disposition_message_lists_clean_and_consult(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
         result = _run(_append_args(disposition="MAYBE"), cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
-        assert "must be ADDRESS, DEFER, SETTLED, or CLEAN" in result.stderr
+        assert "must be ADDRESS, DEFER, SETTLED, CLEAN, or CONSULT" in result.stderr
 
     def test_clean_disposition_with_authoring_fields_lands_all_four(self, isolated_home, git_repo):
         """Production code (code-review/SKILL.md's Step 0.1 short-circuit)
@@ -707,7 +770,7 @@ class TestReviewLedgerRoundScopedDedup:
         ledger.parent.mkdir(parents=True, exist_ok=True)
         ledger.write_text(json.dumps({
             "schema_version": 2, "round": 1, "finding": "Missing error handling in foo()",
-            "disposition": "ADDRESS", "rationale": "fixed inline", "source": "n/a",
+            "disposition": "ADDRESS", "rationale": "fixed inline", "source": _ADDRESS_SOURCE,
             "authoring_agent": "", "authoring_effort": "", "event_time": "2024-01-01T00:00:00Z",
         }) + "\n")
 
@@ -1224,11 +1287,18 @@ def _commit_file(repo: Path, name: str, content: str) -> None:
     _git(repo, "commit", "-q", "-m", f"edit {name}")
 
 
+# What makes an append an engineer SETTLED that can carry forward. _engineer_args builds the append from it and
+# _ENGINEER_SETTLED_ROW_OVERRIDES describes the row it stores, so the two cannot drift.
+_ENGINEER_SETTLED_ROW_FIELDS = {
+    "disposition": "SETTLED", "decided_by": "engineer", "carry_forward": True, "source": "file.txt:1-2",
+}
+
+
 def _engineer_args(**overrides) -> list[str]:
     """An engineer SETTLED that can carry forward: range-form source, quote, flag."""
     params = {
-        "disposition": "SETTLED", "decided_by": "engineer", "source": "file.txt:1-2",
-        "engineer_quote": "keep it as written", "carry_forward": True, "rationale": "engineer kept the text",
+        **_ENGINEER_SETTLED_ROW_FIELDS,
+        "engineer_quote": "keep it as written", "rationale": "engineer kept the text",
         "finding": "wording of the first two lines",
     }
     params.update(overrides)
@@ -1243,6 +1313,137 @@ def _consult_args(**overrides) -> list[str]:
     }
     params.update(overrides)
     return _append_args(**params)
+
+
+# The row shape _engineer_args builds, as _fields_for_row_of_bytes takes it. An engineer SETTLED's quote is
+# the one free-text field that may hold a control character, so the byte-bound tests size it.
+_ENGINEER_SETTLED_ROW_OVERRIDES = {**_ENGINEER_SETTLED_ROW_FIELDS, "site_hash": "0" * 12}
+
+
+def _round_cap_verdict_args(verdict: str = "noise", round: str = "2", **extra_flags: str) -> list[str]:
+    """A CONSULT append: the verdict is the rationale, and no finding, source or lane is passed."""
+    args = ["append", "code-review", "--disposition", "CONSULT", "--rationale", verdict, "--round", round]
+    for flag, value in extra_flags.items():
+        args += [f"--{flag.replace('_', '-')}", value]
+    return args
+
+
+class TestReviewLedgerRoundCapVerdictAppend:
+    """One subprocess case per branch of the CONSULT arm. The verdict-word and flag matrix lives in
+    scripts/tests/test_review_ledger_lib.py."""
+
+    def test_a_noise_verdict_is_stored_with_no_finding_source_lanes_or_hash(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert (row["disposition"], row["rationale"], row["round"]) == ("CONSULT", "noise", 2)
+        assert (row["finding"], row["source"], row["reviewers"], row["site_hash"]) == ("", "n/a", [], "")
+        assert row["schema_version"] == 5
+
+    def test_show_counts_the_verdicts_round_in_max_round(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
+        assert _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home).returncode == 0
+        out_path = git_repo / "agent-reviews" / "review-history-verdict.md"
+
+        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert _show_header(result)["max_round"] == "2"
+
+    def test_a_word_outside_the_three_verdicts_exits_2_and_writes_no_row(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_round_cap_verdict_args("foundation-fine"), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "Pass one of: re-plan, noise, one-defect" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    @pytest.mark.parametrize(
+        ("extra_flags", "fragment"),
+        [
+            pytest.param({"finding": "a finding"}, "--finding must be omitted for --disposition CONSULT", id="a finding"),
+            pytest.param({"source": "file.txt:1-2"}, "--source must be omitted for --disposition CONSULT", id="a source"),
+            pytest.param({"reviewer": "staff-sdet"}, "--reviewer is not accepted with --disposition CONSULT", id="a lane"),
+            pytest.param({"decided_by": "engineer"}, "(got it on CONSULT)", id="a decider"),
+        ],
+    )
+    def test_a_flag_a_round_cap_verdict_row_omits_exits_2_naming_it_and_writes_no_row(
+        self, isolated_home, git_repo, extra_flags, fragment
+    ):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_round_cap_verdict_args(**extra_flags), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert fragment in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_one_sessions_repeat_of_one_verdict_at_one_round_dedups_to_one_row(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        assert _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home).returncode == 0
+
+        result = _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
+
+    def test_the_same_verdict_at_the_same_round_from_a_second_session_lands_as_a_second_row(
+        self, isolated_home, git_repo
+    ):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, "session-a")
+        assert _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home).returncode == 0
+        _seed_session(isolated_home, "session-b")
+
+        result = _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        rows = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert [row["session_id"] for row in rows] == ["session-a", "session-b"]
+
+    def test_one_session_logging_verdicts_across_rounds_shows_exactly_two_noise_rows_even_when_an_address_row_quotes_the_literal(
+        self, isolated_home, git_repo
+    ):
+        """The second-noise-verdict stop counts the skill's literal in the `show --out` text. One session's
+        repeat noise at a later round must land beside its other verdicts, a re-plan or one-defect row must
+        not read as noise, and a finding or rationale quoting the literal must add no match: jq escapes its
+        inner quotes."""
+        literal = _skill_round_cap_grep_literal()
+        assert literal, "SKILL.md names no Grep literal for the noise count"
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
+        for verdict, round_number in (("noise", "2"), ("re-plan", "3"), ("one-defect", "4"), ("noise", "5")):
+            appended = _run(_round_cap_verdict_args(verdict, round_number), cwd=git_repo, home=isolated_home)
+            assert appended.returncode == 0, appended.stderr
+        quoting_row = _run(
+            _append_args(finding=f"the stop greps for {literal}", rationale=f"quotes {literal}", round="5"),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert quoting_row.returncode == 0, quoting_row.stderr
+        out_path = git_repo / "agent-reviews" / "review-history-literal-count.md"
+
+        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 5, "all five appended rows must be stored"
+        shown_text = out_path.read_text()
+        noise_rounds = [
+            row["round"]
+            for row in (json.loads(line) for line in shown_text.splitlines())
+            if row["disposition"] == "CONSULT" and row["rationale"] == "noise"
+        ]
+        # Rows can land in the same second, so their event_time may tie and the
+        # order between them is not pinned.
+        assert sorted(noise_rounds) == [2, 5]
+        assert shown_text.count(literal) == 2, "only the two noise CONSULT rows may match the literal"
 
 
 class TestReviewLedgerSettledAndDeferAppend:
@@ -1478,10 +1679,7 @@ class TestReviewLedgerSettledAndDeferAppend:
         and id, so a row one byte over the bound only counts as over when the
         check runs on the final line."""
         _seed_session(isolated_home, SID)
-        finding, rationale, quote = _fields_for_row_of_bytes(
-            final_row_bytes, disposition="SETTLED", decided_by="engineer", carry_forward=True,
-            source="file.txt:1-2", site_hash="0" * 12,
-        )
+        finding, rationale, quote = _fields_for_row_of_bytes(final_row_bytes, **_ENGINEER_SETTLED_ROW_OVERRIDES)
 
         result = _run(
             _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
@@ -1521,12 +1719,22 @@ def _slug(phrase: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", phrase.lower()).strip("-")
 
 
+def _code_review_skill_text() -> str:
+    """code-review/SKILL.md's text, or empty when the file is missing or unreadable. The parity helpers run at
+    import, so a moved skill file must fail only the tests that use them, not collection of this whole file."""
+    try:
+        return (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    except OSError:
+        return ""
+
+
 def _skill_defer_criterion_names() -> list[str]:
     """The five criteria of code-review/SKILL.md's closed DEFER list, each
     named by the slug of its bold lead phrase up to the first comma. Empty
-    when the SKILL.md markers are gone, so a reworded skill fails the parity
-    tests below instead of failing collection of this whole file."""
-    skill_text = (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    when the skill file is missing or its markers are gone, so a moved or
+    reworded skill fails the parity tests below instead of failing collection
+    of this whole file."""
+    skill_text = _code_review_skill_text()
     try:
         section = skill_text.split("**DEFER criteria (closed list).**")[1].split("**Invalid DEFER rationales.**")[0]
     except IndexError:
@@ -1540,6 +1748,10 @@ _DEFER_CRITERION_NAMES = _skill_defer_criterion_names()
 class TestReviewLedgerEnumParity:
     """Drives the CLI rather than scanning the script's source, per
     test-conventions section 9."""
+
+    def test_skill_md_is_readable_and_non_empty(self):
+        """Names the cause first: an unreadable skill file otherwise surfaces only as count mismatches below."""
+        assert _code_review_skill_text(), f"{SKILLS_DIR / 'code-review' / 'SKILL.md'} is missing, unreadable, or empty"
 
     def test_skill_md_lists_exactly_five_criteria(self):
         assert len(_DEFER_CRITERION_NAMES) == 5
@@ -1591,6 +1803,80 @@ class TestReviewLedgerEnumParity:
         assert settled.returncode == 0, settled.stderr
 
 
+_ROUND_CAP_REGION_START = "<!-- DISPOSITION_RULE:code-review-round-cap-consult-verdict start -->"
+_ROUND_CAP_REGION_END = "<!-- DISPOSITION_RULE:code-review-round-cap-consult-verdict end -->"
+
+
+def _skill_round_cap_region() -> str:
+    """The round-cap consult verdict region of code-review/SKILL.md. Empty when the skill file is missing or
+    its markers are gone, so a moved or reworded skill fails the parity tests below instead of failing
+    collection of this whole file."""
+    try:
+        return _code_review_skill_text().split(_ROUND_CAP_REGION_START)[1].split(_ROUND_CAP_REGION_END)[0]
+    except IndexError:
+        return ""
+
+
+def _skill_round_cap_verdict_words() -> list[str]:
+    """The backticked words of the region's "where `<verdict>` is ..." sentence."""
+    sentence = re.search(r"where `<verdict>` is ([^.]*)\.", _skill_round_cap_region())
+    return re.findall(r"`([^`]+)`", sentence.group(1)) if sentence else []
+
+
+def _skill_round_cap_grep_literal() -> str:
+    """The `"disposition":"CONSULT","rationale":"noise"` literal the region tells the session to Grep for."""
+    literal = re.search(r"`(\"disposition\":\"CONSULT\",\"rationale\":\"noise\")`", _skill_round_cap_region())
+    return literal.group(1) if literal else ""
+
+
+_ROUND_CAP_VERDICT_WORDS = _skill_round_cap_verdict_words()
+
+
+class TestRoundCapVerdictSkillParity:
+    """Drives the CLI rather than scanning the script's source, per test-conventions section 9."""
+
+    def test_skill_md_names_exactly_three_verdicts(self):
+        assert len(_ROUND_CAP_VERDICT_WORDS) == 3
+
+    @pytest.mark.parametrize("verdict", _ROUND_CAP_VERDICT_WORDS)
+    def test_each_skill_md_verdict_is_accepted(self, isolated_home, git_repo, verdict):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_round_cap_verdict_args(verdict), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+
+    def test_the_verdicts_the_script_lists_are_exactly_the_skill_md_verdicts(self, isolated_home, git_repo):
+        """Both directions: a fourth word in the script, or a stale old one, fails here."""
+        _seed_session(isolated_home, SID)
+
+        result = _run(_round_cap_verdict_args("not-a-verdict"), cwd=git_repo, home=isolated_home)
+
+        listing = result.stderr.split("Pass one of: ", 1)[1].splitlines()[0]
+        assert {word.strip() for word in listing.split(",")} == set(_ROUND_CAP_VERDICT_WORDS)
+
+    def test_the_usage_text_lists_the_same_verdicts_the_script_accepts(self, isolated_home, git_repo):
+        usage = " ".join(_run(["--help"], cwd=git_repo, home=isolated_home).stderr.split())
+
+        listing = usage.split("CONSULT records the round-cap consult's verdict in --rationale, one of: ", 1)[1]
+        usage_words = listing.split(". ", 1)[0]
+        assert {word.strip() for word in usage_words.split(",")} == set(_ROUND_CAP_VERDICT_WORDS)
+
+    def test_the_grep_literal_the_skill_names_is_a_substring_of_a_shown_noise_row(self, isolated_home, git_repo):
+        literal = _skill_round_cap_grep_literal()
+        assert literal
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
+        assert _run(_round_cap_verdict_args("noise"), cwd=git_repo, home=isolated_home).returncode == 0
+        out_path = git_repo / "agent-reviews" / "review-history-parity.md"
+
+        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert literal in out_path.read_text()
+
+
 _LONG_FLAG_PATTERN = re.compile(r"(?<![\w-])--[a-z][a-z-]*")
 # What the script's argument loop prints for a flag it does not recognize.
 _UNKNOWN_FLAG_MESSAGE = "unknown argument"
@@ -1601,8 +1887,10 @@ _FLAGS_UNDOCUMENTED_BY_DESIGN: dict[str, set[str]] = {"append": set(), "render":
 def _skill_ledger_invocation_flags() -> dict[str, set[str]]:
     """Per review-ledger.sh subcommand, every `--flag` that follows it inside a
     code span of code-review/SKILL.md. A flag before the script name belongs to
-    another command in the same span (`gh pr view --json body | ...`)."""
-    skill_text = (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    another command in the same span (`gh pr view --json body | ...`). Empty
+    when the skill file is missing, so the parity tests below fail instead of
+    collection of this whole file."""
+    skill_text = _code_review_skill_text()
     flags_by_subcommand: dict[str, set[str]] = {}
     for span in re.findall(r"`([^`]*review-ledger\.sh [^`]*)`", skill_text):
         invocation = re.search(r"review-ledger\.sh (append|show|render|clear-stale)\b", span)
@@ -1687,7 +1975,8 @@ class TestReviewLedgerUsageStatesTheCarryRules:
             "A DEFER carry restates the decision's --defer-criterion.",
             "These two lines and show print it with control and format characters (zero-width, bidi, line separators) "
             "shown as spaces.",
-            "CLEAN takes no lanes; every other disposition takes at least one lane (--reviewer) or --relog, never both.",
+            "CLEAN and CONSULT take no lanes; ADDRESS, DEFER and SETTLED take at least one lane (--reviewer) or --relog, "
+            "never both.",
             "--relog copies the --ref decision's lanes",
         ],
         ids=["shape", "acceptance", "defer-criterion", "display-cleaning", "lane-rule", "relog-copy"],
@@ -2318,8 +2607,7 @@ class TestReviewLedgerLanes:
             assert fragment not in render.stdout
         assert show.returncode == 0, show.stderr
         assert "\u202e" not in show.stdout
-        copied = _shown_rows(show)[-1]
-        assert copied["finding"] == "reopened finding"
+        copied = next(row for row in _shown_rows(show) if row["finding"] == "reopened finding")
         assert copied["reviewers"] == [hostile_lane.replace("\u202e", " ")]
 
     def test_a_relog_copy_is_not_rechecked_against_the_roster(self, isolated_home, git_repo):
@@ -2341,7 +2629,7 @@ class TestReviewLedgerLanes:
             {"disposition": "SETTLED", "defer_criterion": None},
         )
         assert carry_result.returncode == 0, carry_result.stderr
-        assert f"ADDRESS --ref {decision_id} --relog" in carry_result.stdout
+        assert f"ADDRESS --ref {decision_id} --relog with the decision's --source" in carry_result.stdout
         before_reopen = _run(["render"], cwd=git_repo, home=isolated_home)
         assert before_reopen.returncode == 0, before_reopen.stderr
         assert f"orchestrator-matched carry of {decision_id}" in before_reopen.stdout
@@ -2350,14 +2638,65 @@ class TestReviewLedgerLanes:
         assert (decision["reviewers"], carry["reviewers"]) == (["ciso-reviewer"], ["staff-sdet"])
 
         reopen = _run(
-            _append_args(ref=decision_id, round="3", reviewers=(), relog=True), cwd=git_repo, home=isolated_home,
+            _append_args(ref=decision_id, round="3", reviewers=(), relog=True, source=decision["source"]),
+            cwd=git_repo, home=isolated_home,
         )
         after_reopen = _run(["render"], cwd=git_repo, home=isolated_home)
 
         assert reopen.returncode == 0, reopen.stderr
-        assert _ledger_rows(_ledger_path(isolated_home, git_repo))[-1]["reviewers"] == ["ciso-reviewer"]
+        reopened = _ledger_rows(_ledger_path(isolated_home, git_repo))[-1]
+        assert (reopened["reviewers"], reopened["source"], reopened["site_hash"]) == (
+            ["ciso-reviewer"], decision["source"], "",
+        )
         assert after_reopen.returncode == 0, after_reopen.stderr
         assert after_reopen.stdout.strip() == ""
+
+    def test_a_relog_reopen_without_the_decisions_source_exits_2_naming_the_flag_and_disposition_and_writes_no_row(
+        self, isolated_home, git_repo
+    ):
+        """A reopen's fix rewrites its decision's site, so the row must carry that site for the rewrite count."""
+        decision_id = self._log_defer(isolated_home, git_repo)
+
+        result = _run(
+            _without_source(_append_args(ref=decision_id, round="2", reviewers=(), relog=True)),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 2
+        assert "--source" in result.stderr and "--disposition ADDRESS" in result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
+
+    def test_a_relog_reopen_carrying_a_range_decisions_stored_source_lands_it_with_no_site_hash(
+        self, isolated_home, git_repo
+    ):
+        decision_id = self._log_defer(isolated_home, git_repo)
+        (decision,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert decision["source"] == _DEFER_SOURCE and decision["site_hash"]
+
+        result = _run(
+            _append_args(ref=decision_id, round="2", reviewers=(), relog=True, source=decision["source"]),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 0, result.stderr
+        reopened = _ledger_rows(_ledger_path(isolated_home, git_repo))[1]
+        assert (reopened["source"], reopened["site_hash"], reopened["ref"]) == (_DEFER_SOURCE, "", decision_id)
+
+    def test_a_relog_reopen_whose_source_differs_from_the_decisions_lands_because_the_script_does_not_check_source_equality(
+        self, isolated_home, git_repo
+    ):
+        decision_id = self._log_defer(isolated_home, git_repo)
+        (decision,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        other_source = "other.py:7"
+        assert other_source != decision["source"]
+
+        result = _run(
+            _append_args(ref=decision_id, round="2", reviewers=(), relog=True, source=other_source),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _ledger_rows(_ledger_path(isolated_home, git_repo))[1]["source"] == other_source
 
     def test_a_second_non_carry_ref_row_with_other_lanes_is_rejected_as_no_longer_live(self, isolated_home, git_repo):
         decision_id = self._log_defer(isolated_home, git_repo)
@@ -2435,7 +2774,7 @@ class TestReviewLedgerLanes:
         assert "needs at least one lane" in result.stderr
         for lane in _accepted_lanes():
             assert lane in result.stderr
-        for phrase in ("CLEAN takes neither --reviewer nor --relog", "a reopen, a gate-denial recovery"):
+        for phrase in ("CLEAN and CONSULT take neither --reviewer nor --relog", "a reopen, a gate-denial recovery"):
             assert phrase in result.stderr
         assert not _ledger_path(isolated_home, git_repo).exists()
 
@@ -2481,10 +2820,12 @@ class TestReviewLedgerLanes:
         """The list holds every accepted lane, so a new persona widens it and the pair keeps testing the real maximum."""
         _seed_session(isolated_home, SID)
         lanes = _accepted_lanes()
-        finding, rationale, source = _fields_for_row_of_bytes(final_row_bytes, reviewers=lanes)
+        finding, rationale, quote = _fields_for_row_of_bytes(
+            final_row_bytes, reviewers=lanes, **_ENGINEER_SETTLED_ROW_OVERRIDES,
+        )
 
         result = _run(
-            _append_args(finding=finding, rationale=rationale, source=source, reviewers=lanes),
+            _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote, reviewers=lanes),
             cwd=git_repo, home=isolated_home,
         )
 
@@ -2985,14 +3326,14 @@ class TestReviewLedgerRowSizeBound:
     jq writes a control character with no short escape as six bytes, so the
     per-field character caps alone do not bound it."""
 
-    _FIELD_CAPS = {"finding": 200, "rationale": 300, "source": 200}
+    _FIELD_CAPS = {"finding": 200, "rationale": 300, "source": 200, "quote": 200}
 
     def test_control_characters_at_every_cap_are_rejected_with_nothing_written(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
-        args = _append_args(
+        args = _engineer_args(
             finding="\x01" * self._FIELD_CAPS["finding"],
             rationale="\x01" * self._FIELD_CAPS["rationale"],
-            source="\x01" * self._FIELD_CAPS["source"],
+            engineer_quote="\x01" * self._FIELD_CAPS["quote"],
         )
 
         result = _run(args, cwd=git_repo, home=isolated_home)
@@ -3003,9 +3344,12 @@ class TestReviewLedgerRowSizeBound:
 
     def test_row_of_exactly_4095_bytes_is_accepted(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
-        finding, rationale, source = _fields_for_row_of_bytes(4095)
+        finding, rationale, quote = _fields_for_row_of_bytes(4095, **_ENGINEER_SETTLED_ROW_OVERRIDES)
 
-        result = _run(_append_args(finding=finding, rationale=rationale, source=source), cwd=git_repo, home=isolated_home)
+        result = _run(
+            _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
+            cwd=git_repo, home=isolated_home,
+        )
 
         assert result.returncode == 0, result.stderr
         written_line = _ledger_path(isolated_home, git_repo).read_text().splitlines()[0]
@@ -3014,9 +3358,12 @@ class TestReviewLedgerRowSizeBound:
 
     def test_row_of_4096_bytes_is_rejected_naming_the_fields_to_shorten(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
-        finding, rationale, source = _fields_for_row_of_bytes(4096)
+        finding, rationale, quote = _fields_for_row_of_bytes(4096, **_ENGINEER_SETTLED_ROW_OVERRIDES)
 
-        result = _run(_append_args(finding=finding, rationale=rationale, source=source), cwd=git_repo, home=isolated_home)
+        result = _run(
+            _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
+            cwd=git_repo, home=isolated_home,
+        )
 
         assert result.returncode == 2
         assert "is 4096 bytes" in result.stderr
@@ -3103,10 +3450,10 @@ class TestReviewLedgerRowSizeBound:
         every per-field cap under a UTF-8 locale, but about 4,000 bytes
         before the row's own envelope. A character count would accept it."""
         _seed_session(isolated_home, SID)
-        args = _append_args(
+        args = _engineer_args(
             finding="\x01" * 200,
             rationale="\x01" * 300,
-            source="\x01" * 100 + "\U0001F600" * 100,
+            engineer_quote="\x01" * 100 + "\U0001F600" * 100,
         )
 
         result = _run(
@@ -3899,9 +4246,9 @@ class TestReviewLedgerLocking:
         procs = []
         for index in range(session_count):
             session_id = f"session-{index}"
-            finding, rationale, source = _fields_for_row_of_bytes(4095, session_id)
+            finding, rationale, quote = _fields_for_row_of_bytes(4095, session_id, **_ENGINEER_SETTLED_ROW_OVERRIDES)
             procs.append(_popen_as_session(
-                _append_args(finding=finding, rationale=rationale, source=source),
+                _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
                 cwd=git_repo, home=isolated_home, session_id=session_id,
             ))
         stderrs = []
@@ -3909,7 +4256,11 @@ class TestReviewLedgerLocking:
             _stdout, stderr = proc.communicate(timeout=30)
             assert proc.returncode == 0, stderr
             stderrs.append(stderr)
-        return _ledger_path(isolated_home, git_repo).read_text().splitlines(), stderrs
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert [len(line.encode()) for line in lines] == [4095] * session_count, (
+            "each row must sit at the bound, or the single-write append boundary is not exercised"
+        )
+        return lines, stderrs
 
     def test_parallel_near_limit_appends_from_distinct_sessions_land_as_intact_rows(
         self, isolated_home, git_repo
