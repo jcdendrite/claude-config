@@ -22,14 +22,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from helpers import (
     REPO_ROOT,
     ci_test_slice_job,
+    extract_ci_detect_step_run_block,
     init_ci_detect_step_test_repo,
+    install_shell_exec_guard,
     run_ci_detect_step,
 )
 
-_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+
+@pytest.fixture(autouse=True)
+def _guard_shell_exec(monkeypatch):
+    """This tree has no conftest, so each module installs the guard itself."""
+    install_shell_exec_guard(monkeypatch)
+
 
 _INTENDED_DENY_LIST = frozenset(
     {"LICENSE", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "SECURITY.md", "CONTRIBUTING.md"}
@@ -51,11 +59,30 @@ _PREVIOUSLY_MISSING_PATHS = (
 )
 
 
+_SKIP_REGEX_ASSIGNMENT_PREFIX = "SKIP_REGEX="
+
+
+def _skip_regex_from_run_block(run_block: str) -> str:
+    assignment_lines = [
+        line.strip() for line in run_block.splitlines() if line.strip().startswith(_SKIP_REGEX_ASSIGNMENT_PREFIX)
+    ]
+    assert len(assignment_lines) == 1, (
+        "expected exactly one line starting `SKIP_REGEX=` in the detect step — did the gate move? "
+        f"got: {assignment_lines}"
+    )
+    try:
+        # comments=False on purpose: a trailing `# ...` becomes extra words, so the one-word assert rejects it.
+        words = shlex.split(assignment_lines[0])
+    except ValueError as error:
+        raise AssertionError(f"cannot shell-split the detect step's SKIP_REGEX line {assignment_lines[0]!r}: {error}") from error
+    assert len(words) == 1, (
+        f"expected the SKIP_REGEX assignment to be exactly one shell word, got {words} from {assignment_lines[0]!r}"
+    )
+    return words[0].removeprefix(_SKIP_REGEX_ASSIGNMENT_PREFIX)
+
+
 def _skip_regex_pattern() -> str:
-    workflow = _WORKFLOW_PATH.read_text()
-    match = re.search(r"^\s*SKIP_REGEX='([^']+)'", workflow, re.MULTILINE)
-    assert match, "SKIP_REGEX not found in tests.yml — did the gate move?"
-    return match.group(1)
+    return _skip_regex_from_run_block(extract_ci_detect_step_run_block())
 
 
 def _grep_e_matches(pattern: str, candidate: str) -> bool:
@@ -83,6 +110,43 @@ def _tracked_files() -> list[str]:
         check=True,
     ).stdout
     return [p for p in out.split("\0") if p]
+
+
+class TestSkipRegexExtraction:
+    """The parse step fails loudly, naming the offending line, on every degenerate assignment shape."""
+
+    def test_clean_single_quoted_assignment_returns_the_bare_pattern(self):
+        run_block = "echo start\nSKIP_REGEX='^(LICENSE|CHANGELOG\\.md)$'\necho end\n"
+        assert _skip_regex_from_run_block(run_block) == "^(LICENSE|CHANGELOG\\.md)$"
+
+    @pytest.mark.parametrize(
+        ("run_block", "expected_message_fragment"),
+        [
+            pytest.param("echo no assignment here\n", "got: []", id="no-assignment-line"),
+            pytest.param(
+                "SKIP_REGEX='^LICENSE$'\nSKIP_REGEX='^NOTICE$'\n",
+                "SKIP_REGEX='^NOTICE$'",
+                id="two-assignment-lines",
+            ),
+            pytest.param("SKIP_REGEX='^LICENSE$\n", "SKIP_REGEX='^LICENSE$", id="unbalanced-quote"),
+            pytest.param(
+                "SKIP_REGEX='^LICENSE$' # deny-list\n",
+                "SKIP_REGEX='^LICENSE$' # deny-list",
+                id="trailing-comment",
+            ),
+            pytest.param(
+                "SKIP_REGEX='^LICENSE$' extra\n",
+                "SKIP_REGEX='^LICENSE$' extra",
+                id="quoted-assignment-with-extra-word",
+            ),
+        ],
+    )
+    def test_degenerate_assignment_raises_an_assertion_error_naming_the_line(
+        self, run_block: str, expected_message_fragment: str
+    ):
+        with pytest.raises(AssertionError) as raised:
+            _skip_regex_from_run_block(run_block)
+        assert expected_message_fragment in str(raised.value)
 
 
 class TestSkipRegexBounded:
@@ -225,9 +289,8 @@ def _pytest_step_matching(steps: list[dict], *required_phrases: str) -> dict | N
 
 class TestPytestTwoPassSplit:
     """The parallel/timing marker split must survive an unrelated workflow
-    edit. Parses the workflow with yaml.safe_load rather than regex --
-    unlike SKIP_REGEX above, which is a shell-embedded string, this is
-    checking real YAML structure (the `test-slice` job's step list). Asserts
+    edit. Parses the workflow with yaml.safe_load rather than regex, checking
+    real YAML structure (the `test-slice` job's step list). Asserts
     on full step dicts, not just `run:` substrings, so the two invocations
     are pinned to distinct steps — a substring-only check would pass even if
     both invocations were concatenated into a single step's `run:` body."""
@@ -271,8 +334,8 @@ class TestParallelPassCollectsTheLint:
     - A skip marker on the lint test itself is not caught, since skipped items still collect.
     - A PYTEST_ADDOPTS set in the workflow's `env:` blocks is judged only when this test runs in
       CI, since the probe inherits its own process env rather than reading those blocks.
-    - A collection hook added to a conftest.py outside this directory is judged only by CI's full
-      suite, since select-tests.py does not select this file for such an edit.
+    - A collection hook added to evals/conftest.py is judged only by CI's full suite, since
+      select-tests.py selects only the review-bench tests for that edit.
     """
 
     def test_parallel_invocation_collects_the_repo_lint(self):

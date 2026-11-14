@@ -29,6 +29,8 @@ from helpers import (
     symlink_hooks_lib_chain,
 )
 
+from .test_agent_roster import _declared_tool_names
+
 HOOK_PATH = HOOKS_DIR / "send-back-skipped-self-review.sh"
 EVALUATOR_PATH = HOOKS_DIR / "evaluate-code-writer-self-review.py"
 PARSE_GIT_COMMAND_PATH = HOOKS_DIR / "parse-git-command.py"
@@ -749,15 +751,10 @@ def test_code_writer_names_the_skill_reviewer_read_path_literally():
     assert SKILL_REVIEWER_READ_PATH in CODE_WRITER_PATH.read_text()
 
 
-def _code_writer_declared_tools():
-    tools_line = next(line for line in CODE_WRITER_PATH.read_text().splitlines() if line.startswith("tools:"))
-    return {tool.strip() for tool in tools_line.removeprefix("tools:").split(",")}
-
-
 def test_evaluator_edit_tools_equal_the_editing_tools_code_writer_declares():
     known_editing_tools = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
-    assert _code_writer_declared_tools() & known_editing_tools == set(evaluator.EDIT_TOOLS)
+    assert _declared_tool_names(CODE_WRITER_PATH) & known_editing_tools == set(evaluator.EDIT_TOOLS)
 
 
 def test_cited_heading_exists_in_code_writer():
