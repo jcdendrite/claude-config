@@ -752,9 +752,10 @@ def test_schedulewakeup_stays_denied_in_settings() -> None:
     This proves the *declared* config state — `"ScheduleWakeup"` is present
     in `permissions.deny` — not that the harness actually removes the tool
     from context at runtime. That live-session verification lives outside
-    pytest, recorded as prose only in the "Blast radius" section of
-    `docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md`; no
-    transcript or log of it is committed. This test only pins the
+    pytest, recorded as prose in the "Blast radius" section of
+    `docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md`. Its
+    "Accepted residual risk" section notes that no transcript, log or
+    fixture of it is committed. This test only pins the
     declaration so a future edit can't drop it silently. A membership check
     on the exact bare string also catches a later weakening into the parenthesized
     `"ScheduleWakeup(*)"` form, which leaves the tool visible in context.
@@ -779,9 +780,8 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
       because the live-session check of the deny required them to remain
       available, and §49's Revisit list separately names them as a
       substitution-risk channel to watch, not as confirmed-unaffected.
-    - `Agent` is guarded because the misfire most often comes while a
-      backgrounded `Agent` dispatch runs, and the same live-session check
-      required it to remain available.
+    - `Agent` is guarded because the same live-session check required it to
+      remain available.
 
     `CronCreate`'s presence in this list tracks §49's current
     Accepted-residual-risk stance (the substitution channel is unguarded,
@@ -795,21 +795,20 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
         "design-decisions.md §49's Blast-radius section claims this tool "
         "stays unaffected by the ScheduleWakeup deny"
     )
-    gate_required_available = (
-        "the live-session check of the deny "
-        "requires this tool to remain available, and design-decisions.md "
+    live_check_requires_available = (
+        "the live-session check of the deny requires this tool to remain "
+        "available"
+    )
+    live_check_and_revisit_listed = (
+        f"{live_check_requires_available}, and design-decisions.md "
         "§49's Revisit list separately names it as a substitution-risk "
         "channel to watch, not as confirmed-unaffected"
     )
-    dispatch_trigger = (
-        "the ScheduleWakeup misfire most often comes while a "
-        "backgrounded Agent dispatch runs"
-    )
     rationale = {
         "CronCreate": documented_unaffected,
-        "ListAgents": gate_required_available,
-        "TaskOutput": gate_required_available,
-        "Agent": dispatch_trigger,
+        "ListAgents": live_check_and_revisit_listed,
+        "TaskOutput": live_check_and_revisit_listed,
+        "Agent": live_check_requires_available,
     }
     for tool_name, why in rationale.items():
         assert tool_name not in deny, (

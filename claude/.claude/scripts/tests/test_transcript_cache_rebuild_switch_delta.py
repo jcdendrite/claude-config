@@ -273,9 +273,10 @@ class TestCacheRebuildSwitchDeltaZeroState:
 
 
 class TestCacheRebuildSubagentDispersion:
-    """Per-dispatch dispersion is computed against each
-    subagent group's OWN X and W5m, not the pooled corpus-wide denominator --
-    it bounds what a selective, per-dispatch TTL switch could save, and a
+    """Per-dispatch dispersion is computed against each subagent group's OWN
+    X and W5m, not the pooled corpus-wide denominator.
+
+    It bounds what a selective, per-dispatch TTL switch could save, and a
     pooled denominator would corrupt that bound."""
 
     def test_per_group_ratios_dispersion_excludes_zero_w5m_group_and_counts_sub_threshold_calls(
