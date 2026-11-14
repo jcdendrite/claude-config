@@ -94,7 +94,7 @@ The engineer, not the agent, follows the Recovery section. An agent runs no comm
 
 This file lives in the claude-config checkout that `~/.claude`'s stowed files link into, not in the workspace. Your own terminal and `uninstall` are the way out of every entry below. The log is `<routed config dir>/cursor-adapter-state/shim.log`.
 
-A shim deny's text carries an outcome name, as in `outcome pin-check`. Each entry below names in backticks the outcomes it covers, and the last entry covers the rest.
+A shim deny's text carries an outcome name, as in `outcome pin-check`. Only the entries that cover outcomes name them in backticks, and the entry headed "A deny whose outcome no entry above names" covers the rest.
 
 If `cursor-adapter.py` cannot run, restore `~/.cursor/hooks.json` by hand: copy the bytes of `~/.cursor/cursor-adapter/hooks.json.pre-install` over it, or delete it when `hooks.json.pre-install.none` is the file that exists. The copy discards every entry added to `hooks.json` since install. To keep those entries, delete by hand only the entries whose command holds `/.claude/scripts/cursor-adapter/` under your home directory. The `.none` delete applies only when `hooks.json` holds nothing but those entries. The install record, the state directory and the manifest remain after that restore, so when `cursor-adapter.py` runs again, run `uninstall` to remove them. Until then `check` reports every entry missing, or `hooks.json` as absent after the delete, and its fix sentence says to re-run `install`, which would install again what you just removed.
 
