@@ -1343,10 +1343,7 @@ class TestReviewLedgerRoundCapVerdictAppend:
         assert (row["finding"], row["source"], row["reviewers"], row["site_hash"]) == ("", "n/a", [], "")
         assert row["schema_version"] == 5
 
-    def test_show_prints_the_disposition_and_rationale_as_one_run_and_counts_the_verdicts_round(
-        self, isolated_home, git_repo
-    ):
-        """code-review/SKILL.md's second-noise-verdict stop Greps a `show --out` copy for this exact text."""
+    def test_show_counts_the_verdicts_round_in_max_round(self, isolated_home, git_repo):
         _git(git_repo, "checkout", "-q", "-b", "feature")
         _seed_session(isolated_home, SID)
         ignore_agent_reviews(git_repo)
@@ -1357,7 +1354,6 @@ class TestReviewLedgerRoundCapVerdictAppend:
 
         assert result.returncode == 0, result.stderr
         assert _show_header(result)["max_round"] == "2"
-        assert '"disposition":"CONSULT","rationale":"noise"' in out_path.read_text()
 
     def test_a_word_outside_the_three_verdicts_exits_2_and_writes_no_row(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -1411,37 +1407,13 @@ class TestReviewLedgerRoundCapVerdictAppend:
         rows = _ledger_rows(_ledger_path(isolated_home, git_repo))
         assert [row["session_id"] for row in rows] == ["session-a", "session-b"]
 
-    def test_one_session_logging_verdicts_across_rounds_lands_every_row_and_shows_exactly_two_noise_rows(
+    def test_one_session_logging_verdicts_across_rounds_shows_exactly_two_noise_rows_even_when_an_address_row_quotes_the_literal(
         self, isolated_home, git_repo
     ):
-        """The second-noise-verdict stop counts noise rows in `show --out`, so one session's repeat
-        noise at a later round must land beside its other verdicts, and a re-plan or one-defect row
-        must not read as noise."""
-        _git(git_repo, "checkout", "-q", "-b", "feature")
-        _seed_session(isolated_home, SID)
-        ignore_agent_reviews(git_repo)
-        for verdict, round_number in (("noise", "2"), ("re-plan", "3"), ("one-defect", "4"), ("noise", "5")):
-            appended = _run(_round_cap_verdict_args(verdict, round_number), cwd=git_repo, home=isolated_home)
-            assert appended.returncode == 0, appended.stderr
-        out_path = git_repo / "agent-reviews" / "review-history-rounds.md"
-
-        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
-
-        assert result.returncode == 0, result.stderr
-        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 4
-        shown_rows = [json.loads(line) for line in out_path.read_text().splitlines()]
-        noise_rounds = [
-            row["round"] for row in shown_rows if row["disposition"] == "CONSULT" and row["rationale"] == "noise"
-        ]
-        # Rows can land in the same second, so their event_time may tie and the
-        # order between them is not pinned.
-        assert sorted(noise_rounds) == [2, 5]
-
-    def test_the_skills_noise_grep_literal_matches_exactly_the_two_noise_rows_even_when_an_address_row_quotes_it(
-        self, isolated_home, git_repo
-    ):
-        """The stop counts the skill's literal in the `show --out` text, so a finding or rationale quoting
-        the literal must add no match: jq escapes its inner quotes."""
+        """The second-noise-verdict stop counts the skill's literal in the `show --out` text. One session's
+        repeat noise at a later round must land beside its other verdicts, a re-plan or one-defect row must
+        not read as noise, and a finding or rationale quoting the literal must add no match: jq escapes its
+        inner quotes."""
         literal = _skill_round_cap_grep_literal()
         assert literal, "SKILL.md names no Grep literal for the noise count"
         _git(git_repo, "checkout", "-q", "-b", "feature")
@@ -1462,7 +1434,16 @@ class TestReviewLedgerRoundCapVerdictAppend:
 
         assert result.returncode == 0, result.stderr
         assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 5, "all five appended rows must be stored"
-        assert out_path.read_text().count(literal) == 2, "only the two noise CONSULT rows may match the literal"
+        shown_text = out_path.read_text()
+        noise_rounds = [
+            row["round"]
+            for row in (json.loads(line) for line in shown_text.splitlines())
+            if row["disposition"] == "CONSULT" and row["rationale"] == "noise"
+        ]
+        # Rows can land in the same second, so their event_time may tie and the
+        # order between them is not pinned.
+        assert sorted(noise_rounds) == [2, 5]
+        assert shown_text.count(literal) == 2, "only the two noise CONSULT rows may match the literal"
 
 
 class TestReviewLedgerSettledAndDeferAppend:
@@ -1738,12 +1719,22 @@ def _slug(phrase: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", phrase.lower()).strip("-")
 
 
+def _code_review_skill_text() -> str:
+    """code-review/SKILL.md's text, or empty when the file is missing or unreadable. The parity helpers run at
+    import, so a moved skill file must fail only the tests that use them, not collection of this whole file."""
+    try:
+        return (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    except OSError:
+        return ""
+
+
 def _skill_defer_criterion_names() -> list[str]:
     """The five criteria of code-review/SKILL.md's closed DEFER list, each
     named by the slug of its bold lead phrase up to the first comma. Empty
-    when the SKILL.md markers are gone, so a reworded skill fails the parity
-    tests below instead of failing collection of this whole file."""
-    skill_text = (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    when the skill file is missing or its markers are gone, so a moved or
+    reworded skill fails the parity tests below instead of failing collection
+    of this whole file."""
+    skill_text = _code_review_skill_text()
     try:
         section = skill_text.split("**DEFER criteria (closed list).**")[1].split("**Invalid DEFER rationales.**")[0]
     except IndexError:
@@ -1757,6 +1748,10 @@ _DEFER_CRITERION_NAMES = _skill_defer_criterion_names()
 class TestReviewLedgerEnumParity:
     """Drives the CLI rather than scanning the script's source, per
     test-conventions section 9."""
+
+    def test_skill_md_is_readable_and_non_empty(self):
+        """Names the cause first: an unreadable skill file otherwise surfaces only as count mismatches below."""
+        assert _code_review_skill_text(), f"{SKILLS_DIR / 'code-review' / 'SKILL.md'} is missing, unreadable, or empty"
 
     def test_skill_md_lists_exactly_five_criteria(self):
         assert len(_DEFER_CRITERION_NAMES) == 5
@@ -1813,11 +1808,11 @@ _ROUND_CAP_REGION_END = "<!-- DISPOSITION_RULE:code-review-round-cap-consult-ver
 
 
 def _skill_round_cap_region() -> str:
-    """The round-cap consult verdict region of code-review/SKILL.md. Empty when its markers are gone, so a
-    reworded skill fails the parity tests below instead of failing collection of this whole file."""
-    skill_text = (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    """The round-cap consult verdict region of code-review/SKILL.md. Empty when the skill file is missing or
+    its markers are gone, so a moved or reworded skill fails the parity tests below instead of failing
+    collection of this whole file."""
     try:
-        return skill_text.split(_ROUND_CAP_REGION_START)[1].split(_ROUND_CAP_REGION_END)[0]
+        return _code_review_skill_text().split(_ROUND_CAP_REGION_START)[1].split(_ROUND_CAP_REGION_END)[0]
     except IndexError:
         return ""
 
@@ -1892,8 +1887,10 @@ _FLAGS_UNDOCUMENTED_BY_DESIGN: dict[str, set[str]] = {"append": set(), "render":
 def _skill_ledger_invocation_flags() -> dict[str, set[str]]:
     """Per review-ledger.sh subcommand, every `--flag` that follows it inside a
     code span of code-review/SKILL.md. A flag before the script name belongs to
-    another command in the same span (`gh pr view --json body | ...`)."""
-    skill_text = (SKILLS_DIR / "code-review" / "SKILL.md").read_text()
+    another command in the same span (`gh pr view --json body | ...`). Empty
+    when the skill file is missing, so the parity tests below fail instead of
+    collection of this whole file."""
+    skill_text = _code_review_skill_text()
     flags_by_subcommand: dict[str, set[str]] = {}
     for span in re.findall(r"`([^`]*review-ledger\.sh [^`]*)`", skill_text):
         invocation = re.search(r"review-ledger\.sh (append|show|render|clear-stale)\b", span)
