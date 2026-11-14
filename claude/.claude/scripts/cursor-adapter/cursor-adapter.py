@@ -2530,7 +2530,10 @@ def settings_link_findings(record):
 
 
 def tool_findings(record, command_name):
-    """Re-tests the recorded wrapper, the three floors and jq and sha256sum. Returns finding lines, wrapper first."""
+    """Re-tests the wrapper, the hooks'-PATH python3 and bash floors, and that jq and sha256sum resolve there.
+
+    Returns finding lines, wrapper first.
+    """
     findings = []
     tool_paths = record["tool_paths"]
     wrapper_name = next((name for name in WRAPPER_CANDIDATES if name in tool_paths), None)

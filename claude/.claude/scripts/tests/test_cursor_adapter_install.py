@@ -1738,6 +1738,27 @@ class TestInstallCrashInjection:
 
         assert world.hooks_path.read_bytes() == edited
 
+    def test_an_interrupted_uninstall_then_a_deleted_hooks_json_then_install_swaps_the_stale_pre_install_file_for_the_none_marker(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = fast_world
+        world.hooks_path.write_bytes(ORIGINAL_HOOKS)
+        world.install()
+        crash_at(world, monkeypatch, "after-entries")
+        with pytest.raises(Crash):
+            world.run("uninstall")
+        stop_crashing(world, monkeypatch)
+        assert (world.record_dir / "hooks.json.pre-install").exists()
+        world.hooks_path.unlink()
+
+        assert world.install().status == 0
+
+        assert not (world.record_dir / "hooks.json.pre-install").exists()
+        assert (world.record_dir / "hooks.json.pre-install.none").exists()
+        assert world.run("uninstall").status == 0
+        assert not world.hooks_path.exists()
+        assert not world.record_dir.exists()
+
     def test_an_edit_between_the_merge_and_the_rename_aborts_after_writes_with_the_partial_write_status_and_keeps_the_edit(
         self, fast_world: World, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4526,6 +4547,24 @@ class TestFlushToDisk:
 
         assert target.read_bytes() == b"data"
         assert flushed_a_directory == [False, True]
+
+    def test_a_durable_write_that_fails_at_the_rename_keeps_the_old_bytes_and_leaves_no_temp_file(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = world.tmp_path / "durable.txt"
+        target.write_bytes(b"old bytes")
+
+        def refuse_rename(source, destination):
+            raise OSError(errno.EIO, "rename refused")
+
+        # The adapter's `os` is the process-wide module, so monkeypatch restores it at teardown.
+        monkeypatch.setattr(world.adapter.os, "replace", refuse_rename)
+
+        with pytest.raises(OSError, match="rename refused"):
+            world.adapter.durable_write(str(target), b"new bytes")
+
+        assert target.read_bytes() == b"old bytes"
+        assert [path.name for path in world.tmp_path.iterdir() if path.name.startswith(world.adapter.TEMP_FILE_PREFIX)] == []
 
 
 # --- uninstall with nothing installed ---
