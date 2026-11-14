@@ -6,7 +6,7 @@ With the `agent_branch_records` key on, `cleanup-merged-branches.sh` and `cleanu
 
 The commands take `<volume path>` as a bare word, so quote it if it has a space, as in `/Volumes/My Drive`. With no larger volume, run `mkdir -p -m 700 ~/.local/state/agent-branch-records`, skip steps 1 and 2 and continue at step 3. Moving an existing root to another volume is manual and not covered here.
 
-Before step 5, exclude the root, and the step 1 target if you use a volume, from any sync or backup client that copies off the machine. Snapshots hold finding text that can quote secrets.
+Before step 5, exclude the root, and the step 1 target if you use a volume, from any sync or backup client that copies off the machine.
 
 1. Create the target on the volume first, because a link to a missing target reads as a missing sentinel: `mkdir -m 700 <volume path>/agent-branch-records`. Also run `mkdir -p ~/.local/state`, since a macOS home may lack it.
 2. Link the root to it: `ln -s <volume path>/agent-branch-records ~/.local/state/agent-branch-records`. The root must not exist yet, because `ln -s` onto an existing directory links inside it.
