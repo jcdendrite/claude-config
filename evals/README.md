@@ -517,7 +517,8 @@ the emitter, every arm receives the rules by hook, so the preflight refuses.
   - The self-check launches with every tool disabled and no MCP configuration.
     Whether the CLI also drops account-level connectors is unconfirmed, so read
     the first self-check stream's init event (kept with `--keep-artifacts`) and
-    confirm it lists no tools and no MCP servers before relying on the result.
+    confirm it lists no tools and no MCP servers and reads `permissionMode`
+    `default` before relying on the result.
 - `--phase gate` adds the `hook` arm, re-runs the calibration, sizes a
   two-look non-inferiority comparison of `hook` against `memory` from it, and
   prints one verdict: pass, fail, miss, inconclusive or void. It reads the
@@ -582,22 +583,24 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
     that never finished refuses a temp project directory outside the current
     temp directory.
   - It refuses while `ps -axww -o command=` lists the `--session-id` of an attempt
-    that started and never finished. End the child, then resume. A hard kill
-    of the harness can leave that attempt's `claude -p` child running, and the
-    cleanup would delete the directories under it.
+    that started and never finished. It also refuses when an attempt started
+    and never finished and the process list is empty or cannot be read. End the
+    child, then resume. A hard kill of the harness can leave that attempt's
+    `claude -p` child running, and the cleanup would delete the directories
+    under it.
     - The check sees only a child whose command line carries its session id.
       On a system whose `ps` cannot show full command lines even with `ww`, check for stray
       `claude -p` children by hand before resuming.
-  - With such an attempt, it also refuses when the process list is empty or cannot be read.
+  - A non-default `--base-ref` (and a gate run's `--candidate-ref`) must be repeated on resume. The run header
+    records the commit each resolved to, and a refusal on an `inputs.*_claude_md` hash names the option to pass.
   - It may reuse the `--json` and `--keep-artifacts` paths.
 - `--dry-run` prints the schedule and runs no preflight, so a clean dry run
   does not predict a refusal.
 - Do not pull or switch branches in the main checkout during a run: the
   ambient config checkout is one of the arms' shared inputs, and its commit is
   read at every stage boundary.
-- Each sample's deny hook is registered with `onFailure: "block"`, so a hook that cannot start blocks the call. That
-  takes effect on Claude Code 2.1.295 or newer, as for every gate registration in the repository `README.md`. Run the
-  harness on a CLI at or above that version.
+- Run the harness on Claude Code 2.1.295 or newer. Each sample's deny hook is registered with `onFailure: "block"`,
+  which older versions may not honor, as for every gate registration in the repository `README.md`.
 - A CLI self-update halts the run when the next stage boundary or sample sees
   the new version. `--resume` then refuses, so the remaining samples need a
   fresh run. The harness launches the `claude` binary's real path, resolved
@@ -644,9 +647,12 @@ subscription auth that is a unit of account, not a charge.
   zero.
 - Dollar figures and the account label appear only in the notices on stderr,
   the run log and `--json`.
-- Stdout carries the report alone, with rates, counts and sample counts, so it
+- Stdout carries the report alone: no dollar figure and no account label, so it
   can go into a PR body. The report also counts faults by class for each arm
   and observable.
+- The report prints a model name or CLI version only when it is a short alias, a
+  `claude-<family>-<version>` id or a dotted version, and a placeholder
+  otherwise. The run log and `--json` hold the full values.
 - A delivery failure prints its status class (`sidecar`, `missing`,
   `receipt-missing` and so on) in the report. Its free-text cause appears only
   in the halt line on stderr, the run log and `--json`. The self-check answers

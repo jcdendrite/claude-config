@@ -780,7 +780,7 @@ class TestWordings:
     def test_the_leak_check_matches_whole_words_only(self, text) -> None:
         assert not m.prompt_leaks_rule_action(text)
 
-    def test_the_dictated_o3_and_o4_wordings_are_unchanged(self) -> None:
+    def test_the_o3_first_wording_opening_and_the_o4_second_wording_closing_are_pinned(self) -> None:
         assert m.OBSERVABLES_BY_KEY["O3"].wordings[0].startswith("Add one test for the staged `multiply` change")
         assert m.OBSERVABLES_BY_KEY["O4"].wordings[1].endswith("`build_layout` in layout.py.")
 
@@ -1419,6 +1419,37 @@ class TestArms:
         assert prepared.self_check_arms[m.ARM_NONE].claude_md == CANDIDATE_CLAUDE_MD
         assert prepared.receipt_last_lines == {}
 
+    def test_prepare_run_records_the_commit_a_base_ref_name_resolves_to(self, tmp_path: Path) -> None:
+        repo = _build_repo(tmp_path)
+
+        args = _prepare_args(repo, m.PHASE_CALIBRATE, base_ref="HEAD")
+
+        prepared = m.prepare_run(args, tmp_path / "scratch", repo_root=repo.path)
+
+        assert prepared.refs == {"base_ref_sha": repo.base_sha}
+
+    def test_prepare_run_records_the_candidate_commit_in_the_gate_phase_only(self, tmp_path: Path) -> None:
+        repo = _build_repo(tmp_path)
+
+        gate = m.prepare_run(_prepare_args(repo, m.PHASE_GATE), tmp_path / "gate-scratch", repo_root=repo.path)
+        calibrate = m.prepare_run(_prepare_args(repo, m.PHASE_CALIBRATE), tmp_path / "calibrate-scratch", repo_root=repo.path)
+
+        assert gate.refs == {"base_ref_sha": repo.base_sha, "candidate_ref_sha": repo.candidate_sha}
+        assert calibrate.refs == {"base_ref_sha": repo.base_sha}
+
+    def test_prepare_run_records_the_commit_a_symbolic_candidate_ref_names_not_the_name(self, tmp_path: Path) -> None:
+        repo = _build_repo(tmp_path)
+        _git(repo.path, "branch", "candidate-branch", repo.candidate_sha)
+        _git(repo.path, "tag", "candidate-tag", repo.candidate_sha)
+        assert _git(repo.path, "rev-parse", "HEAD").strip() == repo.base_sha, "HEAD stays away from the candidate"
+        for symbolic_ref in ("candidate-branch", "candidate-tag"):
+            args = _prepare_args(repo, m.PHASE_GATE)
+            args.candidate_ref = symbolic_ref
+
+            gate = m.prepare_run(args, tmp_path / f"scratch-{symbolic_ref}", repo_root=repo.path)
+
+            assert gate.refs["candidate_ref_sha"] == repo.candidate_sha, symbolic_ref
+
     def test_prepare_run_records_the_hash_of_every_arm_input_prompt_and_the_scorer(self, tmp_path: Path) -> None:
         repo = _build_repo(tmp_path)
 
@@ -1906,7 +1937,7 @@ class TestProjectFiles:
         assert cmd[cmd.index("--max-turns") + 1] == str(m.MAX_TURNS)
         assert cmd[cmd.index("--max-budget-usd") + 1] == "3.25"
         assert cmd[cmd.index("--session-id") + 1] == request.session_id
-        assert "--permission-mode" not in cmd
+        assert cmd[cmd.index("--permission-mode") + 1] == "default"
 
     def test_the_command_asks_for_the_stream_the_parser_reads(self) -> None:
         request = make_request("O1")
@@ -1928,12 +1959,21 @@ class TestProjectFiles:
         assert "--tools" not in observed
         assert "--strict-mcp-config" not in observed
 
-    def test_only_o3_runs_under_accept_edits(self) -> None:
+    def test_only_o3_runs_under_accept_edits_and_every_other_observable_under_default(self) -> None:
         o3 = m.build_command(make_request("O3"), claude_path="c", observable=m.OBSERVABLES_BY_KEY["O3"])
-        o4 = m.build_command(make_request("O4"), claude_path="c", observable=m.OBSERVABLES_BY_KEY["O4"])
 
         assert o3[o3.index("--permission-mode") + 1] == "acceptEdits"
-        assert "--permission-mode" not in o4
+        for observable in m.OBSERVABLES:
+            if observable.key == "O3":
+                continue
+            cmd = m.build_command(make_request(observable.key), claude_path="c", observable=observable)
+            assert cmd[cmd.index("--permission-mode") + 1] == "default", observable.key
+
+    def test_the_self_check_passes_the_same_default_permission_mode_as_the_observables(self) -> None:
+        cmd = m.build_command(make_request("O1"), claude_path="c", observable=None)
+
+        assert cmd[cmd.index("--permission-mode") + 1] == m.DEFAULT_PERMISSION_MODE == "default"
+        assert cmd[-2:] == ["--tools", ""]
 
 
 class TestLiveLauncher:
@@ -2386,7 +2426,7 @@ class RunKit:
         self, launcher: Callable[[m.SampleRequest], m.RawSample], *, phase: str = m.PHASE_CALIBRATE, workers: int = 3,
         stop: float = 300.0, budget: float = 11.5, seed: int = 7, resume: bool = False, log_name: str = "run.jsonl",
         environment_reader: Callable[[], bench_runner.EnvironmentRecord] | None = None,
-        header_inputs: Mapping[str, str] | None = None,
+        header_inputs: Mapping[str, str] | None = None, header_refs: Mapping[str, str] | None = None,
         keep_artifacts_dir: Path | None = None,
         process_lister: Callable[[], str] | None = lambda: PROCESS_LISTING_WITHOUT_CHILDREN,
     ) -> Built:
@@ -2408,7 +2448,7 @@ class RunKit:
             config, launcher, log, store,
             environment_reader=environment_reader or (lambda: bench_runner.EnvironmentRecord("cli 1", "commit-1")),
             sleep=sleeps.append, notify=notices.append, header_inputs=header_inputs or {"base_claude_md": "hash-1"},
-            **lister_option,
+            header_refs=header_refs, **lister_option,
         )
         built = Built(harness, log, store, notices, sleeps)
         self.built.append(built)
@@ -3949,6 +3989,71 @@ class TestResume:
         with pytest.raises(m.ResumeRefused, match=changed_header):
             second.harness.run()
 
+    def test_the_header_records_the_resolved_ref_commits_and_a_resume_does_not_compare_them(self, kit: RunKit) -> None:
+        refs = {"base_ref_sha": "a" * 40, "candidate_ref_sha": "b" * 40}
+        first = kit.build(ScriptedLauncher(gate_rates()), log_name="log.jsonl", stop=0.5, header_refs=refs)
+        first.harness.run()
+        first.release()
+        other_refs = {"base_ref_sha": "c" * 40, "candidate_ref_sha": "d" * 40}
+        second = kit.build(ScriptedLauncher(gate_rates()), log_name="log.jsonl", resume=True, header_refs=other_refs)
+
+        second.harness.run()
+
+        header = log_entries(first)[0]
+        assert {name: header[name] for name in refs} == refs
+
+    @pytest.mark.parametrize(
+        ("differing_input", "remedy"),
+        [
+            ("base_claude_md", f"--base-ref {'a' * 40}"),
+            ("memory_claude_md", f"--base-ref {'a' * 40}"),
+            ("none_claude_md", f"--base-ref {'a' * 40}"),
+            ("candidate_claude_md", f"--candidate-ref {'b' * 40}"),
+        ],
+    )
+    def test_a_resume_refusal_on_a_claude_md_hash_names_the_logged_ref_that_reproduces_it(
+        self, kit: RunKit, differing_input: str, remedy: str,
+    ) -> None:
+        refs = {"base_ref_sha": "a" * 40, "candidate_ref_sha": "b" * 40}
+        first = kit.build(
+            ScriptedLauncher(gate_rates()), log_name="log.jsonl", stop=0.5, header_inputs={differing_input: "hash-1"},
+            header_refs=refs,
+        )
+        first.harness.run()
+        first.release()
+        second = kit.build(
+            ScriptedLauncher(gate_rates()), log_name="log.jsonl", resume=True, header_inputs={differing_input: "other"},
+            header_refs={"base_ref_sha": "c" * 40, "candidate_ref_sha": "d" * 40},
+        )
+
+        with pytest.raises(m.ResumeRefused, match=f"inputs.{differing_input} differs.*{remedy}"):
+            second.harness.run()
+
+    def test_a_resume_refusal_on_a_non_ref_input_names_no_ref_option(self, kit: RunKit) -> None:
+        refs = {"base_ref_sha": "a" * 40}
+        first = kit.build(ScriptedLauncher(gate_rates()), log_name="log.jsonl", stop=0.5, header_refs=refs)
+        first.harness.run()
+        first.release()
+        second = kit.build(ScriptedLauncher(gate_rates()), log_name="log.jsonl", resume=True, seed=8, header_refs=refs)
+
+        with pytest.raises(m.ResumeRefused) as refusal:
+            second.harness.run()
+
+        assert "--base-ref" not in str(refusal.value)
+
+    def test_a_resume_refusal_on_a_claude_md_hash_of_a_log_without_ref_commits_adds_no_remedy(self, kit: RunKit) -> None:
+        first = kit.build(ScriptedLauncher(gate_rates()), log_name="log.jsonl", stop=0.5)
+        first.harness.run()
+        first.release()
+        second = kit.build(
+            ScriptedLauncher(gate_rates()), log_name="log.jsonl", resume=True, header_inputs={"base_claude_md": "other"},
+        )
+
+        with pytest.raises(m.ResumeRefused) as refusal:
+            second.harness.run()
+
+        assert "--base-ref" not in str(refusal.value)
+
     def test_a_resume_refuses_when_the_cli_version_differs(self, kit: RunKit) -> None:
         first = kit.build(ScriptedLauncher(gate_rates()), log_name="log.jsonl", stop=0.5)
         first.harness.run()
@@ -3960,6 +4065,51 @@ class TestResume:
 
         with pytest.raises(m.ResumeRefused, match="cli_version"):
             second.harness.run()
+
+
+class TestResumeRefRemedy:
+    BASE_SHA = "a" * 40
+    CANDIDATE_SHA = "b" * 40
+    BOTH_REFS = {"base_ref_sha": BASE_SHA, "candidate_ref_sha": CANDIDATE_SHA}
+    BASE_OPTION = f"--base-ref {BASE_SHA}"
+    CANDIDATE_OPTION = f"--candidate-ref {CANDIDATE_SHA}"
+
+    @pytest.mark.parametrize(
+        ("logged_header", "differing", "remedy"),
+        [
+            pytest.param(BOTH_REFS, ["inputs.base_claude_md"], f"; pass {BASE_OPTION} as the original run did", id="base-only"),
+            pytest.param(
+                BOTH_REFS, ["inputs.candidate_claude_md"], f"; pass {CANDIDATE_OPTION} as the original run did",
+                id="candidate-only",
+            ),
+            pytest.param(
+                BOTH_REFS, ["inputs.base_claude_md", "inputs.candidate_claude_md"],
+                f"; pass {BASE_OPTION} and {CANDIDATE_OPTION} as the original run did", id="both-joined-with-and",
+            ),
+            pytest.param(BOTH_REFS, ["seed", "phase", "inputs.scorer"], "", id="no-claude-md-entry"),
+            pytest.param(BOTH_REFS, [], "", id="nothing-differs"),
+            pytest.param(
+                {"base_ref_sha": BASE_SHA}, ["inputs.base_claude_md", "inputs.candidate_claude_md"],
+                f"; pass {BASE_OPTION} as the original run did", id="header-without-candidate-sha",
+            ),
+            pytest.param(
+                {"candidate_ref_sha": CANDIDATE_SHA}, ["inputs.base_claude_md", "inputs.candidate_claude_md"],
+                f"; pass {CANDIDATE_OPTION} as the original run did", id="header-without-base-sha",
+            ),
+            pytest.param({}, ["inputs.base_claude_md"], "", id="header-without-either-sha"),
+            pytest.param(
+                BOTH_REFS, [f"inputs.hook.{m.CANDIDATE_HOOK_FILES[0]}"], "", id="hook-file-hash-has-no-ref-remedy",
+            ),
+            pytest.param(
+                BOTH_REFS, [f"inputs.content.{m.CONTENT_PARTS[0]}"], "", id="content-file-hash-has-no-ref-remedy",
+            ),
+            pytest.param(BOTH_REFS, ["inputs.handlers"], "", id="handlers-hash-has-no-ref-remedy"),
+        ],
+    )
+    def test_names_only_the_options_whose_logged_commit_reproduces_a_differing_claude_md_hash(
+        self, logged_header: dict, differing: list[str], remedy: str,
+    ) -> None:
+        assert m.resume_ref_remedy(logged_header, differing) == remedy
 
 
 class TestGitCommitPatternBacktracking:
@@ -4372,6 +4522,38 @@ class TestReport:
         assert f"models seen: {MODEL_ID}" in text
         assert "Attempts per cost source: reported" in text
         assert "nominal dollars" in text
+
+    def test_an_arn_shaped_model_value_prints_a_placeholder_and_never_the_raw_value(self, kit: RunKit) -> None:
+        arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-v1:0"
+        versioned = "2.1.325 account-123456789012"
+        result = kit.build(ScriptedLauncher()).harness.run()
+        data = {**result.report, "model": arn, "models_seen": [arn], "cli_versions": [versioned]}
+
+        text = m.render_report(data, result.verdict)
+
+        assert f"model {m.UNRECOGNIZED_VALUE_PLACEHOLDER}\n" in text
+        assert f"models seen: {m.UNRECOGNIZED_VALUE_PLACEHOLDER}" in text
+        assert f"CLI versions seen: {m.UNRECOGNIZED_VALUE_PLACEHOLDER};" in text
+        assert "123456789012" not in text
+        assert "arn:aws" not in text
+
+    @pytest.mark.parametrize("model", ["sonnet", "opus[1m]", "claude-opus-4-1", "claude-sonnet-4-5-20250929"])
+    def test_a_short_alias_and_a_claude_model_id_print_as_given(self, kit: RunKit, model: str) -> None:
+        result = kit.build(ScriptedLauncher()).harness.run()
+
+        text = m.render_report({**result.report, "model": model, "models_seen": [model]}, result.verdict)
+
+        assert f"model {model}\n" in text
+        assert f"models seen: {model}" in text
+
+    @pytest.mark.parametrize("model", ["us.anthropic.claude-sonnet-4-5-v1:0", "claude-123456789012", "sonnet 123456789012", ""])
+    def test_a_model_value_outside_the_closed_grammar_prints_the_placeholder(self, kit: RunKit, model: str) -> None:
+        result = kit.build(ScriptedLauncher()).harness.run()
+
+        text = m.render_report({**result.report, "model": model, "models_seen": [model]}, result.verdict)
+
+        assert f"model {m.UNRECOGNIZED_VALUE_PLACEHOLDER}\n" in text
+        assert f"models seen: {m.UNRECOGNIZED_VALUE_PLACEHOLDER}" in text
 
     def test_the_report_counts_attempt_classes_and_flags_unreached_samples_with_unscored_target_calls(self, kit: RunKit) -> None:
         launcher = ScriptedLauncher(
@@ -4905,18 +5087,19 @@ class TestLauncherSidecarRead:
 
 def wire_live_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, launcher: ScriptedLauncher, *,
-    receipt_last_lines: dict[str, str] | None = None,
+    receipt_last_lines: dict[str, str] | None = None, refs: dict[str, str] | None = None,
 ) -> None:
     """Replaces what `_live_run` reaches outside this process: the binary, git, the launcher and the environment record.
 
     A gate-phase run passes the candidate's `receipt_last_lines`, which `prepare_run` otherwise derives from git.
+    `refs` stands for the commits `prepare_run` resolves the base and candidate refs to.
     """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg-label-q"))
     monkeypatch.setattr(m.mer, "_repo_roots_for_containment_check", lambda start_dir=None: ())
     monkeypatch.setattr(m, "resolve_claude_binary", lambda: "claude")
     prepared = m.PreparedRun(
         arms={}, self_check_arms={}, self_check_spec=SELF_CHECK_SPECS,
-        receipt_last_lines=receipt_last_lines or {}, inputs={"base_claude_md": "hash-1"},
+        receipt_last_lines=receipt_last_lines or {}, inputs={"base_claude_md": "hash-1"}, refs=refs or {},
     )
     monkeypatch.setattr(m, "prepare_run", lambda args, scratch, **kwargs: prepared)
     monkeypatch.setattr(m, "LiveLauncher", lambda **kwargs: launcher)
@@ -4948,6 +5131,20 @@ class TestLiveRun:
         store = bench_runner.RunStore(Path(f"{log_path}.d"))
         store.acquire_lock()  # the run released its lock
         store.release_lock()
+
+    def test_the_log_header_main_writes_holds_the_resolved_ref_commits_prepare_run_returned(
+        self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        refs = {"base_ref_sha": "a" * 40, "candidate_ref_sha": "b" * 40}
+        wire_live_run(monkeypatch, tmp_path, ScriptedLauncher(), refs=refs)
+        log_path = tmp_path / "live.jsonl"
+
+        code = m.main(["--phase", "calibrate", "--run-log", str(log_path), "--model", "sonnet"])
+
+        header = json.loads(log_path.read_text().splitlines()[0])
+        assert code == 0
+        assert header["kind"] == "header"
+        assert {name: header[name] for name in refs} == refs
 
     def test_a_run_whose_log_is_locked_by_another_holder_is_refused_before_anything_is_created_or_launched(
         self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,

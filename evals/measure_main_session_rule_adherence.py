@@ -272,6 +272,13 @@ LEDGER_RENDER_PATTERN = r"review-ledger(?:\.sh)?\s+render\b"
 DISPATCH_DENY_TOOLS = ("Agent", "Task")
 
 
+# Passed explicitly on every launch so the account's own `permissions.defaultMode` cannot change what a sample may run.
+# `default` is an alias the CLI accepts although its `--help` omits it from the choices, and
+# evals/measure_subagent_model_resolution.py states the literal is not among them. A CLI that rejects it produces no
+# result event, which `classify_attempt` pauses on as unrecognized, so the first self-check sample ends the run loudly.
+DEFAULT_PERMISSION_MODE = "default"
+
+
 @dataclass(frozen=True)
 class Observable:
     key: str
@@ -282,7 +289,7 @@ class Observable:
     deny_tools: tuple[str, ...] = ()
     deny_skill_suffixes: tuple[str, ...] = ()
     deny_bash_patterns: tuple[str, ...] = ()  # regular expressions, matched with re.search
-    permission_mode: str | None = None
+    permission_mode: str = DEFAULT_PERMISSION_MODE
     max_turns: int = MAX_TURNS
 
     @property
@@ -851,8 +858,6 @@ def evaluate_delivery(
     event proves the text left the hook."""
     if facts.init is None:
         return DELIVERY_NOT_STARTED, "the stream has no init event"
-    if facts.blocked_prompt:
-        return DELIVERY_BLOCKED, None
     causes: list[str] = []
     missing: list[str] = []
     for part in CONTENT_PARTS:
@@ -1200,6 +1205,10 @@ def default_base_ref(repo_root: Path) -> str:
     return run_git(repo_root, "merge-base", "HEAD", "origin/main").strip()
 
 
+def resolve_commit_sha(repo_root: Path, ref: str) -> str:
+    return run_git(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+
+
 def cut_main_session(claude_md_text: str) -> str:
     """The text above the `# Main session` line. Refuses unless that line occurs exactly once, so a base ref whose
     CLAUDE.md no longer holds the section fails loudly instead of building two identical arms."""
@@ -1424,8 +1433,8 @@ def build_command(request: SampleRequest, *, claude_path: str, observable: Obser
         # It does not say whether account-level connectors count as an MCP configuration, so the operator confirms
         # the first self-check stream's init event lists no tools and no MCP servers (see the README).
         # `--tools` takes a variable number of values, so it stays last: a later argument would be read as a tool name.
-        cmd += ["--strict-mcp-config", "--tools", ""]
-    elif observable.permission_mode is not None:
+        cmd += ["--permission-mode", DEFAULT_PERMISSION_MODE, "--strict-mcp-config", "--tools", ""]
+    else:
         cmd += ["--permission-mode", observable.permission_mode]
     return cmd
 
@@ -1660,7 +1669,15 @@ class RunLog:
         return sum(entry.get("charge_usd", 0.0) for entry in self.records if entry.get("kind") == "finish")
 
 
+# The header's `base_ref_sha` and `candidate_ref_sha` are not compared: they record the commits the compared
+# `*_claude_md` hashes came from, so a refusal on one of those hashes can name the ref that reproduces it.
 RESUME_COMPARED_FIELDS = ("phase", "seed", "model", "inputs", "cli_version", "ambient_config_commit", "account_label")
+
+# (header field holding a commit, option that selects that commit again, the `inputs.*` hashes read from it)
+_REF_REMEDIES = (
+    ("base_ref_sha", "--base-ref", ("inputs.base_claude_md", "inputs.memory_claude_md", "inputs.none_claude_md")),
+    ("candidate_ref_sha", "--candidate-ref", ("inputs.candidate_claude_md",)),
+)
 
 
 def resume_mismatches(logged_header: Mapping, current_header: Mapping) -> list[str]:
@@ -1674,6 +1691,16 @@ def resume_mismatches(logged_header: Mapping, current_header: Mapping) -> list[s
         elif logged_header.get(name) != current_header.get(name):
             differing.append(name)
     return differing
+
+
+def resume_ref_remedy(logged_header: Mapping, differing: Sequence[str]) -> str:
+    """The option that reproduces each differing `*_claude_md` hash, from the commit the log's header recorded."""
+    remedies = [
+        f"{option} {logged_header[field_name]}"
+        for field_name, option, input_names in _REF_REMEDIES
+        if logged_header.get(field_name) and any(name in differing for name in input_names)
+    ]
+    return f"; pass {' and '.join(remedies)} as the original run did" if remedies else ""
 
 
 # --- Halts -------------------------------------------------------------------------------------
@@ -1853,7 +1880,8 @@ class Harness:
         self, config: RunConfig, launcher: Callable[[SampleRequest], RawSample], log: RunLog, store: bench_runner.RunStore, *,
         environment_reader: Callable[[], bench_runner.EnvironmentRecord], sleep: Callable[[float], None] = interruptible_sleep,
         clock: Callable[[], float] = time.time, notify: Callable[[str], None] = notify_on_stderr,
-        header_inputs: Mapping[str, str] | None = None, process_lister: Callable[[], str] = list_process_commands,
+        header_inputs: Mapping[str, str] | None = None, header_refs: Mapping[str, str] | None = None,
+        process_lister: Callable[[], str] = list_process_commands,
     ):
         self.config = config
         self.launcher = launcher
@@ -1865,6 +1893,7 @@ class Harness:
         self._notify = notify
         self._process_lister = process_lister
         self._header_inputs = dict(header_inputs or {})
+        self._header_refs = dict(header_refs or {})
         self._lock = threading.Lock()
         self._halt: HaltRun | None = None
         self._spend_usd = 0.0
@@ -1937,6 +1966,7 @@ class Harness:
             "kind": "header", "utc_start": utc_now(), "phase": self.config.phase, "seed": self.config.seed,
             "model": self.config.model, "inputs": self._header_inputs, "cli_version": environment.cli_version,
             "ambient_config_commit": environment.ambient_config_commit, "account_label": run_skill_evals.config_dir().name,
+            **self._header_refs,
         }
         logged = self.log.header
         if logged is None:
@@ -1944,7 +1974,10 @@ class Harness:
         else:
             differing = resume_mismatches(logged, header)
             if differing:
-                raise ResumeRefused(f"--resume refused: {', '.join(differing)} differs from the log's header")
+                raise ResumeRefused(
+                    f"--resume refused: {', '.join(differing)} differs from the log's header"
+                    + resume_ref_remedy(logged, differing)
+                )
             self.drift.observe("environment.cli_version", logged.get("cli_version"))
             self.drift.observe("environment.ambient_config_commit", logged.get("ambient_config_commit"))
             self._restore_from_log()
@@ -2684,10 +2717,24 @@ def _cell_line(label: str, cell: Mapping) -> str:
     )
 
 
+# Closed grammars for the values the PR-bound report echoes: a short model alias, a `claude-<family>-<version>` id
+# whose segments are too short to hold a cloud account id, and a dotted CLI version.
+_REPORTABLE_MODEL = re.compile(r"[a-z]{3,16}(?:\[1m\])?|claude(?:-[a-z0-9]{1,8}){1,6}")
+_REPORTABLE_CLI_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}")
+UNRECOGNIZED_VALUE_PLACEHOLDER = "(unrecognized form, see the run log)"
+
+
+def _reportable(value: str, grammar: re.Pattern[str]) -> str:
+    """A provider can name a model by an inference-profile ARN that carries a cloud account id, so the report prints
+    a value only when it matches its grammar. The run log and --json hold the full value."""
+    return value if grammar.fullmatch(value) else UNRECOGNIZED_VALUE_PLACEHOLDER
+
+
 def render_report(data: Mapping, verdict: str) -> str:
-    """The PR-body-bound text: rates and counts only, no dollar figure and no account label."""
+    """Stdout carries the report alone: no dollar figure and no account label, so it can go into a PR body."""
     lines = [
-        f"Main session rule adherence, phase {data['phase']}, seed {data['seed']}, model {data['model']}",
+        f"Main session rule adherence, phase {data['phase']}, seed {data['seed']}, "
+        f"model {_reportable(data['model'], _REPORTABLE_MODEL)}",
         f"Run verdict: {verdict}",
         f"Baseline arm `memory` is the {data['baseline_label']}.",
     ]
@@ -2729,7 +2776,8 @@ def render_report(data: Mapping, verdict: str) -> str:
             lines.append(f"    {cell}: " + ", ".join(f"{name} {count}" for name, count in sorted(counts.items())))
     sources = ", ".join(f"{name} {count}" for name, count in sorted(data["cost_source_counts"].items()))
     lines.append(f"Attempts per cost source: {sources}")
-    versions, models = ', '.join(data['cli_versions']), ', '.join(data['models_seen'])
+    versions = ", ".join(_reportable(version, _REPORTABLE_CLI_VERSION) for version in data["cli_versions"])
+    models = ", ".join(_reportable(model, _REPORTABLE_MODEL) for model in data["models_seen"])
     lines.append(f"CLI versions seen: {versions or 'none'}; models seen: {models or 'none'}")
     lines.append("Input hashes: " + ", ".join(f"{name}={digest[:12]}" for name, digest in sorted(data["inputs"].items())))
     lines.append("Costs in the run log and --json are nominal dollars, the CLI's total_cost_usd, not charges.")
@@ -2884,11 +2932,13 @@ class PreparedRun:
     self_check_spec: dict[str, SelfCheckSpec]
     receipt_last_lines: dict[str, str]
     inputs: dict[str, str]
+    refs: dict[str, str] = field(default_factory=dict)
 
 
 def prepare_run(args: argparse.Namespace, scratch_dir: Path, *, repo_root: Path = REPO_ROOT) -> PreparedRun:
     """Builds every arm from git, runs the gate-phase refusals and records every input hash."""
     base_ref = validate_base_ref(args.base_ref) if args.base_ref else default_base_ref(repo_root)
+    refs = {"base_ref_sha": resolve_commit_sha(repo_root, base_ref)}
     base_text = git_show(repo_root, base_ref, GLOBAL_CLAUDE_MD_RELPATH)
     none_text = cut_main_session(base_text)
     bullet = first_agent_briefing_bullet(base_text)
@@ -2908,6 +2958,7 @@ def prepare_run(args: argparse.Namespace, scratch_dir: Path, *, repo_root: Path 
     handlers: list[Handler] = []
     if args.phase == PHASE_GATE:
         candidate_ref = validate_base_ref(args.candidate_ref)
+        refs["candidate_ref_sha"] = resolve_commit_sha(repo_root, candidate_ref)
         try:
             settings = json.loads(git_show(repo_root, candidate_ref, SETTINGS_RELPATH))
         except ValueError as exc:
@@ -2945,7 +2996,7 @@ def prepare_run(args: argparse.Namespace, scratch_dir: Path, *, repo_root: Path 
         base_claude_md=base_text, memory_claude_md=base_text, none_claude_md=none_text, candidate_claude_md=candidate_text,
         frozen_hooks_dir=frozen, handlers=handlers,
     )
-    return PreparedRun(arms, self_check_arms, check_spec, receipt, inputs)
+    return PreparedRun(arms, self_check_arms, check_spec, receipt, inputs, refs)
 
 
 def refuse_existing_outputs(args: argparse.Namespace) -> None:
@@ -3052,7 +3103,7 @@ def _live_run(args: argparse.Namespace) -> int:
         )
         harness = Harness(
             config, launcher, log, store, environment_reader=bench_runner.read_environment_record,
-            header_inputs=prepared.inputs,
+            header_inputs=prepared.inputs, header_refs=prepared.refs,
         )
         try:
             result = harness.run()
