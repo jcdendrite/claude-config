@@ -465,7 +465,11 @@ class TestCallersStopWhenConfigShFails:
     A script that reaches `_config.sh` through `hooks/_lib.sh` also gets the real `_lib.sh` copied."""
 
     _MARKER = "stub _config.sh was sourced"
-    _SCRIPTS_SOURCING_LIB_SH_FIRST = frozenset({"cleanup-merged-branches.sh", "resume-context-same-session.sh"})
+    _SCRIPTS_SOURCING_LIB_SH_FIRST = frozenset({
+        "cleanup-idle-open-pr-worktrees.sh",
+        "cleanup-merged-branches.sh",
+        "resume-context-same-session.sh",
+    })
 
     @pytest.mark.parametrize(
         ("script_name", "expected_status"),

@@ -109,3 +109,4 @@ architect_fix_plan_pilot|bool|false|config-dir|false|config-dir|||Architect-auth
 review_orchestrator_routing|bool|false|config-dir|false|config-dir|||Review-orchestrator routing|docs/design-decisions/review-orchestrator-routing-gate.md|
 architect_disposition_challenge_pilot|bool|false|config-dir|false|config-dir|||Architect disposition-challenge pilot|docs/design-decisions/architect-disposition-challenge-pilot.md|
 plugin_bootstrap|bool|true|config-dir|false|config-dir|||Project-plugin registry bootstrap|docs/hooks.md § Utility hooks|
+agent_branch_records|bool|false|config-dir|false|config-dir|||Agent branch-records archive|docs/agent-branch-records.md|

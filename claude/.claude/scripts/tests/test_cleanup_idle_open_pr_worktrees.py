@@ -19,8 +19,28 @@ from pathlib import Path
 
 import pytest
 
+from ._branch_records_helpers import (
+    REVIEW_FILES,
+    SENTINEL_NAME,
+    account_directory,
+    archive_root,
+    assert_cleanup_manifest,
+    assert_output_never_mentions_the_archive,
+    assert_script_env_confined,
+    build_archive_env,
+    complete_snapshots,
+    expected_ledger_key,
+    list_tree,
+    make_fifo_in_agent_reviews,
+    pinned_script_env_base,  # noqa: F401 -- an autouse fixture that applies to every test here
+    porcelain_paths,
+    read_tree,
+    reason_variables,
+    worktree_holding_reviews,
+)
 from .conftest import (
     _commit,
+    _git,
     _live_process_in,
     _make_feature_branch,
     _make_repo_with_remote,
@@ -203,6 +223,7 @@ def _run_script(
     args: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [str(_SCRIPT)] + (args or [])
+    assert_script_env_confined(env)
     return subprocess.run(
         cmd,
         cwd=str(repo),
@@ -852,3 +873,139 @@ class TestGhUnauthenticated:
         result = _run_script(local, env)
         assert result.returncode != 0
         assert "auth" in result.stderr.lower() or "login" in result.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
+# Branch-records archive (docs/agent-branch-records.md)
+# ---------------------------------------------------------------------------
+
+def _idle_pr_row(branch: str, number: int) -> dict:
+    return {"headRefName": branch, "number": number, "isDraft": False, "updatedAt": _iso(hours_ago=100)}
+
+
+class TestScriptEnvironmentIsolation:
+    def test_fake_gh_environment_keeps_the_account_under_tmp_path_so_a_script_run_cannot_read_the_real_key(
+        self, tmp_path, fake_gh
+    ):
+        # `_isolate_transcript_corpus_lookups` in this tree's conftest.py pins CLAUDE_CONFIG_DIR under tmp_path.
+        # It covers only this test tree.
+        env = fake_gh({})
+
+        assert_script_env_confined(env)
+        assert Path(env["CLAUDE_CONFIG_DIR"]).resolve().is_relative_to(tmp_path.resolve())
+
+
+class TestBranchRecordsArchive:
+    def test_ready_run_snapshots_the_reviews_before_removing_the_worktree(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        tip_sha = _git(local, "rev-parse", "feat/reviewed").strip()
+        main_path, porcelain_path = porcelain_paths(local, "feat/reviewed")
+        env = build_archive_env(tmp_path, fake_gh([_idle_pr_row("feat/reviewed", 1)]))
+
+        result = _run_script(local, env)
+
+        account_dir = account_directory(env)
+        (snapshot,) = complete_snapshots(env, expected_ledger_key(porcelain_path, "feat/reviewed"))
+        assert result.returncode == 0, result.stderr
+        assert f"Archive: ready ({account_dir})" in result.stdout
+        assert f"  feat/reviewed: archived to {snapshot}" in result.stdout
+        assert read_tree(snapshot / "agent-reviews") == (REVIEW_FILES, {"round1"})
+        assert_cleanup_manifest(
+            snapshot, trigger="cleanup-idle-open-pr-worktrees.sh", branch="feat/reviewed", tip_sha=tip_sha,
+            main_worktree_path=main_path, worktree_path=porcelain_path,
+        )
+        assert not wt_path.exists()
+
+    def test_candidate_whose_archive_fails_is_kept_while_the_next_one_is_archived_and_removed(
+        self, tmp_path, fake_gh
+    ):
+        """Branches are walked in refname order, so the refused candidate comes first."""
+        local, _ = _make_repo_with_remote(tmp_path)
+        refused_path = tmp_path / "refused-tree"
+        accepted_path = tmp_path / "accepted-tree"
+        worktree_holding_reviews(local, "feat/a-refused", refused_path)
+        worktree_holding_reviews(local, "feat/b-accepted", accepted_path)
+        make_fifo_in_agent_reviews(refused_path)
+        _, refused_porcelain_path = porcelain_paths(local, "feat/a-refused")
+        _, accepted_porcelain_path = porcelain_paths(local, "feat/b-accepted")
+        env = build_archive_env(tmp_path, fake_gh([
+            _idle_pr_row("feat/a-refused", 1),
+            _idle_pr_row("feat/b-accepted", 2),
+        ]))
+
+        result = _run_script(local, env)
+
+        refusal = reason_variables()["UNSUPPORTED_ENTRY"]
+        assert result.returncode == 1, result.stderr
+        assert f"  feat/a-refused: kept (archive failed: {refusal})" in result.stdout
+        assert refused_path.exists()
+        assert complete_snapshots(env, expected_ledger_key(refused_porcelain_path, "feat/a-refused")) == []
+        assert len(complete_snapshots(env, expected_ledger_key(accepted_porcelain_path, "feat/b-accepted"))) == 1
+        assert not accepted_path.exists()
+
+    def test_missing_sentinel_refuses_before_the_gh_authentication_check(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        env = build_archive_env(tmp_path, fake_gh({"__auth__": "unauth"}), create_sentinel=False)
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 1
+        assert reason_variables()["SENTINEL"] in result.stderr
+        assert "docs/agent-branch-records.md" in result.stderr
+        assert "gh is not authenticated" not in result.stderr
+        assert SENTINEL_NAME not in result.stderr
+        assert str(archive_root(env)) not in result.stderr
+        assert wt_path.exists()
+
+    def test_manifest_names_the_main_checkout_when_the_script_runs_from_a_linked_worktree(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        runner_path = tmp_path / "runner-tree"
+        _make_runner_worktree_with_main_on(local, runner_path, "main")
+        tip_sha = _git(local, "rev-parse", "feat/reviewed").strip()
+        main_path, porcelain_path = porcelain_paths(local, "feat/reviewed")
+        env = build_archive_env(tmp_path, fake_gh([_idle_pr_row("feat/reviewed", 1)]))
+
+        result = _run_script(runner_path, env)
+
+        (snapshot,) = complete_snapshots(env, expected_ledger_key(porcelain_path, "feat/reviewed"))
+        assert result.returncode == 0, result.stderr
+        assert_cleanup_manifest(
+            snapshot, trigger="cleanup-idle-open-pr-worktrees.sh", branch="feat/reviewed", tip_sha=tip_sha,
+            main_worktree_path=main_path, worktree_path=porcelain_path,
+        )
+
+    def test_dry_run_with_a_ready_archive_prints_the_ready_line_and_writes_nothing(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        env = build_archive_env(tmp_path, fake_gh([_idle_pr_row("feat/reviewed", 1)]))
+        root_before = list_tree(archive_root(env))
+
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0, result.stderr
+        assert "Archive: ready (" in result.stdout
+        assert "Would remove" in result.stdout
+        assert wt_path.exists()
+        assert list_tree(archive_root(env)) == root_before
+
+    def test_key_off_removes_the_worktree_without_touching_the_archive_root(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        env = build_archive_env(
+            tmp_path, fake_gh([_idle_pr_row("feat/reviewed", 1)]), key_line=None, create_root=False,
+        )
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert not wt_path.exists()
+        assert not archive_root(env).exists()
+        assert_output_never_mentions_the_archive(result.stdout + result.stderr, tmp_path)
