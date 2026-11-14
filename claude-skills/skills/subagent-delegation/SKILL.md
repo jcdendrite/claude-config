@@ -53,18 +53,6 @@ toward the same question, dispatch the question instead of continuing inline.
   `code-writer` section below for the narrow exception.
 - The failure output or diff you reason over line by line — the artifact itself, not the investigation that precedes it.
 
-**A dispatch must return something the parent does not already have.**
-Never dispatch an agent — of any type — whose instructions are to do no work:
-
-- Report back immediately.
-- Occupy the turn.
-- Hold while other dispatches finish.
-
-A no-op agent returns at once, so it waits for nothing — waiting isn't an
-action a dispatch can perform. It still pays a full agent's context cost
-for an empty return. When pending dispatches are all that remain, end the
-turn without a tool call and let their completion drive the next one.
-
 **Plan mode.** From a session in plan mode, call `ExitPlanMode` and wait
 for the plan's approval before delegating execution: a spawned subagent
 inherits the plan-mode reminder and typically returns a plan instead of
@@ -172,6 +160,10 @@ commit, the `/code-review` re-run, and the marker. Two further carve-outs, neith
 
 - Not code (the review-findings PR-body block, a `respond-pr` reply, a plan-file edit) — stays inline.
 - Still being re-decided — fails condition (1), stays inline.
+
+When the return's **Still uncertain** names a claim the writer changed or left unwritten, or another site that
+states it, act on that entry before the next review: have it fixed, or record it as an ADDRESS row. Never drop the
+entry. Forwarding it to the next reviewer as a known leftover does not count.
 
 A finding surviving a second dispatch stops being delegated — it is now a design question, not a fix. This is not the inverse of the debug-probe carve-out above: a fix the parent designs itself while reading a debug probe's diagnosis fails condition (1) and stays inline. A diagnosis the parent has already fully specified before the locating read still satisfies condition (1) and routes by the ordinary two-condition test, same as any other change — see under this file's § "Debug-investigation probe → `general-purpose` or `Explore`".
 
