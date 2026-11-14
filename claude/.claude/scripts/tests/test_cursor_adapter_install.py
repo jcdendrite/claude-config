@@ -311,6 +311,76 @@ class TestInstallRoundTrip:
 
         assert json.loads(world.hooks_path.read_text()) == {"version": 1, "hooks": {"stop": [{"command": "echo added later"}]}}
 
+    @pytest.mark.parametrize(
+        ("member", "value"),
+        [("added", 1), ("extra", [3]), ("version", 2)],
+        ids=["member-added", "member-changed", "version-changed"],
+    )
+    def test_a_top_level_member_changed_after_install_survives_an_uninstall_that_removes_only_the_owned_entries(
+        self, fast_world: World, member: str, value: object
+    ) -> None:
+        world = fast_world
+        world.hooks_path.write_bytes(ORIGINAL_HOOKS)
+        world.install()
+        document = hooks_document(world)
+        document[member] = value
+        save_hooks(world, document)
+
+        result = world.run("uninstall")
+
+        assert result.status == 0, result.err
+        uninstalled = hooks_document(world)
+        assert uninstalled[member] == value
+        assert uninstalled["hooks"] == {"stop": [{"command": "echo mine"}]}
+        assert not any(world.adapter.ownership(item) == "owned" for items in uninstalled["hooks"].values() for item in items)
+
+    @pytest.mark.parametrize(("member", "value"), [("added", 1), ("version", 2)], ids=["member-added", "version-changed"])
+    def test_a_top_level_member_changed_after_a_no_file_install_keeps_the_file_through_uninstall(
+        self, fast_world: World, member: str, value: object
+    ) -> None:
+        world = fast_world
+        assert not world.hooks_path.exists()
+        world.install()
+        assert (world.record_dir / "hooks.json.pre-install.none").exists()
+        document = hooks_document(world)
+        document[member] = value
+        save_hooks(world, document)
+
+        result = world.run("uninstall")
+
+        assert result.status == 0, result.err
+        uninstalled = hooks_document(world)
+        assert uninstalled[member] == value
+        assert uninstalled["hooks"] == {}
+
+    def test_an_original_hooks_file_with_an_empty_event_array_is_restored_byte_identical_by_uninstall(
+        self, fast_world: World
+    ) -> None:
+        world = fast_world
+        original = b'{"version": 1, "hooks": {"stop": []}}\n'
+        world.hooks_path.write_bytes(original)
+        world.install()
+
+        result = world.run("uninstall")
+
+        assert result.status == 0, result.err
+        assert world.hooks_path.read_bytes() == original
+
+    def test_an_original_hooks_file_with_no_hooks_member_is_restored_byte_identical_by_uninstall(
+        self, fast_world: World
+    ) -> None:
+        world = fast_world
+        original = b'{"version": 1}\n'
+        world.hooks_path.write_bytes(original)
+        installed = world.install()
+        assert installed.status == 0, installed.err
+        assert (world.record_dir / "hooks.json.pre-install").read_bytes() == original
+
+        result = world.run("uninstall")
+
+        assert result.status == 0, result.err
+        assert world.hooks_path.read_bytes() == original
+
     def test_install_record_keys_keep_the_listed_tool_order_and_python3_comes_first(self, fast_world: World) -> None:
         world = fast_world
         world.install()
@@ -1377,9 +1447,7 @@ class TestRunModeWarning:
 
         assert result.status == 1
         assert "--acceptance-only" in result.err
-        for gate in ("require-code-review", "require-plan-review", "require-ready-for-review", "require-respond-pr"):
-            assert gate in result.err
-        assert "require-memory-skill" in result.err
+        assert world.adapter.MARKER_GATES_CLAUSE in result.err
         assert "add --acceptance-only to run it" in result.err
         assert world.adapter.MARKER_GATES_WARNING not in result.err
         assert world.snapshot() == before
@@ -4668,7 +4736,9 @@ class TestTopLevelMembersFix:
         assert "top-level members of hooks.json that differ from the pre-install file: 1" in before.out
         assert "quit Cursor, run `uninstall`, then re-run `install` and relaunch Cursor" in before.out
         assert world.run("uninstall").status == 0
+        assert hooks_document(world)["added"] == 1
         assert world.install().status == 0
+        assert hooks_document(world)["added"] == 1
         after = world.run("check")
         assert after.status == 0, after.out
         assert "top-level" not in after.out

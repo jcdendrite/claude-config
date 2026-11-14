@@ -4,7 +4,7 @@ The adapter runs this repo's unchanged hooks under Cursor's local IDE. It instal
 
 The adapter lives in `claude/.claude/scripts/cursor-adapter/` and reaches `~/.claude/scripts/cursor-adapter/` through the stow link `./install.sh` makes. Generated commands name that stable path, never a checkout or a worktree.
 
-This build supports the acceptance run only. The acceptance run is an install made with `--acceptance-only`, to observe how the entries behave under Cursor, and `install` refuses without that flag. The generated `require-code-review`, `require-plan-review`, `require-ready-for-review`, `require-respond-pr` and `require-memory-skill` gates release an operation only on a marker file, and no path inside Cursor that writes one is verified in this build. They can therefore deny commit and PR steps, and `uninstall` or your own terminal is the way out.
+This build supports the acceptance run only. The acceptance run is an install made with `--acceptance-only`, to observe how the entries behave under Cursor, and `install` refuses without that flag. The marker-gated gates (see `docs/hooks.md`, which describes each gate's marker release in that gate's own entry) release on a marker file, and no path inside Cursor that writes one is verified in this build. Under Cursor they can therefore deny operations, and `uninstall` or your own terminal is the way out.
 
 ## Commands
 
@@ -96,7 +96,7 @@ This file lives in the claude-config checkout that `~/.claude`'s stowed files li
 
 A shim deny's text carries an outcome name, as in `outcome pin-check`. Each entry below names in backticks the outcomes it covers, and the last entry covers the rest.
 
-If `cursor-adapter.py` cannot run, restore `~/.cursor/hooks.json` by hand: copy the bytes of `~/.cursor/cursor-adapter/hooks.json.pre-install` over it, or delete it when `hooks.json.pre-install.none` is the file that exists. The copy discards every entry added to `hooks.json` since install. To keep those entries, delete by hand only the entries whose command holds `~/.claude/scripts/cursor-adapter/`. The `.none` delete applies only when `hooks.json` holds nothing but those entries. The install record, the state directory and the manifest remain after that restore, so when `cursor-adapter.py` runs again, run `uninstall` to remove them. Until then `check` reports every entry missing, or `hooks.json` as absent after the delete, and its fix sentence says to re-run `install`, which would install again what you just removed.
+If `cursor-adapter.py` cannot run, restore `~/.cursor/hooks.json` by hand: copy the bytes of `~/.cursor/cursor-adapter/hooks.json.pre-install` over it, or delete it when `hooks.json.pre-install.none` is the file that exists. The copy discards every entry added to `hooks.json` since install. To keep those entries, delete by hand only the entries whose command holds `/.claude/scripts/cursor-adapter/` under your home directory. The `.none` delete applies only when `hooks.json` holds nothing but those entries. The install record, the state directory and the manifest remain after that restore, so when `cursor-adapter.py` runs again, run `uninstall` to remove them. Until then `check` reports every entry missing, or `hooks.json` as absent after the delete, and its fix sentence says to re-run `install`, which would install again what you just removed.
 
 ### The Cursor adapter's hook shim ended without deciding this call
 
@@ -126,7 +126,7 @@ The shim reads `~/.cursor/cursor-adapter/install.json` on every call, and it run
 
 ### A deny from a marker-gated gate
 
-Under this build the `require-code-review`, `require-plan-review`, `require-ready-for-review`, `require-respond-pr` and `require-memory-skill` gates can deny a commit or a PR step, because each releases only on a marker file and no path inside Cursor that writes one is verified. Make that commit or step from your own terminal, or run `uninstall`.
+The paragraph before `## Commands` says why they can deny. Make the denied operation from your own terminal, or run `uninstall`.
 
 ### A hook's own deny names its bash floor or a missing jq, or an exit-nonzero deny with status 126 or 127
 
@@ -183,7 +183,7 @@ Outcome: `unknown-tool`.
 Cursor sent a tool name that neither the recorded tool map nor a `parity-exceptions.json` `cursor-tool` entry lists, such as a new or renamed tool, or WebFetch or WebSearch under a spelling the files do not hold. Classify the name in the stowed checkout:
 
 - A name added to `parity-exceptions.json` as a `cursor-tool` entry with reason `unsupported` or `declined` attaches no gate. The shim reads that file on each call, so the deny lifts live.
-- A name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map and regenerates the entries it feeds. Until then the shim keeps the recorded map, and `check` reports the drift.
+- A name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map. That lifts the unknown-tool deny but attaches no gate: a name that should carry the Edit, Write or other gates also needs an entry in the `CURSOR_TOOL_NAMES` table in `cursor-adapter.py` before `install`. Until `install`, the shim keeps the recorded map, and `check` reports the drift.
 
 ### A stale-install deny
 
@@ -230,7 +230,7 @@ A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. T
   - A SIGKILL to the `timeout` wrapper itself from outside, or a stop of it that is never resumed, leaves the hook unbounded.
   - The hook runs on under the wrapper's timer until it ends, after an output-cap deny or after a timeout at the shim's bound. A wrapper that started late gives the second.
 - **Your own hooks:** a hook you add to `hooks.json` after install shows in reports as a non-owned entry, counted by event. Note the count in `status` after adding one, because a planted entry under the same event differs from yours only by that count. A "foreign" entry in a report is a different thing: an entry that holds an adapter path without being the adapter's own.
-- **Marker-gated gates:** these can deny commit and PR steps in this build, as the opening paragraph and the Recovery section say.
+- **Marker-gated gates:** the paragraph before `## Commands` says why they can deny, `docs/hooks.md` describes each gate, and the Recovery section holds the way out.
 - **Credential redaction:** `redact-credential-values.sh` runs but redacts no tool output under Cursor, MCP output included. Cursor accepts a replacement tool output for `MCP:` tools only, and the hook's matcher selects no `MCP:` tool.
 - **Protections that do not run:** an entry that `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` lists as `pending-phase`, `unsupported` or `declined` is not carried through the adapter. That holds for a registration, a `permissions.deny` entry and an adapter gate. `gate-settings-permissions.sh` carries the `settings.json` `permissions.deny` Bash and Read entries, and Cursor does not enforce them until the phase the file names. `gate-agent-tools.sh` and `gate-credential-exposure.sh` are pending the same way. The Limitations list of the `cursor-adapter/` entry in `docs/scripts.md` § "Script reference" names the shim's own limits, among them the subagent bars and the `stop` and `subagentStop` deny.
 - **What the reports cannot see:**

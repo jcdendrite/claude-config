@@ -155,13 +155,10 @@ INSTALLED_THINGS_TEXT = "adapter entry, install record, saved pre-install file o
 RUN_MODE_LABEL = "unreadable"
 RUN_MODE_ACCEPTANCE_LABEL = "unreadable+acceptance-only"
 RUN_MODE_LINE = "run mode not readable; the run-mode precondition in docs/cursor-adapter.md is unchecked"
-# The generated gates that release an operation only on a marker file. Under Cursor no path that writes one is verified.
-MARKER_GATES_TEXT = (
-    "require-code-review, require-plan-review, require-ready-for-review, require-respond-pr and require-memory-skill"
-)
+# docs/hooks.md describes each gate's marker release in that gate's own entry; only the Cursor-specific fact is stated here.
 MARKER_GATES_CLAUSE = (
-    f"The {MARKER_GATES_TEXT} gates can deny commit and PR steps under Cursor, "
-    "and no path inside Cursor that releases them is verified in this build."
+    "The marker-gated gates (see docs/hooks.md) release on a marker file, "
+    "and no path inside Cursor that writes one is verified, so under Cursor they can deny operations."
 )
 MARKER_GATES_WARNING = f"{MARKER_GATES_CLAUSE} Engineer: run `uninstall` from a terminal to back out."
 ACCEPTANCE_ONLY_LINE = f"acceptance-only install: {MARKER_GATES_WARNING}"

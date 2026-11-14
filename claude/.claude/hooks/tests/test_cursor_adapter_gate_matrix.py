@@ -1949,7 +1949,10 @@ class TestRecoverySectionResolves:
     def test_the_manual_restore_says_what_the_copy_discards_and_gives_the_lossless_form(self) -> None:
         opening, _ = self._recovery_section()
         assert "The copy discards every entry added to `hooks.json` since install." in opening
-        assert "delete by hand only the entries whose command holds `~/.claude/scripts/cursor-adapter/`" in opening
+        assert (
+            "delete by hand only the entries whose command holds `/.claude/scripts/cursor-adapter/` under your home directory"
+            in opening
+        )
         assert "The `.none` delete applies only when `hooks.json` holds nothing but those entries." in opening
 
     @pytest.mark.parametrize("outcome", DENY_OUTCOMES)
