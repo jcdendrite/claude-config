@@ -188,7 +188,7 @@ The manifest is built with `_lib_jq -n --arg`, written to `manifest.json.tmp`, t
 - Copying the ledger file at removal time: removal deletes no ledger (row 14), and archiving what the sweep deletes is the D3 follow-up's job.
 - Refusing an account directory that is a symlink, is not owned by the caller, or is not mode 0700 after `chmod`, as `_lib.sh:5738-5744` does for its private directory (row 45). A target volume that ignores POSIX modes (row 57) reports an owner and mode the caller cannot change, so the owner and mode checks would refuse every archive there. No code can make files owner-only on a volume that ignores modes (row 58). The symlink refusal does not depend on modes, and the engineer chose to leave it out too (row 63).
 - A runtime notice when the account directory keeps group or other bits after `chmod`: the engineer declined it (row 62).
-- Sandbox grant text in the doc. The doc ships none (row 93) and carries the one sandbox paragraph that Critical files item 4 specifies. A sandboxed agent's own way to a real run is an unsandboxed retry (row 83). That retry passes every archive gate, so it weakens the sandbox, not the archive. Two grants are set aside:
+- Sandbox grant text in the doc. The doc ships none (row 93) and carries no sandbox note. A sandboxed agent's own way to a real run is an unsandboxed retry (row 83). That retry passes every archive gate, so it weakens the sandbox, not the archive. Two grants are set aside:
   - A `sandbox.filesystem.allowWrite` entry, for each account directory or for the whole root. Three reasons:
     - The engineer does not use sandboxed sessions today (row 94), so a grant's spelling, path form and settings scope would ship untested in a public doc.
     - A sibling worktree's removal may fail under the sandbox with the archive granted (row 96).
@@ -253,7 +253,7 @@ The manifest is built with `_lib_jq -n --arg`, written to `manifest.json.tmp`, t
 22. The tracked settings carry no `sandbox` key; machine-level settings were not read. [verified: grep of `claude/.claude/settings.json`; unverified: machine settings] Under G3, an archive write fails and nothing is removed. The case study names `permissions.additionalDirectories`, or `--add-dir`, as the documented setting that restores write access (`docs/case-studies/claude-code-sandbox-write-boundary.md:149-158`). [verified] Row 64 and Alternatives hold the reach of that setting, and the plan ships no grant of either kind (row 93).
     - Whether `test -w` sees a sandbox denial is unknown. On Linux a read-only bind mount would make it fail, as the case study's `Read-only file system` errors suggest (:29-34), and on macOS it may pass ahead of a denied write. [unverified: not run]
     - Either way a denied write fails the archive call and keeps the worktree. Which reason surfaces is unknown: a not-writable reason when `test -w` sees the denial, otherwise `DIRECTORY`, `SNAPSHOT_MKDIR` or `COPY_FAILED` from the first write step 4 or 6 reaches. [unverified: inferred from steps 4-6, not run under the sandbox]
-    - The doc's sandbox paragraph makes no claim about which reason surfaces.
+    - The doc carries no sandbox note, so it makes no claim about which reason surfaces.
 23. No in-repo consumer of `--list-removable` exists beyond the script, its tests, `docs/scripts.md` and `CHANGELOG.md`. [verified: grep]
 24. `jq` is a required tool (`README.md:107`). [verified]
 25. Whether `cp -RPp` and `diff -r` fail on a symlink or special file nested in `agent-reviews/` is unknown. [unverified: manuals not read; three reviewers expect both to succeed, with GNU `diff -r` following the link] The design does not depend on it: the `find` pre-scan refuses any entry that is neither a regular file nor a directory, which keeps the worktree. That `find` without `-L` reports a symlink as itself is pinned by a test on Linux only. [unverified on BSD]
@@ -379,7 +379,9 @@ The manifest is built with `_lib_jq -n --arg`, written to `manifest.json.tmp`, t
 107. [engineer-verified: "Ask the architect"], the engineer's reply to /plan-review's question on whether to keep a one-word edit to `docs/design-decisions/architect-disposition-challenge-pilot.md:346`. Covers only: consulting the architect. The architect's verdict was to keep the edit, because the Revert contract bullet is a forward instruction naming live code, not a record of something that happened. That verdict is the session's relay, not the engineer's words. Item 8 formerly left the file unedited on the plan author's own inference. [unverified: relayed]
 108. [engineer-verified: "yeah I wouldn’t try to fix that in this PR"], the engineer's typed words this session on whether to close the misspelled or hyphenated key name in this PR. Covers only: not closing the misspelled or hyphenated key name in this PR. It does not cover calling the residual acceptable. The engineer said the reviewers raised a legitimate problem that should be fixed in a different way, so the PR body names it as a follow-up.
 109. [engineer-verified: "Restore the engineer's value only (Recommended)"], the option label the engineer selected on what the `KEY_UNREADABLE` fix text tells the reader. Covers only: the fix text tells the reader to restore the value the engineer set and to ask the engineer if unsure, and it does not enumerate `= false`. The option's description was the dispatching session's own proposal, not the engineer's words.
-110. [engineer-verified: "Proceed anyway"], the option label the engineer selected at a diff-size gate on the working tree's changed lines. Covers only: shipping D1 and D2 as one PR at the measured size of about 2,815 changed lines, re-measured at this revision with the command on the `Projected diff:` line. The gate's question and the option's description were the dispatching session's own. [unverified: relayed] Row 103 records the same answer at the earlier size.
+110. [engineer-verified: "Proceed anyway"], the option label the engineer selected at a diff-size gate on the working tree's changed lines. Covers only: shipping D1 and D2 as one PR at the measured size of about 2,815 changed lines, re-measured at this revision with the command on the `Projected diff:` line. The gate's question and the option's description were the dispatching session's own. [unverified: relayed] Row 103 records the same answer at the earlier size. The answer covered the 2,815 figure, which was measured against the older base `13ccd953` and so counted commits merged from `origin/main`. The re-measured figure against the merge base with `origin/main` is 3,148 (row 110's `Projected diff:` line). Row 112 records the engineer's answer at the re-measured size.
+111. [engineer-verified: "only what a first time user needs"], the engineer's typed words, with the follow-up "151 lines is way too much information. Trim aggressively please", on `docs/agent-branch-records.md`. Covers only: trimming `docs/agent-branch-records.md` to what a first-time user needs. It does not cover which individual statements were cut.
+112. [engineer-verified: "Proceed anyway"], the option label the engineer selected in `/plan-review` on the re-measured `Projected diff:` of about 3,148 changed lines, after asking "What does the architect think?" and receiving the consult's recommendation to proceed as one PR. Covers only: shipping this branch as one PR at about 3,148 changed lines. The consult's size breakdown (about 488 production lines, about 2,450 test lines) is the consult's, not the engineer's.
 
 **Mechanisms:**
 - M1. The sentinel file, probed under `_lib_capped` by the status check each archive call re-runs. anchors: root, row21, row42. Lighter checks, and a second probe before the manifest `mv`, are set aside under Alternatives.
@@ -519,53 +521,30 @@ Give each `code-writer` dispatch this Approach and its own file list. The ledger
        - each empty argument, in one parametrized body: `LEDGER_KEY` with no `branches` directory. With no sentinel, each empty argument instead reports the `SENTINEL` reason;
        - the key off: a return of 0 with no snapshot and the root unchanged, for an existing and a missing worktree, for each empty argument, and with TRIGGER omitted. With no root at all, a status call and an archive call create nothing under `HOME`;
        - a symlinked root reads `ready` and holds a complete snapshot on the link's target.
-4. **New:** `docs/agent-branch-records.md`, the docs-anchor target.
-   - Its opening paragraph says what the key, root, sentinel and account directory are for. It also says in plain words that the archive holds only a worktree's `agent-reviews/`, and that the ledger sweep deletes each `review-narrative-ledger/*.jsonl` file once it has gone 30 days without an append, with no copy, whether the key is on or off (rows 60, 75). One more sentence says such a file can be copied by hand into the archive root before then. It names the file's directory, `<config dir>/review-narrative-ledger/` (`_lib.sh:5640`), where `<config dir>` is the account's `CLAUDE_CONFIG_DIR`. It names no destination under the root beyond the root itself, because no layout for ledger files exists until the D3 follow-up defines one. Only this paragraph states either fact (row 73), and the D3 follow-up replaces both sentences.
-   - setup, as numbered steps in this order, after a lead-in that quotes `<volume path>` and, for no larger volume, says to create the root with `mkdir -p` and continue at step 4:
-     1. create the target directory on the larger volume first (`mkdir <volume path>/agent-branch-records`), because a link to a missing target leaves a dangling root that reads as a missing sentinel, and run `mkdir -p ~/.local/state`, since a macOS home may lack it;
-     2. when `~/.local/state/agent-branch-records` already exists as a directory:
-        - move every entry it holds into the volume directory with `find ~/.local/state/agent-branch-records -mindepth 1 -maxdepth 1 -exec mv -- {} <volume path>/agent-branch-records/ \;`, which also moves the dot-named sentinel that a `*` glob skips;
-        - remove the emptied directory with `rmdir`;
-        - link only once `rmdir` succeeds, since a failed `rmdir` means an entry was left behind. `ln -s` onto an existing directory creates the link inside it, which would leave the sentinel on the home volume;
-     3. make the root a symlink to that directory (`ln -s <volume path>/agent-branch-records ~/.local/state/agent-branch-records`). A plain `mkdir` root sits on the volume cleanup is meant to relieve, where `ENOSPC` makes every archive fail;
-     4. create the sentinel only after confirming the volume is mounted, and never from an agent session, because a sentinel on the bare mountpoint passes the gate while the volume is absent;
-     5. smoke-test the copy on the target volume from the engineer's own terminal: `cp -RPp`, `diff -r` and `mv` on a sample tree, then delete the scratch directory. `Archive: ready` does not check that those commands work there;
-     6. set `agent_branch_records = true`, export the account's own `CLAUDE_CONFIG_DIR`, then confirm that `~/.claude/scripts/config-get.sh agent_branch_records` exits 0 (rows 51, 101). The step also says that, when the key reads as off, a malformed line or an unreadable config file makes the archive unavailable;
-   - what a dry run shows, in step 6's own paragraph and not a separate list:
-     - a cleanup script's `--dry-run` prints `Archive: ready (<account directory>)` once the key reads as on and the sentinel and write probes pass;
-     - that line does not mean a copy will succeed, because a directory, copy or manifest refusal can still follow;
-     - it prints `Archive: unavailable (<reason>)` when the archive cannot be written or the key's state could not be read;
-   - the setup caveats, in their own list after the steps:
-     - use a volume as trusted as `$HOME`, because the archive holds finding text that can quote the engineer, plus branch names and worktree paths;
-     - on a volume that ignores POSIX modes, such as FAT, exFAT, NTFS or many SMB mounts, any other local account can read, modify or replace the archive unless the volume is remounted with your own uid and gid and an owner-only umask (row 58);
-     - no check refuses a symlink at the account, `branches` or key directory, so an account that can write the root or an account directory can redirect later snapshots to a directory it controls (rows 63, 90);
-   - what an agent does on a refusal: report it to the engineer, and never create the root or sentinel or change the key;
-   - the fail direction, one fact per bullet:
-     - when the key reads as off, the archive is `unavailable` if `claude-config.toml` or a directory on its path cannot be read or searched, a non-file sits at its path, or a line names the key and `_config.sh` skips it or reads its value as other than `true` or `false`;
-     - a misspelled key name is not detected and reads as off with only `_config.sh`'s stderr warning. The hyphenated `agent-branch-records` is a named known residual, to be fixed in a separate change (row 108);
-     - that check runs only when the key reads as off, so `= true` plus a malformed duplicate stays on;
-     - `unavailable` keeps every item, for a default-off consumer too, until the install is fixed or the change reverted;
-     - a missing config dir, or a missing toml under a searchable directory, reads as off, with an absent `Archive: ready` line as the only sign;
-     - an internal failure of the config reader's resolver returns the schema default `false`, so the key reads as off and removal proceeds unarchived, with the same sign;
-     - the off conclusion rests on the config reader's own read of the file, and can still read as off in two cases:
-       - a transient I/O failure on that read;
-       - a stat error under a searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE, ETIMEDOUT);
-     - the doc states that residual as a residual and not as a guarantee;
-     - an unreadable `agent-reviews` or an unreadable entry inside it refuses instead of reading as `absent`, with a pointer to the `UNSUPPORTED_ENTRY` and `COPY_FAILED` rows;
-     - list mode prints no `Archive:` line, so it gives no sign that the key read as on;
-   - removing the key: when the key leaves the schema, delete the `agent_branch_records` line from each account's `claude-config.toml`, because `_config.sh` warns on every read of a line for an unrecognized key (row 67);
-   - a reason table with one row per `_BRANCH_RECORDS_REASON_*` value, quoting the value in backticks, with its fix:
-     - the `SENTINEL` row names a dangling root symlink as one cause;
-     - the `UNSUPPORTED_ENTRY` row gives `find agent-reviews ! -type f ! -type d` to list the refused entries, and says the value also covers an `agent-reviews` that is not a plain directory;
-     - the `KEY_UNREADABLE` row has one line per cause: restore the value the engineer set, and ask the engineer if unsure; fix permissions or repair a dangling link; or replace a non-file with a regular file (row 109). It does not name `= false` or any other way to turn the key off (see Out of scope);
-     - the `ROOT_NOT_WRITABLE` row's fix is "Fix the root's mode.", and the `ACCOUNT_NOT_WRITABLE` row's is "Fix its mode.";
-   - after the table, one paragraph on the sandbox, which gives no grant (rows 22, 93): "By default the Claude Code sandbox denies writes outside the session's working directory, added directories and `$TMPDIR`, so under it an archive write typically fails and the worktree is kept. Run cleanup from a terminal outside Claude Code." It makes no claim about which reason surfaces, because that is unverified (row 22);
-   - that CI checks Linux only, so macOS is unverified beyond the path name;
-   - retention: nothing prunes the archive, which keeps finding text until the engineer deletes it. Deleting `<root>/<account>/` removes one account's archive, and an incomplete snapshot is safe to delete;
-   - from code review (rows 99, 101), one fact per item, each in the doc section it names:
-     - Setup: archived findings can quote secrets, which rotation does not remove;
-     - Platforms and retention: verification reads through the page cache and is no durability guarantee;
-     - Fail direction: a stat failing for want of search permission reads as `absent`.
+4. **New:** `docs/agent-branch-records.md`, the docs-anchor target, written for a first-time user. It holds only what that reader needs (row 111), in these sections:
+   - Intro: what the key and the fixed root are for, and that the archive holds only a worktree's `agent-reviews/`. It does not define the account directory.
+   - Setup: a preamble, then five one-time steps (volume target and link, sentinel, smoke test, enable and `--dry-run` check), with the sentinel never created from an agent session.
+     - The preamble gives the path when there is no larger volume, and says to exclude the root from any backup or sync client before step 5.
+     - The preamble also says moving an existing root is manual.
+   - What a run prints (D2, item 14): the `Archive: ready` and `Archive: unavailable` lines for dry and real runs, the `kept (archive failed: ...)` line, and list mode printing no `Archive:` line.
+   - When a script refuses: a table with one row per `_BRANCH_RECORDS_REASON_*` value, each reason string byte-identical to the lib's constant and quoted in the first column, with its fix:
+     - the `UNSUPPORTED_ENTRY` row gives `find agent-reviews ! -type f ! -type d`;
+     - the `KEY_UNREADABLE` row is the last.
+       - It tells the engineer to restore the value they set.
+       - It names no way to turn the key off, `= false` included (row 109).
+       - It says an agent only reports the refusal.
+   - Fail direction: a key that reads as off prints nothing and archives nothing, and an unreadable key refuses.
+     - Residual: a misspelled or hyphenated key name reads as off with no snapshot (row 108).
+     - Residual: a transient read failure in the config reader reads as off with no snapshot.
+     - Residual: a stat error such as EIO, ESTALE or ETIMEDOUT under a searchable parent reads as off with no snapshot.
+     - The copy steps are not time-capped.
+   - Snapshots (D2, item 14):
+     - The account directory and snapshot path layout.
+     - A snapshot is complete only once `manifest.json` exists.
+     - How to find one.
+     - Restore is a manual `cp -R`.
+     - The manifest and account directories are not an access boundary.
+   - Known limits (D2, item 14): the ledger sweep's 30-day deletion is not covered, a worktree removed by other means gets no snapshot, and a repo on a key-off account is removed with no snapshot.
 
    Examples use placeholder paths and names only.
 5. `docs/config-file.md`: the table row; 21 to 22 at :148, :180 and :265; the key added to the scaffold list at :180-185, where "all five" becomes "all six".
@@ -603,16 +582,16 @@ Give each `code-writer` dispatch this Approach and its own file list. The ledger
     - `--dry-run` with `ready` prints `Archive: ready`, previews the removal, exits 0 and leaves the root's file tree unchanged;
     - a disabled run that exits 0, removes the worktree, leaves `$HOME/.local/state` uncreated, and passes item 11's path-stripped `archive` check.
 13. `claude/.claude/hooks/tests/test_bash_floor.py`: add `cleanup-idle-open-pr-worktrees.sh` to `_SCRIPTS_SOURCING_LIB_SH_FIRST` (:444).
-14. `docs/agent-branch-records.md`: add the worktree snapshots (layout, manifest fields, completeness rule, reuse check), the two scripts' behavior including the `Archive: ready (<account directory>)` and `Archive: unavailable (<reason>)` lines, and which account owns a worktree's snapshots under `--all-projects` (row 46). Also the list-mode bypass sentence: the key covers only the scripts' own `git worktree remove` calls, so a consumer that removes a listed worktree itself gets no snapshot. The "Key off" bullet says the toml is absent "under a searchable directory", the qualifier the Fail direction section carries.
+14. `docs/agent-branch-records.md`: D2 adds the What a run prints, Snapshots and Known limits sections, the three item 4 marks as D2's. D1's item 4 writes Intro, Setup, When a script refuses and Fail direction.
 15. `docs/scripts.md`: one sentence in each cleanup entry (:253, :269) citing `docs/agent-branch-records.md`.
-16. `CHANGELOG.md`: one `### Added` entry under `[Unreleased]`. It names the key, says that turning it on makes both cleanup scripts snapshot a worktree's `agent-reviews/` before removing it, and states the refusal behavior. Its rule wording matches the doc's: a line naming the key that the config reader skips or reads as other than `true` or `false`, checked only when the key reads as off, whatever the key is set to, with absence qualified by a searchable directory. It says nothing about the ledger sweep's window, which only the doc's opening paragraph states.
+16. `CHANGELOG.md`: one `### Added` entry under `[Unreleased]`. It names the key, says that turning it on makes both cleanup scripts snapshot a worktree's `agent-reviews/` before removing it, and states the refusal behavior. The shipped entry's Refusals bullet states no rule for an unreadable key, and says refusal happens when the archive is unavailable. Item 16 requires the Refusals bullet to state one sentence: a key that reads as off but whose config cannot be read as on or off refuses with exit 1. The sentence carries no qualifier the trimmed doc does not state. It says nothing about the ledger sweep's window, which only the doc's Known limits section states.
 17. `claude/.claude/scripts/tests/_branch_records_helpers.py`, item 3's helper module: D2 adds the fixtures and assertions that items 11 and 12 share, `worktree_holding_reviews`, `porcelain_paths`, `complete_snapshots`, `make_fifo_in_agent_reviews`, `assert_cleanup_manifest` and `assert_output_never_mentions_the_archive`.
 18. `claude/.claude/scripts/tests/test_branch_records_archive.py`, an incidental D2 edit to a D1 file: it swaps a hand-written `.git/info/exclude` append for the shared `ignore_agent_reviews` from `claude/.claude/tests/helpers.py`.
 
 19. `claude/.claude/scripts/tests/conftest.py`: give `_seed_session` a keyword-only `config_dir` argument, so the archive test module (`test_branch_records_archive.py:138`) writes its session registry through the shared helper instead of a hand-written copy (row 106). The default behaviour is unchanged.
 20. `docs/design-decisions/architect-disposition-challenge-pilot.md:346`: name `_PER_ACCOUNT_OPT_IN_KEYS` in place of `_OPT_IN_PILOT_KEYS` in the Revert contract bullet (row 107).
 
-Projected diff: about 2,815 changed lines (2,784 added, 31 deleted), re-measured at this revision on the working tree with `git diff --numstat 13ccd953 -- . ':!.claude/plans'` (row 110). The earlier 2,529 (2,502 added, 27 deleted) came from `git diff --numstat origin/main...HEAD -- . ':!.claude/plans'` at the D2 commit (row 103).
+Projected diff: about 3,148 changed lines (3,107 added, 41 deleted), re-measured at this revision on the working tree with `git diff --numstat` against the merge base with `origin/main`, excluding `.claude/plans` (`-- . ':!.claude/plans'`). The merge base comes from a separate `git merge-base HEAD origin/main` call, and `origin/main` is the local ref, not fetched. Row 110's "Proceed anyway" covered the earlier 2,815 figure, which was measured against an older base, and row 112 records the engineer's answer at this figure. The earlier 2,529 (2,502 added, 27 deleted) came from `git diff --numstat origin/main...HEAD -- . ':!.claude/plans'` at the D2 commit (row 103).
 
 ## Verification
 
@@ -654,7 +633,7 @@ Projected diff: about 2,815 changed lines (2,784 added, 31 deleted), re-measured
      - `cleanup-merged-branches.sh --dry-run` prints `Archive: ready`;
      - one real run against a throwaway merged worktree leaves a complete snapshot;
      - the dry run prints `Archive: unavailable` once the sentinel is renamed away.
-   - Run the doc's Setup smoke test (step 5) on the target volume.
+   - Run the doc's Setup smoke test (step 4) on the target volume.
    - The same steps on macOS check row 31, the condition row 30 sets.
    - Enabling the key on a real account waits on row 6.
 5. Accepted gap: no case pins the writer side of the manifest-last rule, that step 7 writes the manifest only after step 6's copy is verified.
@@ -673,7 +652,7 @@ Projected diff: about 2,815 changed lines (2,784 added, 31 deleted), re-measured
 - Pruning or a retention policy for the archive itself.
 - Tooling that reads the archive, such as `author_outcome.py`. Nothing reads it in this phase.
 - `review-pr-finish.sh`'s removal of review-pr worktrees and findings (row 28). It is a sibling removal path, left out because it holds reviews of other authors' PRs, not this account's branch records. It is a candidate for a later phase.
-- `fsync` before deletion. A crash inside the page-cache writeback window can lose an archive whose source is already deleted, which the doc states.
+- `fsync` before deletion. A crash inside the page-cache writeback window can lose an archive whose source is already deleted, a residual the trimmed doc does not state (row 111 covers the trim, not this cut).
 - Splitting `test_cleanup_merged_branches.py`, which already exceeds the repo's 1,000-line limit and which this change grows (row 53). Nothing enforces that limit yet.
 - A content digest per archived file in the manifest. A later phase that reads the archive would need it to detect a changed copy.
 - A guard against an agent turning the key off in `claude-config.toml`. A reviewer's grep found no hook covering that file. This plan did not re-check that grep. No fix text in the reason table names `= false` or any other way to turn the key off (row 109), and the stderr reason says only that the line could not be read as true or false.

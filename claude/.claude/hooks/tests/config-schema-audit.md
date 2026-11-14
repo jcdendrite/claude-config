@@ -498,8 +498,8 @@ Column legend:
   item**. When `_config_enabled` reads the key as off, `branch_records_status`
   makes the archive `unavailable` unless `claude-config.toml` provably does not
   exist or was read and holds no offending line.
-  `docs/agent-branch-records.md` § "Fail direction" holds the condition list
-  and the residuals.
+  `docs/agent-branch-records.md` § "Fail direction" holds the residuals, and
+  the reason table's last row holds the condition list.
 - Check scope: the check does not run when `_config_enabled` reads the key as
   on, so a `= true` line followed by a malformed duplicate still archives.
 - Misspelled key name: a misspelled name, the hyphenated `agent-branch-records`

@@ -572,7 +572,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **A new `agent_branch_records` config key makes both cleanup scripts snapshot a worktree's `agent-reviews/` before they remove it.**
   - **Behavior:** with the key on, `cleanup-merged-branches.sh` and `cleanup-idle-open-pr-worktrees.sh` copy and verify the directory under `~/.local/state/agent-branch-records/` before every `git worktree remove`. The key is per-account and defaults to `false`.
-  - **Refusals:** a worktree whose copy fails is kept, and `cleanup-merged-branches.sh` also keeps its local and remote branch. The script then exits 1. A real run exits 1 before removing anything in the repo it is processing when the archive is unavailable. With the archive unavailable, `--list-removable` prints no list and exits 1. `docs/agent-branch-records.md` lists the causes.
+  - **Refusals:** a worktree whose copy fails is kept, and `cleanup-merged-branches.sh` also keeps its local and remote branch. The script then exits 1. A real run exits 1 before removing anything in the repo it is processing when the archive is unavailable. With the archive unavailable, `--list-removable` prints no list and exits 1. A key that reads as off but whose `claude-config.toml` cannot be read as on or off also refuses, even for an account that never enabled the key. `docs/agent-branch-records.md` lists the causes.
   - **Setup:** the root is a path you can point at a larger volume with a symlink, and you create its sentinel file by hand. `docs/agent-branch-records.md` has the steps and the refusal reasons.
   - The change is live on `git pull`.
 - **`compaction-context.py state --transcript PATH` prints the facts a compaction must keep, derived from the transcript on disk.**
