@@ -614,7 +614,8 @@ def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     This proves the *declared* config state — `"EnterPlanMode"` is present
     in `permissions.deny`, and `permissions.defaultMode` is not `"plan"` —
     not that the harness actually honors either at runtime. That live-session
-    verification lives outside pytest; this test only pins the declaration so a
+    verification lives outside pytest, recorded as prose only; no transcript
+    or log of it is committed. This test only pins the declaration so a
     future edit can't drop it silently.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
@@ -751,9 +752,11 @@ def test_schedulewakeup_stays_denied_in_settings() -> None:
     This proves the *declared* config state — `"ScheduleWakeup"` is present
     in `permissions.deny` — not that the harness actually removes the tool
     from context at runtime. That live-session verification lives outside
-    pytest; this test only pins the declaration so a
-    future edit can't drop it silently. A membership check on the exact
-    bare string also catches a later weakening into the parenthesized
+    pytest, recorded as prose only in the "Blast radius" section of
+    `docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md`; no
+    transcript or log of it is committed. This test only pins the
+    declaration so a future edit can't drop it silently. A membership check
+    on the exact bare string also catches a later weakening into the parenthesized
     `"ScheduleWakeup(*)"` form, which leaves the tool visible in context.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
@@ -3325,7 +3328,7 @@ def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -
     """require-ready-for-review.sh allows a push when `gh` is absent from PATH.
 
     It is the one gate that shells out to `gh` (`gh pr view`, guarding the
-    PR-existence check at line ~183). With `gh` removed from PATH, PR_NUMBER
+    PR-existence check). With `gh` removed from PATH, PR_NUMBER
     comes back empty exactly as it would for "no open PR" or "gh not
     configured", both of which this hook documents as fail-open ("gh pr view
     fails ... fail-open to keep the user unblocked"). So it does not fail

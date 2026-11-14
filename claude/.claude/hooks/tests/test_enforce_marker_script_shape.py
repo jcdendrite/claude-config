@@ -765,8 +765,8 @@ class TestDevNullRedirectBoundaryDenied:
                 "~/.claude/scripts/marker.sh deactivate ready-for-review 2>/dev/null && "
                 "~/.claude/scripts/marker.sh write ready-for-review"
             ),
-            # VALID_CHAINED_COMMIT_PATTERN deliberately excludes 2>/dev/null (> in its forbidden
-            # tail class [^&|;<>] blocks every redirect around `git commit`); these forms stay denied.
+            # VALID_CHAINED_COMMIT_PATTERN deliberately excludes 2>/dev/null.
+            # The `>` in its trailing class [^&|;<>] rejects a redirect after `git commit`, so those forms stay denied.
             "~/.claude/scripts/marker.sh write code-review && git commit -m foo 2>/dev/null",
             # Mid-LHS redirect in commit chain stays denied (LHS has 2>/dev/null, RHS is git commit)
             "~/.claude/scripts/marker.sh write code-review 2>/dev/null && git commit -m foo",

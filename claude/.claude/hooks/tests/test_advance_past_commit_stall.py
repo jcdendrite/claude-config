@@ -154,7 +154,7 @@ def _fire(payload: dict, cwd, home, extra_env: dict | None = None) -> dict | Non
 CORPUS: list[tuple[str, bool]] = [
     (ISSUE_QUOTE_QUESTION, True),
     (ISSUE_QUOTE_NONQUESTION, False),  # non-question stops are uncaught
-    (MODAL_CASE, True),  # the modal case: must fire
+    (MODAL_CASE, True),
     (DOCUMENTED_MISS, True),  # accepted miss: exclusion window is final-sentence only
     ("I committed and pushed the change. Want me to profile it?", False),
     (

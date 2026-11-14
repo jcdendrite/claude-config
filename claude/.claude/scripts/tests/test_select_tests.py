@@ -1871,8 +1871,7 @@ class TestResolveTargetPaths:
         """Collision: HOOKS_TESTS_DIR silently under-collects, running far
         fewer tests than the whole directory holds, when
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH, a file inside it, is also
-        a selected target. resolve_target_paths collapses the pair to the
-        container alone."""
+        a selected target."""
         resolved = _mod.resolve_target_paths(
             [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH], repo_root=_REPO_ROOT,
         )
@@ -1882,8 +1881,7 @@ class TestResolveTargetPaths:
         """Collision: SCRIPTS_TESTS_DIR silently under-collects, running far
         fewer tests than the whole directory holds, when
         TRANSCRIPT_ANALYSIS_TEST_GLOB expands to concrete files already
-        inside it. resolve_target_paths collapses the pair to the
-        container alone."""
+        inside it."""
         resolved = _mod.resolve_target_paths(
             [_mod.SCRIPTS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB], repo_root=_REPO_ROOT,
         )
