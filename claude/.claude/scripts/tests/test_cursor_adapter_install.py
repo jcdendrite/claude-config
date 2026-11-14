@@ -1847,7 +1847,7 @@ class TestUninstallOwnership:
     def _frozen_check_command(self, world: World, python_path: str) -> str:
         adapter_path = world.adapter.stow_adapter_path()
         return (
-            f"out=$({python_path} -I -S {adapter_path} check --hook-env 2>/dev/null); rc=$?; "
+            f"{{ out=$({python_path} -I -S {adapter_path} check --hook-env); }} 2>/dev/null; rc=$?; "
             "if [ \"$rc\" -eq 0 ] && [ -n \"$out\" ]; then printf '%s' \"$out\"; exit 0; fi; printf '%s' '{}'; exit 0"
         )
 
@@ -2314,8 +2314,8 @@ def mutate_argument(document, event, index):
 
 def mutate_python(document, event, index):
     entry = document["hooks"][event][index]
-    first = entry["command"].split(" ", 1)[0]
-    entry["command"] = entry["command"].replace(first, "out=$(/other/python3", 1)
+    guard_head_and_python = entry["command"].split(" -I -S ", 1)[0]
+    entry["command"] = entry["command"].replace(guard_head_and_python, "{ out=$(/other/python3", 1)
 
 
 def mutate_tail_document(document, event, index):

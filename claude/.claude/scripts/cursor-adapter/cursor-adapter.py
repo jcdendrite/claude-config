@@ -621,7 +621,7 @@ def render_command(python_path, script_path, arguments, fail_closed_event=None):
     call = f"{shlex.quote(python_path)} -I -S {shlex.quote(script_path)}"
     for argument in arguments:
         call += " " + shlex.quote(argument)
-    head = f"out=$({call}{GUARD_MIDDLE}"
+    head = f"{GUARD_HEAD}{call}{GUARD_MIDDLE}"
     if fail_closed_event is None:
         return head + INFORMATIONAL_TAIL
     shim = load_shim()
@@ -629,7 +629,8 @@ def render_command(python_path, script_path, arguments, fail_closed_event=None):
     return head + f"printf '%s' {shlex.quote(document)}; printf '%s' {shlex.quote(FAULT_TEXT)} >&2; exit 2"
 
 
-GUARD_MIDDLE = ' 2>/dev/null); rc=$?; if [ "$rc" -eq 0 ] && [ -n "$out" ]; then printf \'%s\' "$out"; exit 0; fi; '
+GUARD_HEAD = "{ out=$("
+GUARD_MIDDLE = '); } 2>/dev/null; rc=$?; if [ "$rc" -eq 0 ] && [ -n "$out" ]; then printf \'%s\' "$out"; exit 0; fi; '
 INFORMATIONAL_TAIL = "printf '%s' '{}'; exit 0"
 _FAULT_TAIL_BETWEEN = "; printf '%s' "
 _FAULT_TAIL_END = " >&2; exit 2"
@@ -695,9 +696,9 @@ def _parse_command(command, shim_path, adapter_path):
     The grammar is the launch guard around the recorded python3 with `-I -S`, then either the shim's stow path with the
     shim's arguments, or this file's stow path with exactly `check --hook-env` under the informational tail. A command
     parses whatever contract version or python3 path it carries."""
-    if not isinstance(command, str) or not command.startswith("out=$("):
+    if not isinstance(command, str) or not command.startswith(GUARD_HEAD):
         return None
-    position = len("out=$(")
+    position = len(GUARD_HEAD)
     python_path, position = _read_token(command, position)
     if python_path is None or not command.startswith(" -I -S ", position):
         return None
