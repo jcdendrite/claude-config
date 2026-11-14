@@ -188,8 +188,12 @@ def _imported_module_basenames(source: str) -> set[str]:
 def _skill_structure_validator_importers(sources: dict[str, str]) -> set[str]:
     """The keys of `sources` that import the skill-structure validator, plus
     those that import the module of a key that does. The scan follows one hop."""
-    # Gaps: evals/ and non-test helper modules are unscanned; hops past one, importlib loads, and
-    # subprocess reach via require-skill-review.sh are unseen.
+    # Gaps:
+    # - evals/ is unscanned.
+    # - Non-test helper modules are unscanned.
+    # - Hops past one are unseen.
+    # - importlib loads are unseen.
+    # - Subprocess reach via require-skill-review.sh is unseen.
     validator_basename = Path(_mod.SKILL_STRUCTURE_VALIDATOR_MODULE).stem
     basenames_by_source = {name: _imported_module_basenames(source) for name, source in sources.items()}
     direct_importers = {name for name, basenames in basenames_by_source.items() if validator_basename in basenames}
@@ -469,6 +473,11 @@ class TestSkillStructureValidatorSelection:
         assert _mod.DOC_COUNTS_TEST_PATH in importers, (
             "the scan found no transitive importer: either it is broken, or test_doc_counts.py no longer reaches "
             "the validator through test_agent_roster.py and this liveness member needs re-picking"
+        )
+        stale_declared_members = sorted(_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR - importers)
+        assert not stale_declared_members, (
+            f"HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR members the scan does not find as importers: "
+            f"{stale_declared_members}; remove the member from the set in select-tests.py, or the scan is broken"
         )
         result = _mod.select_pytest_targets([_mod.SKILL_STRUCTURE_VALIDATOR_MODULE])
         assert result.is_full_suite is False

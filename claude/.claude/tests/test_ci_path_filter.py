@@ -296,7 +296,7 @@ class TestParallelPassCollectsTheLint:
     - A PYTEST_ADDOPTS set in the workflow's `env:` blocks is judged only when this test runs in
       CI, since the probe inherits its own process env rather than reading those blocks.
     - A collection hook added to evals/conftest.py is judged only by CI's full suite, since
-      select-tests.py selects only the review-bench tests for that edit.
+      select-tests.py selects only the tests under evals/ for that edit.
     """
 
     def test_parallel_invocation_collects_the_repo_lint(self):
