@@ -44,6 +44,7 @@ _ABSENCE_INSTRUMENT_REASONS = frozenset({
     checks.REASON_INSTRUMENT_MISSING, checks.REASON_INSTRUMENT_LOG_INVALID, checks.REASON_ACCOUNT_HOOKS_MISSING,
 })
 BASELINE_GIT_NAME = "baseline.git"
+REPLAY_FIXTURE_DIR_PREFIX = f"{review_runner.FIXTURE_DIR_PREFIX}replay-"
 # How many failing tokens a `missing_detail` names. The run record holds all of them.
 MAX_DETAIL_ITEMS = 5
 
@@ -244,7 +245,7 @@ def _attempt_body(
         return _failed(REASON_FIXTURE_ERROR, exception_detail(exc), progress)
     progress.attempt_dir = attempt_dir
 
-    fixture_dir = msmr._resolved_temp_project_dir(f"{review_runner.FIXTURE_DIR_PREFIX}replay-")
+    fixture_dir = msmr._resolved_temp_project_dir(REPLAY_FIXTURE_DIR_PREFIX)
     progress.fixture_dir = fixture_dir
     settings.run_store.record_directory(task.id, fixture_dir, "")
     account_mod.refuse_fixture_dir_under_home(fixture_dir, account.home)

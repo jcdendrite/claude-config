@@ -203,10 +203,14 @@ def preflight_repo(
     repo: Path, *, direnv_timeout_s: float | None = None, readiness_timeout_s: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Account:
-    """Probes `repo`'s account and refuses it, with HarnessInvalidatedError, for a relative repo path, an unsafe
-    `PATH`, a direnv probe that fails or times out, a config dir that lacks a required file or hook, a generated
-    path or link target that `check_generators` refuses, or a `claude` that does not start or is older than
-    the floor.
+    """Probes `repo`'s account and refuses it, with HarnessInvalidatedError, for any of these:
+    - a relative repo path;
+    - an unsafe `PATH`;
+    - a direnv probe that fails or times out;
+    - a config dir that lacks a required file or hook;
+    - a generated path or link target that `check_generators` refuses;
+    - a `claude` that does not start or is older than the floor.
+
     Both timeouts default to `review_bench.runner._ENVIRONMENT_READ_TIMEOUT_S`, read at call time."""
     environ = os.environ if environ is None else environ
     if not repo.is_absolute():

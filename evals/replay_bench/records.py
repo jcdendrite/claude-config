@@ -89,9 +89,13 @@ def diff_path(campaign_dir: Path, task_id: str, arm: str, run_index: int) -> Pat
 
 
 def write_run(campaign_dir: Path, record: ReplayRunRecord, diff_text: str | None) -> None:
-    """The diff first, then the record, each atomically. A block rerun after a crash overwrites its own files."""
+    """The diff first, then the record, each atomically. A block rerun after a crash overwrites its own files and
+    removes a diff the record no longer has."""
+    run_diff_path = diff_path(campaign_dir, record.task_id, record.arm, record.run_index)
     if diff_text is not None:
-        atomic_write_text(diff_path(campaign_dir, record.task_id, record.arm, record.run_index), diff_text)
+        atomic_write_text(run_diff_path, diff_text)
+    else:
+        run_diff_path.unlink(missing_ok=True)
     atomic_write_text(
         record_path(campaign_dir, record.task_id, record.arm, record.run_index), json.dumps(record.to_dict(), indent=2) + "\n",
     )

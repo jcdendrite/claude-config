@@ -30,7 +30,7 @@ from pathlib import Path
 import measure_subagent_model_resolution as msmr
 from replay_bench import account as account_mod
 from replay_bench import arms as arms_mod
-from replay_bench import campaign, smoke, summary, tasks
+from replay_bench import attempt, campaign, smoke, summary, tasks
 from replay_bench import runner as replay_runner
 from replay_bench.render import SafeStream
 from review_bench import runner as review_runner
@@ -267,7 +267,10 @@ def check_local_dir(local_dir: Path) -> None:
             timeout=review_runner._ENVIRONMENT_READ_TIMEOUT_S,
         ).returncode == 0
     except subprocess.TimeoutExpired:
-        ignored = False
+        raise HarnessInvalidatedError(
+            f"--local-dir {shown}: the git check-ignore probe timed out after "
+            f"{review_runner._ENVIRONMENT_READ_TIMEOUT_S} s, a fixed limit with no flag to raise it"
+        ) from None
     if not ignored:
         raise HarnessInvalidatedError(f"--local-dir {shown} is not ignored by the git work tree that holds it")
 
@@ -285,7 +288,7 @@ def _interrupt_hint(args: argparse.Namespace) -> str:
     if args.subcommand == "smoke":
         return (
             f"smoke: interrupted; rerun the command. {wait} A hard kill also leaves the smoke run's fixtures, "
-            f"named {review_runner.FIXTURE_DIR_PREFIX}* under TMPDIR ({temp_dir!r}), and its session stores under "
+            f"named {attempt.REPLAY_FIXTURE_DIR_PREFIX}* under TMPDIR ({temp_dir!r}), and its session stores under "
             "the account config dir's projects/ for you to remove by hand, since a rerun sweeps neither."
         )
     resume = f"resume with --campaign-id {args.campaign_id}" if args.campaign_id else "rerun the command"

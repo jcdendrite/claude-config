@@ -842,6 +842,23 @@ class TestTheCommandLine:
         assert main_run("--local-dir", str(target), "summarize", "--campaign-id", "c1") == 2
         assert not (real_parent / ".local").exists() and not target.exists()
 
+    def test_a_timed_out_ignore_probe_refuses_naming_the_fixed_limit_and_not_an_unignored_dir(
+        self, tmp_path, monkeypatch,
+    ):
+        ignored_local_dir = make_ignored_local_dir(tmp_path)
+
+        def probe_that_times_out(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(run_replay_bench.subprocess, "run", probe_that_times_out)
+
+        with pytest.raises(review_runner.HarnessInvalidatedError) as refusal:
+            run_replay_bench.check_local_dir(ignored_local_dir)
+
+        message = str(refusal.value)
+        assert "timed out" in message and f"{review_runner._ENVIRONMENT_READ_TIMEOUT_S} s" in message
+        assert "no flag" in message and "is not ignored" not in message
+
     def test_the_default_local_dir_is_ignored_by_this_checkout(self):
         run_replay_bench.check_local_dir(REAL_DEFAULT_LOCAL_DIR)
 
@@ -910,7 +927,7 @@ class TestTheCommandLine:
         hint = run_replay_bench._interrupt_hint(args)
 
         assert "wait at least --timeout-s (90 s)" in hint
-        assert f"{review_runner.FIXTURE_DIR_PREFIX}* under TMPDIR ('/synthetic/tmp')" in hint
+        assert f"{attempt.REPLAY_FIXTURE_DIR_PREFIX}* under TMPDIR ('/synthetic/tmp')" in hint
         assert "remove by hand" in hint and "projects/" in hint
         assert "resume with" not in hint and "same TMPDIR" not in hint
 
