@@ -109,7 +109,7 @@ def bare_settings_text(config_dir: Path) -> str:
 @dataclass(frozen=True)
 class Arm:
     """`excludes_toolkit` arms fail on any subagent load outside the fixture and on any dispatcher load but
-    the account's `CLAUDE.md`. `fixture_settings_text` is None for an arm that writes no settings file."""
+    the account's `CLAUDE.md`."""
 
     name: str
     agent_name: str

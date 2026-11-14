@@ -157,7 +157,7 @@ def _log_size(log_path: Path) -> int | None:
 def wait_for_hook_log_to_settle(log_path: Path, *, timed_out: bool) -> None:
     """Returns once the log's size holds across two polls, or at `SESSION_FLUSH_TIMEOUT_S`. The hook runs
     asynchronously, so a line can land after the session's own files stop growing. A log absent at one poll
-    and present at the next counts as growth, and an absent log never raises. A timed-out attempt skips the wait."""
+    and present at the next counts as growth, and an absent log never raises."""
     if timed_out:
         return
     deadline = time.monotonic() + review_runner.SESSION_FLUSH_TIMEOUT_S

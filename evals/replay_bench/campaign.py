@@ -1,7 +1,10 @@
 """`run`: the block-by-block campaign with its pinned manifest, smoke gate, spend guards and halts.
 
 Exit codes follow the review bench CLI: a refusal before the first launch raises `HarnessInvalidatedError`
-(exit 2), a halt returns 1, and a campaign that completes every task returns 0.
+(exit 2), a halt returns 1, and a campaign that completes every task returns 0. A block-start read of the
+environment or the live checkouts that fails after block 1 also exits 2 and spends nothing for that block.
+A block-start reading that differs from the pinned environment halts with exit 1. A block-end read that
+fails is read once more, and a second failure halts with exit 1.
 """
 from __future__ import annotations
 
@@ -106,8 +109,14 @@ def _check_manifest(manifest: dict, expected: dict, *, path: Path) -> None:
                     raise HarnessInvalidatedError(
                         f"account {key!r}: {field_name} is {value!r}, not the manifest's {pinned_value!r}"
                     )
-    except (KeyError, TypeError, AttributeError) as exc:
-        raise HarnessInvalidatedError(f"{path}: the manifest is malformed: {exc!r}") from exc
+    except KeyError as exc:
+        raise HarnessInvalidatedError(
+            f"{path}: the manifest is malformed: it lacks the key {exc.args[0]!r}; start a new --campaign-id"
+        ) from exc
+    except (TypeError, AttributeError) as exc:
+        raise HarnessInvalidatedError(
+            f"{path}: the manifest is malformed: {exc!r}; start a new --campaign-id"
+        ) from exc
 
 
 def _refuse_without_smoke_pass(config: CampaignConfig, readings: Mapping[str, review_runner.EnvironmentRecord]) -> None:

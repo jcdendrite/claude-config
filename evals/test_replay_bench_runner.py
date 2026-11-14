@@ -35,6 +35,7 @@ from test_replay_bench_runner_support import (
     MODEL_ID,
     READING,
     Scenario,
+    build_replay_world,
     claude_md_line,
     leaking_log_lines,
     make_block,
@@ -535,6 +536,34 @@ class TestAFailingWorkerStopsItsSiblings:
         assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
         assert leftovers(world, launch_stub) == []
 
+    def test_a_launch_that_dies_on_a_disk_that_refuses_the_cap_charge_surfaces_the_append_error_and_names_the_launch(
+        self, world, monkeypatch,
+    ):
+        """Kills: dropping the `uncharged_launches` append from `run_attempt`'s failed cap charge, which lets the
+        campaign halt read `Launches begun and not charged: none` for a paid session missing from the ledger."""
+
+        def failing_append(self, line):
+            raise SpendAppendError("disk full")
+
+        monkeypatch.setattr(SpendFile, "append", failing_append)
+        launch_stub = world.launch(lambda _n, _a: Scenario(raises=RuntimeError("synthetic")))
+        settings = make_settings(world, launch_stub)
+
+        with pytest.raises(SpendAppendError, match="disk full"):
+            execute_run(settings, make_block(world), arms.BARE.name, 0)
+
+        assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
+
+    def test_the_same_launch_failure_on_a_working_disk_is_cap_charged_and_names_no_uncharged_launch(self, world):
+        launch_stub = world.launch(lambda _n, _a: Scenario(raises=RuntimeError("synthetic")))
+        settings = make_settings(world, launch_stub)
+
+        with pytest.raises(RuntimeError, match="synthetic"):
+            execute_run(settings, make_block(world), arms.BARE.name, 0)
+
+        assert [line["is_cap_charge"] for line in spend_lines(settings)] == [True]
+        assert settings.uncharged_launches == []
+
     def test_an_unexpected_exception_in_a_worker_starts_no_further_launch(self, world):
         launch_stub = world.launch(lambda _n, _a: Scenario(raises=RuntimeError("synthetic")))
         settings = make_settings(world, launch_stub)
@@ -792,13 +821,6 @@ class TestTheCommandLine:
         assert stat.S_IMODE(local_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE((local_dir / "tasks" / "n.json").stat().st_mode) == 0o600
 
-    def test_python_below_3_12_exits_two_before_any_preflight(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "version_info", (3, 11, 0, "final", 0))
-        monkeypatch.setattr(account, "preflight_repo", lambda *a, **k: pytest.fail("preflight must not run"))
-
-        assert main_run("preflight", "--tasks", "x") == 2
-        assert "Python 3.12" in capsys.readouterr().err
-
     def test_git_below_2_32_exits_two_before_any_preflight(self, tmp_path, monkeypatch, capsys):
         fake_bin = tmp_path / "fakebin"
         write_executable(fake_bin / "git", 'echo "git version 2.31.0"\n')
@@ -841,6 +863,35 @@ class TestTheCommandLine:
         assert main_run("summarize", "--campaign-id", "whole", "--budget-cap-usd", "1.0") == 0
         assert "paired 1 of 1 complete tasks" in capsys.readouterr().out
 
+    def test_an_unreadable_environment_at_a_later_blocks_start_exits_two_and_leaves_that_block_unspent(
+        self, tmp_path, local_dir, monkeypatch, capsys,
+    ):
+        two_task_world = build_replay_world(tmp_path, monkeypatch, task_count=2)
+        # The first read pins the campaign, then each block reads at its start and its end.
+        readings = iter([READING, READING, READING, review_runner.HarnessInvalidatedError("read timed out")])
+
+        def read_environment_record(*, checkout_root=None):
+            reading = next(readings, READING)
+            if isinstance(reading, Exception):
+                raise reading
+            return reading
+
+        monkeypatch.setattr(review_runner, "read_environment_record", read_environment_record)
+        monkeypatch.setattr(account, "preflight_repo", lambda repo, **_k: two_task_world.account)
+        smoke_pass.write_smoke_pass(local_dir, two_task_world.account.key, READING, MODEL_ID, ("toolkit", "bare"))
+        tasks.write_task_set(local_dir / "tasks", "set", two_task_world.tasks)
+        launch_stub = two_task_world.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+
+        code = main_run(
+            "run", "--tasks", "set", "--k", "1", "--cumulative-stop-usd", "1000", "--campaign-id", "unreadable",
+            "--budget-cap-usd", "1.0",
+        )
+
+        assert code == 2 and "could not read the CLI version" in capsys.readouterr().err
+        assert len(launch_stub.calls) == 2, "only the first block's two runs launched"
+        spend_path = local_dir / campaign.CAMPAIGNS_DIR_NAME / "unreadable" / "spend.jsonl"
+        assert len(spend_path.read_text().splitlines()) == 2
 
     @pytest.fixture
     def run_files(self, world, local_dir):
@@ -874,6 +925,91 @@ class TestTheCommandLine:
     def test_a_duplicate_arm_is_refused_with_exit_two(self, run_ready, capsys):
         assert main_run(*self.RUN_ARGV, "--arm", "bare", "--arm", "bare") == 2
         assert "more than once" in capsys.readouterr().err
+
+    @staticmethod
+    def paths_under(root):
+        return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+    @pytest.mark.parametrize("campaign_id", ["", "..", "../x", ".hidden", "a/b"])
+    def test_a_run_campaign_id_that_is_not_one_path_component_is_refused_and_creates_nothing(
+        self, run_ready, tmp_path, local_dir, monkeypatch, capsys, campaign_id,
+    ):
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+        before = self.paths_under(tmp_path)
+
+        assert main_run(*self.RUN_ARGV, "--campaign-id", campaign_id) == 2
+
+        assert f"invalid campaign ID {campaign_id!r}" in capsys.readouterr().err
+        assert launch_stub.calls == [] and self.paths_under(tmp_path) == before
+        assert not (local_dir / campaign.CAMPAIGNS_DIR_NAME).exists()
+
+    def test_a_run_campaign_id_of_one_path_component_reaches_the_launch_and_a_campaign_directory(
+        self, run_ready, local_dir, monkeypatch,
+    ):
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+
+        assert main_run(*self.RUN_ARGV, "--campaign-id", "accepted.1") == 0
+
+        assert launch_stub.calls != [] and (local_dir / campaign.CAMPAIGNS_DIR_NAME / "accepted.1").is_dir()
+
+    @pytest.mark.parametrize("campaign_id", ["", "..", "../x", ".hidden", "a/b"])
+    def test_a_summarize_campaign_id_that_is_not_one_path_component_is_refused_even_where_it_would_resolve_to_a_campaign(
+        self, local_dir, tmp_path, capsys, campaign_id,
+    ):
+        """A manifest where `../x` would land makes the summary succeed if the ID is not validated."""
+        (local_dir / "x").mkdir(parents=True)
+        (local_dir / "x" / "manifest.json").write_text("{}")
+        (local_dir / campaign.CAMPAIGNS_DIR_NAME).mkdir()
+        before = self.paths_under(tmp_path)
+
+        assert main_run("summarize", "--campaign-id", campaign_id) == 2
+
+        assert f"invalid campaign ID {campaign_id!r}" in capsys.readouterr().err
+        assert self.paths_under(tmp_path) == before
+
+    @pytest.mark.parametrize("k", ["0", "-1"])
+    def test_a_k_below_one_is_refused_naming_the_flag_before_any_launch_and_pins_nothing(
+        self, run_ready, local_dir, monkeypatch, capsys, k,
+    ):
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+        argv = list(self.RUN_ARGV)
+        argv[argv.index("--k") + 1] = k
+
+        assert main_run(*argv, "--campaign-id", "no-k") == 2
+
+        assert "--k must be at least 1" in capsys.readouterr().err
+        assert launch_stub.calls == [] and not (local_dir / campaign.CAMPAIGNS_DIR_NAME).exists()
+
+    def test_an_empty_task_set_is_refused_naming_it_before_any_launch_and_pins_nothing(
+        self, run_ready, local_dir, monkeypatch, capsys,
+    ):
+        tasks.write_task_set(local_dir / "tasks", "empty", [])
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+        argv = [("empty" if part == "set" else part) for part in self.RUN_ARGV]
+
+        assert main_run(*argv, "--campaign-id", "no-tasks") == 2
+
+        assert "task set 'empty' holds no tasks" in capsys.readouterr().err
+        assert launch_stub.calls == [] and not (local_dir / campaign.CAMPAIGNS_DIR_NAME).exists()
+
+    def test_a_smoke_task_id_the_set_lacks_is_refused_naming_the_id_before_any_launch(
+        self, run_ready, monkeypatch, capsys,
+    ):
+        launch_stub = run_ready.launch()
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
+        absent_task_id = "00000000-000000000000"
+        assert absent_task_id not in {task.id for task in run_ready.tasks}
+        argv = self.launching_argv(run_ready, "smoke")
+        argv[argv.index("--task-id") + 1] = absent_task_id
+
+        assert main_run(*argv) == 2
+
+        assert f"holds no task {absent_task_id!r}" in capsys.readouterr().err
+        assert launch_stub.calls == []
 
     @pytest.mark.timing
     def test_direnv_timeout_s_reaches_the_probe_and_the_refusal_names_the_flag(self, run_files, tmp_path, monkeypatch, capsys):

@@ -18,11 +18,14 @@ Command-text scan. A Bash command is scanned for guarded paths as text, not exec
 - `~`, `$HOME` and `${HOME}` at the start of a candidate expand to the home directory, and `$PWD` and
   `${PWD}` to the fixture. No other variable expands.
 - A candidate hits a guarded location when it names the location, is below it, or is a directory holding it
-  that is still inside the location's own tree. The trees are the config dir (the toolkit and the projects
-  root), each live checkout root (its changed paths and its `.git`), the local dir, and each
-  `FIXTURE_DIR_PREFIX` directory other than the run's own. A directory above a tree is never a hit, so `/`,
-  `~`, `$HOME` and a division operator in a heredoc fail nothing.
-  `ls ~/.claude` fails when `~/.claude` is the config dir, because it names the config tree's root.
+  that is still inside the location's own tree. The trees are:
+  - the config dir (the toolkit and the projects root);
+  - each live checkout root (its changed paths and its `.git`);
+  - the local dir;
+  - each `FIXTURE_DIR_PREFIX` directory other than the run's own.
+
+  A directory above a tree is never a hit, so `/`, `~`, `$HOME` and a division operator in a heredoc fail
+  nothing. `ls ~/.claude` fails when `~/.claude` is the config dir, because it names the config tree's root.
 
 The scan cannot see these shapes, which are illustrative, not exhaustive:
 - a command run on a directory above a guarded tree, as in `grep -r x ~`;
@@ -72,7 +75,7 @@ LOAD_REASON_SESSION_START = "session_start"
 LOAD_REASON_PATH_GLOB_MATCH = "path_glob_match"
 # The key a subagent's `path_glob_match` line carries the triggering file under.
 TRIGGER_PATH_KEY = "trigger_file_path"
-# Linux's PATH_MAX. macOS's is 1,024, so no real path exceeds it, and `realpath` time grows faster than linearly in length.
+# Linux's PATH_MAX. macOS's is 1,024, so no real path exceeds it.
 MAX_PATH_CHARS = 4096
 
 SESSIONS_DIR_NAME = "sessions"
@@ -564,20 +567,20 @@ def _read_transcript_entries(subagent_jsonl: Path) -> tuple[list[dict], int, boo
 
 
 def read_subagent_transcript(subagent_jsonl: Path) -> SubagentTranscript:
-    """Entries that are neither an assistant message nor a user message, such as the attachment a
-    `SubagentStop` hook's send-back leaves, are ignored. Never raises on the file's content or absence.
-
-    A call counts as denied, and so as never run, when its carrier holds any of three markers:
+    """A call counts as denied, and so as never run, when its carrier holds any of three markers:
     - A `tool_result_meta` item whose `non_execution_kind` is `permission-rule`.
     - A `toolDenialKind` in `NEVER_EXECUTED_DENIAL_KINDS`.
     - A `permissionDecision` object whose `decision` is `reject`.
 
     A `toolDenialKind` of `interrupted`, or any value outside that set, leaves the call counted as executed.
+
     The carrier is the `tool_result` block, or the enclosing user entry when it holds exactly one result, since
-    an entry-level marker cannot name which of several results it denied.
-    In a main-session transcript recorded on CLI 2.1.323, `toolDenialKind` sits on the user entry.
-    In the same transcript, `permissionDecision` sits on the user entry.
-    A subagent transcript may carry `tool_result_meta` on the block.
+    an entry-level marker cannot name which of several results it denied. A main-session transcript recorded on
+    CLI 2.1.323 carries `toolDenialKind` and `permissionDecision` on the user entry. A subagent transcript may
+    carry `tool_result_meta` on the block.
+
+    Entries that are neither an assistant message nor a user message, such as the attachment a `SubagentStop`
+    hook's send-back leaves, are ignored. Never raises on the file's content or absence.
     """
     try:
         entries, skipped_lines, last_line_torn = _read_transcript_entries(subagent_jsonl)
@@ -683,9 +686,11 @@ def check_tool_call_paths(
 
     A live checkout's `.git` directory is guarded beside its changed files.
 
-    A call the permission flow denied reached nothing, so the kinds checked here are skipped once denied: a
-    denied Bash command is only recorded, and a denied Write, Edit, MultiEdit or NotebookEdit adds no
-    `out-of-fixture-write`. Read, Grep and Glob targets are checked by the runner's validity step, not here.
+    A call the permission flow denied reached nothing, so the kinds checked here are skipped once denied:
+    - A denied Bash command is only recorded.
+    - A denied Write, Edit, MultiEdit or NotebookEdit adds no `out-of-fixture-write`.
+
+    Read, Grep and Glob targets are checked by the runner's validity step, not here.
     A denied call still counts as evidence for `toolkit_reach_reasons`.
     """
     fixture_real = _real(fixture_dir)

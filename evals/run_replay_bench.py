@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Replay bench CLI: replays a source repo's past commits as coding tasks under two configuration arms and
-counts the comment and docstring lines each arm adds.
+counts the comment and docstring words each arm adds per added non-test code line.
 
 Subcommands:
 - `tasks`: mines a source repo's first-parent commits into a task set. It spends nothing.
@@ -41,7 +41,6 @@ from review_bench.runner import HarnessInvalidatedError, RunStoreLocked
 EVALS_DIR = Path(__file__).resolve().parent
 DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"
 LOCAL_DIR_NAME = ".local"
-MIN_PYTHON = (3, 12)
 MIN_GIT = (2, 32)
 TASKS_DIR_NAME = "tasks"
 _TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
@@ -189,7 +188,8 @@ def cmd_run(args: argparse.Namespace, local_dir: Path) -> int:
     if len(set(arm_names)) != len(arm_names):
         raise HarnessInvalidatedError(f"--arm names an arm more than once: {list(arm_names)}")
     # Stored on the namespace so an interrupt's resume hint names the ID in force, given or generated.
-    args.campaign_id = campaign_id = validate_campaign_id(args.campaign_id or f"run-{replay_runner.new_campaign_suffix()}")
+    candidate_id = f"run-{replay_runner.new_campaign_suffix()}" if args.campaign_id is None else args.campaign_id
+    args.campaign_id = campaign_id = validate_campaign_id(candidate_id)
     task_list = tasks.read_task_set(local_dir / TASKS_DIR_NAME, args.tasks)
     if not task_list:
         raise HarnessInvalidatedError(f"task set {args.tasks!r} holds no tasks")
@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     can put an escape sequence from a child, an agent or a config path on the terminal. Arguments parse outside the
     wrapper: argparse writes its own help, usage and colour markup, which must reach the terminal as it is."""
     with _safe_streams():
-        refusal = _check_runtime()
+        refusal = _check_git()
     if refusal is not None:
         return refusal
     try:
@@ -307,11 +307,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_main(args)
 
 
-def _check_runtime() -> int | None:
-    """Exit code 2 when Python or git is below its floor, else None."""
-    if sys.version_info < MIN_PYTHON:
-        print(f"Python {'.'.join(map(str, MIN_PYTHON))} or newer is required", file=sys.stderr)
-        return 2
+def _check_git() -> int | None:
+    """Exit code 2 when git is below its floor or not runnable, else None."""
     try:
         _refuse_old_git()
     except HarnessInvalidatedError as exc:

@@ -149,7 +149,9 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
     does not parse, or one account whose records span more than one environment reading."""
     if not (campaign_dir / records.RUNS_DIR_NAME).is_dir() and not (campaign_dir / MANIFEST_NAME).exists():
         raise HarnessInvalidatedError(f"{str(campaign_dir)!r} holds no campaign")
-    completed = RunStore(campaign_dir / STORE_DIR_NAME).completed_block_ids()
+    store_dir = campaign_dir / STORE_DIR_NAME
+    # `RunStore` creates its directory, so a campaign with no store is not opened through it.
+    completed = RunStore(store_dir).completed_block_ids() if store_dir.is_dir() else set()
     runs_dir = campaign_dir / records.RUNS_DIR_NAME
     on_disk = sorted(path.name for path in runs_dir.iterdir() if path.is_dir()) if runs_dir.is_dir() else []
     complete_ids = [task_id for task_id in on_disk if task_id in completed]

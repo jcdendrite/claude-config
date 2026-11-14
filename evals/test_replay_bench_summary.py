@@ -226,6 +226,42 @@ class TestCompleteAndIncompleteBlocks:
             campaign.summarize()
 
 
+def tree_snapshot(directory: Path) -> dict[str, tuple[int, bytes | None]]:
+    """Each path's mtime and, for a file, its bytes, so a rewrite within one timestamp tick still differs."""
+    return {
+        str(path.relative_to(directory)): (path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
+        for path in [directory, *directory.rglob("*")]
+    }
+
+
+class TestSummarizeCreatesNothing:
+    def test_a_campaign_with_records_a_manifest_and_a_spend_file_is_left_exactly_as_it_was(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        campaign.add_block("t2", record("t2", "toolkit"), complete=False)
+        spend = SpendFile(campaign.dir / "spend.jsonl", budget_cap_usd=CAP)
+        spend.append(SpendLine("t1", "bare", 0, 1, ACCOUNT, "s", 2.0, False))
+        (campaign.dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": CAP}))
+        before = tree_snapshot(campaign.dir)
+        assert {"manifest.json", "spend.jsonl", "store", "runs"} <= set(before), "the snapshot sees each kind of file"
+
+        lines = campaign.summarize()
+
+        assert "1 complete blocks, 1 incomplete blocks" in lines[0]
+        assert tree_snapshot(campaign.dir) == before
+
+    def test_a_campaign_with_no_store_directory_gets_none(self, tmp_path):
+        campaign_dir = tmp_path / ".local" / "campaigns" / "c1"
+        campaign_dir.mkdir(parents=True)
+        (campaign_dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": CAP}))
+        before = tree_snapshot(campaign_dir)
+
+        lines = summary.summarize(campaign_dir, local_dir=tmp_path / ".local", budget_cap_usd=CAP)
+
+        assert "0 complete blocks, 0 incomplete blocks" in lines[0]
+        assert set(before) == {".", "manifest.json"}
+        assert tree_snapshot(campaign_dir) == before
+
+
 class TestSecondaryAndDiagnostics:
     def test_each_arm_prints_docstring_lines_per_100_code_lines_and_its_diagnostics(self, campaign):
         campaign.add_block(

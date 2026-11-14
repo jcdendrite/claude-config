@@ -15,7 +15,7 @@ from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
-from replay_bench import arms, campaign, checks, records, smoke_pass
+from replay_bench import arms, campaign, checks, records, smoke_pass, summary
 from replay_bench.spend import SpendAppendError, SpendFile, SpendLine
 from review_bench import runner as review_runner
 from review_bench.runner import HarnessInvalidatedError, RunStore
@@ -275,6 +275,60 @@ class TestAFailedSpendAppendHaltsTheCampaign:
             assert f"task {env.world.tasks[0].id} session {call.session_id}" in error
 
 
+    def test_a_launch_that_dies_on_a_disk_that_refuses_the_cap_charge_is_named_in_the_halt(self, env, monkeypatch, capsys):
+        env.world.tasks[:] = env.world.tasks[:1]
+
+        def failing_append(self, line):
+            raise SpendAppendError("could not append to the spend file: OSError: disk full")
+
+        monkeypatch.setattr(SpendFile, "append", failing_append)
+        launch_stub = env.world.launch(by_call=lambda call: Scenario(raises=RuntimeError("synthetic")))
+
+        assert env.run(launch_stub, workers=1) == 1
+
+        error = capsys.readouterr().err
+        assert f"task {env.world.tasks[0].id} session {launch_stub.calls[0].session_id}" in error
+        assert "not charged: none" not in error
+
+
+class TestASingleArmCampaign:
+    @pytest.mark.parametrize("arm_name", ["toolkit", "bare"])
+    def test_a_campaign_over_one_arm_of_a_two_arm_smoke_runs_that_arm_only_and_summarizes(self, env, arm_name):
+        env.world.tasks[:] = env.world.tasks[:1]
+        launch_stub = env.world.launch()
+
+        assert env.run(launch_stub, arm_names=(arm_name,)) == 0
+
+        assert {path.name for path in records.block_runs_dir(env.campaign_dir, env.world.tasks[0].id).iterdir()} == {
+            f"{arm_name}-0.json", f"{arm_name}-0.diff",
+        }
+        assert len(launch_stub.calls) == 1
+        lines = summary.summarize(env.campaign_dir, local_dir=env.world.local_dir, budget_cap_usd=CAP)
+        assert "1 complete blocks, 0 incomplete blocks" in lines[0]
+        missing_arm = ({"toolkit", "bare"} - {arm_name}).pop()
+        assert "paired difference toolkit - bare: n/a" in lines
+        assert f"  excluded, {missing_arm} with no valid run: 1 (missing reasons: none)" in lines
+
+    def test_a_two_arm_campaign_over_a_smoke_that_passed_one_arm_is_refused(self, env):
+        env.pass_smoke(arm_names=("toolkit",))
+        env.world.tasks[:] = env.world.tasks[:1]
+        launch_stub = env.world.launch()
+
+        with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
+            env.run(launch_stub)
+        assert launch_stub.calls == []
+
+    @pytest.mark.parametrize(
+        ("requested", "accepted"),
+        [(("bare",), True), (("toolkit",), True), (("toolkit", "bare"), True), (("toolkit", "bare", "other"), False)],
+        ids=["bare", "toolkit", "both", "an-arm-the-record-lacks"],
+    )
+    def test_a_smoke_record_of_both_arms_covers_any_subset_of_them(self, env, requested, accepted):
+        assert smoke_pass.has_smoke_pass(
+            env.world.local_dir, env.world.account.key, READING, MODEL_ID, requested,
+        ) is accepted
+
+
 class TestParallelWorkers:
     def test_four_workers_over_a_k_of_two_block_write_one_spend_line_per_attempt_and_every_record(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
@@ -383,7 +437,7 @@ class TestTheManifestAndTheSmokeGate:
         env.run(env.world.launch())
         resumed = env.world.launch()
 
-        with pytest.raises(HarnessInvalidatedError, match=field_name):
+        with pytest.raises(HarnessInvalidatedError, match=f"{field_name}.*start a new --campaign-id"):
             env.run(resumed, **override, cumulative_stop_usd=1000, account_stop_usd=1000)
         assert resumed.calls == []
 
@@ -391,18 +445,27 @@ class TestTheManifestAndTheSmokeGate:
         ("damage", "refusal"),
         [
             pytest.param(lambda manifest: "not json", "cannot read the manifest", id="invalid-json"),
-            pytest.param(lambda manifest: "{}", "is malformed", id="empty-object"),
             pytest.param(
-                lambda manifest: json.dumps({**manifest, "environments": {}}), "is malformed", id="no-environments-entry",
+                lambda manifest: "{}", "lacks the key 'task_set_hash'; start a new --campaign-id", id="empty-object",
             ),
-            pytest.param(lambda manifest: json.dumps({**manifest, "repo_accounts": []}), "is malformed", id="wrong-type"),
+            pytest.param(lambda manifest: "[]", "malformed: .*; start a new --campaign-id", id="array"),
+            pytest.param(lambda manifest: "null", "malformed: .*; start a new --campaign-id", id="null"),
+            pytest.param(lambda manifest: "5", "malformed: .*; start a new --campaign-id", id="number"),
+            pytest.param(
+                lambda manifest: json.dumps({**manifest, "environments": {}}),
+                "lacks the key .*; start a new --campaign-id", id="no-environments-entry",
+            ),
+            pytest.param(
+                lambda manifest: json.dumps({**manifest, "repo_accounts": []}),
+                "malformed: .*; start a new --campaign-id", id="wrong-type",
+            ),
             pytest.param(
                 lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "budget_cap_usd"}),
-                "is malformed", id="no-budget-cap-pin",
+                "lacks the key 'budget_cap_usd'; start a new --campaign-id", id="no-budget-cap-pin",
             ),
             pytest.param(
                 lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "timeout_s"}),
-                "is malformed", id="no-timeout-pin",
+                "lacks the key 'timeout_s'; start a new --campaign-id", id="no-timeout-pin",
             ),
         ],
     )
@@ -414,6 +477,18 @@ class TestTheManifestAndTheSmokeGate:
         resumed = env.world.launch()
 
         with pytest.raises(HarnessInvalidatedError, match=refusal):
+            env.run(resumed)
+        assert resumed.calls == []
+
+    def test_a_resume_whose_manifest_path_is_a_directory_exits_two_before_any_launch(self, env):
+        env.world.tasks[:] = env.world.tasks[:1]
+        env.run(env.world.launch())
+        manifest_path = env.campaign_dir / "manifest.json"
+        manifest_path.unlink()
+        manifest_path.mkdir()
+        resumed = env.world.launch()
+
+        with pytest.raises(HarnessInvalidatedError, match="cannot read the manifest"):
             env.run(resumed)
         assert resumed.calls == []
 
@@ -530,6 +605,43 @@ class TestEnvironmentDrift:
 
         assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
         assert "0 attempts" in capsys.readouterr().err
+
+    def test_an_unreadable_start_reading_after_a_completed_block_raises_and_spends_nothing_for_that_block(self, env):
+        env.world.tasks[:] = env.world.tasks[:2]
+        unreadable = HarnessInvalidatedError("environment record: read timed out")
+        # The campaign's initial pin read comes first, then each block reads at its start and end. The second
+        # block's start read is the fourth.
+        env.readings = [READING, READING, READING, unreadable]
+        launch_stub = env.world.launch()
+
+        with pytest.raises(HarnessInvalidatedError, match="could not read the CLI version"):
+            env.run(launch_stub)
+
+        completed = env.completed()
+        assert len(completed) == 1
+        assert len(launch_stub.calls) == 2, "only the first block's two runs launched"
+        assert set(env.spend().totals().by_task_usd) == completed
+
+    def test_an_unlistable_worktree_set_at_a_later_blocks_start_raises_and_spends_nothing_for_that_block(self, env):
+        env.world.tasks[:] = env.world.tasks[:2]
+        listings = []
+
+        def fail_the_second_listing(checkout):
+            listings.append(checkout)
+            if len(listings) == 2:
+                raise HarnessInvalidatedError("git worktree list failed")
+            return ()
+
+        env.monkeypatch.setattr(review_runner, "_worktree_top_levels", fail_the_second_listing)
+        launch_stub = env.world.launch()
+
+        with pytest.raises(HarnessInvalidatedError, match="could not list the worktrees"):
+            env.run(launch_stub)
+
+        completed = env.completed()
+        assert len(completed) == 1
+        assert len(launch_stub.calls) == 2, "only the first block's two runs launched"
+        assert set(env.spend().totals().by_task_usd) == completed
 
     def test_drift_at_a_blocks_end_halts_with_no_record_and_prints_the_blocks_spend(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]

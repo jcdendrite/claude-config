@@ -1272,7 +1272,12 @@ campaign's manifest pins no usable cap.
 Exit codes: 0 for done, 1 for a run that stopped short, 2 for a refusal
 before the first launch. An interrupt exits 128 plus the signal number.
 `smoke` exits 0 only when its last line reads `instrument: ok`. A failed
-condition or refusal exits 2, and a held run-store lock exits 1.
+condition or refusal exits 2, and a held run-store lock exits 1. In `run`, a
+block-start read of the environment or the live checkouts that fails after
+block 1 also exits 2 and spends nothing for that block, since none of its runs
+has launched. In `run`, a block-start read that differs from the pinned
+environment halts with exit 1. A block-end read that fails is read once more,
+and a second failure halts with exit 1.
 
 ### Tasks
 
@@ -1437,12 +1442,16 @@ estimate, so a gap close to the margin is weak evidence either way.
 `run` pins a manifest (task set, arms, `--k`, `--seed`, model,
 `--budget-cap-usd`, `--timeout-s`, each repo's account and each account's CLI
 version and config commit) at its first start. A resume passes `--campaign-id`
-again, and it exits 2 when any pinned input differs, or when the manifest does
-not parse or lacks a pinned key. Before the first launch `run` prints the run
-count and the campaign's nominal ceiling, and it exits 2 when one block's
-ceiling exceeds either stop. It exits 2 as well when the campaign's ceiling
-exceeds `--cumulative-stop-usd`, unless `--allow-early-stop` accepts that the
-campaign will stop early.
+again. Before the first launch `run` prints the run count and the campaign's
+nominal ceiling. It exits 2 when:
+
+- any pinned input differs, or the manifest lacks a pinned key or has the wrong
+  shape, in which case the refusal says to start a new `--campaign-id`. A
+  changed repo-to-account pin, CLI version or config commit, or a manifest
+  that cannot be read or parsed, also exits 2 but does not say it;
+- one block's ceiling exceeds either stop;
+- the campaign's ceiling exceeds `--cumulative-stop-usd`, unless
+  `--allow-early-stop` accepts that the campaign will stop early.
 
 `run` reads and writes the manifest only while it holds the campaign's lock,
 and writes it only after those ceiling checks pass. A campaign refused for its
@@ -1459,8 +1468,9 @@ each block `run` halts if the block's ceiling would carry the cumulative total
 or the block's account past its stop.
 
 A block's end environment reading that fails is read once more. A reading that
-still cannot be read halts `run` as a failed read, not as drift. As for drift,
-the block's records are discarded and a resume reruns the block.
+still cannot be read halts `run` as a failed read, not as drift. Either halt
+discards the block's records, and a resume reruns the block and pays for it
+again.
 
 After each block the per-arm stop looks for an arm with no valid run:
 
@@ -1504,15 +1514,17 @@ missing with its reason.
   `instrument-log-invalid`, `fixture-instruction-load` and
   `account-hooks-missing`. An attempt that ends under one never retries, since
   a clean second attempt would hide evidence about the instrument.
-- One attempt can meet several reasons, and precedence has two tiers.
-  `arm-leak` and `fixture-instruction-load` outrank the non-instrument
-  reasons, so a timed-out attempt whose log shows a `bare` leak records
-  `arm-leak`. `instrument-missing`, `instrument-log-invalid` and
-  `account-hooks-missing` outrank them only when the run reached its end,
-  because a run that never finished leaves a log that is often absent or torn.
-  A timeout, `launch-no-output`, `launch-error`, `no-result-event` and
-  `session-store-not-found` keep their own reasons. `result-error`, `budget`
-  and `api-error-final-record` count as reaching the end.
+- One attempt can meet several reasons, and precedence has two tiers:
+  - `arm-leak` and `fixture-instruction-load` outrank the non-instrument
+    reasons, so a timed-out attempt whose log shows a `bare` leak records
+    `arm-leak`.
+  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing`
+    outrank them only when the run reached its end, because a run that never
+    finished leaves a log that is often absent or torn.
+  - A timeout, `launch-no-output`, `launch-error`, `no-result-event` and
+    `session-store-not-found` keep their own reasons.
+  - `result-error`, `budget` and `api-error-final-record` count as reaching the
+    end.
 
 ### Accepted residuals
 
@@ -1523,12 +1535,14 @@ missing with its reason.
     `run` at the block's end.
   - The scan misses `grep -r x ~`, which names a directory above a guarded
     tree, and the text of a `bash -c` string.
-  - Among Read, Grep and Glob targets, a run fails only on a live checkout's
-    changed file, the account's `projects/` tree, a toolkit file in a `bare`
-    run (`arm-leak`), or a path that cannot be resolved. A denied call to one
-    still fails it. Any other out-of-fixture target, such as the local dir, a
-    sibling run's fixture or a credential file under `$HOME`, is recorded as
-    an out-of-session path and fails nothing. The Bash scan does guard the local dir and other fixtures.
+  - Read, Grep and Glob targets are checked more narrowly than Bash command
+    text, which does guard the local dir and other fixtures:
+    - A target fails the run when it is a live checkout's changed file, the
+      account's `projects/` tree, a toolkit file in a `bare` run (`arm-leak`),
+      or a path that cannot be resolved. A denied call to one fails it too.
+    - Any other out-of-fixture target is recorded as an out-of-session path and
+      fails nothing. Examples are the local dir, a sibling run's fixture and a
+      credential file under `$HOME`.
   - A Read of `<live>/.git` and of a linked worktree's common git dir is not
     caught.
   - The denial marker was verified on one Claude Code build.
