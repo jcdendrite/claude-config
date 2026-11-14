@@ -1,5 +1,6 @@
 """Test helpers shared by the pr-cost family's test files (test_transcript_pr_cost*.py,
-test_transcript_gh_cli.py, test_transcript_ledger_common.py)."""
+test_transcript_gh_cli.py, test_transcript_ledger_common.py) and by the ledger reader's consumers
+(test_transcript_ledger_rounds.py, test_transcript_review_cost_by_size.py, test_transcript_pricing.py)."""
 from __future__ import annotations
 
 import json
@@ -572,6 +573,33 @@ _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL = (
     '"cache_write_1h":12,"cache_write_5m":11,"input":14,"output":13}}},"main_usd_micros":1500000,'
     '"unpriced_tokens":4,"unpriced_turns":3}],"plan-review":[],"ready-for-review":[]},"rule":1}'
 )
+
+
+_REPRICED_ROUND_MODEL = "claude-sonnet-5"  # a model the rate table prices, for rounds that must re-price
+
+
+def _review_rounds_cell(rounds_by_skill: dict[str, list[dict]]) -> dict:
+    """A review_rounds cell holding exactly `rounds_by_skill`, so a skill left out of it has no key."""
+    return {"rule": review_rounds.REVIEW_ROUND_RULE, "rounds": rounds_by_skill}
+
+
+def _round_with_priced_splits(main_split: dict, agent_split: dict, **overrides) -> dict:
+    """A round whose main and agent token splits are `{variant: {class: count}}` on _REPRICED_ROUND_MODEL. Its stored
+    micro-dollars default to _sample_review_round's, and a test that needs them to differ from the splits' price
+    overrides them."""
+    return {
+        **_sample_review_round(),
+        "main_tokens": {_REPRICED_ROUND_MODEL: main_split},
+        "agent_tokens": {_REPRICED_ROUND_MODEL: agent_split},
+        **overrides,
+    }
+
+
+def _ledger_pr_row(pr_number: int, *, host: str, repo: str, machine: str, cell: dict | None, **overrides) -> dict:
+    """A ledger row for `repo` on `host` carrying `cell` as its review_rounds."""
+    return _sample_pr_cost_row(**{
+        "host": host, "repo": repo, "pr_number": pr_number, "machine": machine, "review_rounds": cell, **overrides,
+    })
 
 
 def _first_round(cell: dict) -> dict:

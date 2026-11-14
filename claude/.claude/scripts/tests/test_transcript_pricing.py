@@ -1,8 +1,9 @@
 from datetime import date
 
 import pytest
-from transcript_analysis import cost, pricing
+from transcript_analysis import cost, pricing, review_rounds
 
+from ._pr_cost_helpers import _REPRICED_ROUND_MODEL
 from .conftest import _asst, _cost_args, _extract_grand_total, _priced, _tool_result, _user_msg, _write_jsonl
 
 
@@ -668,3 +669,98 @@ class TestCacheMissReason:
         merged = pricing.dedup_turns_by_request_id([rec_a, rec_b])
         assert len(merged) == 1
         assert pricing._cache_miss_reason(merged[0]["message"]) == "model_changed"
+
+
+class TestRepriceTokenSplits:
+    """_reprice_token_splits prices a ledger round's stored `{model: {variant: {class: int}}}` token object at the
+    current rate table, through the unchanged _price_turn."""
+
+    # Unequal class counts, so a swapped class mapping changes the total.
+    _SOURCE_USAGE_BY_VARIANT = {
+        "standard": {
+            "input_tokens": 1_000, "output_tokens": 70_000, "cache_read_input_tokens": 300_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 9_000, "ephemeral_5m_input_tokens": 4_000},
+        },
+        "fast": {
+            "input_tokens": 2_000, "output_tokens": 60_000, "cache_read_input_tokens": 200_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 8_000, "ephemeral_5m_input_tokens": 3_000},
+            "speed": "fast",
+        },
+        "us_geo": {
+            "input_tokens": 3_000, "output_tokens": 50_000, "cache_read_input_tokens": 100_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 7_000, "ephemeral_5m_input_tokens": 2_000},
+            "inference_geo": "us",
+        },
+        "fast_us_geo": {
+            "input_tokens": 4_000, "output_tokens": 40_000, "cache_read_input_tokens": 400_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 6_000, "ephemeral_5m_input_tokens": 1_000},
+            "speed": "fast", "inference_geo": "us",
+        },
+    }
+
+    def test_every_pricing_variant_label_has_a_source_usage_in_this_class(self):
+        assert set(self._SOURCE_USAGE_BY_VARIANT) == set(pricing._PRICING_VARIANTS)
+
+    @pytest.mark.parametrize("variant", pricing._PRICING_VARIANTS)
+    def test_usage_built_for_a_variant_classifies_back_to_that_variant(self, variant):
+        usage = pricing._usage_for_token_group(variant, {"input": 1})
+        assert pricing._pricing_variant(usage) == variant
+
+    @pytest.mark.parametrize("variant", pricing._PRICING_VARIANTS)
+    def test_splits_filed_from_a_source_usage_reprice_to_that_usages_own_price(self, variant):
+        source_usage = self._SOURCE_USAGE_BY_VARIANT[variant]
+        assert pricing._pricing_variant(source_usage) == variant
+        splits = {_REPRICED_ROUND_MODEL: {variant: pricing._token_counts(source_usage)}}
+        source_dollars, _context, _unpriced = pricing._price_turn(_REPRICED_ROUND_MODEL, source_usage)
+        assert pricing._reprice_token_splits(splits) == pytest.approx(sum(source_dollars.values()))
+
+    def test_groups_across_models_and_variants_sum(self):
+        standard, fast = self._SOURCE_USAGE_BY_VARIANT["standard"], self._SOURCE_USAGE_BY_VARIANT["fast"]
+        splits = {
+            "claude-sonnet-5": {"standard": pricing._token_counts(standard)},
+            "claude-opus-5": {"fast": pricing._token_counts(fast)},
+        }
+        expected = sum(pricing._price_turn("claude-sonnet-5", standard)[0].values()) + sum(
+            pricing._price_turn("claude-opus-5", fast)[0].values()
+        )
+        assert pricing._reprice_token_splits(splits) == pytest.approx(expected)
+
+    def test_a_multi_turn_rounds_summed_splits_price_to_the_sum_of_each_turns_price(self):
+        """The writer files per-(model, variant) sums of its turns' token counts through review_rounds._add_turn_tokens,
+        so the reader prices a sum where the writer priced each turn."""
+        first_standard_turn = self._SOURCE_USAGE_BY_VARIANT["standard"]
+        second_standard_turn = {**self._SOURCE_USAGE_BY_VARIANT["standard"], "input_tokens": 123_456, "output_tokens": 7}
+        fast_turn = self._SOURCE_USAGE_BY_VARIANT["fast"]
+        splits: dict = {}
+        for turn in [first_standard_turn, second_standard_turn, fast_turn]:
+            review_rounds._add_turn_tokens(splits, _REPRICED_ROUND_MODEL, turn)
+        per_turn_dollars = sum(
+            sum(pricing._price_turn(_REPRICED_ROUND_MODEL, turn)[0].values())
+            for turn in [first_standard_turn, second_standard_turn, fast_turn]
+        )
+        assert pricing._reprice_token_splits(splits) == pytest.approx(per_turn_dollars)
+
+    def test_a_class_missing_from_a_group_prices_as_zero(self):
+        full = {"input": 5_000, "output": 0, "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0}
+        assert pricing._reprice_token_splits({_REPRICED_ROUND_MODEL: {"standard": {"input": 5_000}}}) == pytest.approx(
+            pricing._reprice_token_splits({_REPRICED_ROUND_MODEL: {"standard": full}})
+        )
+
+    def test_empty_object_prices_at_zero(self):
+        assert pricing._reprice_token_splits({}) == 0.0
+
+    def test_returns_none_for_a_model_the_rate_table_does_not_price(self):
+        assert pricing._reprice_token_splits({"unpriced-model-sentinel": {"standard": {"input": 1}}}) is None
+
+    def test_returns_none_for_a_variant_label_outside_the_pricing_variants(self):
+        assert pricing._reprice_token_splits({_REPRICED_ROUND_MODEL: {"unknown-variant": {"input": 1}}}) is None
+
+    def test_returns_none_for_a_class_label_outside_the_token_classes(self):
+        assert pricing._reprice_token_splits({_REPRICED_ROUND_MODEL: {"standard": {"unknown-class": 1}}}) is None
+
+    def test_one_unpriceable_group_makes_the_whole_object_unpriceable(self):
+        splits = {
+            _REPRICED_ROUND_MODEL: {"standard": {"input": 1}},
+            "unpriced-model-sentinel": {"standard": {"input": 1}},
+        }
+        assert pricing._reprice_token_splits(splits) is None

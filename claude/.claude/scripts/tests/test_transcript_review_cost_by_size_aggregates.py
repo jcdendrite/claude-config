@@ -1,4 +1,4 @@
-"""Tests for review_cost_by_size.py's aggregates and its printed aggregate and join-diagnostics lines."""
+"""Tests for review_cost_by_size.py's aggregates and its printed aggregate lines."""
 import math
 
 import pytest
@@ -71,6 +71,15 @@ class TestComputeAggregates:
         assert [aggregates["elasticity"][measure][1] for measure in review_cost_by_size._MEASURES] == [4, 4, 4]
         assert [aggregates["spearman"][measure][1] for measure in review_cost_by_size._MEASURES] == [5, 5, 5]
         assert aggregates["elasticity"]["total_dollars"][0] == pytest.approx(1.5)
+
+    def test_negative_line_pr_is_ranked_by_every_spearman_measure_and_dropped_from_every_elasticity_and_bucket(self):
+        """Only a hand-edited ledger holds a negative size. It has no log and fits no half-open bucket, but Spearman
+        ranks it."""
+        records = [_record(1, -20, 1.0), _record(2, 5, 1.0), _record(3, 10, 2.0)]
+        aggregates = review_cost_by_size._compute_aggregates(records)
+        assert [aggregates["spearman"][measure][1] for measure in review_cost_by_size._MEASURES] == [3, 3, 3]
+        assert [aggregates["elasticity"][measure][1] for measure in review_cost_by_size._MEASURES] == [2, 2, 2]
+        assert [bucket["pr_count"] for bucket in aggregates["buckets"]] == [2, 0, 0, 0]
 
     def test_zero_dollar_pr_drops_out_of_the_two_dollar_elasticities_only(self):
         """A 25-line PR with five zero-dollar rounds sits on the rounds line (ln 5 / ln 25 = 0.5), so the
@@ -182,7 +191,7 @@ class TestComputeAggregates:
 
 
 class TestPrintedReport:
-    """The stdout lines _print_aggregates and _print_join_diagnostics render from hand-computed fixtures."""
+    """The stdout lines _print_aggregates renders from hand-computed fixtures."""
 
     @staticmethod
     def _aggregate_lines(capsys, records) -> list[str]:
@@ -266,31 +275,3 @@ class TestPrintedReport:
         ]
         lines = self._aggregate_lines(capsys, records)
         assert "  PRs with a rho: 4; median rho 0.40; share above zero 50.0%" in lines
-
-    def test_join_diagnostics_print_each_count_under_its_own_label(self, capsys):
-        counts = review_cost_by_size._JoinCounts(
-            merged_pr_count=11, unmatched_branch_count=22, ambiguous_branch_count=33,
-            unpriced_turns=44, dangling_dispatches=55, invalid_usage_records=1_234,
-        )
-        review_cost_by_size._print_join_diagnostics(66, counts, 77)
-        assert capsys.readouterr().out.splitlines() == [
-            "",
-            "Join diagnostics",
-            "  Merged PRs listed: 11",
-            "  PRs joined: 66",
-            "  Unmatched branches: 22",
-            "  Ambiguous branches (excluded): 33",
-            "  Unpriced turns inside joined rounds: 44",
-            "  Dangling dispatches inside joined rounds: 55",
-            "  MALFORMED USAGE — 1,234 usage-bearing turns inside joined rounds had non-numeric or negative"
-            " token fields and were excluded from this report's dollars",
-            "  Unreadable sources skipped: 77",
-        ]
-
-    def test_join_diagnostics_print_no_malformed_usage_line_when_no_turn_was_excluded(self, capsys):
-        counts = review_cost_by_size._JoinCounts(
-            merged_pr_count=11, unmatched_branch_count=22, ambiguous_branch_count=33,
-            unpriced_turns=44, dangling_dispatches=55, invalid_usage_records=0,
-        )
-        review_cost_by_size._print_join_diagnostics(66, counts, 77)
-        assert "MALFORMED USAGE" not in capsys.readouterr().out

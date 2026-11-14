@@ -10,7 +10,6 @@ Subcommands that call `gh`:
 - `pr-cost`
 - `workstream-cost --check-pr-status`
 - `period-cost`
-- `review-cost-by-size`
 
 Subcommands that write to disk:
 
@@ -33,8 +32,8 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
 - **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — how a scan treats it depends on the scan path:
-  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled`, `review-cost-by-size`, `read-cost` and `routing-guard --capture` abort the whole invocation with an uncaught error, with the path stripped from the message.
-  - `review-round-cost --pooled`, `review-cost-by-size`, `read-cost` and `routing-guard --capture` record it as a scan gap instead. `routing-guard --capture` then refuses with exit 2 (see the exit-code table under "routing-guard").
+  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled`, `read-cost` and `routing-guard --capture` abort the whole invocation with an uncaught error, with the path stripped from the message.
+  - `review-round-cost --pooled`, `read-cost` and `routing-guard --capture` record it as a scan gap instead. `routing-guard --capture` then refuses with exit 2 (see the exit-code table under "routing-guard").
   - A single-root glob scan (any `--projects` value, including the default, on a one-root scan) skips it silently, because `Path.glob` swallows the error.
   - `cost`'s per-root scan diagnostic also skips it silently.
   - A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.
@@ -47,7 +46,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 ## Scoping to this repo: `--this-repo`
 
-Every subcommand except five accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, `period-cost`, and `routing-guard` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+Every subcommand except five accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, `period-cost`, and `routing-guard` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. `review-cost-by-size` is the exception among the subcommands that accept it: its `--this-repo` selects the pr-cost ledger rows recorded for this checkout's origin repository and resolves no worktrees. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
 
 **`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort. Under `review-round-cost --pooled`, that surfaces as the generic unexpected-error refusal.
 
@@ -81,7 +80,7 @@ Most subcommands' default scan corpus is a **union**, not a single account. The 
 - `cost --summary`: resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below).
 - `period-cost`: reads the active account's whole projects directory only (see its section below).
 - `cost-counts`: reads the active account's `projects` directory only (see its section below).
-- `review-cost-by-size` without `--all-accounts`: reads the active account's `projects` directory only, scoped to this repository (see its section below).
+- `review-cost-by-size` without `--all-accounts`: reads the active account's pr-cost ledger only, for the rows recorded for this repository. A non-empty `PR_COST_LEDGER_PATH` makes it read that one file instead (see its section below).
 - `read-cost`: reads the active account's `projects` directory only, scoped to this repository (see its section below).
 - `routing-guard`: under `--capture` reads only the one root the top-level `--config-dir` names, and otherwise reads no transcripts (see its section below).
 - `user-input`: reads the active account's `projects` directory only, narrowed by `--projects GLOB`.
@@ -91,7 +90,7 @@ List additional Claude Code config directories, one absolute path per line, in `
 The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except these three, which print no root count:
 
 - `cost --summary`: prints no header at all and states its repository-and-account scope on its own `Scope:` line instead.
-- `review-cost-by-size`: its header names the scope label and whether it read the active account or every declared account.
+- `review-cost-by-size`: its header names the pr-cost ledger rows for this checkout's origin and whether it read the active account or every declared account. Under a non-empty `PR_COST_LEDGER_PATH` it prints `PR_COST_LEDGER_PATH file, account scope unverified` instead.
 - `read-cost`: its header names the scope label, the active account and this repository, and states that the declared-roots file was not consulted.
 
 `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
@@ -740,8 +739,8 @@ These subcommands apply this block, except where the last bullet says otherwise,
 - `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation. The `pr-cost` `review_rounds` column is the exception: it applies only this block, and "Subagent attribution" does not reach it.
 - `subagents`, `skill-invocation --include-subagents`, `skill-pair` and `cost-counts` spawn counts apply both blocks. The `cost-counts` spawn counts read sidechain records. `cost-counts` reads the direct `subagents/*.jsonl` files of the sessions it scopes, with no flag to turn that off. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
 - `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
-- `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. `review-cost-by-size` reuses `review-round-cost`'s round detection, so the same applies. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
-- Round attribution (`review-round-cost`, `review-cost-by-size`, `cost-counts` round counts, the `pr-cost` `review_rounds` column, `routing-guard --capture`, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
+- `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
+- Round attribution (`review-round-cost`, `cost-counts` round counts, the `pr-cost` `review_rounds` column, `routing-guard --capture`, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
 - Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
 
 The full `cost` report under `--branches` prints one extra line, `Pre-branch default-branch records credited to this --branches filter: <N> turns, $<X>`. It counts only the turns this block moved into the filter set from outside it, so a filter that holds both the default branch and its successor prints nothing for that session. Unpriced turns count toward the turns but not the dollars. It never prints under `--summary` or `--share-only`. The shift from "Subagent attribution" has no audit line.
@@ -1443,70 +1442,83 @@ A withheld block prints `(95% CI not computed — too few branches in scope)` fo
 
 ## review-cost-by-size
 
-**Purpose.** How `code-review` round count and round cost vary with merged-PR size. It prices `code-review` rounds with `review-round-cost`'s own round detection and joins each branch to its merged PR by exact head-branch name, then prints aggregates, join diagnostics and one row per PR.
+**Purpose.** How `code-review` round count and round cost vary with recorded-PR size. It reads the `review_rounds` cell of the pr-cost ledger (see `docs/pr-cost.md`), keeps each PR's one current row for this checkout's origin repository, and prints aggregates, ledger diagnostics and one row per PR. It reads no transcript, so a PR's round series survives after its transcripts age out of Claude Code's retention.
 
-**Requires `gh`.** A `gh auth status` preflight, a `gh repo view` repo pin that must match this checkout's `origin` remote, then one bulk `gh pr list --state merged` call (limit 1000). The pin and discovery messages carry a `pr-cost:` prefix, because they come from the helpers `pr-cost` shares.
+**Requires a pr-cost ledger, and no `gh`.** The report makes no `gh` call. It runs one local `origin` remote lookup, then reads the ledger file. Run `pr-cost --record` first (it needs the `pr_cost_recording` config key). When the report reports no PR, it exits 0 with `n/a` aggregates over zero PRs and the diagnostics' counts, and prints one of two `No PR reported.` messages:
+- With no ledger, or a ledger holding no row for this repository, the message says so and points at `pr-cost --record` and the `pr_cost_recording` config key.
+- When rows exist but none is reported, the message names the `--force` re-capture of a row recorded before the `review_rounds` column, with its `cleanupPeriodDays` limit, and refers to the diagnostics' counts of the PRs left out.
 
 **Exit codes.**
-- 2 -- a refused flag scope, an unresolvable config directory, or `gh repo view` naming a different repository or host than `origin`.
+- 2 -- a refused flag scope, an unresolvable config directory, or a non-empty `PR_COST_LEDGER_PATH` while more than one account root resolves.
 - 1 -- any other failure before a report prints:
-  - `gh` auth.
   - The `origin` remote.
-  - The repo pin, including a `GH_HOST` that matches none of this repo's remotes.
-  - The discovery call.
-  - Running outside a listed worktree.
+  - A relative `PR_COST_LEDGER_PATH`.
+  - A ledger file that cannot be read or is not text.
+  - A bad row in a ledger that is read. The message names the account (`account-N`) and the parser's rule, never a path, value or cell. The recovery for an unparsable `review_rounds` cell is under `docs/pr-cost.md` § "Data".
+  - A header failure in a ledger that is read: a zero-length file, an unrecognized first line, or a ledger written by a newer checkout. The message is the parser's text, and this command appends no pointer to it. Only the newer-checkout message carries a recovery hint of its own: update this checkout.
 
 **Flags.**
-- `--this-repo` -- required. The command exits 2 without it and refuses any `--projects` scope.
-- `--all-accounts` -- read every declared account as one merged scan instead of the active account alone. A private view; see "Publication" below.
+- `--this-repo` -- required. It selects the ledger rows recorded for this checkout's origin repository, and the command exits 2 without it and refuses any `--projects` scope.
+- `--all-accounts` -- read every declared account's pr-cost ledger instead of the active account's alone. A PR with more than one row that carries a `review_rounds` cell is excluded and counted, not summed. A private view; see "Publication" below.
 
 Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--config-dir` flag of its own.
 
-**Join.**
-- A round's branch follows the "Pre-branch default-branch attribution" block under `cost`.
-- A branch joins the merged PR whose `headRefName` equals it exactly, and the PR number keys the record.
-- One PR's rounds sum across every project directory and root the scan reads, so a branch worked on in two checkouts is one record.
-- A branch matching no merged PR counts as an unmatched branch. So does a default-branch name (`main`, `master`, `develop`), a detached head and a `worktree-agent-*` branch, which never join, even when a merged PR carries that head name.
-- A branch matching more than one merged PR counts as an ambiguous branch and is excluded. The check sees only merged PRs, so it does not detect a name reused by a merged PR and a later PR that is open, closed unmerged or not yet opened. That later PR's rounds join the merged PR.
-- Rounds opened after a PR's merge still count toward it, as `pr-cost` counts a branch's later activity.
-- The scan does not attribute sessions to a root, so a project directory symlinked outside every root does not abort it.
+**Which rows it reads.**
+- Each account's ledger lives beside its `projects` directory, at the `pr-cost` default path. A non-empty `PR_COST_LEDGER_PATH` replaces every account's path with that one file, so the command honors it at one root and exits 2 across several.
+- Only a row whose `host` and `repo` equal this checkout's `origin` remote is read. A row superseded by a later capture of the same PR on the same machine is ignored, so a newer degraded row over an older `ok` row is the row read.
+- A row with an empty `review_rounds` cell is set aside before any other check. It counts only when no other row of that PR carries a cell.
+- A degraded `status` excludes nothing. A row's size and rounds come from the bulk discovery call and the local corpus pass, not from the per-PR enrichment call that `status` reports on.
+- A round flagged `after_merge` is removed and counted, because its window opened at or after the PR's merge. A round with no `after_merge` flag stays, because the writer omits the flag only when it cannot place the round against the merge.
+- A PR is excluded and counted under the first reason it meets:
+  - No row of the PR carries a `review_rounds` cell. `pr-cost` read mode lists every recorded PR but does not mark which rows lack a cell. Recapture a PR with `pr-cost --record --force --pr N` only when every session of that PR is inside `cleanupPeriodDays`. `docs/pr-cost.md` § "The re-record contract" states what happens outside it.
+  - More than one row of the PR carries a cell, whether from another machine identity, another account, or a regenerated machine identity. No field tells those apart, and summing them could double the rounds.
+  - `join_confidence` is `low`. `medium` is kept.
+  - The cell's `rule` differs from the current review-round rule, because rounds counted under different rules do not compare. After a rule change, every older row is excluded until a forced re-capture (which carries the same `cleanupPeriodDays` limit; see `docs/pr-cost.md` § "The re-record contract").
+  - A round that is not after-merge, in any skill's list, holds token splits this checkout's rate table cannot price, such as a model it does not list.
+- The excluded PRs are counts only. No excluded row's branch, machine, host or repository prints.
 
-**What a record measures.** A PR's size is `additions + deletions`. Each round's dollars are its main-thread turns plus every subagent dispatched inside it, as in `review-round-cost`. A record yields three values: rounds per PR, total dollars per PR, and mean dollars per round (total over rounds).
+**What a record measures.** A PR's size is the row's `additions + deletions`. Each round's dollars are its stored main-thread and subagent token splits, re-priced at this checkout's rate table, not the micro-dollars the capture stored. Rows captured under different rate tables compare for the turns the capture priced. A turn the capture could not price is absent from the splits, so it stays missing from the dollars, and the unpriced-turns diagnostic below counts it. A record yields three values: rounds per PR, total dollars per PR, and mean dollars per round (total over rounds). Only `code-review` rounds feed them.
 
 **Aggregates.** An aggregate that cannot be computed prints `n/a`.
-- Spearman rho of lines against each of the three values, with tied values taking the mean of their ranks. Each prints as `rho (n=N)`, or `n/a (n=N)` when rho is undefined. Every PR is ranked, so N is the number of PRs joined, which can exceed an elasticity's count.
+- Spearman rho of lines against each of the three values, with tied values taking the mean of their ranks. Each prints as `rho (n=N)`, or `n/a (n=N)` when rho is undefined. Every PR is ranked, so N is the number of PRs reported, which can exceed an elasticity's count.
 - Log-log elasticity of each value against lines: the slope of the natural log of the value on the natural log of lines, over PRs with lines above 0 and that value above 0. Each value prints its own PR count, because a zero-dollar PR drops out of the two dollar values only. A value that is the same for every PR counted for it gives slope 0.0 when those PRs' sizes differ.
 - Size-bucket medians. Buckets are half-open on lines: 0-149, 150-399, 400-799 and 800 or more. Each prints its PR count and the median of the three values.
 - Within-PR trend, over PRs with at least 4 `code-review` rounds: Spearman's rho of round index against round dollars. The line prints how many PRs yielded a rho, their median rho, and the share above zero. A PR whose rounds all cost the same has no rho and is skipped.
 
 **Diagnostics.** Counts only, never a branch name.
-- Merged PRs listed, PRs joined, and unmatched and ambiguous branches count the join's outcome.
-- Unpriced turns and dangling dispatches inside the joined rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both.
-- A `MALFORMED USAGE` line prints after the dangling-dispatches line, only when nonzero: `MALFORMED USAGE — <n> usage-bearing turns inside joined rounds had non-numeric or negative token fields and were excluded from this report's dollars`. Those turns are missing from the dollar figures too. The **Round detection caveats.** list under `review-round-cost` defines the exclusion.
-- Unreadable sources skipped counts the session files, project directories and roots the scan could not read. A nonzero count means the rounds and dollars those sources held are missing.
-- When the merged-PR list reaches the `gh pr list` limit, a note says older merged PRs may count as unmatched branches, and that a branch name reused by a PR beyond the limit can join the wrong PR. That wrong join is possible because the ambiguity check sees only the listed PRs.
+- PRs with a current row for this repository, and PRs reported. The two differ by the exclusions and by the PRs with no `code-review` round before merge.
+- One `PRs excluded, <reason>` line per exclusion above, zeros included.
+- PRs with no `code-review` round before merge: a kept PR whose `code-review` list is absent, empty, or held only after-merge rounds.
+- Code-review rounds removed as opened at or after merge. Other skills' after-merge rounds are removed too and are not counted here.
+- Unpriced turns and dangling dispatches inside the reported rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both. Only the reported PRs' `code-review` rounds before merge add to them.
+- A `MALFORMED USAGE` line prints after the dangling-dispatches line, only when nonzero: `MALFORMED USAGE — <n> usage-bearing turns inside reported rounds had non-numeric or negative token fields and were excluded from this report's dollars`. Those turns are missing from the dollar figures too. The **Round detection caveats.** list under `review-round-cost` defines the exclusion.
+
+**Header.** `REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)`, or `every declared account` under `--all-accounts`. Under a non-empty `PR_COST_LEDGER_PATH`, both modes print `PR_COST_LEDGER_PATH file, account scope unverified` in that slot, with no path or value: every account that ran `pr-cost --record` under the variable wrote that one file, so the file is not verified to hold one account. A scope-unverified notice follows the header on every run.
 
 **Known limits.**
 - A PR's size is its final merged size, not the size each round read, so an early round's dollars are set against changes made after it ran.
+- A PR enters the aggregates only with at least one `code-review` round before merge, so rounds per PR floors at 1. `PRs with no code-review round before merge` counts the PRs left out.
 - Bucket medians resolve only at the bucket edges above, so a threshold inside a bucket reads from the per-PR rows.
 - A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost (see "Round detection caveats" under `review-round-cost`): fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
-- A fork PR whose head branch matches a local feature branch joins to it, so that record carries the fork PR's size. No diagnostic counts such a join.
-- A PR enters only with at least one in-scope `code-review` round, so its round count floors at 1 and a PR that skipped review is absent.
-- A PR whose early sessions aged out of Claude Code's transcript retention shows fewer rounds and dollars than it had, and is absent when every session aged out.
-- A PR whose worktree was removed is absent. `--this-repo` reads only live worktrees' project directories (see the "An orphaned project directory" bullet under "Scoping to this repo"), and this command refuses `--projects`, so there is no glob fallback.
-- The scan reads this machine's transcripts only, so a PR worked partly or wholly on another machine shows fewer rounds and dollars than it had, or is absent.
-- The gap between merged PRs listed and PRs joined mixes the four causes above with reused branch names and unreadable sources. The diagnostics count only the last two: reused names by branch on the `Ambiguous branches (excluded)` line, and unreadable sources by source on the `Unreadable sources skipped` line.
+- Only recorded PRs appear, and a PR is recorded only after its merge, the as-of window and a `pr-cost --record` run. A PR with no row is absent.
+- The writer discovers at most the 1000 most recent merged PRs, so a PR beyond that cap is never recorded, and a branch name reused by a PR beyond it can carry the older PR's rounds.
+- A row captured after some of its sessions aged out of Claude Code's retention undercounts its rounds, and no field marks it. A row recorded before the `review_rounds` column existed is excluded.
+- A row records no capture scope. The capture's review-round pass defaults to every project directory, and it joins a round to a PR by head-branch name alone, so a PR's rounds can include another repository's session on a same-named branch.
+- For the same reason, and because the writer has no fork guard, a fork PR whose head name equals a local branch name inherits that branch's rounds, paired with the PR's size.
+- A row's size is `additions + deletions` as the ledger holds it. A row with a negative sum, which only a hand-edited ledger can hold, is ranked and counted but falls in no size bucket.
+- Because the join is by head-branch name, a PR whose head branch is `main`, `master`, `develop`, a detached `HEAD` or a `worktree-agent-*` name carries every round the capture saw on that name, including other repositories' sessions, and the report does not exclude it. A row holds only an opaque per-run branch label, so the report cannot refuse such a row.
+- Each account's ledger lives in its own config directory, which has these consequences:
+  - A PR worked on two machines shows only the rounds this machine captured, an undercount no field marks.
+  - If two machines with distinct machine identities write one ledger file, such a PR is excluded for carrying more than one cell-bearing row.
+  - A synced config directory shares one machine identity, so the report collapses to the latest capture with no exclusion count. See `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
+  - Whether any setup shares a file under distinct identities is unverified.
 
-**Publication.**
-- Default mode publishes under `docs/private-project-redaction.md` § "This repository, one account".
-  - Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout, so a run from another checkout reports that checkout's repository instead.
-  - It reads the active config directory's `projects/` alone, and any symlink under that directory is followed.
-  - A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
-- `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication. Under it stderr also carries a `scanning root K/N` line per root, printed only when more than one root resolves.
+**Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run; default mode, stdout only):
 ```
-REVIEW COST BY SIZE SOURCES (this repo (3 project dirs); active account only)
+REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)
+Scope unverified -- a pr-cost ledger row does not record which project directories its --record run read, so a PR's rounds can include another repository's session on a same-named branch; see docs/transcript-analysis.md § "review-cost-by-size".
 
 Aggregates -- code-review rounds per merged PR; size is additions + deletions
 Spearman rho of lines against (rho; PRs used):
@@ -1525,14 +1537,18 @@ Size buckets, median per PR:
 Within-PR trend, rho of round index against round dollars, PRs with at least 4 rounds:
   PRs with a rho: 3; median rho 0.90; share above zero 100.0%
 
-Join diagnostics
-  Merged PRs listed: 40
-  PRs joined: 6
-  Unmatched branches: 5
-  Ambiguous branches (excluded): 0
-  Unpriced turns inside joined rounds: 2
-  Dangling dispatches inside joined rounds: 0
-  Unreadable sources skipped: 0
+Ledger diagnostics
+  PRs with a current row for this repository: 14
+  PRs reported: 6
+  PRs excluded, no review_rounds cell recorded: 5
+  PRs excluded, more than one row with a review_rounds cell: 0
+  PRs excluded, join confidence low: 1
+  PRs excluded, review-round rule other than the current one: 0
+  PRs excluded, a round this checkout cannot price: 0
+  PRs with no code-review round before merge: 2
+  Code-review rounds removed as opened at or after merge: 3
+  Unpriced turns inside reported rounds: 2
+  Dangling dispatches inside reported rounds: 0
 
 Per-PR rows, sorted by lines then PR number
        PR     lines  rounds     total $      mean $
@@ -1544,7 +1560,7 @@ Per-PR rows, sorted by lines then PR number
      9113     3,720       6      $21.00       $3.50
 ```
 
-**When to reach for it.** Answer "does the spend in code-review rounds grow with a PR, and by how much", for example to ground a diff-size threshold on a measurement of round spend. Reach for `review-round-cost` instead for one branch's round-by-round cost, and for `pr-cost` for a PR's whole-branch cost.
+**When to reach for it.** Answer "does the spend in code-review rounds grow with a PR, and by how much", for example to ground a diff-size threshold on a measurement of round spend, over the PRs captured since the `review_rounds` column. Reach for `review-round-cost` instead for one branch's round-by-round cost, and for `pr-cost` for a PR's whole-branch cost.
 
 ---
 

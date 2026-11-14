@@ -772,6 +772,17 @@ class TestPrCostReportOrchestration:
         assert str(fake_projects.parent) not in err
         assert str(other_root) not in err
 
+    def test_an_empty_pr_cost_ledger_path_counts_as_unset_under_all_accounts_across_two_roots(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        pr_cost._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        assert "PR_COST_LEDGER_PATH" not in capsys.readouterr().err
+
 
 class TestPrCostRecordingConfigDirUnresolvable:
     """_config.config_enabled("pr_cost_recording", ...) returning None --
@@ -966,11 +977,8 @@ class TestPrCostRecordRelativeLedgerPathExitsWithNoRawValue:
     def test_relative_pr_cost_ledger_path_exits_1_with_no_raw_value(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
-        """_pr_cost_report's own `except ValueError` around
-        _pr_cost_ledger_path -- that raising function's own message embeds
-        PR_COST_LEDGER_PATH's raw value, so this catch must not forward
-        str(exc) to stderr. Mirrors pr-cost-export's identical no-raw-value
-        discipline for its own copy of this catch."""
+        """_pr_cost_report reaches the ledger path through _pr_cost_ledger_path_or_exit, so a relative
+        PR_COST_LEDGER_PATH exits 1 with the fixed account-1 line and never echoes the raw value."""
         monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
@@ -980,7 +988,7 @@ class TestPrCostRecordRelativeLedgerPathExitsWithNoRawValue:
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
-        assert "must be an absolute path" in err
+        assert "pr-cost: account-1: PR_COST_LEDGER_PATH must be an absolute path" in err.splitlines()
         assert "relative/pr-cost-ledger.tsv" not in err
 
 

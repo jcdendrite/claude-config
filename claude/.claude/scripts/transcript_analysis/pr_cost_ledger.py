@@ -133,18 +133,45 @@ class _PrCostLedgerParseError(Exception):
     a hand-edited or corrupted row."""
 
 
+_PR_COST_LEDGER_PATH_ENV_VAR = "PR_COST_LEDGER_PATH"
+
+
+def _ledger_path_override() -> str | None:
+    """PR_COST_LEDGER_PATH's value, or None when it is unset or empty."""
+    return os.environ.get(_PR_COST_LEDGER_PATH_ENV_VAR) or None
+
+
+def pr_cost_ledger_path_overridden() -> bool:
+    """Whether PR_COST_LEDGER_PATH replaces every account's ledger path. An empty value counts as unset."""
+    return _ledger_path_override() is not None
+
+
 def _pr_cost_ledger_path(config_dir_override: Path | None = None) -> Path:
-    """Active pr-cost ledger path: $PR_COST_LEDGER_PATH if set (must be
+    """Active pr-cost ledger path: $PR_COST_LEDGER_PATH if non-empty (must be
     absolute), else (config_dir_override or config_dir()) / "pr-cost-ledger.tsv".
     config_dir_override lets --all-accounts resolve each account's own
     ledger path without reassigning the process-wide CLAUDE_CONFIG_DIR."""
-    override = os.environ.get("PR_COST_LEDGER_PATH")
-    if override:
+    override = _ledger_path_override()
+    if override is not None:
         path = Path(override)
         if not path.is_absolute():
             raise ValueError(f"PR_COST_LEDGER_PATH must be an absolute path, got: {override!r}")
         return path
     return (config_dir_override or config_dir()) / "pr-cost-ledger.tsv"
+
+
+def _pr_cost_ledger_path_or_exit(subcommand: str, ordinal: int, config_dir_override: Path) -> Path:
+    """_pr_cost_ledger_path, or exit 1 with a fixed account-N message. Never str(exc): its text embeds
+    PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted engagement path.
+    The exit follows the suppress block so that the ValueError does not stay on SystemExit.__context__.
+    config_dir_override is concrete, so the only ValueError left is the relative-override one."""
+    with contextlib.suppress(ValueError):
+        return _pr_cost_ledger_path(config_dir_override=config_dir_override)
+    print(
+        f"{subcommand}: account-{ordinal}: {_PR_COST_LEDGER_PATH_ENV_VAR} must be an absolute path",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 # Persisted contract: a cell outside this key rule, these leaf keys, this leaf integer range, or this depth makes every
@@ -467,6 +494,8 @@ def _unrecognized_header_message(first_line: str | None) -> str:
     return f"{message} (unrecognized first line)"
 
 
+# Every ledger reader (pr_cost, pr_cost_export, ledger_rounds) reads the whole file into memory with no size bound.
+# That is acceptable because the ledger is operator-written; revisit if that stops being true.
 def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     """Canonical parser for the pr-cost ledger's tab-separated content.
 
@@ -554,6 +583,22 @@ def _latest_pr_cost_row(
         return None
     # Last appended wins on an equal captured_at (the index tiebreaks max()).
     return max(enumerate(matches), key=lambda p: (p[1]["captured_at"], p[0]))[1]
+
+
+def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, int]]:
+    """The row with the latest captured_at wins per (host, repo, pr_number, machine), and the last appended wins a tie.
+
+    correction_count is the number of other rows sharing that key.
+    """
+    groups: dict[tuple[str, str, int, str], list[dict]] = {}
+    for row in rows:
+        key = (row["host"], row["repo"], row["pr_number"], row["machine"])
+        groups.setdefault(key, []).append(row)
+    collapsed: list[tuple[dict, int]] = []
+    for (host, repo, pr_number, machine), group in groups.items():
+        latest = _latest_pr_cost_row(group, host, repo, pr_number, machine)
+        collapsed.append((latest, len(group) - 1))
+    return collapsed
 
 
 def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
