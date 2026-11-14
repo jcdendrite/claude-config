@@ -273,9 +273,10 @@ DISPATCH_DENY_TOOLS = ("Agent", "Task")
 
 
 # Passed explicitly on every launch so the account's own `permissions.defaultMode` cannot change what a sample may run.
-# `default` is an alias the CLI accepts although its `--help` omits it from the choices, and
-# evals/measure_subagent_model_resolution.py states the literal is not among them. A CLI that rejects it produces no
-# result event, which `classify_attempt` pauses on as unrecognized, so the first self-check sample ends the run loudly.
+# `default` is an alias that CLI 2.1.325 accepts although its `--help` omits it from the choices.
+# evals/measure_subagent_model_resolution.py states the literal is not among them, so older CLIs are unverified.
+# A CLI that rejects it produces no result event, which `classify_attempt` pauses on as unrecognized.
+# The self-check passes the same mode, so the first sample surfaces a rejection before any observable runs.
 DEFAULT_PERMISSION_MODE = "default"
 
 

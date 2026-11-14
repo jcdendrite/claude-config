@@ -518,7 +518,10 @@ the emitter, every arm receives the rules by hook, so the preflight refuses.
     Whether the CLI also drops account-level connectors is unconfirmed, so read
     the first self-check stream's init event (kept with `--keep-artifacts`) and
     confirm it lists no tools and no MCP servers and reads `permissionMode`
-    `default` before relying on the result.
+    `default` before relying on the result. `default` is an alias that
+    `claude --help` omits from the `--permission-mode` choices. A CLI that
+    rejects it ends the first self-check sample with no result event, and the
+    run pauses as unrecognized.
 - `--phase gate` adds the `hook` arm, re-runs the calibration, sizes a
   two-look non-inferiority comparison of `hook` against `memory` from it, and
   prints one verdict: pass, fail, miss, inconclusive or void. It reads the
@@ -613,8 +616,8 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
   that the scorer's commit pattern does not match, such as
   a quoted option value containing a space (`git -c "user.name=A B" commit`).
   The pattern does not match them, so the deny hook does not deny them. Only an
-  unreached sample counts one in its `unscored_target_calls`; a sample that
-  later calls `code-review` scores adherent without counting it.
+  unreached sample counts one in its `unscored_target_calls`. A sample that
+  later calls `code-review` scores adherent and counts none.
 
 **Local only.** Like the other instruments here it never runs in CI. `--json`,
 `--keep-artifacts`, `--run-log` and `--resume` are each refused when they
