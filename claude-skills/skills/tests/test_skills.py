@@ -9528,7 +9528,7 @@ def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body()
 
 
 _SUBAGENT_DELEGATION_GATE_LOOP_HEADING = "### Exception: gate/review loops stay orchestrator-driven"
-_REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "HALT:")
+_REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "Not addressed:", "HALT:")
 _REVIEW_ORCHESTRATOR_DESIGN_RECORD = (
     "docs/design-decisions/review-orchestrator-gate-release-decoupling.md"
 )
@@ -9538,7 +9538,8 @@ _CODE_REVIEW_OUTPUT_FORMAT_HEADING = "## Output format"
 
 # The `review-orchestrator` agent body and the dispatching session's protocol
 # (subagent-delegation's gate/review-loop exception) share one return contract,
-# and the agent body in turn depends on the `code-review` skill's headings.
+# and the agent body in turn cites the `code-review` skill's headings and
+# that same gate/review-loop heading.
 # Renaming either end of a boundary fails below. Every other rule in the
 # protocol is deliberately unpinned.
 
@@ -9721,16 +9722,26 @@ def test_review_orchestrator_return_item_named_at_both_ends(item: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "cited_heading", ["Output format", "Review-findings persistence"]
+    "cited_target, cited_heading",
+    [
+        ("code-review/SKILL.md", normalize_heading(_CODE_REVIEW_OUTPUT_FORMAT_HEADING)),
+        ("code-review/SKILL.md", "Review-findings persistence"),
+        (
+            "subagent-delegation/SKILL.md",
+            normalize_heading(_SUBAGENT_DELEGATION_GATE_LOOP_HEADING),
+        ),
+    ],
 )
-def test_review_orchestrator_agent_body_cites_code_review_heading_that_exists(
+def test_review_orchestrator_agent_body_cites_skill_heading_that_exists(
+    cited_target: str,
     cited_heading: str,
 ) -> None:
     # The agent body sits outside test_skill_citations_resolve_to_real_headings'
-    # corpus, so its citations into the code-review skill resolve only here.
+    # corpus, so its citations into the code-review and subagent-delegation
+    # skills resolve only here.
     _assert_citation_resolves_to_heading(
         _AGENTS_DIR / "review-orchestrator.md",
-        "code-review/SKILL.md",
+        cited_target,
         cited_heading,
         repo_root=REPO_ROOT,
     )
