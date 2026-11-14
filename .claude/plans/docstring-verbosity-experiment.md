@@ -412,7 +412,7 @@ The gate puts `smoke`'s checks, and the engineer's read of what it prints, ahead
   - Every other failed block is task-specific. `summarize` leaves its task out of the pairs and counts it.
   - After two task-specific failed blocks in a row, `run` halts with exit 1. Its message names each failing arm with its missing reasons and `missing_detail` text, names the two tasks now lost from the sample, and says a resume goes on past them.
   - The count of failed blocks in a row lives in memory for one invocation. It starts at 0 on every start and resume, and any block with a valid run in every arm resets it (rows 153, 159).
-- A persistent failure meets the pre-block spend stops and the two-in-a-row halt. Failures on alternating tasks never make two in a row, so only `--cumulative-stop-usd` bounds them (row 153).
+- A persistent failure meets the pre-block spend stops and the two-in-a-row halt. Failures on alternating tasks never make two in a row, so only the spend stops bound them: `--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it (row 153).
 
 `run`'s halts and exit codes:
 - Every halt prints its reason: environment drift, the cumulative stop, the account stop naming its account, an instrument failure naming its task, arm and reason, or two task-specific failed blocks naming both tasks and their failing arms.
@@ -444,7 +444,7 @@ For each run, `smoke` prints:
   - When the `toolkit` control fired and its `path_glob_match` lines name the file that triggered each load (row 146), `smoke` prints whether the `bare` transcript shows a Read that ran of any such file, compared by path relative to each run's fixture. A payload with no trigger field leaves this line out.
   - `smoke` always prints one residual sentence: "A `bare` run that read no rule-matching file passes without testing the exclude, and a later `bare` run that reads one fails `arm-leak`."
 - Inheritance: the `toolkit` run's first-turn prompt size, minus the `bare` run's, minus the body term, is at least the margin. The comparison is `>=`. Otherwise, or when either size is null, `arm-config-missing`.
-- The verdict is a pure function of both runs' parsed logs and first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It reaches the verdict only when each arm has a valid run, so a missing run reports its own missing reason instead.
+- The verdict is a pure function of both runs' parsed logs and first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It computes the calibration conditions whenever both runs reached their end and the `toolkit` log parsed, whether or not either run is valid, and a missing run's own reason is listed first.
 - The verdict returns every failed condition, in the order above, and `smoke` prints them all. The inheritance check is token arithmetic, so it stays computable when the control fails, and one paid block shows every problem it can.
 
 The terms, each a character count over 4:
@@ -812,7 +812,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - A persistent failure meets the pre-block spend stops and the two-in-a-row halt, so it costs at most one block beyond the first.
     - Two residuals stay, which the README and Out of scope also name:
       - [unverified: how `claude -p` behaves at a usage limit] a usage-limit, auth or overload event that fails every run of two blocks marks two tasks that no agent really tried complete, and drops both from the sample;
-      - failures on alternating tasks never make two in a row, so only `--cumulative-stop-usd` bounds them.
+      - failures on alternating tasks never make two in a row, so only the spend stops bound them: `--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it.
     - An instrument failure halts at its block's end with the block complete (row 160), so it never blocks a resume.
 154. [verified: `claude/.claude/hooks/capture-session-id.sh:96`; `claude/.claude/hooks/_lib.sh:3695-3706`; a search of `evals/` Python files, which name no `sessions/` path, and of `claude/.claude/` outside its tests, which found no code that deletes a `sessions/` entry] `capture-session-id.sh` rewrites `<config-dir>/sessions/<claude-pid>` at each session start. `_lib_registered_live_sid` reads an entry as absent when its recorded start time does not match the live process. Nothing deletes an interactive session's or a review-bench launch's entry. So each replay attempt leaves one file there too, as accepted residue beside row 79's files.
     - [verified: `claude/.claude/scripts/post-crash-sessions.py:18,127,158,161`] `post-crash-sessions.py` reads these files as its source D, and its crash-evidence window is 14,400 seconds.
@@ -1481,7 +1481,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a task-specific failed block is marked complete and its task is left out of the pairs;
     - two task-specific failed blocks in a row halt `run`, and a resume is the way forward: it goes on past both, and those two tasks are lost from the sample. Exit 1 then wins over the exit 0 a lone failed last block gets;
     - a persistent failure meets the pre-block spend stops and the two-in-a-row halt;
-    - two residuals: a usage-limit, auth or overload event that fails every run of two blocks drops two tasks no agent really tried, and failures on alternating tasks never make two in a row, so only `--cumulative-stop-usd` bounds them;
+    - two residuals: a usage-limit, auth or overload event that fails every run of two blocks drops two tasks no agent really tried, and failures on alternating tasks never make two in a row, so only the spend stops bound them (`--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it);
   - the account preflight with its readiness check, `--direnv-timeout-s` and the `direnv exec <repo> true` hint, the allowlisted launch environment, and the refusal of a `PATH` with an empty or relative entry;
   - that `preflight` names every variable the launch drops, ambient ones included, so the engineer reads that list per account before the first `run`;
   - that `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws` and `~/.ssh` are not routed by account;
@@ -1637,7 +1637,7 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
 - Deleting the rows that replay sessions add to the account's shared logs (row 79), or the `sessions/` file each launch leaves (row 154). `post-crash-sessions.py` lists those files for four hours after a campaign. The README lists both as accepted residue.
 - Charging, at resume, a launched attempt that a hard kill left with no spend line. After each hard kill, up to one such attempt per worker thread (`run_skill_evals.DEFAULT_WORKERS`) stays uncharged. The undercount adds up over kills, each adding at most that many times the nominal per-run cap (row 65). The resume prints the count, and the README lists this as accepted residue (row 155).
 - Telling a usage-limit, auth or overload event apart from a task-specific failure. Such an event that fails every run of two blocks marks two tasks no agent really tried complete and drops them, and how `claude -p` behaves at a usage limit is unverified (row 153).
-- A stop for failures on alternating tasks, which never make two failed blocks in a row. Only `--cumulative-stop-usd` bounds them (row 153).
+- A stop for failures on alternating tasks, which never make two failed blocks in a row. Only the spend stops bound them: `--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it (row 153).
 - `summarize` figures beyond the primary outcome, the docstring outcome and the diagnostics: comment-plus-docstring lines per added code line, blocks per 100 added code lines, mean lines and words per block, the block-length histogram, the Python trailing-comment count, the base-density split (row 64), the mean first-turn prompt size, the per-repo breakdown, and each account's cap-charged share of spend. The records keep what each needs, so a later change adds any of them with no rerun (row 157).
 - A `smoke` listing of the account config dir. Verification step 6 has the engineer take it by hand.
 - A login check in preflight. Whether the installed CLI has a login-status command is unchecked, so `smoke` is the first check that authenticates (row 70).

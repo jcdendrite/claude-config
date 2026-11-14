@@ -1556,8 +1556,8 @@ missing with its reason.
     - Any other guarded path fails `out-of-fixture-path` on either arm. That is
       a task-specific failed block.
   - The scan misses `grep -r x ~`, which names a directory above a guarded
-    tree, and the text of a `bash -c` string, unless `shlex` cannot split the
-    line that holds it.
+    tree, and, on a line `shlex` can split, a path inside a `bash -c` string
+    that whitespace sets off from any quote character or shell operator.
   - Read, Grep and Glob targets are checked more narrowly than Bash command
     text, which does guard the local dir and other fixtures:
     - A target fails the run when it is a live checkout's changed file, the

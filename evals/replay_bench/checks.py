@@ -13,7 +13,7 @@ Command-text scan. A Bash command is scanned for guarded paths as text, not exec
   still found through its shorter pieces.
 - A candidate hits a guarded location when it names the location, is below it, or is a directory holding it
   that is still inside the location's own tree. The trees are:
-  - the config dir (the toolkit and the projects root);
+  - the config dir (the projects root, and the toolkit on an arm that excludes it);
   - each live checkout root (its changed paths and its `.git`);
   - the local dir;
   - each `FIXTURE_DIR_PREFIX` directory other than the run's own.
@@ -24,8 +24,8 @@ Command-text scan. A Bash command is scanned for guarded paths as text, not exec
 The scan cannot see these shapes, which are illustrative, not exhaustive:
 - a command run on a directory above a guarded tree, as in `grep -r x ~`;
 - a path relative to a directory the command changed into;
-- a path in a nested command string, as in `bash -c`, `eval` or `xargs`, which is scanned only when `shlex`
-  cannot split its line;
+- on a line `shlex` can split, a path that whitespace sets off inside a nested command string, as in
+  `bash -c "cat <path>"`, `eval` or `xargs`;
 - a path built from another shell variable, a glob, brace expansion or a colon list;
 - a path glued to a short option, as in `tar -tf<path>`;
 - a case variant of a guarded path on a case-insensitive volume;
