@@ -38,7 +38,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   - The skills loaded this session, each with its SKILL.md path, most recently loaded first.
   - The branch's plan file.
-  - The engineer's five newest prompts, quoted from the transcript, oldest first. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
+  - The five newest prompts, quoted from the transcript, oldest first. A prompt sent headless through `claude -p` is preceded by a label line saying so. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
 
   The plan line names the absolute `<checkout root>/.claude/plans/<slug>.md`. It carries a sentence saying the block does not check who wrote the file or whether the session used it. The script reads the file `PATH` names and checks the checkout's `.git` and plan file on disk. It makes no network call and writes nothing.
 
@@ -46,7 +46,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   - the plan file does not exist;
   - the plan path, which holds the checkout root and the branch slug, has a character outside `[A-Za-z0-9._/@+-]` or a `..` segment;
-  - the recorded `cwd` is relative or has no `.git` ancestor;
+  - the recorded `cwd` is relative, longer than 4,096 characters, or has no `.git` ancestor;
   - the plan file is a symlink;
   - `.claude` or `plans` is a symlink, or the plan otherwise resolves outside `<root>/.claude/plans`;
   - no main-thread record carries both a branch and a cwd, or the branch is detached HEAD;
@@ -58,7 +58,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   Limits and omissions:
 
-  - **Output limits:** the block stays within 9,000 characters. Over that it drops older prompts first, then the least recently loaded skills, and never drops the newest prompt or the plan line. The one exception is a block whose framing text, plan line and newest prompt alone exceed 9,000 characters. That takes a newest prompt made almost entirely of `~` characters, whose fences grow with it, together with a plan path near the longest the filesystem accepts. Each prompt is also cut to the per-message limit above.
+  - **Output limits:** the block stays within 9,000 code points. Over that it drops older prompts first, then the least recently loaded skills, and never drops the newest prompt or the plan line. The one exception is a block whose framing text, plan line and newest prompt alone exceed 9,000 code points. That takes a newest prompt made almost entirely of `~` characters, whose fences grow with it, together with a plan path near the longest the filesystem accepts. Each prompt is also cut to the per-message limit above.
   - **Exit codes:** it prints nothing and exits 0 when the transcript holds no skill, prompt or plan file. It exits 1 with one stderr line when the file cannot be opened. Exit 1 is also the interpreter's default code for an import-time or other uncaught failure outside `main`, with a traceback and no `compaction-context:` stderr line, so exit 1 alone does not show the transcript was the problem. An argparse usage error exits 2. It exits 3 with one stderr line naming the exception type on an unexpected internal error, a failed write of the block included. A record or line it cannot interpret costs that record or line, not the block.
   - **Silent omissions:** a skill directory holding a space, a non-ASCII letter, another character outside `[A-Za-z0-9._/@+-]` or a `..` segment yields no skill line. The plan line has its own omission list above. The block also omits AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token.
   - **Redaction limit:** do not paste a hand-run block into a PR, issue or channel: it carries the engineer's prompts and absolute paths and is not safe to publish, whatever the channel.

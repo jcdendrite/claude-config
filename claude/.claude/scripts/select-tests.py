@@ -226,6 +226,16 @@ TRANSCRIPT_ANALYSIS_SCRIPT = "claude/.claude/scripts/transcript-analysis.py"
 # cannot see the read.
 NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH = "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py"
 
+# restore-session-state-on-compact.sh runs this script by path, which loads the transcript_analysis package,
+# and _config_dir.py through it.
+COMPACTION_CONTEXT_SCRIPT = "claude/.claude/scripts/compaction-context.py"
+# test_restore_session_state_on_compact.py runs that hook, so it runs COMPACTION_CONTEXT_SCRIPT as a subprocess.
+# The script's imports are loaded at run time, which TestCrossDomainReadCompleteness cannot see.
+RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH = "claude/.claude/hooks/tests/test_restore_session_state_on_compact.py"
+# test_restore_session_state_on_compact.py imports its record builders and the script's module from this scripts-tests
+# helper module by name, an import from the hooks tests tree into the scripts tests tree that path-constant scanning cannot see.
+COMPACTION_CONTEXT_TEST_HELPERS = "claude/.claude/scripts/tests/_compaction_context_helpers.py"
+
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
 # grep of static `import`/`from` statements, not derived by a test, so the
@@ -771,7 +781,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # REVIEW_PR_AUDIT_SCRIPT, REVIEW_PR_SKILL_MD, and PERIOD_COST_REPORT_SKILL_MD:
 # see each constant's own comment above for its citation.
 # DOC_COUNTS_TEST_PATH: see its own comment above for citation.
-# NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH: see its own comment above for citation.
+# NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH, RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH, and
+# COMPACTION_CONTEXT_TEST_HELPERS: see each constant's own comment above for its citation.
 # _is_hooks_dir_shell_script_change: test_default_branch_resolution_is_shared.py
 # (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
 # picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
@@ -913,6 +924,12 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         or _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR),
         (NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,),
     ),
+    (
+        lambda p: p in (COMPACTION_CONTEXT_SCRIPT, CONFIG_DIR_MODULE)
+        or _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR),
+        (RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,),
+    ),
+    (lambda p: p == COMPACTION_CONTEXT_TEST_HELPERS, (RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,)),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
     (lambda p: _is_under(p, CURSOR_ADAPTER_DIR), CURSOR_ADAPTER_READING_TESTS),

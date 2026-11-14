@@ -22,6 +22,7 @@
     {"kind": "registration", "key": "Stop|*|nudge-handoff-near-context-cap.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by a Cursor-side context-cap hook"},
     {"kind": "registration", "key": "SubagentStop|code-writer|send-back-skipped-self-review.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by a Cursor-side send-back hook"},
     {"kind": "registration", "key": "SessionStart|compact|restore-authorization-boundary-on-compact.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by a Cursor-side compact hook"},
+    {"kind": "registration", "key": "SessionStart|compact|restore-session-state-on-compact.sh", "reason": "unsupported", "detail": "The shim's SessionStart match target is startup only, so a compact matcher never fires, and the script reads Claude Code transcript records only"},
     {"kind": "adapter-gate", "key": "gate-settings-permissions.sh", "reason": "pending-phase", "phase": "5a", "detail": "Carries the permissions.deny Bash and Read entries"},
     {"kind": "adapter-gate", "key": "gate-agent-tools.sh", "reason": "pending-phase", "phase": "5a", "detail": "Carries agent tool limits"},
     {"kind": "adapter-gate", "key": "gate-credential-exposure.sh", "reason": "pending-phase", "phase": "5a", "detail": "Carries the credential-exposure arms"}
