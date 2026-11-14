@@ -1628,7 +1628,6 @@ class TestSelectPytestTargets:
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
-            _mod.RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,
         }
         # Hand-typed literal, independent of the constant: an emptied
         # SKILLS_TESTS_IMPORTING_CONFIG would otherwise satisfy the set above.
@@ -1703,16 +1702,25 @@ class TestSelectPytestTargets:
         [
             _mod.COMPACTION_CONTEXT_SCRIPT,
             "claude/.claude/scripts/transcript_analysis/user_input.py",
-            _mod.CONFIG_MODULE,
             _mod.CONFIG_DIR_MODULE,
         ],
-        ids=["script", "package-module", "config", "config-dir"],
+        ids=["script", "package-module", "config-dir"],
     )
     def test_compaction_context_import_closure_selects_the_session_state_hook_test(self, changed_path):
         """test_restore_session_state_on_compact.py runs the real compaction-context.py, and through it the script's
         first-party imports, as a subprocess of restore-session-state-on-compact.sh. Those imports load at run
         time, which TestCrossDomainReadCompleteness cannot see, so only this row selects it for these paths.
         The test path is hand-typed so a constant retyped to another existing file fails here."""
+        assert (_REPO_ROOT / changed_path).is_file()
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        assert "claude/.claude/hooks/tests/test_restore_session_state_on_compact.py" in result.target_paths
+
+    def test_compaction_context_test_helpers_change_selects_the_session_state_hook_test(self):
+        """test_restore_session_state_on_compact.py imports its record builders from the scripts-tests helper module,
+        which TestCrossDomainReadCompleteness cannot see, so only this row selects it for a helper edit.
+        The test path is hand-typed so a constant retyped to another existing file fails here."""
+        changed_path = "claude/.claude/scripts/tests/_compaction_context_helpers.py"
         assert (_REPO_ROOT / changed_path).is_file()
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False
@@ -2300,6 +2308,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.EVALS_CONFTEST,
     _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
     _mod.COMPACTION_CONTEXT_SCRIPT,
+    _mod.COMPACTION_CONTEXT_TEST_HELPERS,
 )
 
 # The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file rather

@@ -83,6 +83,14 @@ _EXCLUDED_AFTER_PRIOR = [
     pytest.param([user_prompt(f'<widget-frame size="2">{EXCLUDED}')], id="typed_prompt_opening_with_a_tag"),
     pytest.param([user_prompt(f"\n\n<widget-frame>{EXCLUDED}")], id="human_prompt_opening_with_two_newlines_then_a_tag"),
     pytest.param([user_prompt(f"<pasted_content_other>{EXCLUDED}")], id="human_prompt_opening_with_a_longer_pasted_tag_name"),
+    pytest.param([user_prompt(f"\x00<widget-frame>{EXCLUDED}")], id="human_prompt_opening_with_nul_then_a_tag"),
+    pytest.param(
+        [user_prompt(f"\x00<pasted_content_other>{EXCLUDED}")], id="human_prompt_opening_with_nul_then_a_longer_pasted_tag_name"
+    ),
+    pytest.param(
+        [headless_prompt(f"prose {EXCLUDED} </task-notif\x00ication> more prose")],
+        id="no_origin_prompt_holding_a_task_notification_closer_split_by_nul",
+    ),
     pytest.param(
         [slash_invocation(args=EXCLUDED), assistant_tool_use("Bash"), skill_load()],
         id="slash_with_args_and_an_assistant_record_before_its_skill_load",
@@ -192,6 +200,31 @@ class TestExcludedRecords:
         assert EXCLUDED not in block
         expected = [PRIOR, "Base directory for this skill: /work/x"] if following_prompt_is_quoted else [PRIOR]
         assert quoted_messages(block) == expected
+
+    @pytest.mark.parametrize(
+        "nul_only_prompt",
+        [
+            pytest.param(user_prompt("\x00\x00"), id="human_prompt_of_nul_only"),
+            pytest.param(headless_prompt("\x00"), id="headless_prompt_of_nul_only"),
+            pytest.param(user_prompt(" \x00\n"), id="human_prompt_of_nul_and_whitespace_only"),
+        ],
+    )
+    def test_prompt_with_no_text_once_nul_is_stripped_takes_no_message_slot(self, tmp_path, nul_only_prompt):
+        prompts = [f"prompt number {index}" for index in range(PROMPT_LIMIT)]
+        records = [*(user_prompt(prompt) for prompt in prompts), nul_only_prompt]
+
+        block = block_for(tmp_path, records)
+
+        assert quoted_messages(block) == prompts
+        assert "\x00" not in block
+
+    def test_slash_name_split_by_nul_is_quoted_as_the_name_with_nul_removed(self, tmp_path):
+        records = [slash_invocation(name="ab\x00c"), skill_load()]
+
+        block = block_for(tmp_path, records)
+
+        assert quoted_messages(block) == ["/abc some args"]
+        assert "\x00" not in block
 
     def test_bare_slash_invocation_quotes_no_name_line_and_lists_its_skill_once(self, tmp_path):
         records = [user_prompt(PRIOR), slash_invocation(args=None), skill_load()]

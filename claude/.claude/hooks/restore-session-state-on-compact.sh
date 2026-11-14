@@ -12,6 +12,8 @@
 # A 6-second time cap, not a byte cap, bounds the transcript read.
 # The cap plus 2 seconds of kill grace leaves 2 seconds of the 10-second settings timeout for the bootstrap and the jq calls.
 # Without timeout or gtimeout on PATH the script call runs uncapped, bounded only by the settings timeout.
+# A fire costs a few hundred milliseconds because it starts python3, which is outside the usual per-fire hook budget and
+# acceptable here because the hook fires only after a compaction.
 #
 # A secret pasted into a quoted message is not redacted.
 # The quoted text is already in the session's own transcript.

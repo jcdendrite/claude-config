@@ -224,7 +224,6 @@ class FencedMessage(NamedTuple):
 
 
 def fenced_messages(block: str) -> list[FencedMessage]:
-    """Each fenced message of a block, oldest first, with its fence and the line directly above the opening fence."""
     return [
         FencedMessage(block[: match.start() - 1].rsplit("\n", 1)[-1], match.group(1), match.group(2))
         for match in _FENCED_MESSAGE_RE.finditer(block)

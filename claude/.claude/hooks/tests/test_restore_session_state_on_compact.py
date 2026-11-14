@@ -10,12 +10,10 @@ tests at the end tie two duplicated values in the script to the sources they cop
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -37,6 +35,15 @@ from helpers import (
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
 )
+from scripts.tests._compaction_context_helpers import (
+    SKILL_PATH,
+    at_checkout,
+    compaction_context,
+    headless_prompt,
+    skill_load,
+    user_prompt,
+    write_transcript,
+)
 
 from .conftest import requires_jq
 from .test_lib_path_char_allowlist import _run_sweep
@@ -51,42 +58,7 @@ KILL_GRACE_SECONDS = 2
 # A production-scale stall far past the cap, so a hook that waited it out is told apart from one the cap killed.
 STALL_PAST_CAP_SECONDS = 60
 
-SKILL_DIR = "/work/repo/.claude/skills/scratch"
-SKILL_MD_PATH = f"{SKILL_DIR}/SKILL.md"
 NEWEST_PROMPT = "the newest typed prompt"
-
-
-def _skill_load_record() -> dict:
-    body = f"Base directory for this skill: {SKILL_DIR}\n\n# Scratch skill\n\n1. First step."
-    return {
-        "type": "user",
-        "isMeta": True,
-        "entrypoint": "cli",
-        "promptId": "prompt-1",
-        "message": {"role": "user", "content": [{"type": "text", "text": body}]},
-    }
-
-
-def _typed_prompt(text: str) -> dict:
-    return {
-        "type": "user",
-        "origin": {"kind": "human"},
-        "entrypoint": "cli",
-        "promptSource": "typed",
-        "message": {"role": "user", "content": text},
-    }
-
-
-def _headless_prompt(text: str) -> dict:
-    """A `claude -p` prompt: no `origin`, with the three markers the script requires in its place."""
-    record = {key: value for key, value in _typed_prompt(text).items() if key != "origin"}
-    return {**record, "entrypoint": "sdk-cli", "promptSource": "sdk", "turnOrigin": "sdk"}
-
-
-def _write_transcript(directory: Path, records: list[dict]) -> Path:
-    path = directory / "session.jsonl"
-    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
-    return path
 
 
 def _payload(transcript: Path, **overrides) -> dict:
@@ -102,7 +74,7 @@ def _assert_silent(result: subprocess.CompletedProcess) -> None:
     assert result.stdout == b""
 
 
-def _assert_emits_state_block(result: subprocess.CompletedProcess, expected_text: str = SKILL_MD_PATH) -> str:
+def _assert_emits_state_block(result: subprocess.CompletedProcess, expected_text: str = SKILL_PATH) -> str:
     assert result.returncode == 0
     context = session_start_additional_context(result)
     assert expected_text in context
@@ -111,7 +83,7 @@ def _assert_emits_state_block(result: subprocess.CompletedProcess, expected_text
 
 @pytest.fixture
 def transcript(tmp_path) -> Path:
-    return _write_transcript(tmp_path, [_skill_load_record(), _typed_prompt(NEWEST_PROMPT)])
+    return write_transcript(tmp_path, [skill_load(), user_prompt(NEWEST_PROMPT)])
 
 
 def _relocated_hook(tmp_path: Path, *, with_lib: bool = True, with_script: bool = True) -> Path:
@@ -309,6 +281,8 @@ class TestFailOpen:
         _assert_silent(silent)
         _assert_emits_state_block(_run_hook(RESTORE_STATE_HOOK, _payload(transcript), isolated_home))
 
+    # Every other run in this file uses the unscaled production caps (6 s for python3, 5 s per jq call).
+    # One run took about 0.2 s idle, so a cap kill under extreme load would surface as a JSON decode error on empty stdout.
     @pytest.mark.timing
     @requires_timeout
     def test_script_stalled_past_the_cap_gives_no_output_within_a_bounded_wall_time(self, isolated_home, tmp_path, transcript):
@@ -335,9 +309,8 @@ class TestHappyPath:
         checkout = tmp_path / "checkout"
         (checkout / ".git").mkdir(parents=True)
         plan = checkout / ".claude" / "plans" / "scratch.md"
-        on_branch = {"gitBranch": "feature/scratch", "cwd": str(checkout)}
-        records = [{**_skill_load_record(), **on_branch}, _typed_prompt(NEWEST_PROMPT)]
-        transcript_path = _write_transcript(tmp_path, records)
+        records = [at_checkout(skill_load(), cwd=str(checkout)), user_prompt(NEWEST_PROMPT)]
+        transcript_path = write_transcript(tmp_path, records)
 
         without_plan = _run_hook(RESTORE_STATE_HOOK, _payload(transcript_path), isolated_home)
         plan.parent.mkdir(parents=True)
@@ -351,7 +324,7 @@ class TestHappyPath:
         self, isolated_home, tmp_path
     ):
         tricky_prompt = "café 日本 😀 \"double\" 'single' back\\slash `tick` $HOME\n~~~\nafter the tilde run"
-        transcript_path = _write_transcript(tmp_path, [_skill_load_record(), _typed_prompt(tricky_prompt)])
+        transcript_path = write_transcript(tmp_path, [skill_load(), user_prompt(tricky_prompt)])
         script_result = subprocess.run(
             ["python3", str(COMPACTION_CONTEXT_SCRIPT), "state", "--transcript", str(transcript_path)],
             capture_output=True,
@@ -365,9 +338,9 @@ class TestHappyPath:
 
     def test_headless_prompt_keeps_its_label_directly_above_its_fence(self, isolated_home, tmp_path):
         headless_text = "the headless prompt"
-        records = [_skill_load_record(), _typed_prompt(NEWEST_PROMPT), _headless_prompt(headless_text)]
-        transcript_path = _write_transcript(tmp_path, records)
-        label = _load_compaction_context_module().HEADLESS_LABEL
+        records = [skill_load(), user_prompt(NEWEST_PROMPT), headless_prompt(headless_text)]
+        transcript_path = write_transcript(tmp_path, records)
+        label = compaction_context.HEADLESS_LABEL
 
         context = _assert_emits_state_block(_run_hook(RESTORE_STATE_HOOK, _payload(transcript_path), isolated_home))
 
@@ -381,7 +354,7 @@ class TestHappyPath:
 
     def test_block_reaches_jq_on_stdin_and_never_in_its_argv(self, isolated_home, tmp_path):
         sentinel = "ARGV-SENTINEL-7f3a"
-        transcript_path = _write_transcript(tmp_path, [_typed_prompt(f"prompt holding {sentinel}")])
+        transcript_path = write_transcript(tmp_path, [user_prompt(f"prompt holding {sentinel}")])
         fake_bin = fake_bin_dir(tmp_path, "logs-jq-argv")
         argv_log = tmp_path / "jq-argv.log"
         jq_shim = fake_bin / "jq"
@@ -450,21 +423,8 @@ class TestRegistration:
         assert "onFailure" not in entries[0]
 
 
-def _load_compaction_context_module():
-    """The script as a module; its sibling-package imports need the scripts directory on sys.path while it executes."""
-    spec = importlib.util.spec_from_file_location("compaction_context_under_parity_test", COMPACTION_CONTEXT_SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path.remove(str(SCRIPTS_DIR))
-    return module
-
-
 class TestParity:
     def test_path_class_accepts_the_same_bytes_as_the_bash_allowlist(self):
-        compaction_context = _load_compaction_context_module()
         values = [bytes([byte]) for byte in range(1, 256)]
         verdicts = _run_sweep(values)
         assert len(verdicts) == len(values)
@@ -476,16 +436,12 @@ class TestParity:
         assert bash_accepted
 
     def test_value_of_allowed_bytes_ending_in_a_newline_is_rejected_by_both(self):
-        compaction_context = _load_compaction_context_module()
-
         assert _run_sweep([b"ab\n", b"ab"]) == b"01"
         assert compaction_context._PATH_RE.fullmatch("ab\n") is None
         assert compaction_context._PATH_RE.fullmatch("ab") is not None
 
     @requires_jq
     def test_irreversible_action_set_appears_verbatim_in_the_boundary_hooks_runtime_output(self, isolated_home):
-        compaction_context = _load_compaction_context_module()
-
         result = _run_hook(RESTORE_BOUNDARY_HOOK, {"source": "compact"}, isolated_home)
 
         assert result.returncode == 0

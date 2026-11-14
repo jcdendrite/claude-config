@@ -101,6 +101,11 @@ def _record_text(rec: dict) -> str:
     return render._content_text(content)
 
 
+def _prompt_text(rec: dict) -> str:
+    """The record's text with NUL removed, so the closer and emptiness checks judge the text the block emits."""
+    return _record_text(rec).replace("\x00", "")
+
+
 def _skill_md_path(rec: dict) -> str | None:
     """The SKILL.md path a skill-load record names, or None when rec is not one or its directory fails the allow-list."""
     if rec.get("type") != "user" or not rec.get("isMeta"):
@@ -190,7 +195,7 @@ def _is_prompt_candidate(rec: dict) -> bool:
         return False
     if not _passes_origin_rule(rec):
         return False
-    if rec.get("origin") is None and "task-notification>" in _record_text(rec):
+    if rec.get("origin") is None and "task-notification>" in _prompt_text(rec):
         return False
     return "interruptedMessageId" not in rec
 
@@ -215,7 +220,9 @@ def _quoted_text(thread: Sequence[dict], index: int) -> str | None:
     rec = thread[index]
     if not _is_prompt_candidate(rec):
         return None
-    text = _record_text(rec)
+    text = _prompt_text(rec)
+    if not text.strip():
+        return None
     # The match is a search, so a typed prompt holding a command-name tag mid-text loses the text around it when a
     # skill-load record follows, or is dropped whole when the tag has no args or its name fails the allow-list.
     slash_match = review_rounds._SLASH_COMMAND_RE.search(text)
@@ -247,8 +254,8 @@ def _fenced(text: str) -> str:
 
 
 def _quoted_message(rec: dict, text: str) -> str:
-    """The fenced, budget-cut message, preceded by the headless label unless the record carries a human `origin`."""
-    fenced = _fenced(_cut_to_budget(text.replace("\x00", "")))
+    fenced = _fenced(_cut_to_budget(text))
+    # The complement of the human-origin test, so a newly admitted `origin` kind is labelled by default.
     return fenced if _has_human_origin(rec) else f"{HEADLESS_LABEL}\n{fenced}"
 
 
