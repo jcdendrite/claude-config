@@ -381,6 +381,7 @@ _HEADLESS_SLASH_TEXT = slash_invocation(args="alpha beta")["message"]["content"]
 _HEADLESS_VARIANTS = [
     pytest.param([headless_prompt("headless text")], id="origin_absent"),
     pytest.param([headless_prompt("headless text", origin=None)], id="origin_none"),
+    # Assumed shape, no recorded run: `claude -p "/skill args"` is listed as not run in docs/precompact-hook-behavior.md.
     pytest.param([headless_prompt(_HEADLESS_SLASH_TEXT), skill_load()], id="slash_invocation"),
     pytest.param([headless_prompt("h" * (compaction_context.MESSAGE_CHAR_BUDGET + 500))], id="over_budget_prompt_that_is_cut"),
 ]
@@ -451,6 +452,17 @@ class TestHeadlessLabel:
 
         assert [(message.body, message.line_above == HEADLESS_LABEL) for message in quoted] == [
             ("human origin, sdk markers", False)
+        ]
+
+    @pytest.mark.parametrize("origin_kind", ["coordinator", "peer", "an_unrecorded_kind"])
+    def test_record_with_a_non_human_origin_kind_is_quoted_with_the_label_directly_above_its_fence(self, origin_kind):
+        # Admission never lets such a record through today, so the label rule is reached through `_quoted_message`.
+        record = user_prompt("text from a non-human origin", origin={"kind": origin_kind})
+
+        quoted = fenced_messages(compaction_context._quoted_message(record, "text from a non-human origin"))
+
+        assert [(message.line_above, message.body) for message in quoted] == [
+            (HEADLESS_LABEL, "text from a non-human origin")
         ]
 
     @pytest.mark.parametrize(

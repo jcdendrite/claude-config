@@ -331,6 +331,8 @@ def build_state_block(transcript: Path) -> str:
         return ""
 
     # With dozens of loaded skills the skill lines can crowd out the earlier prompts before any skill is dropped.
+    # Trimming skills is quadratic in their count, which only a transcript with thousands of distinct skill loads reaches.
+    # The result is then the same silent drop as an over-cap transcript.
     while len(block := _render_block(skill_paths, plan_line, messages)) > BLOCK_CHAR_CAP:
         if len(messages) > 1:
             messages = messages[1:]

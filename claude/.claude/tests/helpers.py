@@ -2999,7 +2999,7 @@ def fake_python3(fake_bin: Path, script_body: str) -> str:
     shim = fake_bin / "python3"
     shim.write_text(script_body)
     shim.chmod(0o755)
-    return f"{fake_bin}:{os.environ['PATH']}"
+    return f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
 
 
 def _awk_implementations_on_this_machine() -> dict[str, str]:

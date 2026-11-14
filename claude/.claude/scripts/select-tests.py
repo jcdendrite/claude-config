@@ -226,8 +226,8 @@ TRANSCRIPT_ANALYSIS_SCRIPT = "claude/.claude/scripts/transcript-analysis.py"
 # cannot see the read.
 NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH = "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py"
 
-# restore-session-state-on-compact.sh runs this script by path, which loads its first-party imports: the
-# transcript_analysis package and _config_dir.py.
+# restore-session-state-on-compact.sh runs this script by path, which loads the transcript_analysis package,
+# and _config_dir.py through it.
 COMPACTION_CONTEXT_SCRIPT = "claude/.claude/scripts/compaction-context.py"
 # test_restore_session_state_on_compact.py runs that hook, so it runs COMPACTION_CONTEXT_SCRIPT as a subprocess.
 # The script's imports are loaded at run time, which TestCrossDomainReadCompleteness cannot see.

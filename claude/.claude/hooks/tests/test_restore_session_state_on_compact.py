@@ -5,7 +5,7 @@ The hook is a SessionStart hook (matcher: compact) that emits `additionalContext
 failure path exits 0 with no output.
 
 The block's content rules are tested in claude/.claude/scripts/tests/test_compaction_context_*.py. These tests cover the
-hook's wiring: its self-filter, its failure paths, its cap, its encoding of the block, and its registration. The two parity
+hook's wiring: its self-filter, its failure paths, its cap, its encoding of the block, and its registration. The parity
 tests at the end tie two duplicated values in the script to the sources they copy.
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     assert_cap_engaged,
+    build_path_with_silent_python3,
     build_path_without,
     fake_bin_dir,
     fake_python3,
@@ -185,21 +186,19 @@ class TestTranscriptPath:
         _assert_emits_state_block(result)
         assert not (directory / "PWNED").exists()
 
-    def test_relative_path_with_a_leading_dash_gives_no_output_unless_written_with_a_dot_slash(
-        self, isolated_home, tmp_path, transcript
-    ):
+    def test_relative_path_with_a_leading_dash_still_emits_the_state_block(self, isolated_home, tmp_path, transcript):
         directory = tmp_path / "dash"
         directory.mkdir()
         (directory / "-session.jsonl").write_bytes(transcript.read_bytes())
 
-        silent = _run_hook(
+        dashed = _run_hook(
             RESTORE_STATE_HOOK, {"source": "compact", "transcript_path": "-session.jsonl"}, isolated_home, process_cwd=directory
         )
         control = _run_hook(
             RESTORE_STATE_HOOK, {"source": "compact", "transcript_path": "./-session.jsonl"}, isolated_home, process_cwd=directory
         )
 
-        _assert_silent(silent)
+        _assert_emits_state_block(dashed)
         _assert_emits_state_block(control)
 
     def test_symlink_to_a_transcript_is_read_through(self, isolated_home, tmp_path, transcript):
@@ -272,7 +271,7 @@ class TestFailOpen:
 
     def test_script_with_empty_output_gives_no_output(self, isolated_home, tmp_path, transcript):
         fake_bin = fake_bin_dir(tmp_path, "prints-nothing")
-        path_with_silent_script = fake_python3(fake_bin, "#!/bin/bash\nexit 0\n")
+        path_with_silent_script = build_path_with_silent_python3(fake_bin)
 
         silent = _run_hook(
             RESTORE_STATE_HOOK, _payload(transcript), isolated_home, extra_env={"PATH": path_with_silent_script}
@@ -282,7 +281,9 @@ class TestFailOpen:
         _assert_emits_state_block(_run_hook(RESTORE_STATE_HOOK, _payload(transcript), isolated_home))
 
     # Every other run in this file uses the unscaled production caps (6 s for python3, 5 s per jq call).
-    # One run took about 0.2 s idle, so a cap kill under extreme load would surface as a JSON decode error on empty stdout.
+    # On a one-line transcript the script alone takes about 0.25 to 0.7 s warm and about 1 s or more with no cached
+    # bytecode, and the whole hook adds a few hundred milliseconds. The 6 s cap bounds only the script call.
+    # A cap kill under extreme load would surface as a JSON decode error on empty stdout.
     @pytest.mark.timing
     @requires_timeout
     def test_script_stalled_past_the_cap_gives_no_output_within_a_bounded_wall_time(self, isolated_home, tmp_path, transcript):

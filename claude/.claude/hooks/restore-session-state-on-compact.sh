@@ -11,9 +11,11 @@
 # Fail-open: every failure path (missing python3, jq, script, transcript, or a script error) exits 0 with no output.
 # A 6-second time cap, not a byte cap, bounds the transcript read.
 # The cap plus 2 seconds of kill grace leaves 2 seconds of the 10-second settings timeout for the bootstrap and the jq calls.
-# Without timeout or gtimeout on PATH the script call runs uncapped, bounded only by the settings timeout.
-# A fire costs a few hundred milliseconds because it starts python3, which is outside the usual per-fire hook budget and
-# acceptable here because the hook fires only after a compaction.
+# Without timeout or gtimeout on PATH the script call runs uncapped, and the settings timeout bounds the hook's wall time only.
+# The harness's kill scope for a timed-out hook is unverified.
+# A fire costs about half a second to a second because it starts python3.
+# That exceeds the usual per-fire hook budget, which is acceptable because the hook fires only after a compaction.
+# docs/precompact-hook-behavior.md "Timing" records the measurements.
 #
 # A secret pasted into a quoted message is not redacted.
 # The quoted text is already in the session's own transcript.
@@ -43,7 +45,7 @@ STATE_SCRIPT="${0%/*}/../scripts/compaction-context.py"
 TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.transcript_path | type) == "string" then .transcript_path else empty end' 2>/dev/null)
 [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ] || exit 0
 
-STATE_BLOCK=$(_lib_capped_for 6 python3 "$STATE_SCRIPT" state --transcript "$TRANSCRIPT_PATH" 2>/dev/null) || exit 0
+STATE_BLOCK=$(_lib_capped_for 6 python3 "$STATE_SCRIPT" state --transcript="$TRANSCRIPT_PATH" 2>/dev/null) || exit 0
 [ -n "$STATE_BLOCK" ] || exit 0
 
 # shellcheck disable=SC2016 # single-quoted on purpose: `.` is jq's input, not a shell expansion.
