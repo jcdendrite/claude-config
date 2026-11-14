@@ -1714,6 +1714,7 @@ class TestProjectFiles:
         assert [group.get("matcher") for group in hooks["PreToolUse"]] == ["Agent|Task", "Agent|Task"]
         assert str(tmp_path / "deny.py") in hooks["PreToolUse"][1]["hooks"][0]["command"]
         assert hooks["PreToolUse"][0]["hooks"][0]["onFailure"] == "block"
+        assert hooks["PreToolUse"][1]["hooks"][0]["onFailure"] == "block"
 
     def test_the_memory_arm_registers_only_the_deny_hook(self, tmp_path: Path) -> None:
         settings = m.project_settings(
@@ -1908,6 +1909,16 @@ class TestProjectFiles:
         assert "--verbose" in cmd
         assert "--include-hook-events" in cmd
         assert cmd[cmd.index("--model") + 1] == request.model
+
+    def test_the_self_check_runs_with_every_tool_disabled_and_an_observable_does_not(self) -> None:
+        self_check = m.build_command(make_request("O1"), claude_path="c", observable=None)
+        observed = m.build_command(make_request("O1"), claude_path="c", observable=m.OBSERVABLES_BY_KEY["O1"])
+
+        assert self_check[-2:] == ["--tools", ""], "--tools takes a variable number of values, so nothing may follow it"
+        assert "--strict-mcp-config" in self_check
+        assert "--mcp-config" not in self_check
+        assert "--tools" not in observed
+        assert "--strict-mcp-config" not in observed
 
     def test_only_o3_runs_under_accept_edits(self) -> None:
         o3 = m.build_command(make_request("O3"), claude_path="c", observable=m.OBSERVABLES_BY_KEY["O3"])
@@ -2722,9 +2733,10 @@ class TestCostAccounting:
         launcher = ScriptedLauncher()
         built = kit.build(launcher, stop=1.0, workers=4)
 
-        built.harness.run()
+        result = built.harness.run()
 
-        assert built.harness.spend_usd <= 1.0 + 4 * 0.1 + 1e-9
+        assert isinstance(result.halt, m.StopReached)
+        assert 1.0 <= built.harness.spend_usd <= 1.0 + 4 * 0.1 + 1e-9
 
     def test_the_projection_and_ceiling_print_after_the_smoke_and_before_the_first_scored_sample(self, kit: RunKit) -> None:
         notices: list[tuple[str, int]] = []
@@ -4032,6 +4044,8 @@ class TestInterrupts:
 
         built = kit.build(sleeping_child, workers=2)
         m.install_termination_handlers()
+        # Without a handler the real SIGTERM below would end the whole pytest process instead of failing this test.
+        assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
 
         cancelled = threading.Event()
         alive_before_sigterm: dict[int, bool] = {}
@@ -4461,7 +4475,7 @@ class TestCli:
             assert f"(default {default})" in actions[dest].help % {"default": actions[dest].default}
 
 
-# --- Added behavior under the scripted launcher ----------------------------------------------------------------
+# --- Delivery, resume and stop behavior under the scripted launcher ----------------------------------------------------
 
 
 class TestDeliveryFailureStopsTheStage:
@@ -5256,6 +5270,25 @@ class TestLiveRun:
 
         assert code == 0
         assert set(kept_after_the_pause) < {path.name for path in kept.glob("*.jsonl")}
+
+    def test_a_failed_seed_git_command_names_the_command_and_carries_only_the_stderr_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def failing_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(
+                128, args[0], stderr="x" * m.STDERR_DETAIL_TAIL_CHARS + "fatal: the tail\n",
+            )
+
+        monkeypatch.setattr(subprocess, "run", failing_run)
+
+        with pytest.raises(subprocess.SubprocessError) as raised:
+            m._git_in(tmp_path, "checkout", "-q")
+
+        message = str(raised.value)
+        assert message.startswith("git checkout exited 128: ")
+        assert message.endswith("fatal: the tail'")
+        assert "x" * (m.STDERR_DETAIL_TAIL_CHARS - len("fatal: the tail")) in message
+        assert "x" * (m.STDERR_DETAIL_TAIL_CHARS - len("fatal: the tail") + 1) not in message
 
     def test_main_removes_the_git_local_variables_so_o3_seeding_leaves_a_repository_named_by_git_dir_untouched(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

@@ -1358,7 +1358,7 @@ def project_settings(
     if deny_script is not None and observable is not None:
         command = f"{shlex.quote(sys.executable)} -I {shlex.quote(str(deny_script))}"
         hooks.setdefault("PreToolUse", []).append(
-            {"matcher": observable.deny_matcher, "hooks": [{"type": "command", "command": command}]}
+            {"matcher": observable.deny_matcher, "hooks": [{"type": "command", "command": command, "onFailure": "block"}]}
         )
     settings: dict = {"claudeMdExcludes": excludes}
     if hooks:
@@ -1367,10 +1367,15 @@ def project_settings(
 
 
 def _git_in(project_dir: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-c", "user.email=eval@example.com", "-c", "user.name=Eval Harness", *args],
-        cwd=project_dir, check=True, capture_output=True, timeout=GIT_TIMEOUT_S, env=msmr.environment_without_git_local_vars(),
-    )
+    try:
+        subprocess.run(
+            ["git", "-c", "user.email=eval@example.com", "-c", "user.name=Eval Harness", *args],
+            cwd=project_dir, check=True, capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
+            env=msmr.environment_without_git_local_vars(),
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr_tail = exc.stderr.strip()[-STDERR_DETAIL_TAIL_CHARS:]
+        raise subprocess.SubprocessError(f"git {args[0]} exited {exc.returncode}: {stderr_tail!r}") from exc
 
 
 def seed_project(observable: Observable, project_dir: Path, *, session_id: str) -> None:
@@ -1412,7 +1417,14 @@ def build_command(request: SampleRequest, *, claude_path: str, observable: Obser
         "--model", request.model, "--session-id", request.session_id, "--max-turns", str(request.max_turns),
         "--max-budget-usd", str(request.budget_cap_usd),
     ]
-    if observable is not None and observable.permission_mode is not None:
+    if observable is None:
+        # The self-check has no deny hook, so no tool may run. `claude --help` documents `--tools ""` as disabling every
+        # tool and `--strict-mcp-config` as ignoring every MCP configuration except `--mcp-config`, which is not passed.
+        # It does not say whether account-level connectors count as an MCP configuration, so the operator confirms
+        # the first self-check stream's init event lists no tools and no MCP servers (see the README).
+        # `--tools` takes a variable number of values, so it stays last: a later argument would be read as a tool name.
+        cmd += ["--strict-mcp-config", "--tools", ""]
+    elif observable.permission_mode is not None:
         cmd += ["--permission-mode", observable.permission_mode]
     return cmd
 

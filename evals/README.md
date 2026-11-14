@@ -514,6 +514,10 @@ the emitter, every arm receives the rules by hook, so the preflight refuses.
   An observable enters when both arms score 30 samples within 45 attempts and
   the Newcombe lower bound (z = 1.96) for `memory` minus `none` exceeds the 0.15
   margin.
+  - The self-check launches with every tool disabled and no MCP configuration.
+    Whether the CLI also drops account-level connectors is unconfirmed, so read
+    the first self-check stream's init event (kept with `--keep-artifacts`) and
+    confirm it lists no tools and no MCP servers before relying on the result.
 - `--phase gate` adds the `hook` arm, re-runs the calibration, sizes a
   two-look non-inferiority comparison of `hook` against `memory` from it, and
   prints one verdict: pass, fail, miss, inconclusive or void. It reads the
@@ -555,7 +559,6 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
   sleep does not use up `--timeout-s`. It can leave a sample's API connection
   dead on wake, which ends that sample as a fault or as a timeout.
 - `--resume LOG` continues the run recorded in LOG:
-  - It replays the seeded schedule by stage and slot and skips finished slots.
   - It runs a slot again when its last attempt ended in a fault, a delivery
     retry, an unrecognized failure or a blocked prompt. That attempt's charge
     still counts toward spend.
@@ -563,7 +566,6 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
     once, and runs that slot again.
   - It removes the temp project and session store of any slot that started and
     never finished.
-  - It starts the cumulative spend from the log's total.
   - It refuses when an arm-input, prompt, scorer, deny-hook, launch-command or
     seeded-fixture hash, the CLI version, the ambient config commit, the model,
     the seed, the phase or the account differs from the log's. A refusal leaves
@@ -586,13 +588,16 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
     - The check sees only a child whose command line carries its session id.
       On a system whose `ps` cannot show full command lines even with `ww`, check for stray
       `claude -p` children by hand before resuming.
-  - It also refuses when the process list is empty or cannot be read.
+  - With such an attempt, it also refuses when the process list is empty or cannot be read.
   - It may reuse the `--json` and `--keep-artifacts` paths.
 - `--dry-run` prints the schedule and runs no preflight, so a clean dry run
   does not predict a refusal.
 - Do not pull or switch branches in the main checkout during a run: the
   ambient config checkout is one of the arms' shared inputs, and its commit is
   read at every stage boundary.
+- Each sample's deny hook is registered with `onFailure: "block"`, so a hook that cannot start blocks the call. That
+  takes effect on Claude Code 2.1.295 or newer, as for every gate registration in the repository `README.md`. Run the
+  harness on a CLI at or above that version.
 - A CLI self-update halts the run when the next stage boundary or sample sees
   the new version. `--resume` then refuses, so the remaining samples need a
   fresh run. The harness launches the `claude` binary's real path, resolved
@@ -600,8 +605,9 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
 - A scorer fix after a run does not need new samples: with `--keep-artifacts`,
   `rescore_kept_streams(DIR)` scores the kept streams again with the current
   scorer. A prompt change reruns that observable's cells.
-- Before reading a gate table, grep the kept O3 streams for Bash commands that
-  contain `commit` but that the scorer's commit pattern does not match, such as
+- Run the gate with `--keep-artifacts`. Before reading its table, grep the kept
+  O3 (review-before-commit) streams for Bash commands that contain `commit` but
+  that the scorer's commit pattern does not match, such as
   a quoted option value containing a space (`git -c "user.name=A B" commit`).
   The pattern does not match them, so the deny hook does not deny them. Only an
   unreached sample counts one in its `unscored_target_calls`; a sample that
