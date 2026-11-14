@@ -96,9 +96,27 @@ MEASURE_EXPLORE_RECALL_TEST = "evals/test_measure_explore_recall.py"
 # test is its only automated-test consumer. The recall scorer also reads it,
 # but at runtime via --fixtures, not through a test.
 MEASURE_EXPLORE_RECALL_FIXTURE = "evals/fixtures/explore-recall-cases.json"
-# Applies to every test under evals/, which are exactly the review_bench
-# tests, the replay_bench tests, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
-# MEASURE_EXPLORE_RECALL_TEST.
+# The one-time Main session adherence gate: its module imports measure_subagent_model_resolution,
+# measure_explore_recall, run_skill_evals and review_bench.runner, so an edit to any of them also needs its tests.
+MEASURE_MAIN_SESSION_RULE_ADHERENCE = "evals/measure_main_session_rule_adherence.py"
+MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST = "evals/test_measure_main_session_rule_adherence.py"
+MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST = "evals/test_main_session_rule_adherence_fixtures.py"
+MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR = "evals/fixtures/main-session-rule-adherence"
+# The seeded projects the gate copies into every sample and hashes into its run header; its tests assert on their content.
+DISPATCH_PROJECT_FIXTURE_DIR = "evals/fixtures/dispatch-project"
+TEMP_PROJECT_FIXTURE_DIR = "evals/fixtures/temp-project"
+TEMP_PROJECT_STAGED_PATCH = "evals/fixtures/temp-project.staged.patch"
+# Not a test file: a plain module the gate's test and the model-resolution test import, so an edit to it selects
+# every evals test through the review_bench predicate.
+EVALS_PROCESS_TEST_HELPERS = "evals/process_test_helpers.py"
+# Every evals test a review_bench, measure_subagent_model_resolution, measure_explore_recall, run_skill_evals or
+# _config_dir edit selects.
+EVALS_TEST_TARGETS = (
+    REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    MEASURE_EXPLORE_RECALL_TEST, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+    MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
+)
+# Applies to every test under evals/, which are exactly EVALS_TEST_TARGETS.
 EVALS_CONFTEST = "evals/conftest.py"
 
 # Every claude/.claude/scripts module the review_bench sources import,
@@ -639,12 +657,23 @@ def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
+        or _is_under(path, MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR)
+        or _is_under(path, DISPATCH_PROJECT_FIXTURE_DIR)
+        or _is_under(path, TEMP_PROJECT_FIXTURE_DIR)
         or path in (
             REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             MEASURE_EXPLORE_RECALL, MEASURE_EXPLORE_RECALL_TEST, MEASURE_EXPLORE_RECALL_FIXTURE, EVALS_CONFTEST,
+            MEASURE_MAIN_SESSION_RULE_ADHERENCE, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+            MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST, EVALS_PROCESS_TEST_HELPERS, TEMP_PROJECT_STAGED_PATCH,
         )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
+
+
+# test_trigger_detector.py reaches these fixtures only through run_skill_evals.seed_temp_project_git, which copies
+# them by path at run time, so the import-based rows cannot see the dependency.
+def _is_temp_project_fixture_change(path: str) -> bool:
+    return _is_under(path, TEMP_PROJECT_FIXTURE_DIR) or path == TEMP_PROJECT_STAGED_PATCH
 
 
 def _is_replay_bench_change(path: str) -> bool:
@@ -663,13 +692,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
-    (
-        _is_review_bench_change,
-        (
-            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL_TEST,
-        ),
-    ),
+    (_is_review_bench_change, EVALS_TEST_TARGETS),
     (_is_replay_bench_change, (REPLAY_BENCH_TEST_GLOB,)),
 )
 
@@ -873,25 +896,21 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # TestCrossDomainReadCompleteness cannot see.
 # The row is standalone because folding this target into the replay domain row
 # would run test_select_tests.py on every replay test edit.
+# MEASURE_MAIN_SESSION_RULE_ADHERENCE (standalone row): SELECT_TESTS_TEST_PATH's
+# import-closure test reads this module by path from a function body, which
+# TestCrossDomainReadCompleteness cannot see.
+# The row is standalone because the review_bench predicate already includes this
+# file, and folding this target in would run test_select_tests.py on every
+# review_bench edit.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
-    (
-        lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES,
-        (
-            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL_TEST,
-        ),
-    ),
-    (
-        lambda p: p == SKILL_EVALS_RUNNER,
-        (
-            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL_TEST,
-        ),
-    ),
+    (lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES, EVALS_TEST_TARGETS),
+    (lambda p: p == SKILL_EVALS_RUNNER, EVALS_TEST_TARGETS),
+    (_is_temp_project_fixture_change, tuple(sorted(SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER))),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
     (lambda p: _is_under(p, REPLAY_BENCH_DIR), (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: p == MEASURE_MAIN_SESSION_RULE_ADHERENCE, (SELECT_TESTS_TEST_PATH,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (
