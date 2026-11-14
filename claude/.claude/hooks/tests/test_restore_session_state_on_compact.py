@@ -324,7 +324,10 @@ class TestHappyPath:
     def test_additional_context_equals_the_script_stdout_for_text_the_json_encoding_could_mangle(
         self, isolated_home, tmp_path
     ):
-        tricky_prompt = "café 日本 😀 \"double\" 'single' back\\slash `tick` $HOME\n~~~\nafter the tilde run"
+        tricky_prompt = (
+            "café 日本 😀 \"double\" 'single' back\\slash `tick` $HOME"
+            "\ttab\rreturn \x1b[31mred\n~~~\nafter the tilde run"
+        )
         transcript_path = write_transcript(tmp_path, [skill_load(), user_prompt(tricky_prompt)])
         script_result = subprocess.run(
             ["python3", str(COMPACTION_CONTEXT_SCRIPT), "state", "--transcript", str(transcript_path)],
