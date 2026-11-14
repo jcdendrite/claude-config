@@ -258,8 +258,11 @@ MAX_TURNS = 20
 # Each scorer counts a match as its observable's call and that observable's deny hook denies one, so both read these
 # definitions.
 # `git`, any run of global options (with their values), then `commit`.
+# The last alternative excludes the options the first two take a value for, so every token has one parse and a long
+# run of options cannot backtrack exponentially.
 GIT_COMMIT_PATTERN = (
-    r"(?:^|[\s;&|(])git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace)(?:=|\s+)\S+|--?[A-Za-z][\w-]*))*\s+commit\b"
+    r"(?:^|[\s;&|(])git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace)(?:=|\s+)\S+"
+    r"|(?!-[Cc](?:\s|$)|--(?:git-dir|work-tree|namespace)(?:[=\s]|$))--?[A-Za-z][\w-]*))*\s+commit\b"
 )
 # `review-ledger`, with or without `.sh`, then the `render` subcommand. Other subcommands such as `show` do not match.
 LEDGER_RENDER_PATTERN = r"review-ledger(?:\.sh)?\s+render\b"
@@ -1823,9 +1826,12 @@ def notify_on_stderr(text: str) -> None:
 
 
 def list_process_commands() -> str:
-    """Every process's command line, one per line. `-axo command=` is the form BSD and GNU ps share.
+    """Every process's command line, one per line. `-axww -o command=` is the form BSD and procps ps share, and `ww`
+    removes any width limit `ps` applies, which would otherwise hide a session id placed late in a `claude -p` argv.
     Decoded leniently, because the match needs only a session id and an unrelated process's bytes must not fail it."""
-    listing = subprocess.run(["ps", "-axo", "command="], capture_output=True, check=True, timeout=GIT_TIMEOUT_S).stdout
+    listing = subprocess.run(
+        ["ps", "-axww", "-o", "command="], capture_output=True, check=True, timeout=GIT_TIMEOUT_S,
+    ).stdout
     return listing.decode("utf-8", errors="replace")
 
 

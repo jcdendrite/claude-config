@@ -141,7 +141,20 @@ GIT_COMMIT_COMMANDS = [
     "git -c user.name=a commit -m x", "git add -A; git commit -m x", "git --git-dir=d/.git commit -m x",
     "git --no-pager commit -m x",
 ]
-NON_COMMIT_COMMANDS = ["git log --grep commit", "git status", "echo git is not commit", "git add -A"]
+NON_COMMIT_COMMANDS = [
+    "git log --grep commit", "git status", "echo git is not commit", "git add -A",
+    # `commit` here is the value of the preceding option, not the subcommand.
+    "git -C commit", "git --git-dir commit",
+]
+# One run per value-taking global option. Each option could swallow the following `-A` or leave it as a bare option, so an
+# ambiguous pattern parses the run 2**n ways. 22 repeats take the pre-fix pattern 2 to 10 seconds, long enough to fail
+# the time bound and short enough to return, where more repeats would hang the run.
+OPTION_RUN_REPEATS = 22
+AMBIGUOUS_OPTION_RUNS = [
+    option_with_next_option * OPTION_RUN_REPEATS
+    for option_with_next_option in ("-C -A ", "-c -A ", "--git-dir -A ", "--work-tree -A ", "--namespace -A ")
+]
+MAX_NO_MATCH_SECONDS = 0.5
 CALLS_BY_OUTCOME: Mapping[tuple[str, str], list[tuple[str, dict]]] = {
     ("O1", m.OUTCOME_ADHERENT): O1_ADHERENT, ("O1", m.OUTCOME_NON_ADHERENT): O1_NON_ADHERENT,
     ("O2", m.OUTCOME_ADHERENT): O2_ADHERENT, ("O2", m.OUTCOME_NON_ADHERENT): O2_NON_ADHERENT,
@@ -3927,6 +3940,22 @@ class TestResume:
 
         with pytest.raises(m.ResumeRefused, match="cli_version"):
             second.harness.run()
+
+
+class TestGitCommitPatternBacktracking:
+    @pytest.mark.timing
+    @pytest.mark.parametrize("option_run", AMBIGUOUS_OPTION_RUNS)
+    def test_a_long_option_run_with_no_commit_fails_to_match_quickly(self, option_run: str) -> None:
+        started = time.monotonic()
+
+        matched = re.search(m.GIT_COMMIT_PATTERN, f"\tgit {option_run}status")
+
+        assert matched is None
+        assert time.monotonic() - started < MAX_NO_MATCH_SECONDS
+
+    @pytest.mark.parametrize("option_run", AMBIGUOUS_OPTION_RUNS)
+    def test_a_long_option_run_ending_in_commit_still_matches(self, option_run: str) -> None:
+        assert re.search(m.GIT_COMMIT_PATTERN, f"git {option_run}commit -m x")
 
 
 class TestListProcessCommands:

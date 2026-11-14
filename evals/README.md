@@ -579,12 +579,12 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
   - It must run with the original run's `TMPDIR`: the cleanup of an attempt
     that never finished refuses a temp project directory outside the current
     temp directory.
-  - It refuses while `ps -axo command=` lists the `--session-id` of an attempt
+  - It refuses while `ps -axww -o command=` lists the `--session-id` of an attempt
     that started and never finished. End the child, then resume. A hard kill
     of the harness can leave that attempt's `claude -p` child running, and the
     cleanup would delete the directories under it.
     - The check sees only a child whose command line carries its session id.
-      On a system where `ps` may not show full command lines, check for stray
+      On a system whose `ps` cannot show full command lines even with `ww`, check for stray
       `claude -p` children by hand before resuming.
   - It also refuses when the process list is empty or cannot be read.
   - It may reuse the `--json` and `--keep-artifacts` paths.
