@@ -240,6 +240,7 @@ class TestExcludedRecords:
 
         assert quoted_messages(block_for(tmp_path, records)) == ["/scratch alpha <command-args>beta"]
 
+    @pytest.mark.timing
     def test_many_unclosed_args_openers_quote_nothing_and_leave_the_rest_of_the_block_in_bounded_time(self, tmp_path):
         unclosed_openers = "<command-args>" * 8_000
         invocation = user_prompt(f"<command-name>/scratch</command-name>\n{unclosed_openers}")
@@ -251,7 +252,7 @@ class TestExcludedRecords:
 
         assert quoted_messages(block) == [PRIOR]
         assert block.count(SKILL_PATH) == 1
-        # The old lazy regex took about 26 s at 8,000 openers, while the find-based match takes milliseconds.
+        # A quadratic match over 8,000 unclosed openers takes far longer than this bound, and the find-based match is linear.
         assert elapsed < 5
 
     def test_tool_run_interrupt_in_recorded_order_leaves_the_prompt_before_the_tool_use_as_newest(self, tmp_path):
