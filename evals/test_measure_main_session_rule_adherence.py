@@ -146,15 +146,23 @@ NON_COMMIT_COMMANDS = [
     # `commit` here is the value of the preceding option, not the subcommand.
     "git -C commit", "git -c commit", "git --git-dir commit", "git --work-tree commit", "git --namespace commit",
 ]
-# One run per value-taking global option. Each option could swallow the following `-A` or leave it as a bare option, so an
-# ambiguous pattern parses the run 2**n ways. `OPTION_RUN_REPEATS` is large enough for such a pattern to exceed
-# `MAX_NO_MATCH_SECONDS` and small enough that the search still returns, where many more repeats would hang the run.
+# One run per value-taking global option, each directly followed by `-A`. The pattern takes no value that starts with `-`,
+# so these runs fail at their first option. They pin that such a run never matches and returns quickly.
+# `OPTION_RUN_REPEATS` sizes both run lists: it is small enough that a pattern which did parse a run 2**n ways would
+# still return, where many more repeats would hang the test run.
 OPTION_RUN_REPEATS = 22
 AMBIGUOUS_OPTION_RUNS = [
     option_with_next_option * OPTION_RUN_REPEATS
     for option_with_next_option in ("-C -A ", "-c -A ", "--git-dir -A ", "--work-tree -A ", "--namespace -A ")
 ]
 MAX_NO_MATCH_SECONDS = 0.5
+# The same options, each with a real value before the next bare option.
+VALUED_OPTION_RUNS = [
+    option_with_value_and_next_option * OPTION_RUN_REPEATS
+    for option_with_value_and_next_option in (
+        "-C d -A ", "-c k=v -A ", "--git-dir d -A ", "--work-tree d -A ", "--namespace n -A ",
+    )
+]
 CALLS_BY_OUTCOME: Mapping[tuple[str, str], list[tuple[str, dict]]] = {
     ("O1", m.OUTCOME_ADHERENT): O1_ADHERENT, ("O1", m.OUTCOME_NON_ADHERENT): O1_NON_ADHERENT,
     ("O2", m.OUTCOME_ADHERENT): O2_ADHERENT, ("O2", m.OUTCOME_NON_ADHERENT): O2_NON_ADHERENT,
@@ -3965,7 +3973,17 @@ class TestGitCommitPatternBacktracking:
         assert matched is None
         assert time.monotonic() - started < MAX_NO_MATCH_SECONDS
 
-    @pytest.mark.parametrize("option_run", AMBIGUOUS_OPTION_RUNS)
+    @pytest.mark.timing
+    @pytest.mark.parametrize("option_run", VALUED_OPTION_RUNS)
+    def test_a_long_valued_option_run_with_no_commit_fails_to_match_quickly(self, option_run: str) -> None:
+        started = time.monotonic()
+
+        matched = re.search(m.GIT_COMMIT_PATTERN, f"\tgit {option_run}status")
+
+        assert matched is None
+        assert time.monotonic() - started < MAX_NO_MATCH_SECONDS
+
+    @pytest.mark.parametrize("option_run", VALUED_OPTION_RUNS)
     def test_a_long_option_run_ending_in_commit_still_matches(self, option_run: str) -> None:
         assert re.search(m.GIT_COMMIT_PATTERN, f"git {option_run}commit -m x")
 

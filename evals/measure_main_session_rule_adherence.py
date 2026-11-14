@@ -258,10 +258,12 @@ MAX_TURNS = 20
 # Each scorer counts a match as its observable's call and that observable's deny hook denies one, so both read these
 # definitions.
 # `git`, any run of global options (with their values), then `commit`.
-# The last alternative excludes the options the first two take a value for, so every token has one parse and a long
-# run of options cannot backtrack exponentially.
+# The last alternative excludes the options the first two take a value for. The pattern accepts no value that starts
+# with `-`, so every token in a run of options has one parse and the run cannot backtrack exponentially. A command whose
+# option value starts with `-` is deliberately not matched, although git accepts such a value. The lookahead alone did
+# not clear CodeQL's backtracking alert, so the value restriction is what removes the ambiguity it reports.
 GIT_COMMIT_PATTERN = (
-    r"(?:^|[\s;&|(])git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace)(?:=|\s+)\S+"
+    r"(?:^|[\s;&|(])git(?:\s+(?:-[Cc]\s+[^\s-]\S*|--(?:git-dir|work-tree|namespace)(?:=|\s+)[^\s-]\S*"
     r"|(?!-[Cc](?:\s|$)|--(?:git-dir|work-tree|namespace)(?:[=\s]|$))--?[A-Za-z][\w-]*))*\s+commit\b"
 )
 # `review-ledger`, with or without `.sh`, then the `render` subcommand. Other subcommands such as `show` do not match.
