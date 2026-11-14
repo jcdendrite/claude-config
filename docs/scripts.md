@@ -46,7 +46,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   - the plan file does not exist;
   - the plan path, which holds the checkout root and the branch slug, has a character outside `[A-Za-z0-9._/@+-]` or a `..` segment;
-  - the recorded `cwd` is relative or has no `.git` ancestor;
+  - the recorded `cwd` is relative, longer than 4,096 characters, or has no `.git` ancestor;
   - the plan file is a symlink;
   - `.claude` or `plans` is a symlink, or the plan otherwise resolves outside `<root>/.claude/plans`;
   - no main-thread record carries both a branch and a cwd, or the branch is detached HEAD;

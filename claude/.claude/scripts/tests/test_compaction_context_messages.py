@@ -1,5 +1,6 @@
 """Tests for compaction-context.py's message rules, record sequences, prompt counting and framing lines."""
 import re
+import time
 
 import pytest
 
@@ -233,6 +234,25 @@ class TestExcludedRecords:
 
         assert quoted_messages(block) == [PRIOR]
         assert block.count(SKILL_PATH) == 1
+
+    def test_nested_args_opener_is_kept_in_the_args_up_to_the_first_closer(self, tmp_path):
+        records = [slash_invocation(args="alpha <command-args>beta"), skill_load()]
+
+        assert quoted_messages(block_for(tmp_path, records)) == ["/scratch alpha <command-args>beta"]
+
+    def test_many_unclosed_args_openers_quote_nothing_and_leave_the_rest_of_the_block_in_bounded_time(self, tmp_path):
+        unclosed_openers = "<command-args>" * 8_000
+        invocation = user_prompt(f"<command-name>/scratch</command-name>\n{unclosed_openers}")
+        records = [user_prompt(PRIOR), invocation, skill_load()]
+
+        started = time.perf_counter()
+        block = block_for(tmp_path, records)
+        elapsed = time.perf_counter() - started
+
+        assert quoted_messages(block) == [PRIOR]
+        assert block.count(SKILL_PATH) == 1
+        # The old lazy regex took about 26 s at 8,000 openers, while the find-based match takes milliseconds.
+        assert elapsed < 5
 
     def test_tool_run_interrupt_in_recorded_order_leaves_the_prompt_before_the_tool_use_as_newest(self, tmp_path):
         records = [

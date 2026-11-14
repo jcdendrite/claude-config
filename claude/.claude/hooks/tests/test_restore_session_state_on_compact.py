@@ -173,6 +173,7 @@ class TestTranscriptPath:
             pytest.param("with space.jsonl", id="spaces"),
             pytest.param("line\nbreak.jsonl", id="embedded_newline"),
             pytest.param("meta;$(touch PWNED)`touch PWNED`'\"&|<>*?.jsonl", id="shell_metacharacters"),
+            pytest.param("café-😀.jsonl", id="non_ascii_letter_and_non_bmp_character"),
         ],
     )
     def test_path_hostile_to_a_shell_reaches_the_script_as_one_argument(self, isolated_home, tmp_path, transcript, file_name):

@@ -82,9 +82,15 @@ _SLASH_NAME_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 _SKILL_LOAD_FIRST_LINE_RE = re.compile(rf"{SKILL_LOAD_PREFIX}:?[ \t]+(\S+)[ \t]*")
 _TAG_OPENING_RE = re.compile(r"<[A-Za-z][A-Za-z0-9_.:-]*[\s/>]")
 _PASTED_OPENING_RE = re.compile(rf"<{PASTED_CONTENT_TAG}[\s>]")
-_COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+_COMMAND_ARGS_OPENER = "<command-args>"
+_COMMAND_ARGS_CLOSER = "</command-args>"
 
 _HALF_BUDGET = MESSAGE_CHAR_BUDGET // 2
+
+# PATH_MAX is 4096 on Linux and 1024 on macOS, so the Linux value never rejects a real Linux path.
+# A cwd at the bound still takes hundreds of milliseconds to walk (about 0.4 to 1 s measured).
+# That cost is constant and stays inside the hook's 6 s cap.
+MAX_CWD_LENGTH = 4096
 
 
 def _is_allowed_path(value: str) -> bool:
@@ -134,6 +140,8 @@ def _loaded_skill_paths(thread: Sequence[dict]) -> list[str]:
 
 def _checkout_root(cwd: str) -> Path | None:
     """The record's absolute cwd, or its nearest ancestor holding a `.git` file or directory (a linked worktree's is a file)."""
+    if len(cwd) > MAX_CWD_LENGTH:
+        return None
     cwd_path = Path(cwd)
     if not cwd_path.is_absolute():
         return None
@@ -155,7 +163,8 @@ def _plan_path(thread: Sequence[dict]) -> str | None:
     if branch == scope._DETACHED_HEAD_BRANCH:
         return None
     slug = branch.rsplit("/", 1)[-1]
-    # A filesystem probe that fails on a stale or hostile cwd costs the plan line, not the block.
+    # A filesystem probe that fails on a stale cwd costs the plan line, not the block, and a cwd past MAX_CWD_LENGTH is
+    # rejected before any probe.
     try:
         root = _checkout_root(cwd)
         if root is None:
@@ -200,12 +209,24 @@ def _is_prompt_candidate(rec: dict) -> bool:
     return "interruptedMessageId" not in rec
 
 
+def _first_command_args(text: str) -> str:
+    """The text between the first `<command-args>` and the first closer after it, or "" when either is missing.
+
+    str.find keeps this linear in text. A lazy regex rescans to the end of text from every opener that has no closer.
+    """
+    opener_start = text.find(_COMMAND_ARGS_OPENER)
+    if opener_start == -1:
+        return ""
+    args_start = opener_start + len(_COMMAND_ARGS_OPENER)
+    closer_start = text.find(_COMMAND_ARGS_CLOSER, args_start)
+    return "" if closer_start == -1 else text[args_start:closer_start]
+
+
 def _slash_invocation_quote(name: str, text: str) -> str | None:
     """`/NAME <args>` for a skill slash invocation, or None when NAME fails the allow-list or the invocation has no args."""
     if not _is_allowed_slash_name(name):
         return None
-    args_match = _COMMAND_ARGS_RE.search(text)
-    args = args_match.group(1).strip() if args_match else ""
+    args = _first_command_args(text).strip()
     return f"/{name} {args}" if args else None
 
 
