@@ -356,7 +356,10 @@ def _run_locked(
         ]
         if instrument_failures:
             first = instrument_failures[0]
-            return _halt(f"instrument failure in {task.id}, arm {first.arm}: {first.missing_reason}; fix the cause and resume")
+            return _halt(
+                f"instrument failure in {task.id}, arm {first.arm}: {first.missing_reason}; "
+                "the block is complete, so fix the cause and resume to go on past it"
+            )
         if failures:
             failed_blocks.append((task.id, failures))
             if len(failed_blocks) >= FAILED_BLOCKS_IN_A_ROW_HALT:

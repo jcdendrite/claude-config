@@ -1392,6 +1392,13 @@ environment (CLI version and config commit), the run's model and every arm it
 runs. A CLI update, a `git pull` of the config checkout, or a new arm therefore
 calls for a new `smoke`.
 
+Operating rule: the config checkout stays at the pinned commit, with no
+uncommitted edits, from the first `smoke` through the last `run` block. The
+`toolkit` arm reads the checkout's toolkit files live, so an edit to one
+changes what the arm runs. The review bench's operating rule for its own
+ambient config checkout, in the Frozen conditions and invalidation section,
+states the same constraint.
+
 `smoke` runs one block of one run per arm (`toolkit` and `bare`) on the task
 you name, and takes no `--k`. It prints its nominal cost ceiling before the
 first launch. For each run it prints the status, instruction loads by class,
@@ -1564,6 +1571,9 @@ missing with its reason.
   the command changed into, a path built from a variable other than `$HOME` or
   `$PWD`, a glob, a case variant of a path on a case-insensitive volume, and a
   Bash write outside the fixture, which is never an `out-of-fixture-write`.
+- **Uncommitted toolkit edits.** The environment drift check compares the CLI
+  version and the config checkout's `HEAD` commit. It cannot see an uncommitted
+  edit to a toolkit file the `toolkit` arm reads live.
 - **Environment names.** Whether the shell and Claude Code set eight
   environment names is unverified: `AI_AGENT`, `CLAUDE_EFFORT`, `CLAUDE_PID`,
   `COREPACK_ENABLE_AUTO_PIN`, `GIT_EDITOR`,

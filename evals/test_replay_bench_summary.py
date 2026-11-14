@@ -311,7 +311,7 @@ class TestSecondaryAndDiagnostics:
                 "t1", "toolkit", run_metrics=metrics(code=50, docstring=10, unclassified=5, ast_rejected=2, non_file=1),
                 denials=3,
             ),
-            record("t1", "bare", run_metrics=metrics(code=100, docstring=5, undecodable=4), ignored=7),
+            record("t1", "bare", run_metrics=metrics(code=100, docstring=5, unclassified=3, undecodable=4), ignored=7),
         )
 
         lines = campaign.summarize()
@@ -321,7 +321,8 @@ class TestSecondaryAndDiagnostics:
         assert number_after(lines, "  bare docstring lines per 100 code lines:") == pytest.approx(5.0)
         assert "runs with a permission-rule denial 1" in text
         assert "python files ast.parse rejected 2" in text
-        assert re.search(r"toolkit: unclassified-line share 0\.0\d+", text)
+        assert "toolkit: unclassified-line share 0.0769," in text, "5 of 65 lines"
+        assert "bare: unclassified-line share 0.0278," in text, "3 of 108 lines"
         assert "non_file_entries 1" in text and "undecodable_files 4" in text and "ignored_paths 7" in text
 
     def test_a_run_with_no_non_test_code_line_enters_its_tasks_sums_and_a_separate_tally(self, campaign):
