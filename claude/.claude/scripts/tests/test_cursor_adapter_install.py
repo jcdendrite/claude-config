@@ -1,7 +1,8 @@
 """cursor-adapter.py install, uninstall, check and status.
 
 Every test runs the adapter under a temporary home and PATH, in-process, with the tools a world links into its own bin
-directory. Real processes start only for the probes and the self-check, and tests that do not concern the self-check stub it."""
+directory. Real processes start only for the probes, the self-check and the sessionStart entry, and tests that do not concern the
+self-check stub it."""
 
 from __future__ import annotations
 
@@ -247,6 +248,41 @@ class TestInstallRoundTrip:
         world.run("uninstall")
 
         assert world.hooks_path.read_bytes() == original
+
+    @pytest.mark.parametrize("uninstall_branch", ["pre-image-restore", "rewrite"])
+    def test_an_existing_hooks_file_keeps_its_mode_through_install_reinstall_and_uninstall(
+        self, fast_world: World, uninstall_branch: str
+    ) -> None:
+        world = fast_world
+        original = b'{"version": 1, "hooks": {"stop": [{"command": "echo mine"}]}}\n'
+        world.hooks_path.write_bytes(original)
+        world.hooks_path.chmod(0o644)
+
+        world.install()
+        assert stat.S_IMODE(world.hooks_path.stat().st_mode) == 0o644
+        world.install()
+        assert stat.S_IMODE(world.hooks_path.stat().st_mode) == 0o644
+        if uninstall_branch == "rewrite":
+            document = json.loads(world.hooks_path.read_text())
+            document["hooks"]["stop"].append({"command": "echo added later"})
+            world.hooks_path.write_text(json.dumps(document))
+        world.run("uninstall")
+
+        if uninstall_branch == "rewrite":
+            assert b"echo added later" in world.hooks_path.read_bytes()
+        else:
+            assert world.hooks_path.read_bytes() == original
+        assert stat.S_IMODE(world.hooks_path.stat().st_mode) == 0o644
+
+    def test_the_install_record_the_pre_install_file_and_the_manifest_are_written_owner_only(self, fast_world: World) -> None:
+        world = fast_world
+        world.hooks_path.write_bytes(b'{"version": 1, "hooks": {}}\n')
+        world.hooks_path.chmod(0o644)
+
+        world.install()
+
+        for name in ("install.json", "hooks.json.pre-install", "manifest.json"):
+            assert stat.S_IMODE((world.record_dir / name).stat().st_mode) == 0o600, name
 
     def test_a_second_install_with_another_config_dir_refuses_and_writes_nothing(self, fast_world: World) -> None:
         world = fast_world
@@ -2880,6 +2916,36 @@ class TestHookEnvStateDirectory:
         assert directory_tree(target) == before
         assert "first-call directory" in result.out
         assert [fields["reg"] for fields in world.adapter.read_log(str(world.state_dir)).lines] == ["check-hook-env"]
+
+    def test_a_state_dir_that_is_a_link_gets_no_first_call_mark_through_it_when_the_entry_runs_with_a_payload(
+        self, fast_world: World
+    ) -> None:
+        world = fast_world
+        world.install()
+        target = world.tmp_path / "elsewhere"
+        (target / "first-call").mkdir(parents=True)
+        self._link_state_dir_to(world, target)
+        before = directory_tree(target)
+
+        run_hook_env_process(world, SESSION_START_PAYLOAD)
+
+        assert directory_tree(target) == before
+        assert not (target / "first-call" / CONVERSATION_ID).exists()
+
+    def test_a_first_call_dir_that_is_a_link_gets_no_first_call_mark_through_it_when_the_entry_runs_with_a_payload(
+        self, fast_world: World
+    ) -> None:
+        world = fast_world
+        world.install()
+        target = world.tmp_path / "elsewhere"
+        target.mkdir()
+        (world.state_dir / "first-call").symlink_to(target)
+        before = directory_tree(target)
+
+        run_hook_env_process(world, SESSION_START_PAYLOAD)
+
+        assert directory_tree(target) == before
+        assert not (target / CONVERSATION_ID).exists()
 
     def test_real_directories_get_the_log_line_the_rotation_and_the_sweep(
         self, fast_world: World, monkeypatch: pytest.MonkeyPatch

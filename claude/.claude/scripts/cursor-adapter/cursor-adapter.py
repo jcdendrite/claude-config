@@ -39,8 +39,9 @@ PYTHON_FLOOR = (3, 14)
 # The bash floor of hooks/_config.sh, which the hooks' `#!/usr/bin/env bash` needs.
 BASH_FLOOR = (5, 2)
 # A project choice: how long one version or floor probe may run. The same bound ends every probe in every entry point.
+# It equals the 2-second probe cap in claude/.claude/hooks/check-python-floor.sh.
 PROBE_BOUND_SECONDS = 2
-# A project choice, matching the harness's own sessionStart registration timeout.
+# A project choice, equal to the timeout of the SessionStart check-python-floor.sh registration in claude/.claude/settings.json.
 CHECK_ENTRY_TIMEOUT_SECONDS = 10
 # A project choice: a log past this size is renamed to the one older file kept.
 LOG_ROTATE_BYTES = 16 * 1024 * 1024
@@ -221,6 +222,7 @@ AGENT_RESTRAINT_SENTENCE = (
     "The engineer, not the agent, acts on the findings below. An agent runs no command a finding names "
     "and reports the findings in chat."
 )
+# The single retry is a project choice.
 RERUN_WRAPPER_SENTENCE = (
     "Re-run the command once. If the same outcome repeats, replace that file or put another GNU build first on PATH, "
     "then re-run `install`."
@@ -1334,7 +1336,8 @@ def gnu_refusal(judged):
             lines.append(f"  {name} at {path}: {bounded_text(line) if line else 'printed no first line'}")
     lines.append(
         "The adapter needs GNU coreutils' `timeout`, which is stricter than the README's `timeout` requirement, "
-        "because BusyBox returns a TERM-trapping hook's own status, so a timed-out hook could read as an allow."
+        "because BusyBox returns a TERM-trapping hook's own status, as the `_lib_capped_for` header in "
+        "claude/.claude/hooks/_lib.sh states, so a timed-out hook could read as an allow."
     )
     lines.append(
         "On macOS, `brew install coreutils` provides `gtimeout`. Otherwise, put GNU's directory first on PATH. "
@@ -1471,6 +1474,7 @@ def run_self_check(python_path, wrapper):
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        # The single retry is a project choice, as for RERUN_WRAPPER_SENTENCE.
         raise AdapterError(
             f"The self-check at {adapter} under {python_path} gave no result within {bound_seconds} s "
             f"({type(error).__name__}). A first run after an install or a boot can be slow. Re-run the command once. "
