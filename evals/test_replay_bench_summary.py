@@ -226,6 +226,47 @@ class TestCompleteAndIncompleteBlocks:
             campaign.summarize()
 
 
+def unparseable_record_texts() -> dict[str, str]:
+    complete = record("t1", "toolkit").to_dict()
+    without_arm = {key: value for key, value in complete.items() if key != "arm"}
+    return {
+        "invalid-json": "{not json",
+        "null": "null",
+        "a-list": "[]",
+        "an-unknown-key": json.dumps({**complete, "unknown_key": 1}),
+        "a-missing-required-key": json.dumps(without_arm),
+    }
+
+
+class TestARecordThatDoesNotParse:
+    @pytest.fixture(params=sorted(unparseable_record_texts()))
+    def unparseable_record_path(self, request, campaign) -> Path:
+        path = records.record_path(campaign.dir, "t1", "toolkit", 0)
+        path.parent.mkdir(parents=True)
+        path.write_text(unparseable_record_texts()[request.param], encoding="utf-8")
+        return path
+
+    def test_reading_the_block_raises_naming_the_file(self, campaign, unparseable_record_path):
+        with pytest.raises(HarnessInvalidatedError) as raised:
+            records.read_block_records(campaign.dir, "t1")
+
+        assert str(unparseable_record_path) in str(raised.value)
+        assert "cannot read the run record" in str(raised.value)
+
+    def test_summarize_refuses_a_complete_block_holding_it(self, campaign, unparseable_record_path):
+        campaign.store.mark_block_complete("t1")
+
+        with pytest.raises(HarnessInvalidatedError) as raised:
+            campaign.summarize()
+
+        assert str(unparseable_record_path) in str(raised.value)
+
+    def test_a_well_formed_record_in_the_same_place_reads_back(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"))
+
+        assert [run.arm for run in records.read_block_records(campaign.dir, "t1")] == ["toolkit"]
+
+
 def tree_snapshot(directory: Path) -> dict[str, tuple[int, bytes | None]]:
     """Each path's mtime and, for a file, its bytes, so a rewrite within one timestamp tick still differs."""
     return {

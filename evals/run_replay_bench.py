@@ -273,14 +273,25 @@ def check_local_dir(local_dir: Path) -> None:
 
 
 def _interrupt_hint(args: argparse.Namespace) -> str:
-    campaign_id = getattr(args, "campaign_id", None)
-    timeout_s = getattr(args, "timeout_s", review_runner.REVIEWER_TIMEOUT_S)
-    resume = f"resume with --campaign-id {campaign_id}" if campaign_id else "rerun the command"
+    """Only `run` and `smoke` launch a `claude` child. Only `run` has a campaign to resume and a sweep of abandoned
+    fixtures, because `smoke` opens a fresh store on every start."""
+    if args.subcommand not in ("run", "smoke"):
+        return f"{args.subcommand}: interrupted; rerun the command."
+    wait = (
+        f"After a hard kill, wait at least --timeout-s ({args.timeout_s} s) first, since a surviving claude child "
+        "can still be writing."
+    )
+    temp_dir = os.environ.get("TMPDIR", "/tmp")
+    if args.subcommand == "smoke":
+        return (
+            f"smoke: interrupted; rerun the command. {wait} A hard kill also leaves the smoke run's fixtures, "
+            f"named {review_runner.FIXTURE_DIR_PREFIX}* under TMPDIR ({temp_dir!r}), and its session stores under "
+            "the account config dir's projects/ for you to remove by hand, since a rerun sweeps neither."
+        )
+    resume = f"resume with --campaign-id {args.campaign_id}" if args.campaign_id else "rerun the command"
     return (
-        f"{args.subcommand}: interrupted; {resume}. After a hard kill, wait at least --timeout-s ({timeout_s} s) "
-        "first, since a surviving claude child can still be writing. Resume with the same TMPDIR "
-        f"({os.environ.get('TMPDIR', '/tmp')!r}), since the sweep matches logged fixtures only directly under the "
-        "system temp dir."
+        f"run: interrupted; {resume}. {wait} Resume with the same TMPDIR ({temp_dir!r}), since the sweep matches "
+        "logged fixtures only directly under the system temp dir."
     )
 
 

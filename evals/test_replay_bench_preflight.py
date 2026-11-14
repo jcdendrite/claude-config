@@ -88,6 +88,11 @@ class TestTheProbe:
         preflight.monkeypatch.delenv("CLAUDE_CONFIG_DIR")
         assert preflight.run().config_dir == preflight.config_dir
 
+    def test_a_relative_config_dir_is_refused_as_not_an_absolute_path(self, preflight):
+        preflight.monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative-config")
+
+        assert "not an absolute path" in preflight.refusal()
+
     def test_stdout_that_is_not_json_is_refused_without_echoing_it(self, preflight):
         preflight.install_direnv('echo "sentinel-not-json"\n')
 

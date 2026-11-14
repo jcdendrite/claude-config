@@ -4,6 +4,7 @@ launch stands in for `claude`, and `read_environment_record` is stubbed to a fix
 from __future__ import annotations
 
 import dataclasses
+import errno
 import io
 import json
 import os
@@ -32,6 +33,8 @@ CAP = 1.0
 BLOCK_CEILING = 4.0  # 2 arms x k of 1 x the cap x 2 attempts
 # A block spends $1.00 and its ceiling is $4.00, so a stop here lets two blocks run and halts before the third.
 EARLY_STOP_USD = 5.5
+# The longest a thread-handoff step may take before its test fails instead of hanging.
+WAIT_S = 5.0
 
 
 def failing_bare(call):
@@ -604,7 +607,10 @@ class TestEnvironmentDrift:
         assert env.run(env.world.launch()) == 1
 
         assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
-        assert "0 attempts" in capsys.readouterr().err
+        stderr = capsys.readouterr().err
+        assert "0 attempts" in stderr
+        assert stderr.startswith("halted: ") and not stderr.startswith("halted: halted: ")
+        assert "pays for it again" not in stderr, "a halt that launched nothing has nothing to pay again"
 
     def test_an_unreadable_start_reading_after_a_completed_block_raises_and_spends_nothing_for_that_block(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
@@ -652,6 +658,19 @@ class TestEnvironmentDrift:
         assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
         error = capsys.readouterr().err
         assert "2 attempts" in error and "$1.00 spent" in error
+        assert "not marked complete" in error and error.count("pays for it again") == 1
+
+    def test_a_resume_after_a_blocks_end_drift_reruns_the_block_and_pays_for_it_again(self, env):
+        env.world.tasks[:] = env.world.tasks[:1]
+        env.readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
+        assert env.run(env.world.launch()) == 1
+        assert env.completed() == set()
+
+        env.readings = [READING]
+
+        assert env.run(env.world.launch()) == 0
+        assert env.completed() == {env.world.tasks[0].id}
+        assert env.spend().totals().total_usd == 2.0, "the rerun paid for the block again"
 
 
     def test_an_end_reading_that_fails_once_is_read_again_and_the_block_completes(self, env):
@@ -671,8 +690,78 @@ class TestEnvironmentDrift:
 
         error = capsys.readouterr().err
         assert "not drift" in error and "2 attempts" in error and "$1.00 spent" in error
-        assert "records were discarded" in error and "not marked complete" in error and "a resume reruns it" in error
+        assert "not marked complete" in error and "summarize leaves it out of the arm counts and the paired difference" in error
+        assert "a resume reruns the block and pays for it again" in error
         assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
+
+
+class TestAPaidBlockWhoseRecordsCannotBePersisted:
+    @staticmethod
+    def disk_full(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device", "/synthetic/path")
+
+    @pytest.mark.parametrize(
+        "failing_target",
+        [(records, "atomic_write_text"), (RunStore, "mark_block_complete")],
+        ids=["record-write", "complete-mark"],
+    )
+    def test_a_failed_write_halts_with_the_blocks_cost_and_a_clean_resume_pays_for_it_again(
+        self, env, capsys, failing_target,
+    ):
+        env.world.tasks[:] = env.world.tasks[:1]
+        owner, attribute = failing_target
+        with env.monkeypatch.context() as failing:
+            failing.setattr(owner, attribute, self.disk_full)
+
+            assert env.run(env.world.launch()) == 1
+
+        error = capsys.readouterr().err
+        assert error.startswith("halted: ") and "OSError: No space left on device" in error
+        assert "/synthetic/path" not in error
+        assert "2 attempts" in error and "$1.00 spent" in error
+        assert "not marked complete" in error and "summarize leaves it out of the arm counts and the paired difference" in error
+        assert "a resume reruns the block and pays for it again" in error
+        assert env.completed() == set()
+
+        assert env.run(env.world.launch()) == 0
+        assert env.completed() == {env.world.tasks[0].id}
+        assert env.spend().totals().total_usd == 2.0, "the rerun paid for the block again"
+
+    def test_a_write_that_fails_after_earlier_writes_succeeded_leaves_them_unlisted_and_a_resume_ends_with_one_file_set(
+        self, env, capsys,
+    ):
+        env.world.tasks[:] = env.world.tasks[:1]
+        task_id = env.world.tasks[0].id
+        block_dir = records.block_runs_dir(env.campaign_dir, task_id)
+        full_file_set = {"toolkit-0.json", "toolkit-0.diff", "bare-0.json", "bare-0.diff"}
+        real_write = records.atomic_write_text
+        writes_before_failure = 2
+        write_calls = []
+
+        def fail_after_the_earlier_writes(path, text):
+            write_calls.append(path)
+            if len(write_calls) > writes_before_failure:
+                self.disk_full()
+            real_write(path, text)
+
+        # The stub replaces atomic_write_text wholesale, so a stray temp file from a real failure is not exercised.
+        with env.monkeypatch.context() as failing:
+            failing.setattr(records, "atomic_write_text", fail_after_the_earlier_writes)
+
+            assert env.run(env.world.launch()) == 1
+
+        assert "OSError: No space left on device" in capsys.readouterr().err
+        assert len(write_calls) == writes_before_failure + 1
+        written = {path.name for path in block_dir.iterdir()}
+        assert len(written) == writes_before_failure and written < full_file_set, "the earlier files stay on disk"
+        assert env.completed() == set()
+        summary_lines = summary.summarize(env.campaign_dir, local_dir=env.world.local_dir, budget_cap_usd=CAP)
+        assert "0 complete blocks, 1 incomplete blocks" in summary_lines[0]
+
+        assert env.run(env.world.launch()) == 0
+        assert {path.name for path in block_dir.iterdir()} == full_file_set
+        assert env.completed() == {task_id}
+        assert env.spend().totals().total_usd == 2.0, "the rerun paid for the block again"
 
 
 class TestResumeAndAttempts:
@@ -873,6 +962,69 @@ class TestTheSpendFile:
         assert totals.unparsed_lines == 1
         assert totals.total_usd == CAP + 3.0 + 4.0
         assert spend.path.read_text().count("\n\n") == 0, "only the first append after the short write adds a newline"
+
+    def test_an_append_that_starts_during_a_short_write_waits_for_it_and_then_ends_the_torn_line(
+        self, tmp_path, monkeypatch,
+    ):
+        """The lock is what makes the torn-tail decision and the write one step. Without it the second append reads
+        the flag before the first sets it and fuses its line onto the torn one."""
+        spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
+        first_has_short_written = threading.Event()
+        release_first_write = threading.Event()
+        second_reached_the_lock = threading.Event()
+        lock_entries = []
+        errors = {}
+
+        class AnnouncingLock:
+            def __init__(self) -> None:
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                lock_entries.append(threading.current_thread().name)
+                if len(lock_entries) == 2:
+                    second_reached_the_lock.set()
+                return self._lock.__enter__()
+
+            def __exit__(self, *exception_info):
+                return self._lock.__exit__(*exception_info)
+
+        real_write = os.write
+        writes = []
+
+        def holding_write(descriptor, data):
+            writes.append(data)
+            if len(writes) > 1:
+                return real_write(descriptor, data)
+            written = real_write(descriptor, data[:7])
+            first_has_short_written.set()
+            release_first_write.wait(timeout=WAIT_S)
+            return written
+
+        def append_recording_error(name, line):
+            try:
+                spend.append(line)
+            except SpendAppendError as exc:
+                errors[name] = exc
+
+        spend._lock = AnnouncingLock()  # the only seam that shows the second append is blocked on the lock
+        monkeypatch.setattr(os, "write", holding_write)
+        first = threading.Thread(target=append_recording_error, args=("first", self.line(2.0)), name="first")
+        second = threading.Thread(target=append_recording_error, args=("second", self.line(3.0)), name="second")
+        try:
+            first.start()
+            assert first_has_short_written.wait(timeout=WAIT_S)
+            second.start()
+            assert second_reached_the_lock.wait(timeout=WAIT_S), "the second append never contended for the lock"
+            assert len(writes) == 1, "the second append wrote while the first held the lock"
+        finally:
+            release_first_write.set()
+            first.join()
+            second.join()
+
+        assert list(errors) == ["first"] and "torn line" in str(errors["first"])
+        totals = spend.totals()
+        assert totals.unparsed_lines == 1
+        assert totals.total_usd == CAP + 3.0
 
     def test_a_torn_last_line_is_truncated_at_resume_and_the_next_append_parses(self, tmp_path):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)

@@ -1270,14 +1270,16 @@ takes `--budget-cap-usd`, which prices an unparsed spend line only when the
 campaign's manifest pins no usable cap.
 
 Exit codes: 0 for done, 1 for a run that stopped short, 2 for a refusal
-before the first launch. An interrupt exits 128 plus the signal number.
-`smoke` exits 0 only when its last line reads `instrument: ok`. A failed
-condition or refusal exits 2, and a held run-store lock exits 1. In `run`, a
-block-start read of the environment or the live checkouts that fails after
-block 1 also exits 2 and spends nothing for that block, since none of its runs
-has launched. In `run`, a block-start read that differs from the pinned
-environment halts with exit 1. A block-end read that fails is read once more,
-and a second failure halts with exit 1.
+before the first launch. An interrupt exits 128 plus the signal number. A held
+run-store lock exits 1. Two commands have further rules:
+
+- `smoke` exits 0 only when its last line reads `instrument: ok`. A failed
+  condition or refusal exits 2.
+- `run` exits 2 when a block-start read of the environment or the live
+  checkouts fails after block 1, and spends nothing for that block, since none
+  of its runs has launched.
+- `run` halts with exit 1 when a block-start read differs from the pinned
+  environment.
 
 ### Tasks
 
@@ -1446,9 +1448,10 @@ again. Before the first launch `run` prints the run count and the campaign's
 nominal ceiling. It exits 2 when:
 
 - any pinned input differs, or the manifest lacks a pinned key or has the wrong
-  shape, in which case the refusal says to start a new `--campaign-id`. A
-  changed repo-to-account pin, CLI version or config commit, or a manifest
-  that cannot be read or parsed, also exits 2 but does not say it;
+  shape. The refusal names a new `--campaign-id`;
+- a repo-to-account pin, the CLI version or the config commit changed, or the
+  manifest cannot be read or parsed. The refusal does not name a new
+  `--campaign-id`;
 - one block's ceiling exceeds either stop;
 - the campaign's ceiling exceeds `--cumulative-stop-usd`, unless
   `--allow-early-stop` accepts that the campaign will stop early.
@@ -1468,9 +1471,12 @@ each block `run` halts if the block's ceiling would carry the cumulative total
 or the block's account past its stop.
 
 A block's end environment reading that fails is read once more. A reading that
-still cannot be read halts `run` as a failed read, not as drift. Either halt
-discards the block's records, and a resume reruns the block and pays for it
-again.
+still cannot be read halts `run` as a failed read, not as drift. A block whose
+end environment reading differs from the campaign's reference reading halts
+`run` as drift. A block whose records or complete mark cannot be written, such
+as on a full disk, halts `run` too. Each of these halts leaves the block
+unmarked, so `summarize` leaves it out of the arm counts and the paired
+difference, and a resume reruns the block and pays for it again.
 
 After each block the per-arm stop looks for an arm with no valid run:
 
@@ -1498,7 +1504,8 @@ ignored by the git work tree that holds it. A resume needs the same `TMPDIR` as
 the run it resumes, since its sweep of abandoned fixtures matches them only
 directly under the system temp dir. After a hard kill, wait at least
 `--timeout-s` before resuming, since a surviving `claude` child can still be
-writing.
+writing. A hard-killed `smoke` has no resume, and a rerun sweeps nothing: its
+fixtures and session stores stay until someone removes them by hand.
 
 ### Retry and missing reasons
 
@@ -1531,8 +1538,11 @@ missing with its reason.
 - **Run checks.** The check on a run's Bash commands scans command text for
   guarded paths. It does not parse or execute the shell. These are accepted:
   - A guarded path that appears only as text, in a heredoc body or a quoted
-    search pattern, is a false hit. It fails a `bare` run `arm-leak` and halts
-    `run` at the block's end.
+    search pattern, is a false hit:
+    - A toolkit file's path in a `bare` run fails `arm-leak` and halts `run` at
+      the block's end.
+    - Any other guarded path fails `out-of-fixture-path` on either arm. That is
+      a task-specific failed block.
   - The scan misses `grep -r x ~`, which names a directory above a guarded
     tree, and the text of a `bash -c` string.
   - Read, Grep and Glob targets are checked more narrowly than Bash command

@@ -3,8 +3,6 @@
 Exit codes follow the review bench CLI: a refusal before the first launch raises `HarnessInvalidatedError`
 (exit 2), a halt returns 1, and a campaign that completes every task returns 0. A block-start read of the
 environment or the live checkouts that fails after block 1 also exits 2 and spends nothing for that block.
-A block-start reading that differs from the pinned environment halts with exit 1. A block-end read that
-fails is read once more, and a second failure halts with exit 1.
 """
 from __future__ import annotations
 
@@ -36,6 +34,10 @@ STORE_DIR_NAME = "store"
 ATTEMPTS_DIR_NAME = "attempts"
 # Two task-specific failed blocks in a row halt the campaign.
 FAILED_BLOCKS_IN_A_ROW_HALT = 2
+_DISCARDED_BLOCK_TEXT = (
+    "the block is not marked complete, so summarize leaves it out of the arm counts and the paired difference, "
+    "and a resume reruns the block and pays for it again"
+)
 _MANIFEST_COMPARED_FIELDS = ("task_set_hash", "arms", "k", "seed", "model_id", "budget_cap_usd", "timeout_s")
 
 
@@ -135,7 +137,7 @@ def stop_would_be_passed(spent_usd: float, ceiling_usd: float, stop_usd: float) 
 
 
 def _halt(message: str) -> int:
-    print(f"halted: {message}", file=sys.stderr)
+    print(f"halted: {message.removeprefix('halted: ')}", file=sys.stderr)
     return 1
 
 
@@ -184,7 +186,8 @@ def _progress_line(
 def _discarded_block_halt(block: BlockOutcome | None, task: tasks_mod.ReplayTask, message: str, spend: SpendFile) -> int:
     attempts = sum(record.attempts for record in block.records) if block is not None else 0
     block_spend = spend.totals().by_task_usd.get(task.id, 0.0)
-    return _halt(f"{message} -- {task.id}: {attempts} attempts, ${block_spend:.2f} spent in the block")
+    discarded_clause = f"; {_DISCARDED_BLOCK_TEXT}" if block is not None else ""
+    return _halt(f"{message}{discarded_clause} -- {task.id}: {attempts} attempts, ${block_spend:.2f} spent in the block")
 
 
 def _two_in_a_row_message(lost_tasks: list[str], failing_blocks: list[Mapping[str, list]]) -> str:
@@ -329,13 +332,19 @@ def _run_locked(
         if block.end_unread is not None:
             return _discarded_block_halt(
                 block, task,
-                f"the block's end environment reading failed, which is not drift: {block.end_unread}; "
-                "the block's records were discarded and it is not marked complete, so a resume reruns it and pays for it again",
+                f"the block's end environment reading failed, which is not drift: {block.end_unread}",
                 spend,
             )
-        for _arm, _index, outcome in block.runs:
-            records.write_run(campaign_dir, outcome.record, outcome.diff_text)
-        run_store.mark_block_complete(task.id)
+        try:
+            for _arm, _index, outcome in block.runs:
+                records.write_run(campaign_dir, outcome.record, outcome.diff_text)
+            run_store.mark_block_complete(task.id)
+        except OSError as exc:
+            return _discarded_block_halt(
+                block, task,
+                f"the block's records or its complete mark could not be written: {review_runner._os_error_detail(exc)}",
+                spend,
+            )
 
         failures = _arm_failures(block, config.arm_names)
         for arm in failures:

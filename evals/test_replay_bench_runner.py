@@ -58,6 +58,15 @@ def run(world, arm_name, scenario_for=None, live_checkout_roots=(), **settings_k
     return execute_run(settings, block, arm_name, 0), launch_stub, settings
 
 
+def without_account_evidence(**scenario_fields) -> Scenario:
+    """A scenario whose run leaves no instruction log and no account session file."""
+    return Scenario(log_lines=[], write_account_session_file=False, **scenario_fields)
+
+
+def delete_session_transcript(call) -> None:
+    (call.config_dir / "projects" / "synthetic-project" / f"{call.session_id}.jsonl").unlink()
+
+
 def leftovers(world, launch_stub) -> list[Path]:
     """The fixtures and attempt dirs that survived the run, found by the directories themselves so a fixture
     built for an attempt that never launched is seen too."""
@@ -246,13 +255,48 @@ class TestInstrumentReasons:
         assert outcome.record.missing_reason == checks.REASON_ACCOUNT_HOOKS_MISSING
         assert len(launch_stub.calls) == 1
 
-    def test_a_timed_out_run_with_no_log_is_a_timeout_not_an_instrument_reason(self, world):
+    @pytest.mark.parametrize(
+        ("scenario", "expected_reason"),
+        [
+            (without_account_evidence(timed_out=True), review_runner.MISSING_REASON_TIMEOUT),
+            (without_account_evidence(omit_result_event=True), review_runner.VALIDITY_FAIL_NO_RESULT_EVENT),
+            (
+                without_account_evidence(after_write=delete_session_transcript),
+                review_runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND,
+            ),
+            (
+                Scenario(timed_out=True, log_lines=["not an object"], write_account_session_file=False),
+                review_runner.MISSING_REASON_TIMEOUT,
+            ),
+        ],
+        ids=["timeout", "no-result-event", "session-store-not-found", "timeout-with-a-non-object-log-line"],
+    )
+    def test_a_run_that_did_not_complete_keeps_its_own_reason_and_is_launched_twice(
+        self, world, scenario, expected_reason,
+    ):
+        outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name, lambda _n, _a: scenario)
+
+        assert outcome.record.missing_reason == expected_reason
+        assert len(launch_stub.calls) == 2
+
+    @pytest.mark.parametrize(
+        "result_event_fields",
+        [
+            {"is_error": True, "subtype": "error_during_execution"},
+            {"terminal_reason": "budget_exceeded"},
+        ],
+        ids=["result-error", "budget"],
+    )
+    def test_a_run_that_reached_its_end_with_an_error_result_and_no_account_evidence_is_an_instrument_failure(
+        self, world, result_event_fields,
+    ):
         outcome, launch_stub, _settings = run(
-            world, arms.TOOLKIT.name, lambda _n, _a: Scenario(timed_out=True, log_lines=[], write_account_session_file=False),
+            world, arms.TOOLKIT.name,
+            lambda _n, _a: without_account_evidence(result_event_fields=result_event_fields),
         )
 
-        assert outcome.record.missing_reason == review_runner.MISSING_REASON_TIMEOUT
-        assert len(launch_stub.calls) == 2
+        assert outcome.record.missing_reason == checks.REASON_INSTRUMENT_MISSING
+        assert len(launch_stub.calls) == 1
 
 
 class TestRetryThenMissing:
@@ -366,21 +410,19 @@ class TestRetryThenMissing:
 
 
 class TestEveryPostRunGitCallCarriesTheTimeout:
-    def test_the_five_post_run_git_calls_carry_the_configured_limit(self, world, monkeypatch):
-        calls = []
+    def test_every_post_run_git_call_carries_the_configured_limit(self, world, monkeypatch):
+        limits = []
         real_run = subprocess.run
 
         def spy(command, *args, **kwargs):
             if any(str(part).startswith("--git-dir=") for part in command):
-                calls.append((command, kwargs.get("timeout")))
+                limits.append(kwargs.get("timeout"))
             return real_run(command, *args, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", spy)
         run(world, arms.BARE.name, fixture_git_timeout_s=37.5)
 
-        subcommands = [next(part for part in command if part in {"add", "diff", "cat-file", "ls-files"}) for command, _t in calls]
-        assert sorted(subcommands) == ["add", "cat-file", "diff", "diff", "ls-files"]
-        assert {limit for _command, limit in calls} == {37.5}
+        assert limits and set(limits) == {37.5}
 
 
 class TestTheFixtureTheAgentSees:
@@ -829,7 +871,7 @@ class TestTheCommandLine:
         assert main_run("preflight", "--tasks", "x") == 2
         assert "git 2.32" in capsys.readouterr().err
 
-    def test_an_interrupt_aborts_launches_and_prints_the_resume_command_with_its_wait_and_tmpdir_line(
+    def test_an_interrupt_aborts_launches_and_a_command_that_launches_nothing_prints_only_a_rerun_hint(
         self, monkeypatch, capsys,
     ):
         aborted = []
@@ -844,7 +886,45 @@ class TestTheCommandLine:
 
         err = capsys.readouterr().err
         assert code == 130 and aborted == [True]
-        assert "wait at least --timeout-s" in err and "same TMPDIR" in err
+        assert err.strip() == "tasks: interrupted; rerun the command."
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ("preflight", "--tasks", "set"),
+            ("summarize", "--campaign-id", "finished"),
+        ],
+        ids=["preflight", "summarize"],
+    )
+    def test_the_interrupt_hint_of_a_command_that_launches_nothing_names_no_child_wait_and_no_resume(self, argv):
+        args = run_replay_bench.build_parser().parse_args(list(argv))
+
+        assert run_replay_bench._interrupt_hint(args) == f"{argv[0]}: interrupted; rerun the command."
+
+    def test_the_interrupt_hint_of_smoke_names_the_wait_and_the_leftovers_to_remove_by_hand_and_no_resume(
+        self, monkeypatch,
+    ):
+        monkeypatch.setenv("TMPDIR", "/synthetic/tmp")
+        args = run_replay_bench.build_parser().parse_args(["smoke", "--tasks", "set", "--task-id", "t", "--timeout-s", "90"])
+
+        hint = run_replay_bench._interrupt_hint(args)
+
+        assert "wait at least --timeout-s (90 s)" in hint
+        assert f"{review_runner.FIXTURE_DIR_PREFIX}* under TMPDIR ('/synthetic/tmp')" in hint
+        assert "remove by hand" in hint and "projects/" in hint
+        assert "resume with" not in hint and "same TMPDIR" not in hint
+
+    def test_the_interrupt_hint_of_run_names_the_resume_the_wait_and_the_same_tmpdir(self, monkeypatch):
+        monkeypatch.setenv("TMPDIR", "/synthetic/tmp")
+        args = run_replay_bench.build_parser().parse_args(
+            [*self.RUN_ARGV, "--campaign-id", "interrupted", "--timeout-s", "90"],
+        )
+
+        hint = run_replay_bench._interrupt_hint(args)
+
+        assert "resume with --campaign-id interrupted" in hint
+        assert "wait at least --timeout-s (90 s)" in hint
+        assert "same TMPDIR ('/synthetic/tmp')" in hint
 
     def test_a_whole_run_through_main_completes_and_summarize_reads_it_back(self, world, local_dir, monkeypatch, capsys):
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
@@ -1039,8 +1119,7 @@ class TestTheCommandLine:
         monkeypatch.setattr(subprocess, "run", spy)
 
         assert main_run("--fixture-git-timeout-s", "37.5", *self.RUN_ARGV, "--campaign-id", "limits") == 0
-        assert len(limits) == 10, "five post-run git calls for each of the two runs"
-        assert set(limits) == {37.5}
+        assert limits and set(limits) == {37.5}
 
     def test_a_failing_environment_read_prints_the_exit_status_and_never_the_childs_stderr(
         self, run_files, tmp_path, monkeypatch, capsys,

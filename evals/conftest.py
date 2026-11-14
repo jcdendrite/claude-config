@@ -75,6 +75,15 @@ def fresh_launch_abort_flag(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
+def checks_world(tmp_path: Path):
+    """The checks support module's `World`: a config dir, two fixture dirs, a live checkout and allow-listed files
+    laid out under `tmp_path`, for tests of the run checks. It is not the replay world below."""
+    from test_replay_bench_checks_support import build_world
+
+    return build_world(tmp_path)
+
+
+@pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A replay world under `tmp_path`: an account config dir, a fixture temp dir, an ignored local dir and a
     source repo with one qualifying commit. Replay tests that need more build their own with the builder."""

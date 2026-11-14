@@ -14,17 +14,15 @@ from test_replay_bench_runner_support import (
     READING,
     RULE_TEXT,
     Scenario,
-    build_replay_world,
     leaking_log_lines,
 )
 
 CAP = 2.0
 
 
-@pytest.fixture
-def world(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def fixed_environment_reading(monkeypatch):
     monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
-    return build_replay_world(tmp_path, monkeypatch)
 
 
 def run_smoke(world, by_call=None, scenario_for=None):

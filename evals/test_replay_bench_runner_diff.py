@@ -60,6 +60,19 @@ class TestTheAgentRewritesItsOwnHistory:
         assert outcome.diff_text == reference.diff_text
 
 
+def plant_hostile_git_config(fixture_dir: Path, sentinel_dir: Path) -> None:
+    """Config that runs `touch` on a sentinel under `core.fsmonitor` and under a `clean` filter."""
+    git_dir = fixture_dir / ".git"
+    with (git_dir / "config").open("a") as config:
+        config.write(
+            f"[core]\n\tfsmonitor = touch {sentinel_dir / 'fsmonitor'}\n"
+            f"[filter \"hostile\"]\n\tclean = touch {sentinel_dir / 'filter'}\n"
+        )
+    (git_dir / "info").mkdir(exist_ok=True)
+    (git_dir / "info" / "attributes").write_text("*.py filter=hostile\n")
+    (fixture_dir / ".gitattributes").write_text("*.py filter=hostile\n")
+
+
 class TestAHostileFixture:
     @pytest.fixture
     def hostile_edit(self, tmp_path):
@@ -70,18 +83,26 @@ class TestAHostileFixture:
 
         def edit(fixture_dir: Path) -> None:
             default_edit(fixture_dir)
-            git_dir = fixture_dir / ".git"
-            with (git_dir / "config").open("a") as config:
-                config.write(
-                    f"[core]\n\tfsmonitor = touch {sentinel_dir / 'fsmonitor'}\n"
-                    f"[filter \"hostile\"]\n\tclean = touch {sentinel_dir / 'filter'}\n"
-                )
-            (git_dir / "info" / "attributes").write_text("*.py filter=hostile\n")
-            (fixture_dir / ".gitattributes").write_text("*.py filter=hostile\n")
+            plant_hostile_git_config(fixture_dir, sentinel_dir)
             os.mkfifo(fixture_dir / "pipe.fifo")
             os.symlink(outside_fifo, fixture_dir / "link-to-fifo")
 
         return edit, sentinel_dir
+
+    def test_the_planted_config_runs_both_commands_under_an_unprotected_git_add(self, tmp_path):
+        """The control for the test below: without it, an empty sentinel directory could mean the planted config
+        no longer fires under this git, not that the analysis is protected."""
+        fixture_dir = tmp_path / "unprotected-fixture"
+        sentinel_dir = tmp_path / "control-sentinels"
+        fixture_dir.mkdir()
+        sentinel_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=fixture_dir, check=True, capture_output=True)
+        (fixture_dir / "module.py").write_text("value = 1\n")
+        plant_hostile_git_config(fixture_dir, sentinel_dir)
+
+        subprocess.run(["git", "add", "-A"], cwd=fixture_dir, check=True, capture_output=True)
+
+        assert sorted(path.name for path in sentinel_dir.iterdir()) == ["filter", "fsmonitor"]
 
     @pytest.mark.timing
     def test_no_planted_command_runs_the_fifo_is_skipped_and_the_symlink_is_a_non_file_entry(self, world, hostile_edit):

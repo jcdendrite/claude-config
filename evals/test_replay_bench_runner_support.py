@@ -72,6 +72,10 @@ class Scenario:
     first_turn_size: int | None = None
     damage_sidecar: str | None = None  # "skip" puts a non-JSON line before the last line, "torn" tears the last line
     write_account_session_file: bool = True
+    # The stream carries no `result` event, as a `claude` killed before it finished leaves it.
+    omit_result_event: bool = False
+    # Keys that replace the clean `result` event's, such as `is_error` or `terminal_reason`.
+    result_event_fields: dict | None = None
     observed_model: str = MODEL_ID
     # How a denied tool call is recorded: `ENTRY_DENIAL` is the shape a live CLI 2.1.323 session wrote, and
     # `BLOCK_DENIAL` is the `tool_result_meta` shape a subagent transcript may carry.
@@ -119,11 +123,15 @@ def config_dir_from_command(cmd: list[str], default: Path) -> Path:
     return next((Path(part[len(prefix):]) for part in cmd if part.startswith(prefix)), default)
 
 
-def stream_lines(cost: float | None) -> list[bytes]:
+def stream_lines(
+    cost: float | None, *, omit_result_event: bool = False, result_event_fields: dict | None = None,
+) -> list[bytes]:
     result = {"type": "result", "subtype": "success", "is_error": False, "terminal_reason": "completed"}
     if cost is not None:
         result.update(total_cost_usd=cost, usage={"input_tokens": 3, "output_tokens": 4})
-    return [json.dumps({"type": "system"}).encode(), json.dumps(result).encode()]
+    result.update(result_event_fields or {})
+    events = [{"type": "system"}] if omit_result_event else [{"type": "system"}, result]
+    return [json.dumps(event).encode() for event in events]
 
 
 @dataclass
@@ -162,7 +170,9 @@ class ScriptedLaunch:
         if scenario.no_output:
             return [], False
         self._write_session(call, scenario)
-        return stream_lines(scenario.cost), scenario.timed_out
+        return stream_lines(
+            scenario.cost, omit_result_event=scenario.omit_result_event, result_event_fields=scenario.result_event_fields,
+        ), scenario.timed_out
 
     def _default_log(self, call: LaunchCall) -> list[dict]:
         lines = [_line(str(call.config_dir / "CLAUDE.md"), session_id=call.session_id)]

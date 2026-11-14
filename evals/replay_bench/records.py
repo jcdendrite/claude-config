@@ -103,6 +103,6 @@ def read_block_records(campaign_dir: Path, task_id: str) -> list[ReplayRunRecord
     for path in sorted(block_runs_dir(campaign_dir, task_id).glob("*.json")):
         try:
             records.append(ReplayRunRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
-        except (OSError, ValueError, TypeError, AttributeError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             raise HarnessInvalidatedError(f"{path}: cannot read the run record: {exc}") from exc
     return records
