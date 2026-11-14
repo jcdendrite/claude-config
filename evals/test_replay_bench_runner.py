@@ -411,7 +411,7 @@ class TestRetryThenMissing:
         assert outcome.record.missing_reason == attempt.REASON_FIXTURE_ERROR and launch_stub.calls == []
         assert "we(ird)" in outcome.record.missing_detail
         assert spend_lines(settings) == []
-        assert len(launch_stub.calls) == 0, "fixture-error never retries"
+        assert outcome.record.attempts == 1, "fixture-error never retries"
 
     def test_an_attempt_dir_that_already_exists_records_fixture_error_and_launches_nothing(self, world):
         settings = make_settings(world, world.launch())
@@ -842,23 +842,36 @@ class TestTheCommandLine:
         assert main_run(*TASKS_ARGV, *flags) == 0
         assert captured["limits"] == tasks.SelectionLimits(**values)
 
-    @pytest.mark.parametrize("kind", ["relative", "symlink", "name", "unignored"])
-    def test_a_refused_local_dir_exits_two_with_the_target_still_absent(self, tmp_path, kind):
-        real_parent = tmp_path / "real-parent"
-        real_parent.mkdir()
+    @pytest.mark.parametrize("kind, refusal_fragment", [
+        # No relative path equals its own absolute realpath, so this one also fails the resolved-path rule.
+        ("relative", "is not an absolute path"),
+        # Git reports a path through a symlink as not ignored, so the ignore rule also refuses this one.
+        ("symlink", "passes through a symlink"),
+        ("name", "must end in"),
+        ("unignored", "is not ignored by the git work tree"),
+    ])
+    def test_a_refused_local_dir_exits_two_naming_its_own_rule_with_the_target_still_absent(
+        self, tmp_path, capsys, kind, refusal_fragment,
+    ):
+        unignored_parent = tmp_path / "unignored-parent"
+        unignored_parent.mkdir()
+        if kind == "symlink":
+            (tmp_path / "link-parent").symlink_to(make_ignored_local_dir(tmp_path).parent)
+        if kind == "name":
+            ignoring_work_tree = tmp_path / "name-checkout"
+            ignoring_work_tree.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=ignoring_work_tree, check=True, capture_output=True)
+            (ignoring_work_tree / ".gitignore").write_text("ignored-but-misnamed/\n")
         target = {
             "relative": Path("relative-parent") / ".local",
             "symlink": tmp_path / "link-parent" / ".local",
-            "name": make_ignored_local_dir(tmp_path / "other").parent / "elsewhere",
-            "unignored": real_parent / ".local",
+            "name": tmp_path / "name-checkout" / "ignored-but-misnamed",
+            "unignored": unignored_parent / ".local",
         }[kind]
-        if kind == "symlink":
-            (tmp_path / "link-parent").symlink_to(real_parent)
-        if kind == "name":
-            target.parent.mkdir(parents=True, exist_ok=True)
 
         assert main_run("--local-dir", str(target), "summarize", "--campaign-id", "c1") == 2
-        assert not (real_parent / ".local").exists() and not target.exists()
+        assert refusal_fragment in capsys.readouterr().err
+        assert not target.exists()
 
     def test_a_timed_out_ignore_probe_refuses_naming_the_fixed_limit_and_not_an_unignored_dir(
         self, tmp_path, monkeypatch,

@@ -1265,9 +1265,11 @@ it after a run. `smoke` and `run` also take `--model-id`, `--budget-cap-usd`,
 `preflight` takes
 `--direnv-timeout-s`. `run` also takes `--account-stop-usd`, which caps each
 account and defaults to the cumulative stop, `--allow-early-stop`, `--arm`
-(repeatable, default every arm), `--seed` and `--campaign-id`. `summarize`
-takes `--budget-cap-usd`, which prices an unparsed spend line only when the
-campaign's manifest pins no usable cap.
+(repeatable, default every arm), `--seed` and `--campaign-id`. Every spend
+stop and every `summarize` spend line counts one campaign's spend file, so
+spend from `smoke` or another campaign on the same account is not in them.
+`summarize` takes `--budget-cap-usd`, which prices an unparsed spend line only
+when the campaign's manifest pins no usable cap.
 
 Exit codes: 0 for done, 1 for a run that stopped short, 2 for a refusal
 before the first launch. An interrupt exits 128 plus the signal number. A held
@@ -1324,10 +1326,10 @@ Every command that launches probes each source repo's account first, and
 `preflight` runs only that step. The probe runs `direnv exec <repo>` from a
 scratch directory and reads two things: `CLAUDE_CONFIG_DIR` (else
 `~/.claude`) and the names of the variables in the probe's environment. Two
-repos that resolve to one config dir are one account, with one spend pool and
-one smoke pass. The account's config dir needs `CLAUDE.md`,
-`agents/code-writer.md`, and a `settings.json` that registers a `SessionStart`
-command ending in `capture-session-id.sh`.
+repos that resolve to one config dir are one account, with one smoke pass. The
+account's config dir needs `CLAUDE.md`, `agents/code-writer.md`, and a
+`settings.json` that registers a `SessionStart` command ending in
+`capture-session-id.sh`.
 
 A readiness check then runs `claude --version` behind the exact launch prefix.
 It shows that `claude` resolves and starts, and that its version meets the
