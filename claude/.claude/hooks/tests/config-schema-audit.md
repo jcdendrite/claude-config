@@ -502,9 +502,6 @@ Column legend:
   the reason table's last row holds the condition list.
 - Check scope: the check does not run when `_config_enabled` reads the key as
   on, so a `= true` line followed by a malformed duplicate still archives.
-- Misspelled key name: a misspelled name, the hyphenated `agent-branch-records`
-  included, reads as off and is not detected. Only `_config.sh`'s stderr
-  warning marks that line.
 - Fail direction on an internal resolver failure of `_config.sh`:
   **remove unarchived**. `_config_resolve_fail_safe` substitutes the schema
   default, false, so `_config_enabled` returns 1 and the key reads as off.

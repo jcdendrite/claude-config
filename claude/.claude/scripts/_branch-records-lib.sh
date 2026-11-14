@@ -65,13 +65,13 @@ _branch_records_mark_unavailable() {
 }
 
 # _branch_records_toml_confirms_off CONFIG_DIR
-# Returns 0 only when CONFIG_DIR's claude-config.toml provably does not exist, or was read and holds no line containing the text
-# agent_branch_records that _config_line_key_value cannot parse, and no line for the key whose value is other than true or false.
-# Every other outcome returns 1, except the three residuals below.
+# Returns 0 when CONFIG_DIR's claude-config.toml provably does not exist.
+# Returns 0 when the file was read and holds no line containing the text agent_branch_records that _config_line_key_value cannot parse, and no line for the key whose value is other than true or false.
 # A failed lookup proves absence only when the nearest existing ancestor is a searchable directory, because EACCES, ELOOP and ENOTDIR also fail it.
-# A stat error such as EIO, ESTALE or ETIMEDOUT under a searchable parent still reads as absence and returns 0.
-# A transient read failure inside the config reader's own read is not detected here.
-# A misspelled key name is not detected.
+# Every other outcome returns 1, except these three residuals, which return 0:
+# - A stat error such as EIO, ESTALE or ETIMEDOUT under a searchable parent, which reads as absence.
+# - A transient read failure inside the config reader's own read, which is not detected here.
+# - A misspelled key name, which is not detected.
 _branch_records_toml_confirms_off() {
   local state_file="$1/$_CONFIG_STATE_FILENAME" entry="$1/$_CONFIG_STATE_FILENAME" parent
   while [ ! -e "$entry" ] && [ ! -L "$entry" ]; do

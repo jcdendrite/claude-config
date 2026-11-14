@@ -170,6 +170,17 @@ class TestArchiveWorktree:
         assert manifest["ledger_key"] == expected_ledger_key(repo_root, target.branch)
         assert snapshot.parent == key_directory(env, manifest["ledger_key"])
 
+    def test_unchanged_worktree_reuses_the_first_snapshot_under_a_spaced_non_ascii_home_and_worktree_path(self, tmp_path):
+        env = build_archive_env(tmp_path, home_name="hôme with space")
+        target = make_archive_worktree(tmp_path, worktree_name="work tree é")
+        write_tree(target.worktree / "agent-reviews", {"notes/finding é.md": "text\n"})
+        first_snapshot = archive_successfully(tmp_path, env, target)
+
+        second = run_archive(tmp_path, env, target)
+
+        assert (second.rc, second.snapshot) == (0, first_snapshot)
+        assert list(first_snapshot.parent.iterdir()) == [first_snapshot]
+
     def test_worktree_without_a_git_entry_hashes_its_own_path_not_the_enclosing_repository(
         self, tmp_path, archive_worktree
     ):

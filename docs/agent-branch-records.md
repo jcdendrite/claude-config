@@ -53,7 +53,7 @@ A cleanup script that cannot archive a worktree keeps it and exits 1. The first 
 
 ## Fail direction
 
-- Key off: the scripts behave as before and print nothing.
+- Key off: the scripts print no `Archive:` line and refuse nothing, though `_config.sh` still warns on stderr about any bad line in `claude-config.toml`. A config directory or schema that cannot be resolved (relative `CLAUDE_CONFIG_DIR`, unset `HOME`, unreadable `config-keys.psv`) is the exception and refuses regardless of the key.
 - A key that cannot be read as on or off refuses: a malformed or non-boolean `agent_branch_records` line, or a `claude-config.toml` that cannot be read (see the last table row).
 - Some failures read as off and remove worktrees with no snapshot, and a missing `Archive: ready` line is the sign of each. The cases:
   - A misspelled key name, including `agent-branch-records`, is not detected, and only `_config.sh`'s stderr warning marks the line.
@@ -73,6 +73,7 @@ Account directories are not an access boundary, because every account runs as th
 
 ## Known limits
 
-- The ledger sweep deletes `review-narrative-ledger/*.jsonl` files after 30 days without an append, and this archive does not cover them.
+- The ledger sweep deletes `review-narrative-ledger/*.jsonl` files after at least 30 days without an append, and this archive does not cover them.
+- The archive is not crash-consistent, because nothing flushes the copy to disk before removal. A power loss or kernel panic soon after a run can leave empty files in a snapshot that reads as complete.
 - A worktree removed by other means gets no snapshot, such as a `--list-removable` consumer or a manual `git worktree remove`.
 - `cleanup-merged-branches.sh` reads the key and account from each repo's own environment, so a repo on a key-off account is removed with no snapshot and no output.

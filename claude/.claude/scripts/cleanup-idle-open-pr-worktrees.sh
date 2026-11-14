@@ -57,12 +57,12 @@
 # worktree passes every check above, there's no comparable judgment call to
 # prompt about, and the cost of a wrong call is a `git worktree add` +
 # reinstall, not lost committed work. `--dry-run` covers "review before acting".
-# The gitignored agent-reviews/ directory survives a removal only as an archive snapshot (key on, archive succeeded).
-# A recreated worktree does not get that snapshot back.
 #
 # Branch-records archive: with the `agent_branch_records` key on, each
 # candidate's agent-reviews/ is copied into a snapshot before its removal, and
-# a candidate whose archive fails is kept. See docs/agent-branch-records.md.
+# a candidate whose archive fails is kept. The gitignored agent-reviews/
+# directory survives a removal only as that snapshot, and a recreated worktree
+# does not get it back. See docs/agent-branch-records.md.
 #
 # Usage:
 #   cleanup-idle-open-pr-worktrees.sh
