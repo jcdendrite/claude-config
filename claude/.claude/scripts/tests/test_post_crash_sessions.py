@@ -672,10 +672,9 @@ def test_entry_liveness_darwin_format_never_calls_proc_starttime_ticks():
 
 
 def test_build_report_linux_numeric_procstart_live_pid_is_clean_exit_not_unknown(tmp_path):
-    """Bug 3 headline: a registry entry with a Linux-shaped numeric procStart
+    """A registry entry with a Linux-shaped numeric procStart
     for a live pid, with a matching injected ticks function, must classify
-    CLASS_LIVE_PROCESS -- before row4 this never parsed and fell through to
-    CLASS_UNKNOWN regardless of the pid's real liveness."""
+    CLASS_LIVE_PROCESS, not CLASS_UNKNOWN."""
     sessions_dir = tmp_path / "config" / "sessions"
     live_pid = os.getpid()
     _write_registry_entry(sessions_dir, live_pid, sessionId="s1", procStart="13017318")
@@ -1267,9 +1266,8 @@ def test_recent_transcript_only_ids_excluded_when_boot_time_and_now_both_unknown
 
 
 def test_recent_transcript_only_ids_now_anchored_surfaces_with_boot_time_none():
-    """Regression guard for row9's guard: boot_time=None must not raise
-    TypeError on `None - window_seconds` once the boot_time is None -> []
-    early return is gone — the now-anchored disjunct must still evaluate on
+    """boot_time=None must not raise TypeError on `None - window_seconds`:
+    the now-anchored disjunct must still evaluate on
     its own and surface a session with no reboot to anchor it at all."""
     now = 100000.0
     transcripts = {"s1": _transcript_info(session_id="s1", last_activity=now - 3600.0, has_main=True)}
@@ -1525,7 +1523,7 @@ def test_build_report_lookup_file_mtime_governs_admission_not_transcript_mtime(t
 def test_build_report_stale_lookup_file_falls_through_to_transcript_only_evidence(tmp_path):
     """The reverse: a stale (out-of-window) lookup file is treated as if
     absent entirely -- a recent transcript for the same session id still
-    surfaces independently through the row9 transcript-only fallback."""
+    surfaces independently through the transcript-only fallback."""
     config_dir_path = tmp_path / "config"
     sessions_dir = config_dir_path / "sessions"
     dead = _dead_pid()
@@ -2071,7 +2069,7 @@ def test_classify_registry_entries_take_precedence_over_lock_entries():
 
 
 def test_classify_registry_arm_precedes_lookup_arm_lookup_evidence_absent_from_detail():
-    """Pins the registry-arm-before-lookup-arm ordering row13 establishes so
+    """Pins the registry-arm-before-lookup-arm ordering so
     a later reorder has a failing test to catch it."""
     registry_dead_after_boot = _registry_entry(pid=100, mtime=1500.0)
     lookup = _lookup_entry(pid=400, session_id="s1")
@@ -2086,7 +2084,7 @@ def test_classify_registry_arm_precedes_lookup_arm_lookup_evidence_absent_from_d
 
 
 def test_classify_lookup_arm_precedes_lock_arm_lock_evidence_absent_from_detail():
-    """Pins the lookup-arm-before-lock-arm ordering row13 establishes."""
+    """Pins the lookup-arm-before-lock-arm ordering."""
     lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0)
     lock_dead = _lock_entry(pid=200, session_id="s1", mtime=1500.0)
     transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
@@ -2656,7 +2654,7 @@ def test_build_report_lookup_dead_pid_fully_covered_is_confirmed_clean_exit(tmp_
 
 
 def test_build_report_lookup_pid_rewritten_by_subagent_still_matches_session_end_record(tmp_path):
-    """Regression net for ledger row 12: a lookup file at one pid gets
+    """Regression net: a lookup file at one pid gets
     rewritten under a second session id (the SubagentStart-overwrite shape),
     and a SessionEnd record for that same pid, postdating the rewrite,
     still explains the current (second) session -- the match rule keys on
@@ -4023,7 +4021,7 @@ def test_main_threads_near_boot_hours_into_build_report(tmp_path, monkeypatch, c
 
 
 def test_main_threads_crash_window_hours_primary_spelling_into_build_report(tmp_path, monkeypatch):
-    """--crash-window-hours is the primary spelling (row10); --near-boot-hours
+    """--crash-window-hours is the primary spelling; --near-boot-hours
     (covered above) must keep working as an alias with identical effect."""
     captured_kwargs = _spy_on_build_report(monkeypatch)
     empty_config = tmp_path / "empty-config"

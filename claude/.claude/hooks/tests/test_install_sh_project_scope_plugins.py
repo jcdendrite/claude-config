@@ -398,9 +398,9 @@ class TestProjectScopePluginInstallLoop:
         assert _read_log(install_log) == ["skill-management@claude-config"]
 
     def test_single_install_failure_does_not_abort_remaining_plugins(self, tmp_path: Path) -> None:
-        """The new loop's install calls must be non-fatal — see the plan's
-        row6: a single network blip must not abort install.sh before it
-        reaches later, unrelated setup steps."""
+        """The loop's install calls must be non-fatal: a single network
+        blip must not abort install.sh before it reaches later, unrelated
+        setup steps."""
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
         enabled_plugins = {

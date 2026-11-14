@@ -2732,7 +2732,8 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
 
 class TestMarkerScriptHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates every marker path marker.sh writes, not
-    just $HOME/.claude -- closes the cross-account bypass this plan targets."""
+    just $HOME/.claude -- a marker another account writes under its own config
+    directory, in the same $HOME, never releases this account's gate."""
 
     def test_write_code_review_lands_under_config_dir(
         self, isolated_home, git_repo, tmp_path
@@ -2828,8 +2829,7 @@ class TestMarkerScriptHonorsConfigDir:
 class TestSessionStartTimeResolution:
     """_walk_session's PID-reuse guard: a sessions/<pid> entry is trusted
     only when its recorded start time matches the live process's current
-    `ps -o lstart=` start time. Named invariant (see
-    .claude/plans/retire-sessionend-destructors.md): any entry that doesn't
+    `ps -o lstart=` start time. Named invariant: any entry that doesn't
     satisfy this — mismatched, missing the second line, or empty — is
     untrusted and must fall through to the next ancestor exactly as if the
     file were absent, never resolve to a session id."""

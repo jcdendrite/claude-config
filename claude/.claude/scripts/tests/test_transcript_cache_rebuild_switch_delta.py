@@ -93,7 +93,7 @@ class TestCacheRebuildNegateSwitchDeltaForDisplay:
 
 
 class TestCacheRebuildSwitchDeltaThresholdIndependence:
-    """Verification item 3: W5m and X must be threshold-independent -- both
+    """W5m and X must be threshold-independent -- both
     accumulate over every in-scope call, not just tail (>= threshold) ones."""
 
     def test_sub_threshold_calls_count_toward_w5m_and_x_but_stay_invisible_in_tail_cause_table(
@@ -139,7 +139,7 @@ class TestCacheRebuildSwitchDeltaThresholdIndependence:
 
 
 class TestCacheRebuildSwitchDeltaNumeratorBoundaries:
-    """Verification item 4: X excludes idle >1h (a 1-hour cache is also
+    """X excludes idle >1h (a 1-hour cache is also
     cold past 3600s) and pure-1h-tier writes (can't have been forced by a
     <1h gap) -- extends TestCacheRebuildCacheTierGapMismatch's fixture shape
     to a subagent-origin record."""
@@ -176,7 +176,7 @@ class TestCacheRebuildSwitchDeltaNumeratorBoundaries:
 
 
 class TestCacheRebuildSwitchDeltaArithmetic:
-    """Verification items 5-6: the printed net dollar figure for the
+    """The printed net dollar figure for the
     subagent origin row is savings-positive and uses the correct, per-model
     coefficients, and the break-even boundary is exact, not a
     rounded-decimal approximation."""
@@ -273,10 +273,11 @@ class TestCacheRebuildSwitchDeltaZeroState:
 
 
 class TestCacheRebuildSubagentDispersion:
-    """Verification item 8: per-dispatch dispersion is computed against each
-    subagent group's OWN X and W5m, not the pooled corpus-wide denominator --
-    the mechanism Phase 0c's Outcome 2 (a selective lever not excluded)
-    would read off."""
+    """Per-dispatch dispersion is computed against each subagent group's OWN
+    X and W5m, not the pooled corpus-wide denominator.
+
+    It bounds what a selective, per-dispatch TTL switch could save, and a
+    pooled denominator would corrupt that bound."""
 
     def test_per_group_ratios_dispersion_excludes_zero_w5m_group_and_counts_sub_threshold_calls(
         self, fake_projects, capsys

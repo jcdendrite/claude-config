@@ -2663,7 +2663,7 @@ class TestNudgeHandoffNearContextCap:
         )
 
     # -----------------------------------------------------------------------
-    # M3: additionalContext states the computed threshold, ordering hazard
+    # additionalContext states the computed threshold, ordering hazard
     # -----------------------------------------------------------------------
 
     @pytest.mark.parametrize("model,threshold", [("claude-haiku-4-5", SMALL_THRESHOLD), ("claude-sonnet-5", LARGE_THRESHOLD)])

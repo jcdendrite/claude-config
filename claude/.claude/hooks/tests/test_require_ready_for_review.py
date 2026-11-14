@@ -2799,8 +2799,9 @@ class TestRequireReadyForReview:
 
 class TestRequireReadyForReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the ready-for-review marker directory the
-    same way for marker.sh (write) and this hook (read) -- see marker.sh and
-    the cross-account bypass this closes (ledger row 7)."""
+    same way for marker.sh (write) and this hook (read) -- a marker another
+    account writes under its own config directory, in the same $HOME, never
+    releases this account's gate."""
 
     def test_marker_under_matching_config_dir_allows(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path

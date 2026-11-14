@@ -77,7 +77,7 @@ def _write_session_meta(config_dir: Path, session_id: str, project_path: str, to
 class TestFindSessionJsonlMultiRoot:
     """find_session_jsonl searches roots active-profile-first and must warn,
     not resolve silently, when the same id prefix matches different sessions
-    under different declared roots (plan Step 15, bullet 1)."""
+    under different declared roots."""
 
     def test_unambiguous_prefix_found_only_under_a_declared_root_needs_no_warning(
         self, tmp_path, capsys
@@ -117,8 +117,7 @@ class TestFindSessionJsonlMultiRoot:
 
 class TestLatestSessionJsonlMultiRoot:
     """latest_session_jsonl compares mtimes across every root -- the same
-    cwd's project dir can exist under more than one declared root (plan Step
-    15, bullet 2)."""
+    cwd's project dir can exist under more than one declared root."""
 
     def test_newer_session_under_a_declared_root_wins_over_older_active_session(
         self, tmp_path
@@ -146,7 +145,7 @@ class TestLatestSessionJsonlMultiRoot:
 class TestShowTopMultiRootMetadataPairing:
     """show_top reads each root's own usage-data/session-meta dir -- metadata
     must pair with the root a session's transcript actually came from, not
-    always the active profile's SESSION_META_DIR (plan Step 15, bullet 3)."""
+    always the active profile's SESSION_META_DIR."""
 
     def _write_meta(self, config_dir: Path, session_id: str, project_path: str, tokens: int) -> None:
         meta_dir = config_dir / "usage-data" / "session-meta"
@@ -184,8 +183,7 @@ class TestShowTopMultiRootMetadataPairing:
 class TestScopeDisclosureHeader:
     """show_top and analyze_session both print the unconditional
     resolved-scope header transcript-analysis.py's other subcommands print --
-    a single-vs-multi-account scan must not read identically in output
-    (ciso-reviewer Finding A)."""
+    a single-vs-multi-account scan must not read identically in output."""
 
     def test_show_top_states_single_root_when_nothing_declared(self, tmp_path, capsys):
         active_config = tmp_path / "active"
@@ -210,11 +208,10 @@ class TestScopeDisclosureHeader:
         assert out.splitlines()[0] == "TOP SOURCES (*; 2 roots)"
 
     def test_show_top_not_found_states_scanned_root_count_not_a_path(self, tmp_path, capsys):
-        """The not-found message (Finding D) states how many roots were
+        """The not-found message states how many roots were
         searched, not any individual root's path -- same disclosure
-        discipline as the header itself. The header itself moves to stderr,
-        ahead of the message, on this failure path; stdout stays empty
-        (plan mechanism 5)."""
+        discipline as the header itself. The header itself goes to stderr,
+        ahead of the message, on this failure path; stdout stays empty."""
         roots = [tmp_path / "a" / "projects", tmp_path / "b" / "projects", tmp_path / "c" / "projects"]
 
         with pytest.raises(SystemExit):
@@ -253,8 +250,7 @@ class TestScopeDisclosureHeader:
     ):
         """main()'s explicit-session-id not-found exit states how many roots
         were searched, on stderr, ahead of the not-found verdict -- the same
-        disclosure discipline show_top's not-found exit already carries
-        (plan mechanism 5)."""
+        disclosure discipline show_top's not-found exit carries."""
         active_config = tmp_path / "active"
         (active_config / "projects").mkdir(parents=True)
         monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
@@ -276,8 +272,7 @@ class TestScopeDisclosureHeader:
     ):
         """main()'s no-session-id fallback (latest session in cwd's project)
         states how many roots were searched, on stderr, ahead of the
-        not-found verdict, mirroring the explicit-session-id path above
-        (plan mechanism 5)."""
+        not-found verdict, mirroring the explicit-session-id path above."""
         active_config = tmp_path / "active"
         (active_config / "projects").mkdir(parents=True)
         monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
@@ -300,8 +295,7 @@ class TestScopeDisclosureHeader:
 class TestParseTurnsIncludesSubagents:
     """parse_turns routes through _read_session_file(include_subagents=True)
     so a session that dispatched work to a subagent contributes that
-    subagent's turns to the growth curve instead of silently omitting them
-    (plan Step 17 / staff-backend-engineer Finding B)."""
+    subagent's turns to the growth curve instead of silently omitting them."""
 
     def test_subagent_turns_are_merged_into_the_growth_curve(self, tmp_path):
         session_id = "sess-with-subagent"
@@ -329,8 +323,7 @@ def test_main_scans_every_declared_root(monkeypatch, tmp_path, capsys):
     """main() threads _resolve_scan_roots' output into show_top -- a session
     metadata file under a declared (non-active) root must appear in the
     CLI's own --top output, not just be reachable via a direct
-    show_top(roots=...) call (plan Step 15 / staff-backend-engineer
-    Finding E)."""
+    show_top(roots=...) call."""
     active_config = tmp_path / "active"
     _write_session_meta(active_config, "session-active", "/repos/active-proj", 100)
     monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")

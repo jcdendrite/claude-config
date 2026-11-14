@@ -8782,7 +8782,7 @@ def _all_doc_paths() -> list[Path]:
     every co-located skill REFERENCES.md, evals/README.md, and the
     repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
     docs/case-studies/** hold preserved historical records (CLAUDE.md
-    Axis 3) and are excluded, matching the plan's Out of scope list."""
+    Axis 3) and are excluded."""
     repo_root = REPO_ROOT
     docs_root = repo_root / "docs"
     paths = [
@@ -8857,9 +8857,7 @@ def test_all_citation_extraction_doc_paths_raises_when_global_rules_dir_empty(tm
 class TestPerAccountStatePathContract:
     """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
     may hold a literal ~/.claude (or $HOME/.claude, ${HOME}/.claude)
-    per-account-state path — see
-    .claude/plans/normalize-config-dir-paths.md. Guards the state-path class
-    from drifting back in, including the $HOME-form bypass a bare
+    per-account-state path. Covers the $HOME-form bypass a bare
     '~/.claude/' substring check would miss entirely."""
 
     def test_flags_issue_triage_state_path(self):
@@ -8932,8 +8930,7 @@ class TestPerAccountStatePathContract:
 # placeholder, landing immediately in front of a scripts/ or hooks/ path --
 # every script and hook under claude/.claude/ is stow-shared and
 # machine-invariant (resolves into the same checkout under every account), so
-# its own call-site path never needs runtime templating; see
-# .claude/plans/deterministic-config-dir-resolution.md. Anchored on the
+# its own call-site path never needs runtime templating. Anchored on the
 # literal /scripts/ or /hooks/ segment so the ~25 legitimate per-account
 # *state* templating sites (handoffs/, briefs/, sentinels, logs --
 # _PER_ACCOUNT_STATE_PATH_RE's own domain) are left untouched.
@@ -8971,8 +8968,7 @@ def _stowed_path_templating_matches(markdown_text: str) -> list[str]:
 class TestStowedScriptPathContract:
     """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
     may template $CLAUDE_CONFIG_DIR (or a <config-dir> prose placeholder) in
-    front of a scripts/ or hooks/ path -- see
-    .claude/plans/deterministic-config-dir-resolution.md. The other half of
+    front of a scripts/ or hooks/ path. The other half of
     the invariant TestPerAccountStatePathContract guards from the state-path
     direction: stowed paths must be literal, state paths must stay
     config-dir-relative."""
@@ -9057,13 +9053,10 @@ class TestStowedScriptPathContract:
 
 
 # --- findings_path wiring in plan-review/ROUTING.md ---
-# See .claude/plans/consult-dispatch-findings-file.md for the design; ledger
-# rows cited in the docstrings below are that plan's assumption ledger. The
-# mechanical recipe (info/exclude append, <epoch>-<slug> derivation) moved
-# into claude/.claude/scripts/findings-path-suffix.sh — see
-# .claude/plans/findings-path-script.md — leaving each dispatcher body with
-# only the contract statement (path template, spawn-synchronously rule,
-# read-back protocol).
+# The mechanical recipe (info/exclude append, <epoch>-<slug> derivation) lives
+# in claude/.claude/scripts/findings-path-suffix.sh, so each dispatcher body
+# carries only the contract statement (path template, spawn-synchronously
+# rule, read-back protocol).
 #
 # Four tests:
 # 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match

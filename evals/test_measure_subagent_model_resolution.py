@@ -7,9 +7,7 @@ claude/.claude/scripts/tests/conftest.py's
 `_write_subagent_dispatch` helper. Lives beside the harness rather than in
 claude/.claude/tests/ — that directory is stowed to every consumer of this
 repo, and this harness imports a module (measure_subagent_model_resolution)
-that is never stowed. See
-.claude/plans/plan-mode-model-resolution-experiment.md's "Why the test does
-not go in claude/.claude/tests/" note for the full rationale.
+that is never stowed.
 
 pyproject.toml adds 'evals' to the pytest pythonpath so `import
 measure_subagent_model_resolution` resolves correctly.
@@ -758,8 +756,7 @@ class TestClassifyAgentIdentity:
         """staff-backend-engineer already declares Bash, so a Plan
         substitution that only used Bash-or-narrower tools looks identical
         to an as-requested run by this method alone — the documented limit
-        named in plan M3's 'may never observe a true positive' validity
-        threat."""
+        that it may never observe a true positive."""
         declared = frozenset({"Read", "Grep", "Glob", "Bash", "Write"})
         assert (
             msmr.classify_agent_identity(declared, frozenset({"Read", "Bash"}))

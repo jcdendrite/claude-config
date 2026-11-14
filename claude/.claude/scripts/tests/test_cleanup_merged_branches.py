@@ -179,8 +179,8 @@ def _gh_shim_source(pr_data: dict[str, object]) -> str:
 
 
 def _gh_shim_source_by_token(token_to_pr_data: dict[str, dict]) -> str:
-    """gh shim variant for the per-repo-credential tests (verification
-    cases 1, 2, 10 in the plan): selects its PR_DATA table by the current
+    """gh shim variant for the per-repo-credential tests:
+    selects its PR_DATA table by the current
     GH_TOKEN env var rather than by branch name alone, and never by cwd —
     keying on cwd would let a test pass without load_repo_environment's
     direnv call ever running. A GH_TOKEN with no matching table (including
@@ -1281,8 +1281,7 @@ class TestTierBReachableNoMergedPR:
         stdout = result.stdout.decode()
         assert "tier-a-branch" in stdout
         assert "tier-b-branch" in stdout
-        # The removed --yes flag must not resurface in the end-of-run skip
-        # report (plan B11: strip "rerun with --yes" at all three report sites).
+        # The end-of-run skip report must not suggest rerunning with --yes.
         assert "--yes" not in stdout
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
@@ -1351,8 +1350,7 @@ class TestTierBReachableNoMergedPR:
         assert "tier-b-branch" in output
         assert "reachable from origin/main; no merged PR for this name" in output
         assert "tier-c-branch" not in output
-        # The removed --yes flag must not resurface in the dry-run headings
-        # (plan B11: strip "rerun with --yes" at all three report sites).
+        # The dry-run headings must not suggest rerunning with --yes.
         assert "--yes" not in output
 
     def test_existing_tier_a_silent_clean_preserved(self, tmp_path):
@@ -1597,7 +1595,7 @@ class TestWorktreeInUseGuard:
 # PR by branch *name* only, with no check that the current tip belonged to
 # that merge. A branch name reused across PRs (old PR merged, new PR opened
 # on the same head name) was deleted, which GitHub recorded as closing the
-# new, still-open PR. See ~/.claude/plans/cleanup-branches-open-pr-guard.md.
+# new, still-open PR.
 # ---------------------------------------------------------------------------
 
 class TestOpenPRGuardWinsOverStaleMergedMatch:

@@ -1,8 +1,7 @@
 """Unit tests for _lib.sh's worktree-collision-guard functions:
 _lib_worktree_collision_guard, _lib_worktree_lock_pid,
 _lib_resolve_claude_pid, _lib_worktree_lock_is_mine, and
-_lib_registered_live_sid. See .claude/plans/worktree-collision-guard.md and
-.claude/plans/worktree-lock-self-pid-after-clear.md.
+_lib_registered_live_sid.
 
 Hook-level (subprocess-of-a-hook) coverage of the same guard lives in
 test_require_worktree_for_git_writes.py's and
@@ -49,8 +48,7 @@ _RACER_TIMEOUT_SECONDS = 70
 # polls before giving up and exiting anyway. A real Claude Code session
 # stays alive long after acquiring a worktree lock, but a racer that exits
 # immediately makes its own pid genuinely dead within milliseconds, which
-# the auto-reclaim path this repo now ships
-# (.claude/plans/auto-clear-dead-worktree-locks.md) treats exactly like a
+# the guard's auto-reclaim path treats exactly like a
 # real crash -- a straggler racer still mid-diagnosis could then
 # legitimately reclaim it, breaking an "exactly one winner across the
 # whole run" assertion with no atomicity violation at any single instant.
@@ -284,8 +282,7 @@ def _launch_collision_guard_racer(
     plain nested `bash -c '...'` there would be collapsed by bash's
     tail-call exec optimization into the SAME os process as this outer
     one, giving every racer launched this way an identical $PPID and
-    silently defeating the whole test (verified empirically — see
-    .claude/plans/atomic-worktree-lock-acquisition.md). The trailing
+    silently defeating the whole test. The trailing
     `exit $?` is required too: `wait` alone does not propagate the
     backgrounded child's exit code as this script's own.
 
@@ -302,8 +299,7 @@ def _launch_collision_guard_racer(
     long as any straggler might still be mid-diagnosis under whatever
     contention this run hits, rather than guessing a duration. Without
     this, a winner that exits immediately makes its own pid genuinely dead
-    within milliseconds, which the auto-reclaim path this repo now ships
-    (.claude/plans/auto-clear-dead-worktree-locks.md) treats exactly like
+    within milliseconds, which the guard's auto-reclaim path treats exactly like
     a real crash -- a straggler still mid-diagnosis could then legitimately
     reclaim it, breaking an "exactly one winner across the whole run"
     assertion with no atomicity violation at any single instant. The
@@ -357,14 +353,12 @@ class TestConcurrentLockRace:
         """The exclusivity property the whole collision-guard design leans
         on, proven against the guard's own O_EXCL acquisition write — not
         raw `git worktree lock`, which is confirmed non-atomic at git's
-        own source and was the actual cause of a CI flake in an earlier
-        version of this test (see
-        .claude/plans/atomic-worktree-lock-acquisition.md). N real
+        own source. N real
         concurrent processes each call _lib_worktree_collision_guard
-        against the same worktree; exactly one succeeds. Under the O_EXCL
-        rewrite this is a deterministic OS guarantee, not a probabilistic
-        one, so 100% pass across repeated runs is the actual proof the fix
-        works — a single pass proves nothing about a race fix."""
+        against the same worktree; exactly one succeeds. The O_EXCL create
+        makes this a deterministic OS guarantee, not a probabilistic
+        one, so 100% pass across repeated runs is the actual proof of
+        exclusivity — a single pass proves nothing about a race."""
         repo = tmp_path / "race-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "race-worktree"
@@ -410,15 +404,13 @@ class TestConcurrentLockRace:
         assert f"pid {winner_pid}" in reason
 
     def test_n_way_concurrent_eviction_race_exactly_one_winner(self, isolated_home, tmp_path):
-        """The exact race the prior design was rejected over
-        (.claude/plans/worktree-collision-guard.md:86-108: an evict-then-
-        relock sequence racing a second evictor), now closed by the claim
+        """An evict-then-relock sequence racing a second evictor is closed by the claim
         file's own O_EXCL exclusivity: N racers all diagnosing the SAME
         dead lock concurrently must produce exactly one reclaim winner, not
         a double-holder. Deterministic under the claim's O_EXCL create, so
         100% across repeated runs is the expected result -- see
         test_20_way_concurrent_lock_race_exactly_one_winner's docstring
-        above for why a single pass proves nothing about a race fix."""
+        above for why a single pass proves nothing about a race."""
         repo = tmp_path / "evict-race-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "evict-race-worktree"
@@ -526,13 +518,11 @@ exec "{real_git}" "$@"
     def test_verification_reread_mismatch_after_successful_write_denies(self, isolated_home, tmp_path):
         """A distinct, narrow race from the one above: the window between
         the guard's own successful noclobber write and its post-write
-        verification reread (mechanism 2 of
-        .claude/plans/atomic-worktree-lock-acquisition.md). If a human's
+        verification reread. If a human's
         `git worktree unlock` lands in exactly that window, the guard must
         still deny (fail closed) rather than return 0 for a lock it can no
-        longer confirm holds — this is the property mechanism 2 exists to
-        provide, and without this test it was only asserted in the plan's
-        prose. Forced deterministically via a `git` wrapper that performs
+        longer confirm holds — this is the property the verification reread
+        exists to provide. Forced deterministically via a `git` wrapper that performs
         the racing unlock the instant the guard's SECOND `worktree list
         --porcelain` call (the verification reread, distinguishable from
         the first, self-lock-check read by call order) is made — the write
@@ -785,9 +775,7 @@ exec "{real_git}" "$@"
         between _lib_worktree_collision_guard's own diagnosis read and
         _lib_worktree_reclaim_dead_lock's merged raw-lock-file
         read-compare-unlink, which re-reads and validates the lock's
-        content in the same subprocess that removes it (see
-        .claude/plans/auto-clear-dead-worktree-locks.md for the full design
-        rationale). If the lock this caller diagnosed as dead is replaced
+        content in the same subprocess that removes it. If the lock this caller diagnosed as dead is replaced
         by a genuinely live lock in exactly that window, the reclaim must
         refuse to remove it -- fail closed -- rather than evicting a lock
         it never actually diagnosed. Forced
@@ -946,7 +934,7 @@ class TestCollisionGuardBranches:
     """Coverage for _lib_worktree_collision_guard's decision branches that
     a black-box hook test can also reach (duplicated here at the function
     level, with the same case list as the two hook test files' collision-
-    guard classes, per the plan's 'Critical files' section)."""
+    guard classes)."""
 
     def test_acquires_lock_when_unlocked(self, isolated_home, tmp_path):
         repo = tmp_path / "acquire-repo"
@@ -1261,11 +1249,10 @@ class TestCollisionGuardBranches:
 
     def test_foreign_dead_lock_auto_evicted_and_reclaimed(self, isolated_home, tmp_path):
         """A lock naming a pid that is no longer running is auto-evicted
-        and re-acquired for this session within the same guard call. See
-        .claude/plans/worktree-collision-guard.md:86-108 for the
-        counterexample the prior no-auto-evict design was rejected over,
-        and .claude/plans/auto-clear-dead-worktree-locks.md for the
-        release-free claim that closes that race now."""
+        and re-acquired for this session within the same guard call. This
+        single-process test does not exercise the race between concurrent
+        evictors; test_n_way_concurrent_eviction_race_exactly_one_winner
+        pins it."""
         repo = tmp_path / "foreign-dead-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "foreign-dead-worktree"
@@ -1386,8 +1373,7 @@ exec "{real_git}" "$@"
 
     def test_main_working_tree_target_denies(self, isolated_home, tmp_path):
         """A target_path that resolves to the main working tree, not a
-        linked worktree, denies via the main-tree precondition check
-        (mechanism 3 of .claude/plans/atomic-worktree-lock-acquisition.md):
+        linked worktree, denies via the main-tree precondition check:
         the main tree's own `--git-dir` and `--git-common-dir` resolve to
         the same path, which no linked worktree's own git-dir ever does.
         Both existing callers already exclude the main tree before calling
@@ -1522,12 +1508,10 @@ class TestDeadLockReclaim:
     """Coverage for the claim-file protocol behind a dead lock's auto-
     eviction (_lib_worktree_reclaim_dead_lock, _lib.sh) beyond the ordinary
     success/deny cases already covered in TestCollisionGuardBranches and
-    the race cases in TestConcurrentLockRace/TestCollisionGuardRereadRace.
-    See .claude/plans/auto-clear-dead-worktree-locks.md 'Critical files'
-    for the case list this class covers."""
+    the race cases in TestConcurrentLockRace/TestCollisionGuardRereadRace."""
 
     def test_old_format_foreign_dead_lock_auto_evicted(self, isolated_home, tmp_path):
-        """The evictable half of must-not-regress #3: an old-format lock
+        """An old-format lock
         (no session field, predating session-id keying) naming a dead pid
         is auto-evicted and reclaimed exactly like a new-format one, via
         the `nosession` claim-filename branch."""
@@ -1550,7 +1534,7 @@ class TestDeadLockReclaim:
         assert Path(wt_git_dir, f"claude-evicted-lock-{dead_pid}-nosession").exists()
 
     def test_new_format_dead_lock_with_pre_existing_claim_denies_lock_untouched(self, isolated_home, tmp_path):
-        """The once-only property (M1): a claim already on disk for this
+        """The once-only property: a claim already on disk for this
         exact (pid, session_id) identity is never reused. Pre-creating the
         claim file before the guard ever runs proves the guard's own
         noclobber create is what enforces the once-only bound, not
@@ -1638,7 +1622,7 @@ class TestDeadLockReclaim:
         assert f"pid {dead_pid}" in reason
 
     def test_foreign_live_lock_creates_no_claim_file(self, isolated_home, tmp_path, live_pid):
-        """Must-not-regress #2 at the claim-file level: a live-foreign-lock
+        """At the claim-file level, a live-foreign-lock
         deny never reaches the claim-gated eviction branch at all, so no
         claim file is ever created for it."""
         repo = tmp_path / "live-noclaim-repo"
