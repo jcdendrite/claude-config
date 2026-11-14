@@ -4,11 +4,11 @@ With the `agent_branch_records` key on, `cleanup-merged-branches.sh` and `cleanu
 
 ## Setup
 
-The commands take `<volume path>` as a bare word, so quote it if it has a space, as in `/Volumes/My Drive`. With no larger volume, run `mkdir -p ~/.local/state/agent-branch-records`, skip steps 1 and 2 and continue at step 3. Moving an existing root to another volume is manual and not covered here.
+The commands take `<volume path>` as a bare word, so quote it if it has a space, as in `/Volumes/My Drive`. With no larger volume, run `mkdir -p -m 700 ~/.local/state/agent-branch-records`, skip steps 1 and 2 and continue at step 3. Moving an existing root to another volume is manual and not covered here.
 
 Before step 5, exclude the root, and the step 1 target if you use a volume, from any sync or backup client that copies off the machine. Snapshots hold finding text that can quote secrets.
 
-1. Create the target on the volume first, because a link to a missing target reads as a missing sentinel: `mkdir <volume path>/agent-branch-records`. Also run `mkdir -p ~/.local/state`, since a macOS home may lack it.
+1. Create the target on the volume first, because a link to a missing target reads as a missing sentinel: `mkdir -m 700 <volume path>/agent-branch-records`. Also run `mkdir -p ~/.local/state`, since a macOS home may lack it.
 2. Link the root to it: `ln -s <volume path>/agent-branch-records ~/.local/state/agent-branch-records`. The root must not exist yet, because `ln -s` onto an existing directory links inside it.
 3. Create the sentinel with `touch ~/.local/state/agent-branch-records/.agent-branch-records-root`, only after confirming the volume is mounted and never from an agent session. A sentinel on a bare mountpoint passes the check while the volume is absent.
 4. Smoke-test the copy on the target volume, from your own terminal as your own user, because `Archive: ready` does not check that `cp -RPp`, `diff -r` and `mv` work there. A failing command means the volume cannot hold the archive. Delete the scratch directory either way:
@@ -49,11 +49,11 @@ A cleanup script that cannot archive a worktree keeps it and exits 1. The first 
 | `copying agent-reviews failed` | Free space, fix an unreadable file, or rerun the step 4 smoke test. |
 | `the snapshot copy of agent-reviews differs from the original` | Rerun, and if it repeats, run the step 4 smoke test. |
 | `the snapshot manifest could not be written` | Check the volume's space and permissions, then rerun. |
-| `the archive setting in claude-config.toml could not be read as true or false` | You make these fixes, and an agent only reports the refusal. A `_config.sh: warning: skipping malformed line` on stderr names the line.<br>A line that mentions the key but does not parse, or whose value is not bare `true` or `false`: fix that line and restore the value you set.<br>`claude-config.toml` is unreadable: restore read permission.<br>A directory on its path is not searchable: restore search permission.<br>A regular file sits where a directory belongs on its path: replace it with a directory.<br>A dangling or looping link sits on its path: repair the link or fix `CLAUDE_CONFIG_DIR`.<br>A directory or FIFO sits at its path: replace it with a regular file. |
+| `the archive setting in claude-config.toml could not be read as true or false` | A `_config.sh: warning: skipping malformed line` on stderr names the line.<br>A line that mentions the key but does not parse, or whose value is not bare `true` or `false`: fix that line and restore the value you set.<br>`claude-config.toml` is unreadable: restore read permission.<br>A directory on its path is not searchable: restore search permission.<br>A regular file sits where a directory belongs on its path: replace it with a directory.<br>A dangling or looping link sits on its path: repair the link or fix `CLAUDE_CONFIG_DIR`.<br>A directory or FIFO sits at its path: replace it with a regular file. |
 
 ## Fail direction
 
-- Key off: the scripts print no `Archive:` line and refuse nothing, though `_config.sh` still warns on stderr about any bad line in `claude-config.toml`. A config directory or schema that cannot be resolved (relative `CLAUDE_CONFIG_DIR`, unset `HOME`, unreadable `config-keys.psv`) is the exception and refuses regardless of the key.
+- Key off: the scripts print no `Archive:` line and refuse nothing, though `_config.sh` still warns on stderr about any bad line in `claude-config.toml`. A config directory or schema that cannot be resolved is the exception and refuses regardless of the key (the first table row, except its canonicalization cause, which refuses only with the key on).
 - A key that cannot be read as on or off refuses: a malformed or non-boolean `agent_branch_records` line, or a `claude-config.toml` that cannot be read (see the last table row).
 - Some failures read as off and remove worktrees with no snapshot, and a missing `Archive: ready` line is the sign of each. The cases:
   - A misspelled key name, including `agent-branch-records`, is not detected, and only `_config.sh`'s stderr warning marks the line.
@@ -67,7 +67,7 @@ A cleanup script that cannot archive a worktree keeps it and exits 1. The first 
 - Snapshot: `<account directory>/branches/<repo-hash>.<branch-hash>/<UTC stamp>.<pid>.<n>/`, holding `agent-reviews/` (absent when the worktree had none) and `manifest.json`.
 - A snapshot is complete only once its `manifest.json` exists, because the manifest is written last.
 
-To find one, search `<root>/*/branches/*/*/manifest.json` for the `branch` and `main_worktree_path` fields. No script restores a snapshot, so restoring is a manual `cp -R` of its `agent-reviews/`.
+To find one, search `<account directory>/branches/*/*/manifest.json`, using the directory the `Archive: ready (...)` line prints, for the `branch` and `main_worktree_path` fields. No script restores a snapshot, so restoring is a manual `cp -R` of its `agent-reviews/`.
 
 Account directories are not an access boundary, because every account runs as the same OS user. Snapshots are created owner-only, which a volume that ignores POSIX modes does not enforce. The manifest is a plain JSON file that any process of the same OS user can write.
 
@@ -77,3 +77,4 @@ Account directories are not an access boundary, because every account runs as th
 - The archive is not crash-consistent, because nothing flushes the copy to disk before removal. A power loss or kernel panic soon after a run can leave empty files in a snapshot that reads as complete.
 - A worktree removed by other means gets no snapshot, such as a `--list-removable` consumer or a manual `git worktree remove`.
 - `cleanup-merged-branches.sh` reads the key and account from each repo's own environment, so a repo on a key-off account is removed with no snapshot and no output.
+- Nothing prunes the archive. Delete old snapshot directories by hand.

@@ -40,7 +40,6 @@ BRANCH_RECORDS_SNAPSHOT=''
 _branch_records_snapshot_seq=0
 
 # _branch_records_canonical_dir DIR
-# Prints DIR with symlinks resolved; fails on an unreachable DIR or an empty result.
 # The cd runs in a subshell so the caller's cwd and CDPATH are untouched.
 _branch_records_canonical_dir() {
   local resolved
@@ -186,7 +185,6 @@ _branch_records_abandon_snapshot() {
 }
 
 # _branch_records_tree_is_plain DIR
-# Returns 0 when DIR holds only regular files and directories, and 1 on any other entry or a failed scan.
 # Runs without -L, so a symlink is reported as itself and is refused.
 _branch_records_tree_is_plain() {
   local scan_status=0 unsupported_entries

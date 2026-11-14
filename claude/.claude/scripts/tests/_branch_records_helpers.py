@@ -327,7 +327,6 @@ def archive_successfully(tmp_path: Path, env: dict[str, str], target: ArchiveWor
 
 @functools.cache
 def reason_variables() -> dict[str, str]:
-    """Maps each cause to its fixed reason string, read from the sourced lib through bash's prefix expansion."""
     script = (
         f". {shlex.quote(str(HOOKS_LIB))}\n. {shlex.quote(str(LIB))}\n"
         'for name in "${!_BRANCH_RECORDS_REASON_@}"; do printf \'%s\\0%s\\0\' "$name" "${!name}"; done'
@@ -361,7 +360,6 @@ def write_tree(directory: Path, files: dict[str, str]) -> None:
 
 
 def read_tree(directory: Path) -> tuple[dict[str, str], set[str]]:
-    """Maps every file under `directory` to its text, plus the set of its subdirectories."""
     files, directories = {}, set()
     for path in directory.rglob("*"):
         relative_name = str(path.relative_to(directory))
@@ -415,7 +413,6 @@ def write_cp_shim(shim_dir: Path, body: str) -> None:
 
 
 def archive_then_change_worktree(tmp_path: Path, env: dict[str, str], target: ArchiveWorktree) -> Path:
-    """Archives `target` once, then adds a file so the earlier snapshot no longer matches. Returns that snapshot."""
     source_dir = target.worktree / "agent-reviews"
     write_tree(source_dir, {"finding.md": "text\n"})
     first_snapshot = archive_successfully(tmp_path, env, target)
@@ -426,7 +423,6 @@ def archive_then_change_worktree(tmp_path: Path, env: dict[str, str], target: Ar
 def quoted_archive_arguments(
     target: ArchiveWorktree, empty_argument: str | None = None, trigger: str = "test.sh"
 ) -> str:
-    """The four shell-quoted arguments `branch_records_archive_worktree` takes, with `empty_argument` blanked."""
     arguments = {
         "worktree": str(target.worktree),
         "branch": target.branch,
