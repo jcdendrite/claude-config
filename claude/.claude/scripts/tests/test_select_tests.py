@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-import yaml
+from helpers import ci_test_slice_job
 
 from .conftest import _commit, _init_repo, _make_repo_with_remote
 
@@ -2419,7 +2419,6 @@ class TestKnownCrossDomainReadsAudit:
         assert expected == _mod.SKILL_FILES_READ_BY_HOOK_TESTS
 
 
-_TESTS_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _CI_PYTEST_COMMAND = ("pytest",)
 _CI_LINT_COMMAND = ("ruff", "check")
 _CI_PYTEST_STEP_COUNT = 2
@@ -2448,12 +2447,12 @@ def _ci_step_roots(steps: list[dict]) -> list[tuple[str, frozenset[str]]]:
     its step name, so a rename cannot hide a step from the parity check."""
     pytest_steps = _steps_running(steps, _CI_PYTEST_COMMAND)
     assert len(pytest_steps) == _CI_PYTEST_STEP_COUNT, (
-        f"expected {_CI_PYTEST_STEP_COUNT} pytest steps in tests.yml's tests job, "
+        f"expected {_CI_PYTEST_STEP_COUNT} pytest steps in tests.yml's test-slice job, "
         f"found {[step.get('name') for step in pytest_steps]}"
     )
     lint_steps = _steps_running(steps, _CI_LINT_COMMAND)
     assert len(lint_steps) == 1, (
-        f"expected exactly one `{' '.join(_CI_LINT_COMMAND)}` step in tests.yml's tests job, "
+        f"expected exactly one `{' '.join(_CI_LINT_COMMAND)}` step in tests.yml's test-slice job, "
         f"found {[step.get('name') for step in lint_steps]}"
     )
     (lint_step,) = lint_steps
@@ -2521,7 +2520,7 @@ class TestRuleTablePathFidelity:
         assert outside_targets == ["docs/other"]
 
     def test_full_suite_targets_equal_the_roots_of_every_ci_pytest_and_lint_step(self):
-        steps = yaml.safe_load(_TESTS_WORKFLOW_PATH.read_text())["jobs"]["tests"]["steps"]
+        steps = ci_test_slice_job()["steps"]
         expected_roots = frozenset(root.rstrip("/") for root in _mod.FULL_SUITE_TARGETS)
         assert _steps_whose_roots_differ_from(steps, expected_roots) == []
 
