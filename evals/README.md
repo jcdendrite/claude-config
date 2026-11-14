@@ -600,6 +600,12 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
 - A scorer fix after a run does not need new samples: with `--keep-artifacts`,
   `rescore_kept_streams(DIR)` scores the kept streams again with the current
   scorer. A prompt change reruns that observable's cells.
+- Before reading a gate table, grep the kept O3 streams for Bash commands that
+  contain `commit` but that the scorer's commit pattern does not match, such as
+  a quoted option value containing a space (`git -c "user.name=A B" commit`).
+  The pattern does not match them, so the deny hook does not deny them. Only an
+  unreached sample counts one in its `unscored_target_calls`; a sample that
+  later calls `code-review` scores adherent without counting it.
 
 **Local only.** Like the other instruments here it never runs in CI. `--json`,
 `--keep-artifacts`, `--run-log` and `--resume` are each refused when they

@@ -144,11 +144,11 @@ GIT_COMMIT_COMMANDS = [
 NON_COMMIT_COMMANDS = [
     "git log --grep commit", "git status", "echo git is not commit", "git add -A",
     # `commit` here is the value of the preceding option, not the subcommand.
-    "git -C commit", "git --git-dir commit",
+    "git -C commit", "git -c commit", "git --git-dir commit", "git --work-tree commit", "git --namespace commit",
 ]
 # One run per value-taking global option. Each option could swallow the following `-A` or leave it as a bare option, so an
-# ambiguous pattern parses the run 2**n ways. 22 repeats take the pre-fix pattern 2 to 10 seconds, long enough to fail
-# the time bound and short enough to return, where more repeats would hang the run.
+# ambiguous pattern parses the run 2**n ways. `OPTION_RUN_REPEATS` is large enough for such a pattern to exceed
+# `MAX_NO_MATCH_SECONDS` and small enough that the search still returns, where many more repeats would hang the run.
 OPTION_RUN_REPEATS = 22
 AMBIGUOUS_OPTION_RUNS = [
     option_with_next_option * OPTION_RUN_REPEATS
@@ -2341,7 +2341,7 @@ def rate_limit_sample(resets_at: float | None = None) -> m.RawSample:
 
 
 # A real listing holds at least the lister's own process, so an empty one is refused by the resume guard.
-PROCESS_LISTING_WITHOUT_CHILDREN = "/bin/zsh\nps -axo command=\n"
+PROCESS_LISTING_WITHOUT_CHILDREN = "/bin/zsh\nps -axww -o command=\n"
 
 
 @dataclass
