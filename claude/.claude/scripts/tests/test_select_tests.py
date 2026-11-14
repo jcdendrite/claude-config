@@ -1310,6 +1310,14 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
+    def test_workflow_file_change_reaches_the_unmatched_path_fallback(self):
+        """Tests in several test trees read .github/workflows/tests.yml and no
+        row maps it, so an edit to it must keep running the full suite. A row
+        mapping it narrowly would drop tests it must keep selecting."""
+        result = _mod.select_pytest_targets([".github/workflows/tests.yml"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
     def test_changelog_md_change_selects_no_tests(self):
         """test_ci_path_filter.py is the only test that references
         CHANGELOG.md. It matches it as a static CI ignore-paths allowlist
