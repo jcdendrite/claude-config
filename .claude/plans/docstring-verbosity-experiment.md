@@ -241,7 +241,7 @@ The Bash check is a bounded scan of the command text (row 161).
 - A candidate over `MAX_PATH_CHARS` is skipped and recorded as unparsed.
 - Only `~`, `$HOME`, `${HOME}`, `$PWD` and `${PWD}` expand, and `$PWD` is the fixture dir. Relative tokens resolve against the fixture.
 - Containment is bounded to the config dir, the live checkout roots and `.git`, the local dir, and the `FIXTURE_DIR_PREFIX` directories. A word that names a guarded location, or a directory inside its tree that holds it, is a hit. So is a word below a guarded location, as listed above.
-- A command `shlex` cannot split is recorded as unparsed.
+- A line `shlex` cannot split is recorded as unparsed and scanned as raw whitespace-separated words.
 
 Both checks, and `check_tool_call_paths` as a whole:
 - The run's record keeps every Bash command, and every token outside the fixture that no rule above fails.
@@ -309,7 +309,7 @@ Each run also records how many calls were denied, which a hook denial and a perm
 - An `add -A` failure, such as on a nested repository with no commit, is an `analysis-error` (row 78).
 
 The run records three tallies of what it does not classify:
-- `non_file_entries`: changed symlink and gitlink entries;
+- `non_file_entries`: changed entries that end as a symlink or gitlink;
 - `ignored_paths`: untracked paths other than `/.claude/` that the work tree's ignore rules keep out of `add -A`, from one `ls-files -z --others --ignored --exclude-standard --directory` call, kept as a count and the first 100 paths (row 78);
 - `undecodable_files`: blobs that do not decode as UTF-8 once a BOM is stripped. Their added lines count as unclassified.
 
@@ -439,7 +439,7 @@ For each run, `smoke` prints:
 - Exclude: the `bare` run's own per-run checks fail it as `arm-leak` on any subagent load outside the fixture and on any dispatcher load besides the account's `CLAUDE.md`. That shows the exclude holding only when `bare`'s subagent read a rule-matching file (row 145).
 - Exclude note, printed and never gated (row 143):
   - When the `toolkit` control fired and its `path_glob_match` lines name the file that triggered each load (row 146), `smoke` prints whether the `bare` transcript shows a Read that ran of any such file, compared by path relative to each run's fixture. A payload with no trigger field leaves this line out.
-  - `smoke` always prints one residual sentence: "A `bare` run that read no rule-matching file passes without testing the exclude."
+  - `smoke` prints one residual sentence, whether or not the block calibration computed: "A `bare` run that read no rule-matching file passes without testing the exclude."
 - Inheritance: the `toolkit` run's first-turn prompt size, minus the `bare` run's, minus the body term, is at least the margin. The comparison is `>=`. Otherwise, or when either size is null, `arm-config-missing`.
 - The verdict is a pure function of the `toolkit` run's parsed log, both runs' first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It computes the calibration conditions whenever both runs left a session file with no timeout and the `toolkit` run has a log object. Whether either run is valid does not gate that computation. A missing run's own reason is listed first.
 - The verdict returns every failed condition, in the order above, and `smoke` prints them all. The inheritance check is token arithmetic, so it stays computable when the control fails, and one paid block shows every problem it can.
@@ -490,7 +490,7 @@ On an interrupt, `main()` calls `msmr.abort_launches()` and prints a hint. For `
   - `summarize` reports the paired difference `toolkit − bare` over tasks with a valid run and at least one non-test code line in both arms. It uses `analysis.bootstrap_interval` over tasks as singleton clusters, and prints no interval for fewer than two paired tasks (row 75).
   - Directly under that difference it prints `paired <n> of <M> complete tasks`, and then the excluded tasks in four counts: `toolkit` with no valid run, `bare` with no valid run, both arms with no valid run, and no non-test code line. The first three carry their missing reasons. It prints no threshold warning.
 - A null primary difference shows only that the writing agent's instructions leave its first draft's comment density unchanged on these tasks. It cannot show that the verbosity is built-in, because no arm runs the review loop through which the toolkit also shapes comments (row 62).
-- Secondary outcome, per arm beside the task's reference metrics: Python docstring lines per 100 added code lines.
+- Secondary outcome, per arm beside the pooled reference metrics of the complete tasks: Python docstring lines per 100 added code lines.
 - Diagnostics, per arm:
   - the unclassified-line share, and the count of Python files `ast.parse` rejected (row 35);
   - the count of runs with any permission-rule denial;
@@ -606,7 +606,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 25. [verified: `CLAUDE.md` §Working Style "Dispatching cannot clear a denial your child inherits"] A subagent starts in its dispatcher's permission mode, so `--permission-mode acceptEdits` reaches both arms' subagents.
 26. [verified: Verification step 1a, as relayed; the permission-modes page, as relayed] Under `-p`, `acceptEdits` approves Edit and Write inside the working directory. It also auto-approves `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp` and `sed` there, plus the read-only command set. Other Bash needs an allow rule. Step 1a saw `env` denied, and `code-writer`'s Reads of reviewer files outside the fixture denied.
 27. [verified: `evals/review_bench/fixture_repo.py:129-133`] Extracting with `git archive` into a fresh repository keeps every later commit unreachable from the fixture.
-28. [verified: `evals/review_bench/fixture_repo.py:267-284`] `build_two_commit_repo` commits the head tree, so it cannot build a replay fixture.
+28. [verified: `evals/review_bench/fixture_repo.py`, `build_two_commit_repo`] `build_two_commit_repo` commits the head tree, so it cannot build a replay fixture.
 29. [verified: `evals/review_bench/fixture_repo.py:8-9`; `evals/README.md` "Building a later arm"] The bench installs an arm's agent as a fixture-local `.claude/agents/` file.
 30. [verified: `evals/review_bench/runner.py:852-991`] `evaluate_run_validity` checks any thin-dispatcher run, and its live-checkout check covers the changed paths passed to it. Its path checks see only Read, Grep and Glob calls. [verified: `evals/review_bench/runner.py:100`]
 31. [unverified] `code-writer`'s `model: sonnet` resolves to `REVIEWER_MODEL_ID`, the `--model-id` default. If it does not, every run of either arm fails `model-mismatch` at `smoke`. Verification step 1b reads the model ID each subagent observed and stops when it differs.
@@ -657,7 +657,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 72. [verified: `evals/review_bench/runner.py:1041-1045`] `_ENVIRONMENT_READ_TIMEOUT_S` is 10 seconds, set for local process and git calls with no network I/O, a hung `claude --version` among them.
 73. [verified: `evals/review_bench/runner.py:1090-1106`] An `EnvironmentReference` built from a frozen mapping of `cli_version` and `ambient_config_commit` checks every reading against it. Built without one, it adopts its first reading.
 74. [verified: `evals/review_bench/runner.py:1592-1594`] `all_runs_missing` is true only when none of the records it is given is ok.
-75. [verified: `evals/review_bench/analysis.py:361-370`] `bootstrap_interval` returns no interval for fewer than two clusters.
+75. [verified: `evals/review_bench/analysis.py:347-398`, `bootstrap_interval_with_drops` and `bootstrap_interval`] `bootstrap_interval` returns no interval for fewer than two clusters.
 76. [unverified] One `printf '%s\n'` of the captured payload reaches the log in one `write` call, which Phase 4's parallel test checks. [verified: Verification step 1a, as relayed] The session-start burst arrived one payload per line. Whether the harness ever runs two `InstructionsLoaded` hooks at once stays unchecked.
 77. [unverified] `git add -A` stores a symlink as its link text and skips a FIFO without opening it. Phase 4's hostile-tree test checks both.
 78. [unverified] `git add -A` leaves out an untracked path that the work tree's ignore rules match, and fails on a nested repository that has no commit. Phase 4's tests pin both outcomes.
@@ -673,7 +673,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 84. [engineer-verified: "Proceed anyway"] Superseded by row 99. The engineer chose to keep an earlier revision of this plan as one PR at its `Projected diff:` of about 5,100 changed lines, over the 400-line threshold.
 85. [verified: `evals/review_bench/runner.py:1141,1214-1230,1264-1291`] `sweep_abandoned` returns the whole store's pending entries, whichever projects root it is given. An entry with an empty session ID is a directory logged before any run launched against it.
 86. [verified: `evals/review_bench/runner.py:280-313`] `_repair_torn_tail` truncates a JSONL file's unparseable last line back to the last newline, and adds the missing newline to a last line that parses. The bench calls it before a log's next read or append.
-87. [verified: `evals/review_bench/fixture_repo.py:37-41,88-95,121-131,249-259`] `_run_git`, `_extract_commit_tree` and `_commit_snapshot` bound every git call by the module's 10 s `_LOCAL_GIT_TIMEOUT_S`, which its comment calls an empirical guess. `_extract_commit_tree` holds the whole archive in memory, and `_commit_snapshot` runs `git add -A --force` over the whole tree.
+87. [verified: `evals/review_bench/fixture_repo.py`, `_LOCAL_GIT_TIMEOUT_S`, `_run_git`, `_extract_commit_tree` and `_commit_snapshot`] `_run_git`, `_extract_commit_tree` and `_commit_snapshot` bound every git call by the module's 10 s `_LOCAL_GIT_TIMEOUT_S`, which its comment calls an empirical guess. `_extract_commit_tree` holds the whole archive in memory, and `_commit_snapshot` runs `git add -A --force` over the whole tree.
 88. [verified: Verification step 1a's timing, as relayed] The Fixture rule applied to the measured builds gives the defaults Fixture lists. [unverified] Three times the slowest build bounds a hung git without failing a slow but healthy build. The multiplier and the 60 s ceiling are judgments.
 89. [verified: `pyproject.toml:31`; `.github/workflows/tests.yml:26-34,179,186`; `evals/test_review_bench_runner.py:793,810`] CI runs the tests not marked `timing` under `-n auto` and the `timing` tests serially, inside a 25-minute job cap whose comment says to re-derive it whenever either pass grows. The marker is for a test that asserts a wall-clock bound or needs serial isolation.
 90. [verified: `evals/conftest.py:30-47`] The shared autouse fixture stubs `review_bench.runner.default_live_checkout_roots` by module attribute, and only once some test has imported `run_review_bench`. A `from` import binds before the stub, and a process that never imported `run_review_bench` gets no stub.
@@ -1165,7 +1165,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - an absolute token into the run's own fixture, which sits under a `FIXTURE_DIR_PREFIX` directory, passing;
     - a `~/` token resolving under a `tmp_path` home's projects root, and a `../..` token resolving from the fixture into another fixture, each resolved and failing;
     - an unrelated absolute path, recorded;
-    - an unsplittable command, recorded as unparsed;
+    - an unsplittable command, recorded as unparsed and scanned as raw words, so one that holds a guarded path fails;
   - malformed entries: a Bash `command` that is not a string, an Edit with no `file_path`, and a token holding a NUL byte, each recorded as unparsed without raising;
   - permission-rule denials from the permission flow and from a hook, each counted;
   - the account-hook check: a found file passes, an absent file fails `account-hooks-missing`, and a symlink and a file for another session each count as absent.
@@ -1195,7 +1195,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - `smoke.py` and `smoke_pass.py`: `smoke` and the smoke-pass record;
   - `summary.py`: `summarize`;
   - `diffing.py`, `records.py` and `render.py`: the attempt diff, the run record, and the escaping every printed refusal and `missing_detail` goes through;
-  - `runner.py`: `FIXTURE_GIT_TIMEOUT_S`, `run_block` and the environment read.
+  - `runner.py`: `FIXTURE_GIT_TIMEOUT_S`, `execute_run`, `run_block` and the environment read.
 - The runner behavior, under the modules above (new):
   - the account preflight, its account key, its `PATH` check, its call of both generators, and its readiness check with the CLI version floor, with failure text in the probe's shape;
   - the preflight's names-only list of every variable the launch drops;
@@ -1214,13 +1214,13 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - the manifest's repo-to-account pin, the resume's ceiling over the incomplete blocks, and `--fixture-git-timeout-s` outside the manifest comparison;
   - `smoke`'s one-run-per-arm block, printed ceiling, no-retry rule for instrument reasons, printout with the exclude note, block calibration, `read-grant-denied` and `read-grant-unexercised` conditions, and arm-keyed smoke-pass record;
   - `summarize`.
-- `runner.py`'s reuse from `review_bench.runner`:
+- The replay bench's reuse (the package and `evals/run_replay_bench.py`) from `review_bench.runner`:
   - prompts and launch: `build_dispatcher_prompt`, `build_dispatch_command`, `wait_for_session_flush`, `extract_result_usage`;
   - validity: `evaluate_run_validity`, `own_session_paths_for`, `default_live_checkout_roots` through its module, `_worktree_top_levels`, `session_store_dir_for`, `_os_error_detail`;
   - campaign: `read_environment_record`, `EnvironmentReference`, `build_block_plan`, `RunStore`, `count_outcomes`, `all_runs_missing`, `campaign_cost_ceiling`, `remove_tree_reporting_failure`, `_repair_torn_tail`;
   - constants: `FIXTURE_DIR_PREFIX`, `REVIEWER_MODEL_ID`, `REVIEWER_TIMEOUT_S`, `ATTEMPTS_PER_RUN`, `_ENVIRONMENT_READ_TIMEOUT_S`.
-- `runner.py`'s reuse from `measure_subagent_model_resolution`: `_run_claude_to_completion`, `_resolved_temp_project_dir`, `abort_launches`, `LaunchAbortedError`, `PER_RUN_BUDGET_CAP_USD`, `agent_frontmatter_tools`, `agent_frontmatter_model` and `_frontmatter_block`.
-- `runner.py`'s reuse from the rest of `review_bench`: `analysis.bootstrap_interval`, `identifiers.validate_campaign_id`, `defects.atomic_write_text`, `fixture_repo._validate_sha`, and `local_git`'s `isolated_git_environment` and `DIFF_TEXT_ARGS`.
+- The replay bench's reuse (the package and `evals/run_replay_bench.py`) from `measure_subagent_model_resolution`: `_run_claude_to_completion`, `_resolved_temp_project_dir`, `abort_launches`, `LaunchAbortedError`, `PER_RUN_BUDGET_CAP_USD`, `agent_frontmatter_tools`, `agent_frontmatter_model` and `_frontmatter_block`.
+- The replay bench's reuse (the package and `evals/run_replay_bench.py`) from the rest of `review_bench`: `analysis.bootstrap_interval`, `identifiers.validate_campaign_id`, `defects.atomic_write_text`, `fixture_repo._validate_sha`, and `local_git`'s `isolated_git_environment` and `DIFF_TEXT_ARGS`.
 - `evals/run_replay_bench.py` (new): the subcommands `tasks`, `preflight`, `smoke`, `run` and `summarize`, with `DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"`, `--local-dir` and `--fixture-git-timeout-s`. `tasks` takes one flag per `SelectionLimits` field, `--rev` included, named as the field with underscores as hyphens and defaulting to `None`, and `main()` passes only the flags given, by field name (row 152). `smoke` takes no `--k`. `main()` runs the startup steps in Approach's order. Neither an `UnsafeFixtureConfigError` nor an attempt's `UnsafeConfigPathError` reaches it, because an attempt records each as `fixture-error` (Retry). It returns 2, with the offending file path or name in the message, on any of these:
   - `HarnessInvalidatedError`, `TaskSourceError` (an out-of-range selection limit included), `TaskFileError`, or `identifiers.InvalidIdentifierError`, which `tasks.py` raises for a task-set name that breaks its grammar;
   - a preflight, spend, smoke-gate or local-dir refusal, or a resume's refusal of a symlinked `attempts/`;
