@@ -281,13 +281,14 @@ class TestQualifyingCommit:
         repo = _make_repo(tmp_path)
         added_file_commit = _change(repo, {".claude": "rules\n", "src/first.py": twelve_code_lines()})
         # Removes the file so the next commit's base tree holds none. The removing commit is skipped: its base tree holds one.
-        _change(repo, {".claude": None, "src/second.py": twelve_code_lines()})
+        removing_commit = _change(repo, {".claude": None, "src/second.py": twelve_code_lines()})
         _write_symlinks(repo, {"pkg/.claude": "../src"})
         _git(repo, "--literal-pathspecs", "add", "--", "pkg/.claude")
         added_symlink_commit = _change(repo, {"src/third.py": twelve_code_lines()})
 
         task_by_commit = {task.commit: task for task in _mine(repo).tasks}
 
+        assert removing_commit not in task_by_commit
         assert task_by_commit[added_file_commit].changed_paths == (".claude", "src/first.py")
         assert task_by_commit[added_file_commit].reference_metrics.changed_paths == [".claude", "src/first.py"]
         assert task_by_commit[added_symlink_commit].changed_paths == ("src/third.py",)
@@ -654,12 +655,12 @@ class TestThresholdsAreInclusive:
         _assert_only_skipped_as(_mine(repo, max_prompt_chars=prompt_length - 1), SkipReason.PROMPT_TOO_LONG)
 
 
-# --- selection: base trees extraction refuses --------------------------------
+# --- selection: base tree shapes the miner skips -----------------------------
 
 _NON_ASCII_DIR = "日本語"
 
 
-class TestBaseTreesExtractionRefuses:
+class TestBaseTreeShapesTheMinerSkips:
     @pytest.mark.parametrize(
         ("symlinks", "files", "reason"),
         [
