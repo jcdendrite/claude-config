@@ -57,7 +57,7 @@ BLOCK_DENIAL = "block"
 
 @dataclass
 class Scenario:
-    """What one scripted launch writes. The defaults are a clean run of the given arm."""
+    """The defaults are a clean run of the given arm."""
 
     # A list of log lines, or a function of the session ID (and optionally the fixture dir).
     log_lines: list[dict] | Callable[..., list[dict]] | None = None
@@ -136,8 +136,7 @@ def stream_lines(
 
 @dataclass
 class ScriptedLaunch:
-    """A `launch=` stand-in. `scenario_for(call_number, agent_name)` picks each call's behavior; the default
-    is a clean run. The account's config dir comes from the launch prefix, so two accounts work side by side."""
+    """The account's config dir comes from the launch prefix, so two accounts work side by side."""
 
     config_dir: Path
     scenario_for: Callable[[int, str], Scenario] | None = None
@@ -220,7 +219,6 @@ class ScriptedLaunch:
 
 
 def _resolve_lines(lines, call: LaunchCall) -> list[dict] | None:
-    """A function of the session ID, or of the session ID and the fixture directory."""
     if not callable(lines):
         return lines
     return lines(call.session_id) if len(inspect.signature(lines).parameters) == 1 else lines(call.session_id, call.cwd)
@@ -322,7 +320,6 @@ def make_account(config_dir: Path, home: Path) -> Account:
 
 
 def make_ignored_local_dir(root: Path) -> Path:
-    """The path of a `.local` directory, not yet created, in a git work tree whose `.gitignore` ignores it."""
     checkout = root / "checkout"
     (checkout / "evals" / "replay_bench").mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, capture_output=True)
@@ -333,8 +330,7 @@ def make_ignored_local_dir(root: Path) -> Path:
 def build_replay_world(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, task_count: int = 1, base_files: dict[str, str] | None = None,
 ) -> ReplayWorld:
-    """Under `tmp_path`: a home with an account config dir, a temp dir for fixtures, a git-ignored local dir and a
-    source repo with `task_count` qualifying commits (newest first in `tasks`)."""
+    """`tasks` is newest first."""
     home = tmp_path / "home"
     config_dir = home / ".claude"
     build_config_dir(config_dir)
@@ -358,7 +354,6 @@ def build_replay_world(
 
 
 def add_second_account(world: ReplayWorld, task_count: int = 1) -> tuple[Account, list[tasks.ReplayTask]]:
-    """A second account with its own config dir, and tasks from a second source repo."""
     root = world.root / "second"
     config_dir = root / "home" / ".claude"
     build_config_dir(config_dir)
@@ -401,7 +396,6 @@ def claude_md_line(world: ReplayWorld, session_id: str, config_dir: Path | None 
 
 
 def leaking_log_lines(world: ReplayWorld):
-    """A log for a `bare` run that leaks: the dispatcher's `CLAUDE.md` load, then a subagent rule load."""
     return lambda session_id: [
         claude_md_line(world, session_id),
         _line(str(world.config_dir / "rules" / "python.md"), "path_glob_match", agent_id=AGENT_ID, session_id=session_id),
@@ -409,7 +403,6 @@ def leaking_log_lines(world: ReplayWorld):
 
 
 def validity_of(world: ReplayWorld, call: LaunchCall, cost: float | None = 0.5) -> review_runner.RunValidity:
-    """What `evaluate_run_validity` says about the session a scripted launch just wrote."""
     session_jsonl = world.config_dir / "projects" / "synthetic-project" / f"{call.session_id}.jsonl"
     own_session_paths = review_runner.own_session_paths_for(session_jsonl)
     return review_runner.evaluate_run_validity(

@@ -65,7 +65,6 @@ class ReplayRunRecord:
 
     @classmethod
     def from_dict(cls, data: dict) -> ReplayRunRecord:
-        """Raises ValueError for a missing required key or an unknown key."""
         known = {item.name for item in fields(cls)}
         unknown = sorted(set(data) - known)
         if unknown:
@@ -89,8 +88,7 @@ def diff_path(campaign_dir: Path, task_id: str, arm: str, run_index: int) -> Pat
 
 
 def write_run(campaign_dir: Path, record: ReplayRunRecord, diff_text: str | None) -> None:
-    """The diff first, then the record, each atomically. A block rerun after a crash overwrites its own files and
-    removes a diff the record no longer has."""
+    """A block rerun after a crash overwrites its own files and removes a diff the record no longer has."""
     run_diff_path = diff_path(campaign_dir, record.task_id, record.arm, record.run_index)
     if diff_text is not None:
         atomic_write_text(run_diff_path, diff_text)
@@ -102,7 +100,6 @@ def write_run(campaign_dir: Path, record: ReplayRunRecord, diff_text: str | None
 
 
 def read_block_records(campaign_dir: Path, task_id: str) -> list[ReplayRunRecord]:
-    """Raises HarnessInvalidatedError, naming the file, for a record that does not parse."""
     records = []
     for path in sorted(block_runs_dir(campaign_dir, task_id).glob("*.json")):
         try:

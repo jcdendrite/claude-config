@@ -122,8 +122,7 @@ class SelectionLimits:
     max_base_entries: int = 12_500
 
     def __post_init__(self) -> None:
-        """Raises TaskSourceError for an integer limit below 1, naming its flag, and for a minimum above the
-        maximum. A negative `max_count` would make `git log -n` walk the whole history."""
+        """A negative `max_count` would make `git log -n` walk the whole history."""
         for field_name in _INTEGER_LIMIT_FIELDS:
             if getattr(self, field_name) < 1:
                 raise TaskSourceError(f"{_flag_for(field_name)} must be at least 1, got {getattr(self, field_name)}")

@@ -1,9 +1,5 @@
 """One launch attempt of one replay run: build the fixture, launch, check, capture the change, and clean up.
 
-Every attempt ends in a `finally` that deletes its fixture, its session store and its attempt dir, whether it
-was valid, invalid, timed out, raised or was interrupted. Its `sessions/` file stays, as every Claude Code
-session leaves one.
-
 The instruction-load log is read from `<attempt dir>/instructions-loaded.jsonl`, and nothing in the fixture is read
 as a log.
 """
@@ -34,8 +30,8 @@ REASON_LAUNCH_NO_OUTPUT = "launch-no-output"
 REASON_LAUNCH_ERROR = "launch-error"
 # A retry would fail the same way on the same input, or would hide evidence about the instrument.
 NO_RETRY_REASONS = checks.INSTRUMENT_REASONS | {REASON_FIXTURE_ERROR, REASON_ANALYSIS_ERROR}
-# The run never reached its end, so a missing log or session file says nothing about the instrument.
-# `launch-no-output` and `launch-error` return before this check runs, so they are not listed.
+# A run that never reached its end says nothing about the instrument; `launch-no-output` and `launch-error`
+# return before this check, so they are not listed.
 _RUN_DID_NOT_COMPLETE_REASONS = frozenset({
     review_runner.MISSING_REASON_TIMEOUT, review_runner.VALIDITY_FAIL_NO_RESULT_EVENT,
     review_runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND,
@@ -45,7 +41,6 @@ _ABSENCE_INSTRUMENT_REASONS = frozenset({
 })
 BASELINE_GIT_NAME = "baseline.git"
 REPLAY_FIXTURE_DIR_PREFIX = f"{review_runner.FIXTURE_DIR_PREFIX}replay-"
-# How many failing tokens a `missing_detail` names. The run record holds all of them.
 MAX_DETAIL_ITEMS = 5
 
 Launch = Callable[[list[str], Path, int], tuple[list[bytes], bool]]
@@ -53,8 +48,6 @@ Launch = Callable[[list[str], Path, int], tuple[list[bytes], bool]]
 
 @dataclass(frozen=True)
 class RunSettings:
-    """Campaign-level inputs every attempt shares."""
-
     campaign_id: str
     attempts_root: Path
     local_dir: Path
@@ -66,7 +59,7 @@ class RunSettings:
     spend: SpendFile
     runner_environ: Mapping[str, str]
     launch: Launch
-    # Set when a worker fails or the run is interrupted. No run that has not launched yet launches after it.
+    # Set when a worker fails or the run is interrupted.
     stop: threading.Event = field(default_factory=threading.Event)
     # (task ID, session ID) of each launch that began and could not be charged.
     uncharged_launches: list[tuple[str, str]] = field(default_factory=list)
@@ -76,8 +69,6 @@ class RunSettings:
 
 @dataclass(frozen=True)
 class BlockContext:
-    """Inputs one task's block shares."""
-
     task: tasks.ReplayTask
     account: account_mod.Account
     environment: review_runner.EnvironmentRecord
@@ -155,9 +146,7 @@ def _log_size(log_path: Path) -> int | None:
 
 
 def wait_for_hook_log_to_settle(log_path: Path, *, timed_out: bool) -> None:
-    """Returns once the log's size holds across two polls, or at `SESSION_FLUSH_TIMEOUT_S`. The hook runs
-    asynchronously, so a line can land after the session's own files stop growing. A log absent at one poll
-    and present at the next counts as growth, and an absent log never raises."""
+    """The hook runs asynchronously, so a line can land after the session's own files stop growing."""
     if timed_out:
         return
     deadline = time.monotonic() + review_runner.SESSION_FLUSH_TIMEOUT_S
@@ -178,8 +167,6 @@ def _charge(
     spend: SpendFile, block: BlockContext, arm: Arm, run_index: int, attempt_number: int, progress: _Progress,
     usage_cost: float | None,
 ) -> tuple[float, bool]:
-    """Writes the attempt's spend line. An attempt with no usable cost figure, a non-finite or negative one
-    included, is charged at the budget cap."""
     is_cap_charge = not is_usable_cost(usage_cost)
     cost = spend.budget_cap_usd if is_cap_charge else usage_cost
     spend.append(SpendLine(
@@ -203,9 +190,8 @@ def _cleanup(progress: _Progress, projects_root: Path) -> None:
 def run_attempt(
     settings: RunSettings, block: BlockContext, arm: Arm, run_index: int, attempt_number: int,
 ) -> AttemptResult:
-    """Never retries. Raises HarnessInvalidatedError for a fixture directory under `$HOME`,
-    LaunchAbortedError for a run that starts after a sibling failed, and SpendAppendError for a failed spend
-    append. It re-raises an interrupt after charging the cap."""
+    """Raises HarnessInvalidatedError for a fixture directory under `$HOME`, LaunchAbortedError for a run that
+    starts after a sibling failed, and SpendAppendError for a failed spend append."""
     progress = _Progress()
     try:
         _refuse_after_a_sibling_failed(settings)

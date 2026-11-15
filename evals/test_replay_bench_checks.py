@@ -46,7 +46,7 @@ class TestInstrumentMissing:
         log = _parse(checks_world, [], trailing_newline=False)
         assert log.reason == checks.REASON_INSTRUMENT_MISSING
 
-    def test_an_absent_log_is_instrument_missing_without_raising(self, checks_world):
+    def test_an_absent_log_is_instrument_missing(self, checks_world):
         log = checks.parse_instruction_log(checks_world.root / "never-written.jsonl", session_id=SESSION_ID)
         assert log.reason == checks.REASON_INSTRUMENT_MISSING
 
@@ -69,7 +69,7 @@ class TestInstrumentMissing:
             id="expected-claude-md-with-another-load-reason",
         ),
     ])
-    def test_a_dispatcher_load_that_is_not_the_expected_file_at_session_start_is_instrument_missing_in_each_arm(
+    def test_an_unexpected_dispatcher_load_is_instrument_missing(
         self, checks_world, control_line, bare_reasons, toolkit_reasons,
     ):
         assert _check(checks_world, [control_line(checks_world)], _bare(checks_world)).reasons == bare_reasons
@@ -111,7 +111,7 @@ class TestInstrumentLogInvalid:
     ], ids=["agent_id-null", "agent_id-empty", "agent_id-number", "session_id-absent", "session_id-number",
             "file_path-absent", "file_path-number", "load_reason-absent", "load_reason-number", "file_path-nul",
             "file_path-relative", "file_path-too-long", "file_path-lone-surrogate"])
-    def test_a_field_mutation_of_a_captured_line_is_invalid_and_never_reaches_realpath(
+    def test_a_field_mutation_is_invalid(
         self, checks_world, monkeypatch, mutation,
     ):
         line = _line(checks_world.rule(), PATH_GLOB_MATCH, agent_id=AGENT_ID)
@@ -141,7 +141,7 @@ class TestInstrumentLogInvalid:
 
 
 class TestHostileLogContent:
-    def test_an_integer_over_the_parser_limit_fails_the_log_without_raising(self, checks_world):
+    def test_an_integer_over_the_parser_limit_fails_the_log(self, checks_world):
         digit_limit = sys.get_int_max_str_digits()
         if digit_limit == 0:
             pytest.skip("this interpreter sets no integer conversion limit, so no integer is too long to parse")
@@ -149,7 +149,7 @@ class TestHostileLogContent:
         line = json.dumps(_dispatcher_claude_md(checks_world))[:-1] + f', "extra": {huge_integer}}}'
         assert _parse(checks_world, [line]).reason == checks.REASON_INSTRUMENT_LOG_INVALID
 
-    def test_a_line_that_exhausts_the_json_recursion_limit_fails_the_log_without_raising(self, checks_world, monkeypatch):
+    def test_a_line_exhausting_the_recursion_limit_fails_the_log(self, checks_world, monkeypatch):
         checks_world.log_path.write_text(json.dumps(_dispatcher_claude_md(checks_world)) + "\n")
 
         def exhaust_recursion(*_args, **_kwargs):
@@ -161,7 +161,7 @@ class TestHostileLogContent:
 
         assert log.reason == checks.REASON_INSTRUMENT_LOG_INVALID
 
-    def test_a_log_path_that_is_a_directory_fails_the_log_with_a_detail_free_of_the_path(self, checks_world):
+    def test_a_directory_log_path_fails_the_log(self, checks_world):
         log = checks.parse_instruction_log(checks_world.root, session_id=SESSION_ID)
         assert log.reason == checks.REASON_INSTRUMENT_LOG_INVALID
         assert str(checks_world.root) not in (log.detail or "")
@@ -185,19 +185,19 @@ class TestTriggerPath:
         assert log.loads[0].trigger_file_path == "/synthetic/a.py"
 
     @pytest.mark.parametrize("trigger", [ABSENT, 7, None, ["x"], "/synthetic/a\x00b.py"], ids=repr)
-    def test_an_absent_non_string_or_nul_trigger_path_is_dropped_without_failing_the_log(self, checks_world, trigger):
+    def test_an_unusable_trigger_path_is_dropped(self, checks_world, trigger):
         log = _parse(checks_world, [_line(checks_world.rule(), PATH_GLOB_MATCH, agent_id=AGENT_ID, trigger_file_path=trigger)])
         assert log.reason is None
         assert log.loads[0].trigger_file_path is None
 
 
 class TestAttribution:
-    def test_a_subagent_only_session_start_load_is_credited_to_the_subagent_not_the_dispatcher(self, checks_world):
+    def test_a_subagent_session_start_load_is_credited_to_the_subagent(self, checks_world):
         outcome = _check(checks_world, [_line(str(checks_world.claude_md), agent_id=AGENT_ID)], _toolkit_arm(checks_world))
         assert outcome.reasons == (checks.REASON_INSTRUMENT_MISSING,)
         assert outcome.subagent_loads_by_class == {"toolkit": {"CLAUDE.md": 1}}
 
-    def test_a_duplicate_dispatcher_load_passes_and_is_not_credited_to_the_subagent(self, checks_world):
+    def test_a_duplicate_dispatcher_load_passes(self, checks_world):
         outcome = _check(
             checks_world, [_dispatcher_claude_md(checks_world), _dispatcher_claude_md(checks_world)], _bare(checks_world),
         )
@@ -212,7 +212,7 @@ class TestAttribution:
 
 
 class TestStowedFiles:
-    def test_a_stowed_claude_md_and_rules_file_reported_by_link_target_are_still_toolkit(self, tmp_path):
+    def test_a_stowed_claude_md_and_rules_directory_reported_by_link_target_are_toolkit(self, tmp_path):
         checkout = tmp_path / "checkout"
         _touch(checkout / "CLAUDE.md")
         _touch(checkout / "rules" / "python.md")
@@ -351,8 +351,6 @@ class TestPerFileStow:
 
 
 class _NoIterationFrozenSet(frozenset):
-    """A frozenset whose members can be tested but not iterated."""
-
     def __iter__(self):
         raise AssertionError("membership iterated a collection")
 
@@ -363,7 +361,7 @@ class _NoIterationDict(dict):
 
 
 class TestToolkitMembershipCost:
-    def test_membership_tests_the_path_and_its_parents_without_iterating_any_toolkit_collection(self, tmp_path):
+    def test_membership_never_iterates_a_toolkit_collection(self, tmp_path):
         config_dir = tmp_path / "config"
         for number in range(60):
             _touch(config_dir / "agents" / f"agent-{number}.md")
@@ -389,7 +387,7 @@ class TestToolkitMembershipCost:
 
 
 class TestLinkedConfigDir:
-    def test_a_config_dir_that_is_a_link_holds_both_its_link_form_and_its_real_form_but_not_the_real_parent(
+    def test_a_linked_config_dir_holds_both_forms(
         self, tmp_path,
     ):
         real_config = tmp_path / "real-config"
@@ -405,7 +403,7 @@ class TestLinkedConfigDir:
 
 
 class TestToolkitMembership:
-    def test_a_directory_holding_a_toolkit_root_is_toolkit_and_an_unrelated_directory_is_not(self, checks_world):
+    def test_a_directory_holding_a_toolkit_root_is_toolkit(self, checks_world):
         assert checks_world.toolkit.contains(checks_world.config_dir)
         assert not checks_world.toolkit.contains(checks_world.fixture_dir)
 
@@ -420,7 +418,7 @@ class TestArmOutcomes:
         pytest.param(lambda world: _line(world.rule(), "include"), id="dispatcher-rule"),
         pytest.param(lambda world: _line("/synthetic/managed/CLAUDE.md"), id="dispatcher-other-class-claude-md"),
     ])
-    def test_bare_fails_arm_leak_on_a_load_outside_the_fixture_or_a_dispatcher_load_besides_the_expected(
+    def test_bare_fails_arm_leak(
         self, checks_world, leaking_line,
     ):
         outcome = _check(checks_world, [_dispatcher_claude_md(checks_world), leaking_line(checks_world)], _bare(checks_world))
@@ -429,7 +427,7 @@ class TestArmOutcomes:
     def test_bare_whose_only_loads_are_the_dispatcher_claude_md_passes(self, checks_world):
         assert _check(checks_world, [_dispatcher_claude_md(checks_world)], _bare(checks_world)).reasons == ()
 
-    def test_toolkit_with_subagent_rule_loads_passes_with_the_loads_recorded_by_class(self, checks_world):
+    def test_toolkit_with_subagent_rule_loads_passes(self, checks_world):
         outcome = _check(checks_world, [
             _dispatcher_claude_md(checks_world),
             _line(checks_world.rule(), PATH_GLOB_MATCH, agent_id=AGENT_ID),
@@ -459,7 +457,7 @@ class TestArmOutcomes:
         )
         assert outcome.reasons == ()
 
-    def test_every_reason_the_load_hook_and_reach_checks_emit_is_an_instrument_reason(self, checks_world, tmp_path):
+    def test_every_emitted_reason_is_an_instrument_reason(self, checks_world, tmp_path):
         emitted: set[str] = set()
         emitted.add(_parse(checks_world, []).reason or "")
         emitted.add(_parse(checks_world, ["{"]).reason or "")
@@ -480,7 +478,7 @@ class TestArmOutcomes:
         emitted.discard("")
         assert emitted == checks.INSTRUMENT_REASONS
 
-    def test_a_calibration_and_a_path_failure_are_not_instrument_reasons(self, checks_world, tmp_path):
+    def test_other_failure_reasons_are_not_instrument_reasons(self, checks_world, tmp_path):
         calibration = _verdict(checks_world, gap=0)
         paths = _path_check(
             checks_world, _bash_transcript(tmp_path, f"cat {checks_world.other_fixture_dir}/src/app.py > /elsewhere.txt"),
@@ -553,7 +551,7 @@ class TestBlockCalibration:
         log = _parse(checks_world, [_dispatcher_claude_md(checks_world), load(checks_world)])
         assert _verdict(checks_world, log) == (checks.REASON_INSTRUMENT_MISSING,)
 
-    def test_a_rule_load_reported_by_link_target_and_one_nested_below_rules_pass(self, tmp_path, checks_world):
+    def test_a_nested_rule_load_passes_in_either_form(self, tmp_path, checks_world):
         checkout = tmp_path / "checkout"
         _touch(checkout / "rules" / "nested" / "deep.md")
         stowed_config = tmp_path / "stowed-config"
@@ -596,15 +594,15 @@ class TestBlockCalibration:
     def test_a_null_size_in_either_run_fails_arm_config_missing(self, checks_world, gap, bare_size):
         assert _verdict(checks_world, gap=gap, bare_size=bare_size) == (checks.REASON_ARM_CONFIG_MISSING,)
 
-    def test_a_control_failure_with_a_null_size_returns_instrument_missing_then_arm_config_missing(self, checks_world):
+    def test_a_control_failure_with_a_null_size_returns_both_reasons(self, checks_world):
         log = _parse(checks_world, [_dispatcher_claude_md(checks_world)])
         assert _verdict(checks_world, log, gap=None) == (checks.REASON_INSTRUMENT_MISSING, checks.REASON_ARM_CONFIG_MISSING)
 
-    def test_a_control_failure_with_a_short_gap_returns_the_same_two(self, checks_world):
+    def test_a_control_failure_with_a_short_gap_returns_both_reasons(self, checks_world):
         log = _parse(checks_world, [_dispatcher_claude_md(checks_world)])
         assert _verdict(checks_world, log, gap=999) == (checks.REASON_INSTRUMENT_MISSING, checks.REASON_ARM_CONFIG_MISSING)
 
-    def test_dispatcher_rule_files_lists_each_session_start_rule_once_and_skips_the_rest(self, checks_world):
+    def test_dispatcher_rule_files_lists_each_session_start_rule_once(self, checks_world):
         log = _parse(checks_world, [
             _dispatcher_claude_md(checks_world),
             _line(checks_world.rule(), SESSION_START),
@@ -656,7 +654,7 @@ class TestAccountHooks:
         assert checks.check_account_hooks(checks_world.config_dir, SESSION_ID) == checks.REASON_ACCOUNT_HOOKS_MISSING
 
     @pytest.mark.timing
-    def test_a_fifo_entry_counts_as_absent_without_blocking(self, checks_world):
+    def test_a_fifo_entry_counts_as_absent(self, checks_world):
         fifo = checks_world.config_dir / "sessions" / "4242"
         os.mkfifo(fifo)
         reason = call_with_deadline(

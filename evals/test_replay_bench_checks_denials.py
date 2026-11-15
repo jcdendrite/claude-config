@@ -28,7 +28,7 @@ class TestEntryLevelDenialShape:
         assert [call.denied for call in transcript.tool_calls] == [True]
         assert _path_check(checks_world, transcript).failure_reasons == ()
 
-    def test_the_same_entry_without_the_denial_keys_is_an_executed_write_and_fails(self, checks_world, tmp_path):
+    def test_an_undenied_entry_fails_out_of_fixture_write(self, checks_world, tmp_path):
         outside = str(checks_world.root / "elsewhere.txt")
         entry = denied_result_entry("toolu_1", outside)
         for key in ("toolDenialKind", "permissionDecision"):
@@ -72,7 +72,7 @@ class TestEntryLevelDenialShape:
         } == checks.NEVER_EXECUTED_DENIAL_KINDS
 
     @pytest.mark.parametrize("kind", ["interrupted", "future-unknown-kind"])
-    def test_an_interrupted_or_unknown_kind_is_an_executed_write_and_still_fails(self, checks_world, tmp_path, kind):
+    def test_an_interrupted_or_unknown_kind_fails_as_an_executed_write(self, checks_world, tmp_path, kind):
         outside = str(checks_world.root / "elsewhere.txt")
         entry = denied_result_entry("toolu_1", outside)
         entry["toolDenialKind"] = kind
@@ -81,14 +81,14 @@ class TestEntryLevelDenialShape:
         assert transcript.permission_denials == 0
         assert _path_check(checks_world, transcript).failure_reasons == (checks.REASON_OUT_OF_FIXTURE_WRITE,)
 
-    def test_a_denied_bash_command_naming_a_guarded_path_is_recorded_and_not_checked(self, checks_world, tmp_path):
+    def test_a_denied_bash_command_fails_no_path_check(self, checks_world, tmp_path):
         leak = str(checks_world.live_checkout / "src" / "app.py")
         transcript = self._denied_transcript(tmp_path, "Bash", {"command": f"cat {leak}"}, leak)
         result = _path_check(checks_world, transcript)
         assert result.failure_reasons == ()
         assert result.bash_commands == (f"cat {leak}",)
 
-    def test_a_denied_read_of_a_toolkit_file_is_denied_and_still_a_bare_reach(self, checks_world, tmp_path):
+    def test_a_denied_toolkit_read_is_a_bare_reach(self, checks_world, tmp_path):
         reviewer = str(checks_world.config_dir / "agents" / "reviewer.md")
         transcript = self._denied_transcript(tmp_path, "Read", {"file_path": reviewer}, reviewer)
         assert transcript.tool_calls[0].denied
@@ -97,7 +97,7 @@ class TestEntryLevelDenialShape:
         )
         assert reasons == (checks.REASON_ARM_LEAK,)
 
-    def test_a_carrier_level_marker_on_an_entry_holding_several_results_denies_none_of_them(self, tmp_path):
+    def test_an_entry_marker_over_several_results_denies_none(self, tmp_path):
         entry = denied_result_entry("toolu_1", "/tmp/x.txt")
         entry["message"]["content"].append({"type": "tool_result", "tool_use_id": "toolu_2", "content": "synthetic"})
         transcript = _transcript(tmp_path, [

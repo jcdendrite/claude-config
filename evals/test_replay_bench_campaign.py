@@ -1,6 +1,4 @@
-"""Tests for the `run` campaign: the manifest, smoke gate, spend guards, per-arm stop and resume.
-`read_environment_record` is scripted to a sequence of readings, some of which raise.
-"""
+"""Tests for the `run` campaign: the manifest, smoke gate, spend guards, per-arm stop and resume."""
 from __future__ import annotations
 
 import dataclasses
@@ -70,8 +68,7 @@ class CampaignEnv:
         return reading
 
     def add_second_account(self, tasks_in_order_of=None):
-        """A second account with its own repo and task. `tasks_in_order_of` receives the first account's task and
-        the second's and returns the task list."""
+        """`tasks_in_order_of` receives the first account's task and the second's and returns the task list."""
         self.second_account, second_tasks = add_second_account(self.world)
         self.account_by_repo[second_tasks[0].source_repo] = self.second_account
         smoke_pass.write_smoke_pass(
@@ -126,7 +123,7 @@ def brief_of(env, index):
 
 
 class TestACompletedCampaign:
-    def test_it_writes_each_runs_record_and_diff_marks_every_block_complete_and_exits_zero(self, env, capsys):
+    def test_it_completes_every_block(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:2]
 
         assert env.run(env.world.launch()) == 0
@@ -140,7 +137,7 @@ class TestACompletedCampaign:
         assert printed.count("arms with no valid run: none") == 2
         assert "cumulative $2.00 of $100.00" in printed
 
-    def test_the_first_start_prints_the_run_count_and_the_nominal_ceiling(self, env, capsys):
+    def test_the_first_start_prints_the_ceiling_line(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
 
         env.run(env.world.launch())
@@ -177,7 +174,7 @@ class BlockBufferedStream(io.StringIO):
 class TestProgressReachesARedirectedStdout:
     """Kills: dropping `flush=True` from a campaign print. A detached run's stdout is block-buffered."""
 
-    def test_the_ceiling_and_block_progress_lines_are_flushed_as_they_print(self, env, monkeypatch):
+    def test_a_first_start_flushes_every_line(self, env, monkeypatch):
         env.world.tasks[:] = env.world.tasks[:1]
         stream = BlockBufferedStream()
         monkeypatch.setattr(sys, "stdout", stream)
@@ -187,7 +184,7 @@ class TestProgressReachesARedirectedStdout:
         assert "nominal ceiling" in stream.getvalue() and "arms with no valid run" in stream.getvalue()
         assert stream.lines_lost_if_the_process_died_now() == []
 
-    def test_a_resumes_uncharged_attempts_and_spend_lines_are_flushed_as_they_print(self, env, monkeypatch):
+    def test_a_resume_flushes_every_line(self, env, monkeypatch):
         env.world.tasks[:] = env.world.tasks[:1]
 
         def crash(self, defect_id):
@@ -209,7 +206,7 @@ class TestProgressReachesARedirectedStdout:
 
 
 class TestTwoAccounts:
-    def test_an_abandoned_attempt_under_the_second_accounts_projects_root_is_swept_and_reported(self, env, capsys):
+    def test_the_sweep_reaches_the_second_accounts_projects_root(self, env, capsys):
         second_task = env.add_second_account(lambda first, second: [second, first])
         session_id = str(uuid.UUID(int=2))
         abandoned = env.second_account.config_dir / "projects" / "synthetic-project"
@@ -235,7 +232,7 @@ class TestTwoAccounts:
         assert f"account stop for {env.world.account.key!r}" in capsys.readouterr().err
         assert env.spend().totals().total_usd == 9.0 + 1.0
 
-    def test_the_cumulative_stop_counts_both_accounts_spend_when_each_account_is_under_its_own_stop(self, env, capsys):
+    def test_the_cumulative_stop_counts_both_accounts_spend(self, env, capsys):
         env.add_second_account(lambda first, second: [first, second])
         launch_stub = env.world.launch()
         # The first block spends $1.00 on the first account. The second account has spent nothing, so $0.00 + $4.00
@@ -250,7 +247,7 @@ class TestTwoAccounts:
         error = capsys.readouterr().err
         assert "the cumulative stop" in error and "account stop" not in error
 
-    def test_a_drift_on_the_second_accounts_environment_halts_at_its_block_and_names_that_task(self, env, capsys):
+    def test_drift_on_the_second_account_halts_at_its_block(self, env, capsys):
         second_task = env.add_second_account(lambda first, second: [first, second])
         env.second_readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
 
@@ -259,7 +256,7 @@ class TestTwoAccounts:
         assert env.completed() == {env.world.tasks[0].id}
         assert second_task.id in capsys.readouterr().err
 
-    def test_two_repos_that_share_one_config_dir_are_one_account_with_one_pin_and_one_spend_pool(self, env):
+    def test_two_repos_sharing_a_config_dir_are_one_account(self, env):
         env.add_second_account(lambda first, second: [first, second])
         env.account_by_repo[env.world.tasks[1].source_repo] = env.world.account  # both repos now share the first account
 
@@ -272,7 +269,7 @@ class TestTwoAccounts:
 
 
 class TestAFailedSpendAppendHaltsTheCampaign:
-    def test_the_halt_names_each_uncharged_launch_by_task_and_session_and_starts_no_run_after_the_first_failure(
+    def test_the_halt_names_each_uncharged_launch_and_starts_no_run_after_the_first_failure(
         self, env, monkeypatch, capsys,
     ):
         workers = 2  # fewer than the block's four runs, so the bound below can fail
@@ -311,7 +308,7 @@ class TestAFailedSpendAppendHaltsTheCampaign:
 
 class TestASingleArmCampaign:
     @pytest.mark.parametrize("arm_name", ["toolkit", "bare"])
-    def test_a_campaign_over_one_arm_of_a_two_arm_smoke_runs_that_arm_only_and_summarizes(self, env, arm_name):
+    def test_a_one_arm_campaign_runs_that_arm_only(self, env, arm_name):
         env.world.tasks[:] = env.world.tasks[:1]
         launch_stub = env.world.launch()
 
@@ -348,7 +345,7 @@ class TestASingleArmCampaign:
 
 
 class TestParallelWorkers:
-    def test_four_workers_over_a_k_of_two_block_write_one_spend_line_per_attempt_and_every_record(self, env):
+    def test_four_workers_write_one_spend_line_per_attempt(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
 
         assert env.run(env.world.launch(), k=2, workers=4, cumulative_stop_usd=200, account_stop_usd=200) == 0
@@ -359,7 +356,7 @@ class TestParallelWorkers:
 
 
 class TestThePerArmStop:
-    def test_fail_pass_fail_pass_completes_all_four_and_exits_zero(self, env, capsys):
+    def test_alternating_failures_complete_all_four_blocks(self, env, capsys):
         launch_stub = failing_tasks_launch(env, [brief_of(env, 0), brief_of(env, 2)])
 
         assert env.run(launch_stub) == 0
@@ -374,7 +371,7 @@ class TestThePerArmStop:
         assert "arms with no valid run: none" in progress_of(1)
         assert "tasks dropped so far: toolkit 0, bare 2" in progress_of(3)
 
-    def test_two_failing_tasks_halt_with_both_complete_and_the_third_never_launching(self, env, capsys):
+    def test_two_failing_tasks_in_a_row_halt_the_campaign(self, env, capsys):
         launch_stub = failing_tasks_launch(env, [brief_of(env, 0), brief_of(env, 1)])
 
         assert env.run(launch_stub) == 1
@@ -384,7 +381,7 @@ class TestThePerArmStop:
         message = capsys.readouterr().err
         assert "bare" in message and "model-mismatch" in message and env.world.tasks[1].id in message
 
-    def test_a_resume_after_the_halt_reruns_neither_failed_block_and_goes_on(self, env):
+    def test_a_resume_after_the_halt_skips_both_failed_blocks(self, env):
         env.run(failing_tasks_launch(env, [brief_of(env, 0), brief_of(env, 1)]))
         resumed = env.world.launch()
 
@@ -393,12 +390,12 @@ class TestThePerArmStop:
         briefs = [brief_of(env, index) for index in range(4)]
         assert {brief for call in resumed.calls for brief in briefs if brief in call.inner_prompt} == set(briefs[2:])
 
-    def test_two_failing_tasks_where_the_second_is_the_last_exit_one_not_zero(self, env):
+    def test_two_failing_tasks_ending_the_campaign_exit_one(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
 
         assert env.run(env.world.launch(by_call=failing_bare)) == 1
 
-    def test_one_failing_task_that_is_last_after_a_passing_one_exits_zero(self, env):
+    def test_a_lone_failing_last_task_exits_zero(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
         first_task, last_task = env.world.tasks
         launch_stub = failing_tasks_launch(env, [last_task.brief])
@@ -411,7 +408,7 @@ class TestThePerArmStop:
         assert last_block[arms.BARE.name].missing_reason == "model-mismatch"
 
     @pytest.mark.parametrize("failing_agents", [{"code-writer"}, {"code-writer", "bare-writer"}], ids=["toolkit", "both"])
-    def test_a_failing_toolkit_arm_or_both_arms_count_as_failed_blocks(self, env, failing_agents):
+    def test_a_block_with_no_valid_toolkit_run_counts_as_failed(self, env, failing_agents):
         env.world.tasks[:] = env.world.tasks[:2]
 
         def by_call(call):
@@ -419,7 +416,7 @@ class TestThePerArmStop:
 
         assert env.run(env.world.launch(by_call=by_call)) == 1
 
-    def test_two_blocks_in_a_row_each_with_one_arm_holding_one_valid_run_and_one_missing_run_exit_zero(self, env):
+    def test_an_arm_with_one_valid_run_is_not_a_failed_block(self, env):
         briefs = [brief_of(env, 0), brief_of(env, 1)]
         env.world.tasks[:] = env.world.tasks[:2]
         bare_attempts_seen_per_task = dict.fromkeys(briefs, 0)
@@ -435,7 +432,7 @@ class TestThePerArmStop:
 
         assert env.run(env.world.launch(by_call=by_call), k=2, cumulative_stop_usd=200, account_stop_usd=200) == 0
 
-    def test_an_instrument_failure_halts_at_the_blocks_end_with_the_block_complete_and_a_resume_goes_on(self, env, capsys):
+    def test_an_instrument_failure_halts_at_the_blocks_end(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:2]
         leaking = Scenario(log_lines=leaking_log_lines(env.world))
         first = env.world.launch(by_call=lambda call: leaking if call.agent_name == "bare-writer" else Scenario())
@@ -460,7 +457,7 @@ class TestTheManifestAndTheSmokeGate:
             ("timeout_s", {"timeout_s": 60}),
         ],
     )
-    def test_a_resume_with_a_different_pinned_input_exits_two_before_any_launch(self, env, field_name, override):
+    def test_a_resume_with_a_different_input_exits_two(self, env, field_name, override):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         resumed = env.world.launch()
@@ -497,7 +494,7 @@ class TestTheManifestAndTheSmokeGate:
             ),
         ],
     )
-    def test_a_resume_over_an_unreadable_or_malformed_manifest_exits_two_before_any_launch(self, env, damage, refusal):
+    def test_a_resume_over_a_damaged_manifest_exits_two(self, env, damage, refusal):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         manifest_path = env.campaign_dir / "manifest.json"
@@ -508,7 +505,7 @@ class TestTheManifestAndTheSmokeGate:
             env.run(resumed)
         assert resumed.calls == []
 
-    def test_a_resume_whose_manifest_path_is_a_directory_exits_two_before_any_launch(self, env):
+    def test_a_resume_whose_manifest_path_is_a_directory_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         manifest_path = env.campaign_dir / "manifest.json"
@@ -540,7 +537,7 @@ class TestTheManifestAndTheSmokeGate:
 
         assert json.loads((env.campaign_dir / "manifest.json").read_text())["k"] == 2
 
-    def test_a_campaign_refused_for_its_ceiling_pins_nothing_so_a_rerun_with_a_lower_k_runs(self, env):
+    def test_a_campaign_refused_for_its_ceiling_pins_nothing(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         with pytest.raises(HarnessInvalidatedError, match="ceiling"):
             env.run(env.world.launch(), k=2, cumulative_stop_usd=5.0, account_stop_usd=1000)
@@ -562,7 +559,7 @@ class TestTheManifestAndTheSmokeGate:
 
         assert env.run(env.world.launch(), fixture_git_timeout_s=99.0) == 0
 
-    def test_a_resume_after_an_accounts_environment_changed_exits_two_naming_the_field(self, env):
+    def test_a_resume_after_an_environment_change_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         env.readings = [dataclasses.replace(READING, ambient_config_commit="synthetic-commit-b")]
@@ -595,7 +592,7 @@ class TestTheManifestAndTheSmokeGate:
         smoke_pass.smoke_pass_path(env.world.local_dir, env.world.account.key).unlink()
         assert "no passing smoke" in self.smoke_gate_refusal(env)
 
-    def test_a_record_for_another_reading_refuses_at_the_campaign_level(self, env):
+    def test_a_record_for_another_reading_refuses(self, env):
         env.pass_smoke(reading=dataclasses.replace(READING, ambient_config_commit="other-commit"))
         assert "no passing smoke" in self.smoke_gate_refusal(env)
 
@@ -608,7 +605,7 @@ class TestTheManifestAndTheSmokeGate:
             pytest.param({"arm_names": ("toolkit",)}, id="stale-arms"),
         ],
     )
-    def test_a_campaign_over_two_accounts_is_refused_when_only_the_second_accounts_smoke_is_missing_or_stale(
+    def test_a_second_account_without_a_current_smoke_is_refused(
         self, env, second_accounts_record,
     ):
         env.add_second_account(lambda first, second: [first, second])
@@ -636,7 +633,7 @@ class TestTheManifestAndTheSmokeGate:
             ("arms", {"arm_names": ("toolkit",)}),
         ],
     )
-    def test_each_stale_field_alone_fails_the_record_and_the_matching_one_passes(self, env, field_name, stale):
+    def test_only_a_stale_field_fails_the_record(self, env, field_name, stale):
         env.pass_smoke(**stale)
 
         accepted = smoke_pass.has_smoke_pass(
@@ -646,7 +643,7 @@ class TestTheManifestAndTheSmokeGate:
         assert accepted is (field_name == "control")
 
     @pytest.mark.parametrize("damage", ["not json", "{}", {"account_key": "different"}])
-    def test_a_record_that_does_not_parse_lacks_a_key_or_holds_another_account_refuses_without_a_traceback(self, env, damage):
+    def test_a_damaged_record_refuses(self, env, damage):
         record_path = smoke_pass.smoke_pass_path(env.world.local_dir, env.world.account.key)
         if isinstance(damage, dict):
             damage = json.dumps({**json.loads(record_path.read_text()), **damage})
@@ -655,7 +652,7 @@ class TestTheManifestAndTheSmokeGate:
 
 
 class TestEnvironmentDrift:
-    def test_drift_at_a_blocks_start_halts_with_no_record_and_the_block_incomplete(self, env, capsys):
+    def test_drift_at_a_blocks_start_halts_without_launching(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
         env.readings = [READING, dataclasses.replace(READING, cli_version="2.9.9")]
 
@@ -667,7 +664,7 @@ class TestEnvironmentDrift:
         assert stderr.startswith("halted: ") and not stderr.startswith("halted: halted: ")
         assert "pays for it again" not in stderr, "a halt that launched nothing has nothing to pay again"
 
-    def test_an_unreadable_start_reading_after_a_completed_block_raises_and_spends_nothing_for_that_block(self, env):
+    def test_an_unreadable_start_reading_raises(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
         unreadable = HarnessInvalidatedError("environment record: read timed out")
         # The campaign's initial pin read comes first, then each block reads at its start and end. The second
@@ -683,7 +680,7 @@ class TestEnvironmentDrift:
         assert len(launch_stub.calls) == 2, "only the first block's two runs launched"
         assert set(env.spend().totals().by_task_usd) == completed
 
-    def test_an_unlistable_worktree_set_at_a_later_blocks_start_raises_and_spends_nothing_for_that_block(self, env):
+    def test_an_unlistable_worktree_set_at_a_later_blocks_start_raises(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
         listings = []
 
@@ -704,7 +701,7 @@ class TestEnvironmentDrift:
         assert len(launch_stub.calls) == 2, "only the first block's two runs launched"
         assert set(env.spend().totals().by_task_usd) == completed
 
-    def test_drift_at_a_blocks_end_halts_with_no_record_and_prints_the_blocks_spend(self, env, capsys):
+    def test_drift_at_a_blocks_end_halts_with_the_block_unmarked(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
         env.readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
 
@@ -715,7 +712,7 @@ class TestEnvironmentDrift:
         assert "2 attempts" in error and "$1.00 spent" in error
         assert "not marked complete" in error and error.count("pays for it again") == 1
 
-    def test_a_resume_after_a_blocks_end_drift_reruns_the_block_and_pays_for_it_again(self, env):
+    def test_a_resume_after_a_blocks_end_drift_reruns_the_block(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
         assert env.run(env.world.launch()) == 1
@@ -728,7 +725,7 @@ class TestEnvironmentDrift:
         assert env.spend().totals().total_usd == 2.0, "the rerun paid for the block again"
 
 
-    def test_an_end_reading_that_fails_once_is_read_again_and_the_block_completes(self, env):
+    def test_an_end_reading_that_fails_once_is_read_again(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.readings = [READING, READING, HarnessInvalidatedError("environment record: read timed out"), READING]
 
@@ -736,7 +733,7 @@ class TestEnvironmentDrift:
 
         assert env.completed() == {env.world.tasks[0].id}
 
-    def test_an_end_reading_that_fails_twice_halts_as_a_failed_read_and_not_as_drift(self, env, capsys):
+    def test_an_end_reading_that_fails_twice_halts_as_a_failed_read(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
         unreadable = HarnessInvalidatedError("environment record: read timed out")
         env.readings = [READING, READING, unreadable, unreadable]
@@ -760,7 +757,7 @@ class TestAPaidBlockWhoseRecordsCannotBePersisted:
         [(records, "atomic_write_text"), (RunStore, "mark_block_complete")],
         ids=["record-write", "complete-mark"],
     )
-    def test_a_failed_write_halts_with_the_blocks_cost_and_a_clean_resume_pays_for_it_again(
+    def test_a_failed_write_halts_with_the_blocks_cost(
         self, env, capsys, failing_target,
     ):
         env.world.tasks[:] = env.world.tasks[:1]
@@ -782,7 +779,7 @@ class TestAPaidBlockWhoseRecordsCannotBePersisted:
         assert env.completed() == {env.world.tasks[0].id}
         assert env.spend().totals().total_usd == 2.0, "the rerun paid for the block again"
 
-    def test_a_write_that_fails_after_earlier_writes_succeeded_leaves_them_unlisted_and_a_resume_ends_with_one_file_set(
+    def test_a_resume_after_a_partial_write_ends_with_one_file_set(
         self, env, capsys,
     ):
         env.world.tasks[:] = env.world.tasks[:1]
@@ -820,7 +817,7 @@ class TestAPaidBlockWhoseRecordsCannotBePersisted:
 
 
 class TestResumeAndAttempts:
-    def test_a_crash_between_the_record_writes_and_mark_block_complete_then_a_rerun_leaves_one_file_set(self, env, monkeypatch):
+    def test_a_rerun_after_a_pre_mark_crash_leaves_one_file_set(self, env, monkeypatch):
         env.world.tasks[:] = env.world.tasks[:1]
         real_mark = RunStore.mark_block_complete
 
@@ -835,7 +832,7 @@ class TestResumeAndAttempts:
         assert env.run(env.world.launch()) == 0
         assert len(list(records.block_runs_dir(env.campaign_dir, env.world.tasks[0].id).iterdir())) == 4
 
-    def test_a_nested_attempt_dir_is_gone_after_the_resume(self, env):
+    def test_a_resume_removes_a_nested_attempt_dir(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         stale = env.campaign_dir / "attempts" / "stale" / "nested"
@@ -856,7 +853,7 @@ class TestResumeAndAttempts:
         assert not (env.campaign_dir / "attempts").exists()
         assert capsys.readouterr().err == ""
 
-    def test_an_attempts_dir_that_is_a_symlink_refuses_naming_the_path_with_the_sentinel_intact(self, env, tmp_path):
+    def test_an_attempts_dir_that_is_a_symlink_refuses(self, env, tmp_path):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         sentinel_dir = tmp_path / "sentinel"
@@ -871,7 +868,7 @@ class TestResumeAndAttempts:
             env.run(env.world.launch())
         assert (sentinel_dir / "keep.txt").read_text() == "keep"
 
-    def test_a_swept_entry_with_a_session_id_and_no_spend_line_is_reported_and_not_charged(self, env, capsys):
+    def test_a_swept_entry_with_no_spend_line_is_reported(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
         store = RunStore(env.campaign_dir / "store")
         gone = Path(tempfile.gettempdir()) / f"{review_runner.FIXTURE_DIR_PREFIX}replay-gone"
@@ -887,19 +884,19 @@ class TestResumeAndAttempts:
 
 
 class TestSpendGuards:
-    def test_a_block_ceiling_over_a_stop_exits_two_before_any_launch(self, env):
+    def test_a_block_ceiling_over_a_stop_exits_two(self, env):
         launch_stub = env.world.launch()
         with pytest.raises(HarnessInvalidatedError, match="one block's nominal ceiling"):
             env.run(launch_stub, cumulative_stop_usd=BLOCK_CEILING - 1, account_stop_usd=BLOCK_CEILING - 1)
         assert launch_stub.calls == []
 
-    def test_a_campaign_ceiling_over_the_cumulative_stop_exits_two_without_allow_early_stop(self, env):
+    def test_a_campaign_ceiling_over_the_cumulative_stop_exits_two(self, env):
         launch_stub = env.world.launch()
         with pytest.raises(HarnessInvalidatedError, match="allow-early-stop"):
             env.run(launch_stub, cumulative_stop_usd=BLOCK_CEILING * 2, account_stop_usd=BLOCK_CEILING * 2)
         assert launch_stub.calls == []
 
-    def test_with_allow_early_stop_the_cumulative_stop_halts_before_the_block_that_would_pass_it(self, env, capsys):
+    def test_allow_early_stop_halts_at_the_cumulative_stop(self, env, capsys):
         assert env.run(
             env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, account_stop_usd=1000, allow_early_stop=True,
         ) == 1
@@ -930,7 +927,7 @@ class TestSpendGuards:
 
         assert env.run(env.world.launch(), cumulative_stop_usd=13.5, account_stop_usd=1000, allow_early_stop=True) == 1
 
-    def test_a_spend_append_that_raises_halts_with_exit_one_and_leaves_the_block_incomplete(self, env, monkeypatch, capsys):
+    def test_a_spend_append_that_raises_halts_with_exit_one(self, env, monkeypatch, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
 
         def failing_append(self, line):
@@ -985,7 +982,6 @@ class TestTheSpendFile:
             spend.append(self.line())
 
     def short_write_once(self, monkeypatch, written_bytes=7):
-        """The first `os.write` stores only a prefix of its bytes and reports the shorter count, as a full disk does."""
         real_write = os.write
         calls = []
 
@@ -995,14 +991,14 @@ class TestTheSpendFile:
 
         monkeypatch.setattr(os, "write", partial_write)
 
-    def test_a_short_write_raises_spend_append_error_naming_the_torn_line(self, tmp_path, monkeypatch):
+    def test_a_short_write_raises_spend_append_error(self, tmp_path, monkeypatch):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
         self.short_write_once(monkeypatch)
 
         with pytest.raises(SpendAppendError, match="torn line"):
             spend.append(self.line())
 
-    def test_an_append_after_a_short_write_ends_the_torn_line_so_it_counts_once_and_the_new_line_parses(
+    def test_an_append_after_a_short_write_ends_the_torn_line(
         self, tmp_path, monkeypatch,
     ):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
@@ -1018,7 +1014,7 @@ class TestTheSpendFile:
         assert totals.total_usd == CAP + 3.0 + 4.0
         assert spend.path.read_text().count("\n\n") == 0, "only the first append after the short write adds a newline"
 
-    def test_an_append_that_starts_during_a_short_write_waits_for_it_and_then_ends_the_torn_line(
+    def test_an_append_during_a_short_write_waits_for_it(
         self, tmp_path, monkeypatch,
     ):
         """The lock is what makes the torn-tail decision and the write one step. Without it the second append reads
@@ -1081,7 +1077,7 @@ class TestTheSpendFile:
         assert totals.unparsed_lines == 1
         assert totals.total_usd == CAP + 3.0
 
-    def test_a_torn_last_line_is_truncated_at_resume_and_the_next_append_parses(self, tmp_path):
+    def test_a_torn_last_line_is_truncated_at_resume(self, tmp_path):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
         spend.append(self.line())
         with spend.path.open("a") as handle:
@@ -1113,7 +1109,7 @@ class TestTheSpendFile:
 
         assert totals.account_usd("shared-account") == 3.0 and totals.account_usd("other-account") == 4.0
 
-    def test_four_threads_appending_leave_no_torn_line_and_the_total_equal_to_the_sum(self, tmp_path):
+    def test_four_threads_appending_leave_no_torn_line(self, tmp_path):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
 
         def append_many():

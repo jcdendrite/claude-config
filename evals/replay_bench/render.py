@@ -9,8 +9,7 @@ _KEPT_CONTROL_CHARACTERS = frozenset("\n\t")
 
 
 def safe_text(text: str, *, keep_line_breaks: bool = False) -> str:
-    """Replaces every non-printable character with its backslash escape, leaving printable text unchanged.
-    `keep_line_breaks` leaves newline and tab in place, for a message the runner composed itself across lines."""
+    """`keep_line_breaks` leaves newline and tab in place, for a message the runner composed itself across lines."""
     return "".join(
         character if character.isprintable() or (keep_line_breaks and character in _KEPT_CONTROL_CHARACTERS)
         else character.encode("unicode_escape").decode("ascii")
@@ -19,8 +18,6 @@ def safe_text(text: str, *, keep_line_breaks: bool = False) -> str:
 
 
 class SafeStream:
-    """A text stream whose every write goes through `safe_text`. Every other attribute is the wrapped stream's."""
-
     def __init__(self, stream) -> None:
         self._stream = stream
 

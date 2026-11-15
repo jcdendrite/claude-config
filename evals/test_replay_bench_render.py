@@ -23,7 +23,7 @@ class TestSafeText:
         assert escaped == "bad\\x1b[31m\\nforged line\\u2028end"
         assert "\x1b" not in escaped and "\n" not in escaped
 
-    def test_a_message_the_runner_composed_across_lines_can_keep_its_line_breaks_but_not_an_escape(self):
+    def test_keep_line_breaks_leaves_newlines_unescaped_but_not_an_escape(self):
         assert safe_text("one\ntwo\x1b", keep_line_breaks=True) == "one\ntwo\\x1b"
 
 

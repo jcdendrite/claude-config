@@ -1,9 +1,4 @@
-"""`run`: the block-by-block campaign with its pinned manifest, smoke gate, spend guards and halts.
-
-Exit codes follow the review bench CLI: a refusal before the first launch raises `HarnessInvalidatedError`
-(exit 2) and a halt returns 1. A block-start read of the
-environment or the live checkouts that fails after block 1 also exits 2 and spends nothing for that block.
-"""
+"""`run`: the block-by-block campaign with its pinned manifest, smoke gate, spend guards and halts."""
 from __future__ import annotations
 
 import hashlib
@@ -90,7 +85,6 @@ def _manifest_for(
 
 
 def _check_manifest(manifest: dict, expected: dict, *, path: Path) -> None:
-    """Raises HarnessInvalidatedError for a resume whose inputs, repo-to-account pin or environment differ."""
     try:
         for field_name in _MANIFEST_COMPARED_FIELDS:
             if manifest[field_name] != expected[field_name]:
@@ -131,7 +125,6 @@ def _refuse_without_smoke_pass(config: CampaignConfig, readings: Mapping[str, re
 
 
 def stop_would_be_passed(spent_usd: float, ceiling_usd: float, stop_usd: float) -> bool:
-    """True when the next block could carry spend past the stop."""
     projected = spent_usd + ceiling_usd
     return not math.isfinite(projected) or projected > stop_usd
 
@@ -142,7 +135,6 @@ def _halt(message: str) -> int:
 
 
 def _arm_failures(block: BlockOutcome, arm_names: tuple[str, ...]) -> dict[str, list[records.ReplayRunRecord]]:
-    """Each arm with no valid run in the block, with that arm's records."""
     failing = {}
     for arm in arm_names:
         arm_records = [outcome.record for outcome in block.outcomes_for(arm)]
@@ -238,8 +230,6 @@ def _run_locked(
     readings: Mapping[str, review_runner.EnvironmentRecord], run_store: RunStore, runner_environ: Mapping[str, str],
     launch: Launch, *, expected_manifest: dict | None,
 ) -> int:
-    """`expected_manifest` is the manifest to pin once the campaign's refusals pass, or None on a resume. A
-    campaign refused for its ceiling pins nothing, so a rerun with a lower `--k` is a fresh start."""
     is_resume = expected_manifest is None
     campaign_dir = config.campaign_dir
     attempts_root = campaign_dir / ATTEMPTS_DIR_NAME

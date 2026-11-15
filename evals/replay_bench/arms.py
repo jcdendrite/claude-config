@@ -1,9 +1,4 @@
-"""The replay arms and the files they write into a fixture.
-
-`bare` dispatches a fixture-local `bare-writer` with `omitClaudeMd` and a one-line body, in a fixture
-whose settings exclude the account's rule files. `toolkit` dispatches the account's production `code-writer`
-under the account's full config.
-"""
+"""The replay arms and the files they write into a fixture."""
 from __future__ import annotations
 
 import json
@@ -40,7 +35,7 @@ def agent_frontmatter_effort(agent_file_text: str) -> str | None:
 
 
 def agent_body(agent_file_text: str) -> str:
-    """The text after the frontmatter, stripped. A file with no closing frontmatter marker is all body."""
+    """A file with no closing frontmatter marker is all body."""
     block = msmr._frontmatter_block(agent_file_text)
     if block is None:
         return agent_file_text.strip()
@@ -53,8 +48,7 @@ def agent_body_chars(agent_file_text: str) -> int:
 
 
 def bare_writer_markdown(code_writer_text: str) -> str:
-    """`bare-writer.md`, copying `tools`, `model` and `effort` from the account's `code-writer.md`.
-    Raises AgentConfigError, naming the missing field, so an empty field never reaches the fixture."""
+    """An empty field raises, so it never reaches the fixture."""
     tools = msmr.agent_frontmatter_tools(code_writer_text)
     model = msmr.agent_frontmatter_model(code_writer_text)
     effort = agent_frontmatter_effort(code_writer_text)
@@ -80,10 +74,6 @@ def code_writer_text(config_dir: Path) -> str:
 
 
 def claude_md_excludes(config_dir: Path) -> list[str]:
-    """Every `.md` file under the account's `rules/` at any depth, as the walk reached it and as its realpath.
-
-    The walk follows directory links and skips a directory whose realpath it already visited. Raises
-    UnsafeConfigPathError, naming the path, for one that `check_path_characters` refuses."""
     entries: dict[str, None] = {}
     visited: set[str] = set()
     for current, directory_names, file_names in os.walk(config_dir / "rules", followlinks=True):
@@ -108,9 +98,6 @@ def bare_settings_text(config_dir: Path) -> str:
 
 @dataclass(frozen=True)
 class Arm:
-    """`excludes_toolkit` arms fail on any subagent load outside the fixture and on any dispatcher load but
-    the account's `CLAUDE.md`."""
-
     name: str
     agent_name: str
     excludes_toolkit: bool

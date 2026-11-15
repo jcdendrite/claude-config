@@ -37,12 +37,11 @@ def smoke_pass_exists(world) -> bool:
 
 
 def agent_scenarios(**by_agent):
-    """A `by_call` choosing a scenario by agent name: `toolkit=Scenario(...)`, `bare=Scenario(...)`."""
     return lambda call: by_agent.get("toolkit" if call.agent_name == "code-writer" else "bare") or Scenario()
 
 
 class TestAPassingSmoke:
-    def test_it_prints_instrument_ok_and_writes_the_account_record_naming_the_arms(self, world, capsys):
+    def test_it_prints_instrument_ok(self, world, capsys):
         exit_code, launch_stub = run_smoke(world)
 
         output = capsys.readouterr().out
@@ -51,7 +50,7 @@ class TestAPassingSmoke:
         assert not smoke_pass.has_smoke_pass(world.local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare", "other"))
         assert sorted(call.agent_name for call in launch_stub.calls) == ["bare-writer", "code-writer"], "one run per arm"
 
-    def test_each_runs_printout_carries_the_fixture_build_and_body_term_labels_the_sizes_and_the_margin(self, world, capsys):
+    def test_each_runs_printout_carries_its_labels(self, world, capsys):
         run_smoke(world)
 
         output = capsys.readouterr().out
@@ -61,14 +60,14 @@ class TestAPassingSmoke:
         assert f"margin {expected_margin:g} tokens" in output and "body term" in output
         assert "first-turn prompt size: 6000" in output
 
-    def test_the_exclude_note_prints_after_the_runs_and_carries_the_residual_sentence(self, world, capsys):
+    def test_the_exclude_note_prints_after_the_runs(self, world, capsys):
         run_smoke(world)
 
         output = capsys.readouterr().out
         assert output.index("[bare] status") < output.index(checks.EXCLUDE_NOTE_EXERCISED)
         assert checks.EXCLUDE_NOTE_RESIDUAL in output
 
-    def test_a_bare_run_that_read_no_trigger_path_still_writes_the_record_when_every_condition_holds(self, world, capsys):
+    def test_a_bare_run_that_read_no_trigger_path_still_writes_the_record(self, world, capsys):
         bare_reads_elsewhere = Scenario(tool_calls=[("Read", {"file_path": "src/mod_0.py"}, False)])
 
         exit_code, _stub = run_smoke(world, by_call=agent_scenarios(bare=bare_reads_elsewhere))
@@ -91,7 +90,7 @@ class TestFailedConditions:
         output = capsys.readouterr().out
         return exit_code, output, output.strip().splitlines()[-1]
 
-    def test_a_toolkit_run_with_no_listed_read_fails_read_grant_unexercised_and_writes_no_record(self, world, capsys):
+    def test_a_toolkit_run_with_no_listed_read_fails_read_grant_unexercised(self, world, capsys):
         reads_only_fixture = Scenario(tool_calls=[("Read", {"file_path": "src/app.py"}, False)])
 
         exit_code, output, final = self.failing(world, capsys, agent_scenarios(toolkit=reads_only_fixture))
@@ -106,7 +105,7 @@ class TestFailedConditions:
 
         assert final.startswith("instrument: read-grant-denied")
 
-    def test_a_denied_read_of_an_unlisted_toolkit_file_prints_by_path_and_fails_nothing(self, world, capsys):
+    def test_a_denied_read_of_an_unlisted_toolkit_file_fails_nothing(self, world, capsys):
         unlisted = str(world.config_dir / "rules" / "python.md")
         scenario = Scenario(tool_calls=[
             ("Read", {"file_path": str(world.config_dir / "agents" / "reviewer.md")}, False),
@@ -117,7 +116,7 @@ class TestFailedConditions:
 
         assert exit_code == 0 and repr(unlisted) in output
 
-    def test_a_bare_run_that_reads_a_listed_path_fails_arm_leak_never_read_grant_denied(self, world, capsys):
+    def test_a_bare_runs_denied_read_of_a_listed_path_fails_arm_leak_not_read_grant_denied(self, world, capsys):
         leaking = Scenario(tool_calls=[("Read", {"file_path": str(world.config_dir / "agents" / "reviewer.md")}, True)])
 
         _exit_code, output, final = self.failing(world, capsys, agent_scenarios(bare=leaking))
@@ -138,7 +137,7 @@ class TestFailedConditions:
 
         assert final.startswith("instrument: arm-config-missing")
 
-    def test_a_failure_in_each_stage_names_the_first_condition_and_prints_all_three(self, world, capsys):
+    def test_a_failure_in_each_stage_prints_all_three_conditions(self, world, capsys):
         leaking = Scenario(tool_calls=[("Read", {"file_path": str(world.config_dir / "agents" / "reviewer.md")}, False)])
         toolkit = Scenario(first_turn_size=1500, tool_calls=[("Read", {"file_path": "src/app.py"}, False)])
 
@@ -148,7 +147,7 @@ class TestFailedConditions:
         failed = [line for line in output.splitlines() if line.startswith("failed: ")]
         assert [line.split(":")[1].strip() for line in failed] == ["arm-leak", "read-grant-unexercised", "arm-config-missing"]
 
-    def test_a_toolkit_run_that_ended_missing_on_a_timeout_reports_it_and_the_verdict_never_runs(self, world, capsys):
+    def test_a_toolkit_timeout_skips_the_verdict(self, world, capsys):
         timed_out = Scenario(timed_out=True, cost=None)
 
         _exit_code, output, final = self.failing(world, capsys, agent_scenarios(toolkit=timed_out))
@@ -158,7 +157,7 @@ class TestFailedConditions:
 
 
 class TestThePrintoutHoldsThePathEvidence:
-    def test_a_failing_token_and_the_command_that_named_it_print_in_repr_form_with_no_raw_escape(self, world, capsys):
+    def test_the_failing_evidence_prints_in_repr_form(self, world, capsys):
         token = str(world.local_dir / "campaigns" / "other" / "runs")
         command = f"printf '\x1b[31m'\nls {token}"
         scenario = Scenario(tool_calls=[("Bash", {"command": command}, False)])
@@ -182,7 +181,7 @@ class TestThePrintoutHoldsThePathEvidence:
 
 
 class TestTheMarginsRuleTerm:
-    def test_a_rule_the_dispatcher_loaded_at_session_start_raises_the_printed_margin_by_its_size_over_four(
+    def test_a_dispatcher_rule_raises_the_printed_margin(
         self, world, capsys,
     ):
         rule = str(world.config_dir / "rules" / "python.md")
@@ -214,7 +213,7 @@ class TestNoRetryOnInstrumentReasons:
         }[reason]
 
     @pytest.mark.parametrize("reason", sorted(checks.INSTRUMENT_REASONS))
-    def test_each_instrument_reason_ends_the_run_missing_after_one_attempt_with_no_record(self, world, capsys, reason):
+    def test_each_instrument_reason_ends_the_run_missing(self, world, capsys, reason):
         agent, failing = self.scenario_for_reason(world, reason)
         def by_call(call):
             return failing if call.agent_name == agent else Scenario()
@@ -230,7 +229,7 @@ class TestNoRetryOnInstrumentReasons:
         Scenario(no_output=True), Scenario(timed_out=True, cost=None),
         Scenario(raises=OSError("synthetic")),
     ], ids=["launch-no-output", "timeout", "launch-error"])
-    def test_a_non_instrument_failure_then_a_clean_attempt_retries_once_and_the_calibration_runs(
+    def test_a_non_instrument_failure_retries_once(
         self, world, capsys, first_failure,
     ):
         seen = {"toolkit": 0}
@@ -246,7 +245,7 @@ class TestNoRetryOnInstrumentReasons:
         assert exit_code == 0 and sum(call.agent_name == "code-writer" for call in launch_stub.calls) == 2
         assert "first-turn prompt sizes" in capsys.readouterr().out
 
-    def test_a_timed_out_attempt_whose_log_carries_a_bare_rule_load_records_arm_leak_and_launches_no_retry(
+    def test_a_timed_out_attempt_with_a_bare_rule_load_records_arm_leak(
         self, world, capsys,
     ):
         leaking = Scenario(timed_out=True, cost=None, log_lines=leaking_log_lines(world))
@@ -256,7 +255,7 @@ class TestNoRetryOnInstrumentReasons:
         assert exit_code == 2 and "missing (arm-leak)" in capsys.readouterr().out
         assert sum(call.agent_name == "bare-writer" for call in launch_stub.calls) == 1
 
-    def test_launch_no_output_then_arm_leak_ends_missing_as_arm_leak_with_two_attempts(self, world, capsys):
+    def test_launch_no_output_then_arm_leak_ends_missing_as_arm_leak(self, world, capsys):
         seen = {"bare": 0}
 
         def by_call(call):
@@ -272,7 +271,7 @@ class TestNoRetryOnInstrumentReasons:
 
 
 class TestAnAbortedSmokeWritesNoRecord:
-    def test_a_spend_file_the_os_will_not_append_to_exits_two_naming_the_uncharged_launches_and_writes_no_record(
+    def test_a_spend_file_the_os_will_not_append_to_exits_two(
         self, world, capsys, monkeypatch,
     ):
         real_spend_file = smoke.SpendFile
@@ -291,7 +290,7 @@ class TestAnAbortedSmokeWritesNoRecord:
         assert launch_stub.calls and f"session {launch_stub.calls[0].session_id}" in error
         assert not smoke_pass_exists(world)
 
-    def test_an_end_reading_that_cannot_be_read_exits_two_naming_the_failed_read_and_writes_no_record(
+    def test_an_end_reading_that_cannot_be_read_exits_two(
         self, world, capsys, monkeypatch,
     ):
         readings = iter([READING, None, None])

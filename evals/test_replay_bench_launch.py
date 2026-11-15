@@ -40,7 +40,7 @@ def stow_style_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 class TestReadAllowList:
-    def test_each_agent_and_skill_file_appears_by_link_path_and_by_realpath_as_an_absolute_read_entry(self, tmp_path):
+    def test_read_entries_list_both_path_forms(self, tmp_path):
         home, config_dir, checkout = stow_style_tree(tmp_path)
 
         entries = launch.read_allow_entries(launch.read_allow_paths(config_dir, home))
@@ -52,7 +52,7 @@ class TestReadAllowList:
         assert all(entry.startswith("Read(//") for entry in entries)
         assert len(entries) == len(set(entries))
 
-    def test_nested_non_markdown_non_skill_and_dangling_files_are_left_out(self, tmp_path):
+    def test_unlisted_files_are_left_out(self, tmp_path):
         home, config_dir, checkout = stow_style_tree(tmp_path)
         (checkout / "agents" / "dangling.md").symlink_to(tmp_path / "missing.md")
 
@@ -79,7 +79,7 @@ class TestReadAllowList:
 
         assert not any("*" in entry for entry in entries)
 
-    def test_the_tail_is_the_flag_then_each_entry_as_its_own_element(self, tmp_path):
+    def test_the_tail_lists_each_entry_as_its_own_element(self, tmp_path):
         home, config_dir, _checkout = stow_style_tree(tmp_path)
         paths = launch.read_allow_paths(config_dir, home)
 
@@ -98,7 +98,7 @@ KEPT = ["-", "_", ".", "+", "@", "~", "#", "!", ":", "=", "é"]
 
 class TestTheSharedCharacterCheck:
     @pytest.mark.parametrize("character", REFUSED)
-    def test_each_refused_class_raises_naming_the_path_in_repr_form(self, character):
+    def test_each_refused_class_raises(self, character):
         path = f"/config/a{character}b.md"
         with pytest.raises(launch.UnsafeConfigPathError) as raised:
             launch.check_path_characters(path)
@@ -150,7 +150,7 @@ class TestTheLaunchEnvironment:
         for assignment in ("https_proxy=a", "http_proxy=b", "no_proxy=c", "ALL_PROXY=d", "all_proxy=e"):
             assert assignment in prefix
 
-    def test_a_variable_the_runner_does_not_set_is_left_out_and_an_unset_config_dir_is_absent(self):
+    def test_an_unset_variable_is_left_out(self):
         prefix = launch.launch_prefix({"PATH": "/usr/bin"}, config_dir_value=None)
 
         assert prefix == ["/usr/bin/env", "-i", "PATH=/usr/bin"]
@@ -158,7 +158,7 @@ class TestTheLaunchEnvironment:
     def test_a_probed_config_dir_is_passed(self):
         assert launch.launch_prefix({}, config_dir_value="/cfg")[-1] == "CLAUDE_CONFIG_DIR=/cfg"
 
-    def test_a_fake_claude_behind_the_prefix_sees_only_the_allowlist_and_the_probed_config_dir(self, tmp_path, monkeypatch):
+    def test_a_fake_claude_sees_only_the_allowlist(self, tmp_path, monkeypatch):
         dump = tmp_path / "environment.txt"
         fake_bin = tmp_path / "bin"
         write_executable(fake_bin / "claude", f"env > {shlex.quote(str(dump))}\n")
@@ -175,7 +175,7 @@ class TestTheLaunchEnvironment:
         assert seen["CLAUDE_CONFIG_DIR"] == "/probed/config"
 
     @pytest.mark.timing
-    def test_the_group_kill_reaches_a_forked_child_behind_the_env_prefix(self, tmp_path, monkeypatch):
+    def test_the_group_kill_reaches_a_forked_child(self, tmp_path, monkeypatch):
         pid_file = tmp_path / "child.pid"
         fake_bin = tmp_path / "bin"
         write_executable(
@@ -203,14 +203,14 @@ class TestTheInstrumentHook:
         command = json.loads(launch.settings_json(log_path))["hooks"]["InstructionsLoaded"][0]["hooks"][0]["command"]
         subprocess.run(["sh", "-c", command], input=payload.encode(), check=True, timeout=HOOK_TIMEOUT_S)
 
-    def test_the_settings_json_carries_one_event_with_one_group_whose_first_hook_is_a_command(self, tmp_path):
+    def test_the_settings_json_carries_one_command_hook(self, tmp_path):
         settings = json.loads(launch.settings_json(tmp_path / "log.jsonl"))
 
         assert list(settings) == ["hooks"] and list(settings["hooks"]) == ["InstructionsLoaded"]
         assert len(settings["hooks"]["InstructionsLoaded"]) == 1
         assert settings["hooks"]["InstructionsLoaded"][0]["hooks"][0]["type"] == "command"
 
-    def test_the_hook_appends_a_json_line_to_a_log_path_with_a_space_and_a_single_quote(self, tmp_path):
+    def test_the_hook_appends_to_a_quoted_log_path(self, tmp_path):
         log_path = tmp_path / "it's a dir" / "instructions-loaded.jsonl"
         log_path.parent.mkdir()
 

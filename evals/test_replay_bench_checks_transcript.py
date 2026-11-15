@@ -63,7 +63,7 @@ class TestFirstTurnPromptSize:
     def test_it_is_null_when_the_transcript_holds_no_assistant_entry(self, tmp_path):
         assert _transcript(tmp_path, [_result("toolu_1")]).first_turn_prompt_size is None
 
-    def test_a_send_back_attachment_before_the_first_assistant_entry_is_tolerated(self, tmp_path):
+    def test_a_send_back_attachment_is_tolerated(self, tmp_path):
         transcript = _transcript(tmp_path, [_send_back_attachment(), "not json", _assistant([]), _send_back_attachment()])
         assert transcript.first_turn_prompt_size == 66
         assert transcript.tool_calls == ()
@@ -84,7 +84,10 @@ def _note(checks_world: World, tmp_path: Path, trigger: object, bare_entries: li
 
 
 class TestExcludeNote:
-    def test_a_trigger_path_the_bare_transcript_read_prints_the_exercised_line_compared_per_fixture(self, checks_world, tmp_path):
+    def test_a_trigger_path_the_bare_transcript_read_prints_the_exercised_line_compared_per_fixture(
+        self, checks_world, tmp_path,
+    ):
+        # The trigger sits in the toolkit fixture and the read in the bare one, so paths match only per fixture.
         trigger = str(checks_world.fixture_dir / "src" / "app.py")
         read_in_bare_fixture = _call_and_result(
             "toolu_1", "Read", {"file_path": str(checks_world.other_fixture_dir / "src" / "app.py")},
@@ -100,7 +103,7 @@ class TestExcludeNote:
             checks.EXCLUDE_NOTE_NOT_EXERCISED, checks.EXCLUDE_NOTE_RESIDUAL,
         )
 
-    def test_a_bare_transcript_whose_only_such_read_was_denied_prints_the_not_exercised_line(self, checks_world, tmp_path):
+    def test_a_denied_bare_read_prints_the_not_exercised_line(self, checks_world, tmp_path):
         trigger = str(checks_world.fixture_dir / "src" / "app.py")
         denied_read = _call_and_result(
             "toolu_1", "Read", {"file_path": str(checks_world.other_fixture_dir / "src" / "app.py")}, denied=True,
@@ -110,7 +113,7 @@ class TestExcludeNote:
         )
 
     @pytest.mark.parametrize("trigger", [ABSENT, 7, "/synthetic/a\x00b.py"], ids=["absent", "not-a-string", "nul-byte"])
-    def test_a_trigger_field_that_is_absent_not_a_string_or_holds_a_nul_leaves_the_line_out_with_the_residual(
+    def test_an_unusable_trigger_field_prints_the_residual_alone(
         self, checks_world, tmp_path, trigger,
     ):
         read = _call_and_result("toolu_1", "Read", {"file_path": str(checks_world.other_fixture_dir / "src" / "app.py")})
@@ -164,7 +167,7 @@ class TestReadGrantRecords:
             _transcript(tmp_path, entries), toolkit=checks_world.toolkit, fixture_dir=checks_world.fixture_dir,
         )
 
-    def test_a_listed_read_that_ran_and_a_listed_read_denied_are_recorded(self, checks_world, tmp_path):
+    def test_listed_reads_are_recorded(self, checks_world, tmp_path):
         entries = [
             *_call_and_result("toolu_1", "Read", {"file_path": str(checks_world.allow_file)}),
             *_call_and_result("toolu_2", "Read", {"file_path": str(checks_world.second_allow_file)}, denied=True),
@@ -186,7 +189,7 @@ class TestReadGrantRecords:
         assert records.allow_list_reads == ()
 
     @pytest.mark.parametrize("listed_form, read_form", [("link", "target"), ("target", "link")])
-    def test_an_allow_list_entry_and_a_read_naming_the_same_file_by_link_and_target_match(
+    def test_an_allow_list_entry_matches_a_read_of_the_same_file(
         self, checks_world, tmp_path, listed_form, read_form,
     ):
         target = _touch(tmp_path / "checkout" / "agents" / "stowed.md")
@@ -255,7 +258,7 @@ class TestPermissionDenials:
 
 
 class TestTranscriptShapes:
-    def test_parallel_tool_uses_in_one_entry_pair_with_their_own_results_and_a_string_content_prompt_is_ignored(
+    def test_parallel_tool_uses_pair_with_their_own_results(
         self, tmp_path,
     ):
         prompt_entry = {"type": "user", "message": {"role": "user", "content": "synthetic prompt text"}}
@@ -271,7 +274,7 @@ class TestTranscriptShapes:
             ("toolu_1", True, False), ("toolu_2", True, True),
         ]
 
-    def test_lines_that_are_not_json_objects_are_skipped_and_counted_while_the_rest_are_read(self, tmp_path):
+    def test_a_line_that_is_not_a_json_object_is_skipped(self, tmp_path):
         transcript = _transcript(tmp_path, [
             "[1, 2]", '"just a string"', "42", "", *_call_and_result("toolu_1", "Bash", {"command": "ls"}),
         ])
@@ -279,7 +282,7 @@ class TestTranscriptShapes:
         assert transcript.last_line_torn is False
         assert [call.tool_use_id for call in transcript.tool_calls] == ["toolu_1"]
 
-    def test_an_integer_over_the_parser_limit_is_a_skipped_line_not_an_exception(self, tmp_path):
+    def test_an_integer_over_the_parser_limit_is_a_skipped_line(self, tmp_path):
         digit_limit = sys.get_int_max_str_digits()
         if digit_limit == 0:
             pytest.skip("this interpreter sets no integer conversion limit, so no integer is too long to parse")
@@ -288,7 +291,7 @@ class TestTranscriptShapes:
         assert transcript.skipped_lines == 1
         assert [call.tool_use_id for call in transcript.tool_calls] == ["toolu_1"]
 
-    def test_a_line_that_exhausts_the_json_recursion_limit_is_a_skipped_line_not_an_exception(
+    def test_a_line_exhausting_the_recursion_limit_is_a_skipped_line(
         self, tmp_path, monkeypatch,
     ):
         path = tmp_path / "subagent.jsonl"
@@ -304,13 +307,13 @@ class TestTranscriptShapes:
         assert transcript.skipped_lines == 1
         assert transcript.last_line_torn is True
 
-    def test_content_items_that_are_not_objects_are_ignored_beside_valid_calls(self, tmp_path):
+    def test_content_items_that_are_not_objects_are_ignored(self, tmp_path):
         mixed_content = ["a string", None, 7, _tool_use("toolu_1", "Bash", {"command": "ls"})]
         transcript = _transcript(tmp_path, [_assistant(mixed_content), _result("toolu_1")])
         assert [call.tool_use_id for call in transcript.tool_calls] == ["toolu_1"]
 
     @pytest.mark.parametrize("usage", [ABSENT, None, "not an object", []], ids=repr)
-    def test_a_first_assistant_entry_without_usable_usage_gives_a_null_size_without_raising(self, tmp_path, usage):
+    def test_unusable_usage_gives_a_null_size(self, tmp_path, usage):
         entry = _assistant([_tool_use("toolu_1", "Bash", {"command": "ls"})])
         if usage is ABSENT:
             del entry["message"]["usage"]
@@ -320,7 +323,7 @@ class TestTranscriptShapes:
         assert transcript.first_turn_prompt_size is None
         assert len(transcript.tool_calls) == 1
 
-    def test_a_tool_use_with_a_non_object_input_or_a_non_string_name_is_handled_without_raising(self, tmp_path):
+    def test_a_malformed_tool_use_is_read(self, tmp_path):
         transcript = _transcript(tmp_path, [_assistant([
             _tool_use("toolu_1", "Bash", ["not", "an", "object"]),
             {"type": "tool_use", "id": "toolu_2", "name": 7, "input": {}},
@@ -330,12 +333,12 @@ class TestTranscriptShapes:
             ("toolu_1", {}), ("toolu_3", {"command": "ls"}),
         ]
 
-    def test_a_bad_line_mid_file_followed_by_good_lines_is_skipped_without_a_torn_tail(self, tmp_path):
+    def test_a_bad_line_mid_file_is_not_a_torn_tail(self, tmp_path):
         transcript = _transcript(tmp_path, ["not json", *_call_and_result("toolu_1", "Bash", {"command": "ls"})])
         assert transcript.skipped_lines == 1
         assert transcript.last_line_torn is False
 
-    def test_a_result_with_a_list_tool_use_id_is_read_without_raising_and_denies_nothing(self, tmp_path):
+    def test_a_result_with_a_list_tool_use_id_denies_nothing(self, tmp_path):
         odd_result = {"type": "user", "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": ["toolu_1"], "content": "x", "tool_result_meta": [
                 {"non_execution_kind": checks.NON_EXECUTION_PERMISSION_RULE},
@@ -345,14 +348,14 @@ class TestTranscriptShapes:
         assert transcript.permission_denials == 0
         assert [call.answered for call in transcript.tool_calls] == [False]
 
-    def test_a_result_meta_holding_non_objects_is_read_without_raising_and_denies_nothing(self, tmp_path):
+    def test_a_result_meta_of_non_objects_denies_nothing(self, tmp_path):
         result = _result("toolu_1")
         result["message"]["content"][0]["tool_result_meta"] = ["x", 7, None]
         transcript = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", "Bash", {"command": "ls"})]), result])
         assert transcript.permission_denials == 0
         assert [call.answered for call in transcript.tool_calls] == [True]
 
-    def test_a_torn_last_line_is_reported_and_the_complete_lines_before_it_are_read(self, tmp_path):
+    def test_a_torn_last_line_is_reported(self, tmp_path):
         path = tmp_path / "subagent.jsonl"
         complete = "".join(json.dumps(entry) + "\n" for entry in _call_and_result("toolu_1", "Bash", {"command": "ls"}))
         path.write_text(complete + '{"type": "assistant", "message": {"content": [{"type": "tool_u')
@@ -361,7 +364,7 @@ class TestTranscriptShapes:
         assert transcript.skipped_lines == 1
         assert [call.tool_use_id for call in transcript.tool_calls] == ["toolu_1"]
 
-    def test_invalid_utf8_on_one_line_is_skipped_without_losing_the_other_entries(self, tmp_path):
+    def test_invalid_utf8_on_one_line_is_skipped(self, tmp_path):
         path = tmp_path / "subagent.jsonl"
         lines = [json.dumps(entry).encode() for entry in _call_and_result("toolu_1", "Bash", {"command": "ls"})]
         path.write_bytes(b"\n".join([b"\xff\xfe not json", *lines]) + b"\n")
@@ -370,7 +373,7 @@ class TestTranscriptShapes:
         assert [call.tool_use_id for call in transcript.tool_calls] == ["toolu_1"]
 
     @pytest.mark.parametrize("make_path", [lambda tmp_path: tmp_path / "absent.jsonl", lambda tmp_path: tmp_path])
-    def test_a_missing_or_unreadable_transcript_is_a_value_with_a_detail_free_of_the_path(self, tmp_path, make_path):
+    def test_an_unreadable_transcript_gives_a_detail_free_of_the_path(self, tmp_path, make_path):
         transcript = checks.read_subagent_transcript(make_path(tmp_path))
         assert transcript.unreadable_detail is not None
         assert str(tmp_path) not in transcript.unreadable_detail
@@ -390,15 +393,15 @@ class TestTranscriptIntegrity:
         pytest.param(checks.SubagentTranscript((), 0, None, last_line_torn=True), id="torn-last-line"),
         pytest.param(checks.SubagentTranscript((), 0, None, skipped_lines=1), id="skipped-line"),
     ])
-    def test_each_integrity_signal_alone_fails_the_run_as_a_transcript_that_cannot_be_read(self, checks_world, damaged):
+    def test_each_integrity_signal_fails_as_transcript_unreadable(self, checks_world, damaged):
         assert self._failure_reasons(checks_world, damaged) == (checks.REASON_TRANSCRIPT_UNREADABLE,)
         assert checks.REASON_TRANSCRIPT_UNREADABLE == "transcript-unreadable"
 
-    def test_a_missing_transcript_file_fails_the_run_rather_than_reading_clean(self, checks_world, tmp_path):
+    def test_a_missing_transcript_file_fails_the_run(self, checks_world, tmp_path):
         missing = checks.read_subagent_transcript(tmp_path / "absent.jsonl")
         assert self._failure_reasons(checks_world, missing) == (checks.REASON_TRANSCRIPT_UNREADABLE,)
 
-    def test_the_integrity_reason_comes_before_a_path_failure(self, checks_world, tmp_path):
+    def test_the_integrity_reason_is_listed_first(self, checks_world, tmp_path):
         path = tmp_path / "subagent.jsonl"
         write = _call_and_result("toolu_1", "Write", {"file_path": str(checks_world.root / "elsewhere.py")})
         path.write_text("".join(json.dumps(entry) + "\n" for entry in write) + "[1]\n")
@@ -407,7 +410,7 @@ class TestTranscriptIntegrity:
 
 
 class TestDeniedBashCalls:
-    def test_a_denied_command_naming_a_guarded_path_is_recorded_and_fails_no_path_check(self, checks_world, tmp_path):
+    def test_a_block_level_denied_command_fails_no_path_check(self, checks_world, tmp_path):
         leak = str(checks_world.live_checkout / "src" / "app.py")
         transcript = _transcript(tmp_path, _call_and_result("toolu_1", "Bash", {"command": f"cat {leak}"}, denied=True))
         result = _path_check(checks_world, transcript)
@@ -419,7 +422,7 @@ class TestDeniedBashCalls:
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"cat {leak}"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
 
-    def test_a_denied_toolkit_read_still_fails_bare_since_the_attempt_is_evidence_about_the_arm(self, checks_world, tmp_path):
+    def test_a_denied_bash_cat_of_a_toolkit_file_fails_bare(self, checks_world, tmp_path):
         reviewer = str(checks_world.config_dir / "agents" / "reviewer.md")
         transcript = _transcript(tmp_path, _call_and_result("toolu_1", "Bash", {"command": f"cat {reviewer}"}, denied=True))
         reasons = checks.toolkit_reach_reasons(
@@ -444,7 +447,7 @@ class TestDeniedCallsOfEveryKind:
         ("Grep", lambda world: {"pattern": "x", "path": str(world.config_dir / "agents")}),
         ("Glob", lambda world: {"pattern": "*.md", "path": str(world.config_dir / "agents")}),
     ])
-    def test_a_denied_read_grep_or_glob_of_the_toolkit_still_counts_as_a_bare_reach(
+    def test_a_denied_toolkit_reach_fails_bare(
         self, checks_world, tmp_path, tool_name, tool_input_for,
     ):
         denied = _transcript(tmp_path, _call_and_result("toolu_1", tool_name, tool_input_for(checks_world), denied=True))
@@ -455,8 +458,6 @@ class TestDeniedCallsOfEveryKind:
 
 
 class TestCommandTextScan:
-    """The contract in the module docstring: a directory above a guarded tree is never a hit."""
-
     def _both_arms_clean(self, checks_world, tmp_path, command):
         transcript = _bash_transcript(tmp_path, command)
         reach = checks.toolkit_reach_reasons(
@@ -476,7 +477,8 @@ class TestCommandTextScan:
         monkeypatch.setenv("PWD", str(checks_world.live_checkout))
         assert self._both_arms_clean(checks_world, tmp_path, command) == ((), ())
 
-    def test_pwd_expands_to_the_fixture_whatever_the_checkers_own_working_directory_is(self, checks_world, tmp_path, monkeypatch):
+    def test_pwd_expands_to_the_fixture_not_the_checkers_working_directory(self, checks_world, tmp_path, monkeypatch):
+        # The checker's own `$PWD` points at the live checkout; the scan must expand `$PWD` to the fixture instead.
         monkeypatch.setenv("PWD", str(checks_world.live_checkout))
         result = _path_check(checks_world, _bash_transcript(tmp_path, "cat $PWD/src/app.py"))
         assert result.failure_reasons == ()
@@ -490,7 +492,7 @@ class TestCommandTextScan:
         pytest.param(lambda world: f"grep -r x {world.live_checkout}", id="live-checkout-root"),
         pytest.param(lambda world: f"ls {world.live_checkout}/src", id="directory-holding-a-changed-file"),
     ])
-    def test_a_guarded_tree_or_a_directory_holding_a_guarded_path_inside_its_tree_fails(
+    def test_a_guarded_tree_or_a_directory_inside_it_fails(
         self, checks_world, tmp_path, monkeypatch, command_for,
     ):
         monkeypatch.setenv("HOME", str(checks_world.home))
@@ -528,25 +530,25 @@ class TestCommandTextScan:
         )
         assert reasons == (checks.REASON_ARM_LEAK,)
 
-    def test_pwd_expands_to_the_fixture_so_a_path_climbing_out_of_it_is_seen(self, checks_world, tmp_path):
+    def test_a_path_climbing_out_of_pwd_is_seen(self, checks_world, tmp_path):
         token = f"$PWD/../{checks_world.other_fixture_dir.name}/src/app.py"
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"cat {token}"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (token,)
 
-    def test_a_braced_home_prefix_expands_so_the_path_behind_it_is_seen(self, checks_world, tmp_path, monkeypatch):
+    def test_a_braced_home_prefix_is_expanded(self, checks_world, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(checks_world.home))
         result = _path_check(checks_world, _bash_transcript(tmp_path, "cat ${HOME}/.claude/projects/p/other.jsonl"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
 
-    def test_a_braced_pwd_prefix_expands_to_the_fixture_so_a_path_climbing_out_of_it_is_seen(self, checks_world, tmp_path):
+    def test_a_path_climbing_out_of_a_braced_pwd_is_seen(self, checks_world, tmp_path):
         token = f"${{PWD}}/../{checks_world.other_fixture_dir.name}/src/app.py"
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"cat {token}"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (token,)
 
     @pytest.mark.parametrize("tree", ["live-checkout", "local-dir", "fixture-directories"])
-    def test_a_directory_above_each_guarded_tree_fails_nothing_while_the_tree_and_a_directory_inside_it_fail(
+    def test_a_directory_above_a_guarded_tree_is_not_a_hit(
         self, checks_world, tmp_path, tree,
     ):
         parent, inside, tree_root = {
@@ -561,7 +563,7 @@ class TestCommandTextScan:
             result = _path_check(checks_world, _bash_transcript(tmp_path, f"ls {guarded}"))
             assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
 
-    def test_a_config_dir_reached_through_a_link_still_guards_another_sessions_files_by_either_name(
+    def test_a_linked_config_dir_guards_another_sessions_files_by_either_name(
         self, checks_world, tmp_path,
     ):
         real_config = tmp_path / "real-config"
@@ -611,12 +613,12 @@ class TestCommandTextScan:
         )
         assert reasons == (checks.REASON_ARM_LEAK,)
 
-    def test_a_quoted_word_holding_a_space_is_one_candidate_not_split_on_whitespace(self, checks_world, tmp_path):
+    def test_a_quoted_word_holding_a_space_is_one_candidate(self, checks_world, tmp_path):
         result = _path_check(checks_world, _bash_transcript(tmp_path, "ls '/usr/local/my dir'"))
         assert result.failure_reasons == ()
         assert result.other_outside_fixture_tokens == ("/usr/local/my dir",)
 
-    def test_a_guarded_path_inside_a_word_longer_than_a_path_can_be_is_still_found_through_its_pieces(
+    def test_a_guarded_path_inside_a_long_word_is_found_through_its_pieces(
         self, checks_world, tmp_path,
     ):
         leak = str(checks_world.live_checkout / "src" / "app.py")
@@ -636,7 +638,7 @@ class TestCommandTextScan:
         assert any("longer than a path can be" in note for note in result.unparsed)
         assert reaches.paths == (str(checks_world.config_dir / "agents" / "reviewer.md"),)
 
-    def test_own_session_files_are_exempt_while_a_sibling_session_is_not(self, checks_world, tmp_path):
+    def test_only_own_session_files_are_exempt(self, checks_world, tmp_path):
         own_transcript, own_directory = checks_world.own_session_paths
         sibling = own_transcript.parent / "other-session.jsonl"
         for command in (
@@ -654,13 +656,13 @@ class TestCommandTextScan:
         assert result.out_of_fixture_tokens == (leak,)
         assert result.unparsed == ()
 
-    def test_a_guarded_path_cut_across_a_line_continuation_is_joined_before_the_scan(self, checks_world, tmp_path):
+    def test_a_guarded_path_cut_across_a_line_continuation_is_joined(self, checks_world, tmp_path):
         leak = str(checks_world.live_checkout / "src" / "app.py")
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"cat {leak[:-4]}\\\n{leak[-4:]}"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (leak,)
 
-    def test_a_word_longer_than_a_path_can_be_is_skipped_and_recorded(self, checks_world, tmp_path):
+    def test_a_word_longer_than_a_path_can_be_is_recorded_as_unparsed(self, checks_world, tmp_path):
         result = _path_check(checks_world, _bash_transcript(tmp_path, "echo " + "a" * (checks.MAX_PATH_CHARS + 1)))
         assert result.failure_reasons == ()
         assert len(result.unparsed) == 1
@@ -677,7 +679,7 @@ class TestToolkitReach:
         ("Read", lambda path: {"file_path": path}),
         ("Bash", lambda path: {"command": f"cat {path}"}),
     ])
-    def test_bare_reading_a_toolkit_agent_file_fails_arm_leak_and_the_same_read_passes_toolkit(
+    def test_bare_reading_a_toolkit_agent_file_fails_arm_leak(
         self, checks_world, tmp_path, tool_name, tool_input_for,
     ):
         entries = _call_and_result("toolu_1", tool_name, tool_input_for(str(checks_world.config_dir / "agents" / "reviewer.md")))
@@ -698,7 +700,7 @@ class TestToolkitReach:
         entries = _call_and_result("toolu_1", "Bash", {"command": "cat ~/.claude/agents/extra.md"})
         assert self._reasons(checks_world, tmp_path, entries, _bare(checks_world)) == (checks.REASON_ARM_LEAK,)
 
-    def test_bare_reaching_a_toolkit_path_through_an_unsplittable_command_keeps_the_unparsed_record(
+    def test_an_unsplittable_command_still_reaches_a_toolkit_path(
         self, checks_world, tmp_path,
     ):
         command = f"cat {checks_world.config_dir}/agents/reviewer.md  # it's here"
@@ -790,7 +792,7 @@ class TestWriteTargetBoundary:
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_WRITE,)
         assert result.out_of_fixture_writes == (target,)
 
-    def test_a_symlink_in_the_fixture_that_points_out_makes_a_write_through_it_fail(self, checks_world, tmp_path):
+    def test_a_write_through_a_symlink_pointing_out_fails(self, checks_world, tmp_path):
         _link(checks_world.fixture_dir / "escape", checks_world.root)
         write = _call_and_result("toolu_1", "Write", {"file_path": str(checks_world.fixture_dir / "escape" / "elsewhere.py")})
         result = _path_check(checks_world, _transcript(tmp_path, write))
@@ -815,26 +817,26 @@ class TestBashPaths:
         assert result.failure_reasons == ()
         assert result.other_outside_fixture_tokens == ()
 
-    def test_a_home_relative_token_resolves_against_the_home_and_fails_under_the_projects_root(
+    def test_a_home_relative_token_into_the_projects_root_fails(
         self, checks_world, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("HOME", str(checks_world.home))
         result = _path_check(checks_world, _bash_transcript(tmp_path, "cat ~/.claude/projects/synthetic-project/other.jsonl"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
 
-    def test_a_parent_relative_token_resolves_from_the_fixture_into_another_fixture_and_fails(self, checks_world, tmp_path):
+    def test_a_parent_relative_token_into_another_fixture_fails(self, checks_world, tmp_path):
         token = f"../../tmp/{checks_world.other_fixture_dir.name}/src/app.py"
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"cat {token}"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (token,)
 
-    def test_an_unrelated_absolute_path_is_recorded_and_fails_nothing(self, checks_world, tmp_path):
+    def test_an_unrelated_absolute_path_fails_nothing(self, checks_world, tmp_path):
         result = _path_check(checks_world, _bash_transcript(tmp_path, "ls /usr/bin"))
         assert result.failure_reasons == ()
         assert result.other_outside_fixture_tokens == ("/usr/bin",)
         assert result.bash_commands == ("ls /usr/bin",)
 
-    def test_an_unsplittable_command_with_no_guarded_path_is_recorded_as_unparsed_and_fails_nothing(self, checks_world, tmp_path):
+    def test_an_unsplittable_command_with_no_guarded_path_is_recorded_as_unparsed(self, checks_world, tmp_path):
         result = _path_check(checks_world, _bash_transcript(tmp_path, "echo 'unterminated"))
         assert result.bash_commands == ("echo 'unterminated",)
         assert len(result.unparsed) == 1
@@ -848,14 +850,14 @@ class TestBashPaths:
         pytest.param(lambda leak: f'cat "{leak}"  # don\'t', id="double-quoted-path-beside-a-comment"),
         pytest.param(lambda leak: f'cat "{leak}" <<\'EOT\'\nit\'s here\nEOT', id="double-quoted-path-beside-a-heredoc"),
     ])
-    def test_an_unsplittable_command_holding_a_guarded_path_is_scanned_and_fails(self, checks_world, tmp_path, command_for):
+    def test_an_unsplittable_command_holding_a_guarded_path_fails(self, checks_world, tmp_path, command_for):
         leak = str(checks_world.live_checkout / "src" / "app.py")
         result = _path_check(checks_world, _bash_transcript(tmp_path, command_for(leak)))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (leak,)
         assert len(result.unparsed) == 1
 
-    def test_a_double_quoted_guarded_path_inside_a_single_quoted_word_is_seen_and_fails(self, checks_world, tmp_path):
+    def test_a_double_quoted_guarded_path_inside_a_single_quoted_word_fails(self, checks_world, tmp_path):
         leak = str(checks_world.live_checkout / "src" / "app.py")
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"bash -c 'cat \"{leak}\"'"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
@@ -873,21 +875,21 @@ class TestBashPaths:
         pytest.param(lambda leak: f"diff --file={leak}", id="option-attached-path"),
         pytest.param(lambda leak: f"cat `echo {leak}`", id="backticks"),
     ])
-    def test_a_guarded_path_glued_to_a_shell_operator_is_seen_and_fails(self, checks_world, tmp_path, command_for):
+    def test_a_guarded_path_glued_to_a_shell_operator_fails(self, checks_world, tmp_path, command_for):
         leak = str(checks_world.live_checkout / "src" / "app.py")
         result = _path_check(checks_world, _bash_transcript(tmp_path, command_for(leak)))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (leak,)
 
     @pytest.mark.parametrize("relative", [".git", ".git/HEAD"])
-    def test_a_live_checkouts_repository_directory_and_a_path_below_it_fail(self, checks_world, tmp_path, relative):
+    def test_a_live_checkouts_git_directory_or_a_path_below_it_fails(self, checks_world, tmp_path, relative):
         (checks_world.live_checkout / ".git").mkdir()
         token = f"{checks_world.live_checkout}/{relative}"
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"show --dir={token} HEAD"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
         assert result.out_of_fixture_tokens == (token,)
 
-    def test_a_command_through_a_persisting_link_in_the_fixture_to_a_guarded_file_fails(self, checks_world, tmp_path):
+    def test_a_command_through_a_fixture_link_to_a_guarded_file_fails(self, checks_world, tmp_path):
         _link(checks_world.fixture_dir / "escape.py", checks_world.live_checkout / "src" / "app.py")
         result = _path_check(checks_world, _bash_transcript(tmp_path, "cat escape.py"))
         assert result.failure_reasons == (checks.REASON_OUT_OF_FIXTURE_PATH,)
@@ -909,7 +911,7 @@ class TestMalformedEntries:
         assert len(result.unparsed) == 1
         assert result.failure_reasons == ()
 
-    def test_a_token_holding_a_nul_byte_is_recorded_as_unparsed_without_blocking_the_other_tokens(self, checks_world, tmp_path):
+    def test_a_token_holding_a_nul_byte_is_recorded_as_unparsed(self, checks_world, tmp_path):
         outside_token = str(checks_world.other_fixture_dir / "src" / "app.py")
         result = _path_check(checks_world, _bash_transcript(tmp_path, f"cat a\x00b {outside_token}"))
         assert len(result.unparsed) == 1

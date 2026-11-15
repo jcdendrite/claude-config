@@ -104,8 +104,7 @@ def build_world(tmp_path: Path) -> World:
 
 
 def _line(file_path: str, load_reason: str = SESSION_START, *, agent_id: object = ABSENT, **overrides: object) -> dict:
-    """A captured dispatcher line, or a subagent line when `agent_id` is given. An override of `ABSENT`
-    removes its key."""
+    """An override of `ABSENT` removes its key."""
     line: dict = {
         "session_id": SESSION_ID, "transcript_path": "synthetic", "cwd": "synthetic",
         "hook_event_name": "synthetic", "file_path": file_path, "memory_type": "synthetic", "load_reason": load_reason,
@@ -166,7 +165,6 @@ def _result(tool_use_id: str, *, denied: bool = False, kind: str = checks.NON_EX
 
 
 def denied_result_entry(tool_use_id: str, path: str) -> dict:
-    """A user entry holding one denied `tool_result`, in the entry-level shape `read_subagent_transcript` documents."""
     message = f"Claude requested permissions to write to {path}, but you haven't granted it yet."
     return {
         "type": "user",
@@ -213,8 +211,7 @@ def _bash_transcript(tmp_path: Path, command: object) -> checks.SubagentTranscri
 
 
 def call_with_deadline[ResultT](function: Callable[[], ResultT], *, deadline_s: float, hang_message: str) -> ResultT:
-    """Runs `function` in a daemon thread and fails with `hang_message` when it has not returned by the deadline,
-    so a call that blocks forever fails the test instead of hanging the suite."""
+    """A call that blocks forever fails the test instead of hanging the suite."""
     results: list[ResultT] = []
     errors: list[BaseException] = []
 

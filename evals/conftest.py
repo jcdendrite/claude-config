@@ -85,8 +85,7 @@ def checks_world(tmp_path: Path):
 
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """A replay world under `tmp_path`: an account config dir, a fixture temp dir, an ignored local dir and a
-    source repo with one qualifying commit. Replay tests that need more build their own with the builder."""
+    """Replay tests that need more than this build their own with the builder."""
     from test_replay_bench_runner_support import build_replay_world
 
     return build_replay_world(tmp_path, monkeypatch)

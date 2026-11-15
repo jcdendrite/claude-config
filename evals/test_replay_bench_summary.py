@@ -62,7 +62,7 @@ def number_after(lines: list[str], prefix: str) -> float:
 
 
 class TestThePrimaryOutcome:
-    def test_it_is_a_ratio_of_sums_over_a_tasks_runs_and_not_a_mean_of_ratios(self, campaign):
+    def test_it_is_a_ratio_of_sums_over_a_tasks_runs(self, campaign):
         campaign.add_block(
             "t1",
             record("t1", "toolkit", run_metrics=metrics(words=10, code=10)),
@@ -92,7 +92,7 @@ class TestThePrimaryOutcome:
 
 class TestThePairedOutcomeAsValues:
     def blocks(self, *differences_in_words):
-        """One block per task: the toolkit arm writes `words` over ten code lines and the bare arm writes none."""
+        """The bare arm writes no words, so a test over these blocks passes whether or not the bare ratio is subtracted."""
         return {
             f"t{index}": [
                 record(f"t{index}", "toolkit", run_metrics=metrics(words=words, code=10)),
@@ -101,7 +101,7 @@ class TestThePairedOutcomeAsValues:
             for index, words in enumerate(differences_in_words)
         }
 
-    def test_each_tasks_difference_is_its_toolkit_ratio_less_its_bare_ratio_and_the_mean_is_their_mean(self):
+    def test_each_tasks_difference_is_its_toolkit_ratio_less_its_bare_ratio(self):
         outcome = summary.paired_outcome(self.blocks(20, 30, 70))
 
         assert outcome.differences == {"t0": pytest.approx(2.0), "t1": pytest.approx(3.0), "t2": pytest.approx(7.0)}
@@ -135,20 +135,20 @@ class TestThePairedOutcomeAsValues:
 
         assert outcome.interval == (pytest.approx(2.0), pytest.approx(3.0))
 
-    def test_the_interval_of_several_tasks_lies_within_their_smallest_and_largest_difference_and_has_width(self):
+    def test_the_interval_of_several_tasks_lies_within_their_differences(self):
         outcome = summary.paired_outcome(self.blocks(20, 30, 70, 10))
 
         low, high = outcome.interval
         assert min(outcome.differences.values()) <= low < high <= max(outcome.differences.values())
 
-    def test_one_paired_task_has_a_mean_and_no_interval_and_none_has_neither(self):
+    def test_one_paired_task_has_no_interval(self):
         single = summary.paired_outcome(self.blocks(20))
         nothing = summary.paired_outcome({})
 
         assert single.mean == pytest.approx(2.0) and single.interval is None
         assert nothing.mean is None and nothing.interval is None and nothing.differences == {}
 
-    def test_each_exclusion_is_tallied_with_the_records_that_explain_it(self):
+    def test_each_exclusion_is_tallied_with_its_records(self):
         blocks = {
             "paired": [record("paired", "toolkit"), record("paired", "bare")],
             "no-toolkit": [record("no-toolkit", "toolkit", ok=False, reason="timeout"), record("no-toolkit", "bare")],
@@ -206,7 +206,7 @@ class TestTheExclusionLine:
 
 
 class TestCompleteAndIncompleteBlocks:
-    def test_a_partial_incomplete_blocks_records_are_left_out_and_counted_as_incomplete(self, campaign):
+    def test_an_incomplete_blocks_records_are_left_out(self, campaign):
         campaign.add_block("done", record("done", "toolkit"), record("done", "bare"))
         campaign.add_block("partial", record("partial", "toolkit", run_metrics=metrics(words=999)), complete=False)
 
@@ -247,7 +247,7 @@ class TestARecordThatDoesNotParse:
         path.write_text(unparseable_record_texts()[request.param], encoding="utf-8")
         return path
 
-    def test_reading_the_block_raises_naming_the_file(self, campaign, unparseable_record_path):
+    def test_reading_the_block_raises(self, campaign, unparseable_record_path):
         with pytest.raises(HarnessInvalidatedError) as raised:
             records.read_block_records(campaign.dir, "t1")
 
@@ -269,7 +269,7 @@ class TestARecordThatDoesNotParse:
 
 
 def tree_snapshot(directory: Path) -> dict[str, tuple[int, bytes | None]]:
-    """Each path's mtime and, for a file, its bytes, so a rewrite within one timestamp tick still differs."""
+    """The bytes join the mtime so a rewrite within one timestamp tick still differs."""
     return {
         str(path.relative_to(directory)): (path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
         for path in [directory, *directory.rglob("*")]
@@ -277,7 +277,7 @@ def tree_snapshot(directory: Path) -> dict[str, tuple[int, bytes | None]]:
 
 
 class TestSummarizeCreatesNothing:
-    def test_a_campaign_with_records_a_manifest_and_a_spend_file_is_left_exactly_as_it_was(self, campaign):
+    def test_a_campaign_directory_is_left_exactly_as_it_was(self, campaign):
         campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
         campaign.add_block("t2", record("t2", "toolkit"), complete=False)
         spend = SpendFile(campaign.dir / "spend.jsonl", budget_cap_usd=CAP)
@@ -305,7 +305,7 @@ class TestSummarizeCreatesNothing:
 
 
 class TestSecondaryAndDiagnostics:
-    def test_each_arm_prints_docstring_lines_per_100_code_lines_and_its_diagnostics(self, campaign):
+    def test_each_arm_prints_its_secondary_outcome_lines(self, campaign):
         campaign.add_block(
             "t1",
             record(
@@ -326,7 +326,7 @@ class TestSecondaryAndDiagnostics:
         assert "bare: unclassified-line share 0.0278," in text, "3 of 108 lines"
         assert "non_file_entries 1" in text and "undecodable_files 4" in text and "ignored_paths 7" in text
 
-    def test_a_run_with_no_non_test_code_line_enters_its_tasks_sums_and_a_separate_tally(self, campaign):
+    def test_a_run_with_no_non_test_code_line_enters_its_tasks_sums(self, campaign):
         campaign.add_block(
             "t1",
             record("t1", "toolkit", run_metrics=metrics(words=10, code=10)),
@@ -362,7 +362,7 @@ class TestAnUnavailableReferenceNamesItsCause:
         assert self.reference_line(campaign) == "  reference unavailable: the manifest is not a JSON object"
 
     @pytest.mark.parametrize("task_file_text", [None, "not json", '{"not": "a list"}'], ids=["gone", "unparseable", "not-a-list"])
-    def test_a_task_set_that_cannot_be_read_says_which_one_and_gives_the_readers_own_cause(self, campaign, task_file_text):
+    def test_a_task_set_that_cannot_be_read_gives_the_readers_cause(self, campaign, task_file_text):
         campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
         (campaign.dir / "manifest.json").write_text(json.dumps({"tasks_name": "damaged"}))
         tasks_dir = campaign.local_dir / "tasks"
@@ -388,7 +388,7 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
             base_density=None, base_tree_bytes=0, base_tree_entries=0,
         )
 
-    def test_the_reference_rate_is_the_task_sets_docstring_lines_per_100_code_lines_with_no_unavailable_line(self, campaign):
+    def test_the_reference_rate_is_the_task_sets_docstring_lines_per_100_code_lines(self, campaign):
         task = self.reference_task(code=40, docstring=10)
         tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
         (campaign.dir / "manifest.json").write_text(
@@ -439,7 +439,7 @@ class TestSpendByAccount:
         with spend.path.open("a") as handle:
             handle.write("not json\n")
 
-    def test_an_unparseable_spend_line_counts_at_the_flag_when_the_manifest_pins_no_cap_and_says_so(self, campaign):
+    def test_an_unparseable_spend_line_counts_at_the_flag_when_the_manifest_pins_no_cap(self, campaign):
         self.spend_with_one_unparsed_line(campaign)
 
         lines = campaign.summarize()
@@ -447,7 +447,7 @@ class TestSpendByAccount:
         assert f"  {ACCOUNT!r}: $5.00" in lines and "  '/other/account': $4.00" in lines
         assert any("did not parse" in line and "$3.00 each" in line and "manifest pins no usable cap" in line for line in lines)
 
-    def test_an_unparseable_spend_line_counts_at_the_cap_the_campaign_pinned_and_not_the_flag(self, campaign):
+    def test_an_unparseable_spend_line_counts_at_the_cap_the_campaign_pinned(self, campaign):
         self.spend_with_one_unparsed_line(campaign)
         (campaign.dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": 2.0}))
 

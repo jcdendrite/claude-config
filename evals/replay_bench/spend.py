@@ -1,8 +1,4 @@
-"""The campaign's spend file: one JSON line per launched attempt, which `run`'s stops sum.
-
-An attempt with no cost figure is charged at the per-run budget cap, and a line that does not parse counts
-at the cap against the cumulative stop and every account.
-"""
+"""The campaign's spend file: one JSON line per launched attempt, which `run`'s stops sum."""
 from __future__ import annotations
 
 import json
@@ -16,7 +12,7 @@ from review_bench import runner as review_runner
 
 
 class SpendAppendError(RuntimeError):
-    """The spend file could not be appended to. `run` halts rather than continue uncharged."""
+    """`run` halts on this rather than continue uncharged."""
 
 
 @dataclass(frozen=True)
@@ -46,7 +42,7 @@ class SpendTotals:
 
 
 def is_usable_cost(cost: object) -> bool:
-    """A finite, non-negative number. NaN would make every stop comparison False, so it reads as no figure."""
+    """NaN would make every stop comparison False, so it reads as no figure."""
     return isinstance(cost, int | float) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0
 
 
@@ -62,8 +58,8 @@ def _parse_line(text: str) -> SpendLine | None:
 
 
 class SpendFile:
-    """Appends take one `os.write` on an `O_APPEND` descriptor under a lock the worker threads share. After a short
-    write, the next append starts with a newline, so the torn line stays one unparsed line and never fuses with it."""
+    """After a short write, the next append starts with a newline, so the torn line stays one unparsed line and
+    never fuses with it."""
 
     def __init__(self, path: Path, *, budget_cap_usd: float) -> None:
         self.path = path
@@ -72,7 +68,6 @@ class SpendFile:
         self._tail_is_torn = False
 
     def repair_torn_tail(self) -> None:
-        """Repairs a torn last line at resume."""
         review_runner._repair_torn_tail(self.path)
 
     def append(self, line: SpendLine) -> None:

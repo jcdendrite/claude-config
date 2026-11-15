@@ -1,8 +1,8 @@
 """What a replay attempt launches: the allowlisted environment behind `/usr/bin/env -i`, the `--settings`
 JSON that carries the instruction-load hook, and the exact-path Read allow entries on the command line.
 
-The `claude` process's environment is built from a named allowlist instead of inherited. Each allowlisted
-value sits in `env`'s argv until `env` execs `claude`, so the runner assumes a single-user machine.
+Each allowlisted value sits in `env`'s argv until `env` execs `claude`, so the runner assumes a
+single-user machine.
 """
 from __future__ import annotations
 
@@ -33,8 +33,6 @@ class UnsafeConfigPathError(ValueError):
 
 
 def check_path_characters(path: str) -> None:
-    """Raises UnsafeConfigPathError, naming the path in `!r` form, for whitespace, a control character or a
-    pattern character. Both generators call this, and preflight reaches it through them."""
     if any(character.isspace() or not character.isprintable() or character in _PATTERN_CHARACTERS for character in path):
         raise UnsafeConfigPathError(
             f"config path {path!r} holds whitespace, a control character or a pattern character, "
@@ -43,9 +41,6 @@ def check_path_characters(path: str) -> None:
 
 
 def launch_prefix(environ: Mapping[str, str], *, config_dir_value: str | None) -> list[str]:
-    """`env -i` plus `NAME=value` for each allowlisted variable `environ` sets. A variable `environ` does not
-    set is left out, never passed empty. `config_dir_value` is the value the probe found for
-    `CLAUDE_CONFIG_DIR`, or None when it found none."""
     argv = [ENV_EXECUTABLE, "-i"]
     argv.extend(f"{name}={environ[name]}" for name in LAUNCH_ENV_ALLOWLIST if name in environ)
     if config_dir_value is not None:
@@ -75,8 +70,7 @@ def _existing_roots(config_dir: Path, home: Path) -> list[Path]:
 
 
 def _listed_files(root: Path) -> list[Path]:
-    """Each `*.md` file directly under `agents/` and each `skills/<name>/SKILL.md`. `is_file` follows a link,
-    so a dangling link is skipped."""
+    """`is_file` follows a link, so a dangling link is skipped."""
     files: list[Path] = []
     agents_dir = root / "agents"
     if agents_dir.is_dir():
@@ -91,9 +85,6 @@ def _listed_files(root: Path) -> list[Path]:
 
 
 def read_allow_paths(config_dir: Path, home: Path) -> list[Path]:
-    """Every agent and skill file under the config dir and `$HOME/.claude`, each by the path as listed and by
-    its realpath, deduplicated. Raises UnsafeConfigPathError before returning when a path holds a character
-    that `check_path_characters` refuses."""
     paths: dict[str, Path] = {}
     for root in _existing_roots(config_dir, home):
         for listed in _listed_files(root):
@@ -109,5 +100,5 @@ def read_allow_entries(paths: Collection[Path]) -> list[str]:
 
 
 def allowed_tools_tail(paths: Collection[Path]) -> list[str]:
-    """`--allowedTools` and each entry as its own argv element. It goes last on the command line."""
+    """It goes last on the command line."""
     return ["--allowedTools", *read_allow_entries(paths)]

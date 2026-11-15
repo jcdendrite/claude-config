@@ -1,8 +1,7 @@
 """`smoke`: one block of one run per arm on one task, which checks the instrument end to end.
 
 The block calibrates the instrument, since the instruction-load hook cannot show the `CLAUDE.md` a subagent
-inherits and no source read says that `bare`'s exclude holds under `-p`. `smoke` writes the account's
-smoke-pass record only when every condition holds, and `run` requires that record.
+inherits and no source read says that `bare`'s exclude holds under `-p`.
 """
 from __future__ import annotations
 
@@ -44,7 +43,6 @@ def _shown(values) -> str:
 
 
 def format_run_report(arm_name: str, outcome: RunOutcome) -> list[str]:
-    """Everything the engineer reads about one run."""
     record = outcome.record
     status = "ok" if record.is_ok else f"missing ({record.missing_reason})"
     lines = [f"[{arm_name}] status: {status}"]
@@ -89,8 +87,6 @@ def _chars(path: Path) -> int:
 
 
 def calibration_terms(account: Account, toolkit_final) -> tuple[float, float, int, list[int]]:
-    """The body term and margin in tokens, then the account `CLAUDE.md`'s character count and the
-    dispatcher-loaded rule files' character counts."""
     claude_md_chars = _chars(account.config_dir / "CLAUDE.md")
     code_writer_body_chars = arms_mod.agent_body_chars(arms_mod.code_writer_text(account.config_dir))
     bare_writer_body_chars = arms_mod.agent_body_chars(account.bare_writer_markdown)
@@ -107,8 +103,6 @@ def calibration_terms(account: Account, toolkit_final) -> tuple[float, float, in
 
 
 def evaluate_conditions(block: BlockOutcome, account: Account) -> tuple[list[tuple[str, str]], list[str]]:
-    """The failed conditions as (name, text) pairs, and the calibration lines to print. The pairs run in this order:
-    a missing run for each arm, then the read-grant conditions, then the block calibration reasons."""
     by_arm = {arm: outcome for arm, _index, outcome in block.runs}
     toolkit_outcome, bare_outcome = by_arm[arms_mod.TOOLKIT.name], by_arm[arms_mod.BARE.name]
     failed: list[tuple[str, str]] = []
@@ -152,7 +146,6 @@ def evaluate_conditions(block: BlockOutcome, account: Account) -> tuple[list[tup
 def run_smoke(
     config: SmokeConfig, account: Account, task: tasks_mod.ReplayTask, *, runner_environ: Mapping[str, str], launch: Launch,
 ) -> int:
-    """Exit 0 on `instrument: ok`, 2 otherwise. Raises RunStoreLocked, HarnessInvalidatedError and an interrupt."""
     campaign_id = f"smoke-{uuid.uuid4().hex[:8]}"
     campaign_dir = config.local_dir / CAMPAIGNS_DIR_NAME / campaign_id
     ceiling = review_runner.campaign_cost_ceiling(1, len(SMOKE_ARM_NAMES), 1, budget_cap_usd=config.budget_cap_usd)

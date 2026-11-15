@@ -1,6 +1,5 @@
 """Tests for `build_task_fixture`'s optional settings file and for `SelectionLimits`' range checks. Kept apart from
-`test_replay_bench_tasks.py`, which is already past 1,000 lines. Every repository is synthetic, built under
-`tmp_path` with real git. No test launches `claude`.
+`test_replay_bench_tasks.py`, which is already past 1,000 lines. No test launches `claude`.
 """
 from __future__ import annotations
 
@@ -26,13 +25,13 @@ def build_fixture_with(tmp_path: Path, settings_text: str | None) -> Path:
 
 
 class TestFixtureSettingsFile:
-    def test_settings_text_lands_byte_for_byte_and_stays_out_of_the_work_tree_status(self, tmp_path):
+    def test_settings_text_lands_as_an_excluded_file(self, tmp_path):
         fixture = build_fixture_with(tmp_path, SETTINGS_TEXT)
 
         assert (fixture / ".claude" / "settings.json").read_bytes() == SETTINGS_TEXT.encode()
         assert _git_text(fixture, "status", "--porcelain") == ""
 
-    def test_no_settings_file_exists_without_settings_text(self, tmp_path):
+    def test_no_settings_text_writes_no_settings_file(self, tmp_path):
         fixture = build_fixture_with(tmp_path, None)
 
         assert not (fixture / ".claude" / "settings.json").exists()
@@ -46,14 +45,14 @@ class TestSelectionLimitsRanges:
 
     @pytest.mark.parametrize("bad_value", [0, -1])
     @pytest.mark.parametrize("field_name", INTEGER_FIELDS)
-    def test_an_integer_limit_below_one_is_refused_naming_its_flag(self, field_name, bad_value):
+    def test_an_integer_limit_below_one_is_refused(self, field_name, bad_value):
         with pytest.raises(tasks.TaskSourceError, match="--" + field_name.replace("_", "-")):
             tasks.SelectionLimits(**{field_name: bad_value})
 
     def test_equal_code_line_bounds_are_accepted(self):
         assert tasks.SelectionLimits(min_code_lines=7, max_code_lines=7).min_code_lines == 7
 
-    def test_a_minimum_one_above_the_maximum_is_refused_naming_both_flags(self):
+    def test_a_minimum_one_above_the_maximum_is_refused(self):
         with pytest.raises(tasks.TaskSourceError, match=r"--min-code-lines.*--max-code-lines"):
             tasks.SelectionLimits(min_code_lines=11, max_code_lines=10)
 

@@ -6,7 +6,7 @@ from test_replay_bench_summary import record
 
 
 class TestWriteRun:
-    def test_a_rerun_with_no_diff_leaves_no_diff_from_the_earlier_attempt(self, tmp_path):
+    def test_a_rerun_with_no_diff_removes_the_earlier_diff(self, tmp_path):
         first_attempt = record("t1", "toolkit")
         records.write_run(tmp_path, first_attempt, "diff --git a/x b/x\n")
         stale_diff = records.diff_path(tmp_path, "t1", "toolkit", 0)

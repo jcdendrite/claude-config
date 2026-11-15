@@ -25,7 +25,7 @@ def write_rule(config_dir: Path, relative: str, text: str = "rule\n") -> Path:
 
 
 class TestBareWriterMarkdown:
-    def test_it_copies_tools_model_and_effort_and_adds_its_own_name_and_omit_claude_md(self):
+    def test_it_builds_the_bare_writer_file(self):
         markdown = arms.bare_writer_markdown(CODE_WRITER_TEXT)
 
         assert msmr.agent_frontmatter_tools(markdown) == frozenset({"Grep", "Read", "Edit"})
@@ -35,18 +35,18 @@ class TestBareWriterMarkdown:
         assert "name: bare-writer" in frontmatter and "omitClaudeMd: true" in frontmatter
         assert arms.agent_body(markdown) == arms.BARE_WRITER_BODY
 
-    def test_the_effort_reader_returns_nothing_for_a_frontmatter_without_the_key(self):
+    def test_the_effort_reader_returns_none_without_the_key(self):
         assert arms.agent_frontmatter_effort("---\nname: x\nmodel: sonnet\n---\nbody\n") is None
 
     @pytest.mark.parametrize("missing", ["tools", "model", "effort"])
-    def test_a_code_writer_file_without_a_copied_field_is_refused_naming_it(self, missing):
+    def test_a_missing_copied_field_is_refused(self, missing):
         text = "".join(line for line in CODE_WRITER_TEXT.splitlines(keepends=True) if not line.startswith(f"{missing}:"))
         with pytest.raises(arms.AgentConfigError, match=missing):
             arms.bare_writer_markdown(text)
 
 
 class TestRegistry:
-    def test_both_arms_expect_the_account_claude_md_and_allow_no_fixture_loads(self, tmp_path):
+    def test_each_arm_builds_its_load_expectation(self, tmp_path):
         claude_md = tmp_path / "CLAUDE.md"
         for arm in arms.ARMS.values():
             expectation = arm.load_expectation(claude_md)
@@ -55,7 +55,7 @@ class TestRegistry:
         assert arms.BARE.load_expectation(claude_md).excludes_toolkit
         assert not arms.TOOLKIT.load_expectation(claude_md).excludes_toolkit
 
-    def test_bare_dispatches_bare_writer_and_toolkit_dispatches_code_writer(self):
+    def test_each_arm_names_its_dispatched_agent(self):
         assert (arms.BARE.agent_name, arms.TOOLKIT.agent_name) == ("bare-writer", "code-writer")
 
     def test_toolkit_writes_no_settings_file(self, tmp_path):
@@ -90,7 +90,7 @@ def listed(config_dir: Path) -> list[str]:
 
 
 class TestClaudeMdExcludes:
-    def test_a_rules_directory_link_to_a_tree_with_a_nested_rule_lists_each_path_and_realpath(self, tmp_path):
+    def test_a_linked_rules_directory_lists_each_path_and_realpath(self, tmp_path):
         target_tree = tmp_path / "checkout" / "rules"
         write_rule(tmp_path / "checkout", "nested/deep.md")
         write_rule(tmp_path / "checkout", "top.md")
@@ -106,7 +106,7 @@ class TestClaudeMdExcludes:
             assert os.path.realpath(config_dir / "rules" / relative) in entries
         assert str(config_dir / "CLAUDE.md") not in entries
 
-    def test_a_real_rules_directory_of_per_file_links_lists_each_link_path_and_realpath(self, tmp_path):
+    def test_per_file_rule_links_list_each_path_and_realpath(self, tmp_path):
         stow_target = write_rule(tmp_path / "checkout", "a.md")
         config_dir = tmp_path / "config"
         (config_dir / "rules").mkdir(parents=True)
@@ -130,7 +130,7 @@ class TestClaudeMdExcludes:
 
         assert listed(tmp_path) == [str(tmp_path / "rules" / "a.md")]
 
-    def test_a_rule_path_with_a_pattern_character_is_refused_naming_the_path(self, tmp_path):
+    def test_a_rule_path_with_a_pattern_character_is_refused(self, tmp_path):
         write_rule(tmp_path, "we*ird.md")
 
         with pytest.raises(launch.UnsafeConfigPathError, match=r"we\*ird"):

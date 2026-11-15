@@ -118,8 +118,7 @@ def _probe(repo: Path, probe_dir: Path, *, timeout_s: float) -> _Probe:
 
 
 def dropped_variable_names(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Every name in the probe's environment outside the launch allowlist, `CLAUDE_CONFIG_DIR` and direnv's own
-    variables aside. The runner's own shell variables are listed too."""
+    """The runner's own shell variables are listed too."""
     kept = {*launch.LAUNCH_ENV_ALLOWLIST, launch.CONFIG_DIR_VARIABLE}
     return tuple(name for name in names if name not in kept and not name.startswith(DIRENV_VARIABLE_PREFIX))
 
@@ -137,7 +136,6 @@ def _registers_session_start_hook(settings_path: Path) -> bool:
 
 
 def _check_config_dir(repo: Path, config_dir: Path) -> tuple[frozenset[str], str]:
-    """The account's code-writer tools and the `bare-writer.md` text built from its file."""
     for required in (config_dir / "CLAUDE.md", config_dir / arms.CODE_WRITER_AGENT_RELPATH):
         if not required.is_file():
             raise _refuse(repo, f"the config dir lacks {_shown(required.relative_to(config_dir))}")
@@ -170,8 +168,7 @@ def parse_cli_version(version_output: str) -> tuple[int, int, int] | None:
 
 
 def check_readiness(prefix: list[str], probe_dir: Path, *, repo: Path, timeout_s: float) -> None:
-    """Runs `claude --version` behind the exact launch prefix. It shows that `claude` resolves on the
-    allowlisted `PATH` and starts, not that the account is logged in. The child's output is never echoed."""
+    """It shows that `claude` resolves on the allowlisted `PATH` and starts, not that the account is logged in."""
     try:
         completed = subprocess.run(
             launch.readiness_argv(prefix), cwd=probe_dir, capture_output=True, text=True, timeout=timeout_s, check=False,
@@ -192,7 +189,6 @@ def check_readiness(prefix: list[str], probe_dir: Path, *, repo: Path, timeout_s
 
 
 def refuse_fixture_dir_under_home(fixture_dir: Path, home: Path) -> None:
-    """Ancestor instruction files under `$HOME` would load into the fixture's session."""
     if fixture_dir.resolve().is_relative_to(home.resolve()):
         raise HarnessInvalidatedError(
             f"fixture directory {_shown(fixture_dir)} lies under $HOME, where ancestor instruction files would load"
@@ -203,15 +199,7 @@ def preflight_repo(
     repo: Path, *, direnv_timeout_s: float | None = None, readiness_timeout_s: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Account:
-    """Probes `repo`'s account and refuses it, with HarnessInvalidatedError, in these cases among others:
-    - a relative repo path;
-    - an unsafe `PATH`;
-    - a direnv probe that fails or times out;
-    - a config dir that lacks a required file or hook;
-    - a generated path or link target that `check_generators` refuses;
-    - a `claude` that does not start or is older than the floor.
-
-    Both timeouts default to `review_bench.runner._ENVIRONMENT_READ_TIMEOUT_S`, read at call time."""
+    """Both timeouts default to `review_bench.runner._ENVIRONMENT_READ_TIMEOUT_S`, read at call time."""
     environ = os.environ if environ is None else environ
     if not repo.is_absolute():
         raise _refuse(repo, "the source repo path is not absolute")

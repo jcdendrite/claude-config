@@ -60,7 +60,6 @@ def run(world, arm_name, scenario_for=None, live_checkout_roots=(), **settings_k
 
 
 def without_account_evidence(**scenario_fields) -> Scenario:
-    """A scenario whose run leaves no instruction log and no account session file."""
     return Scenario(log_lines=[], write_account_session_file=False, **scenario_fields)
 
 
@@ -80,7 +79,7 @@ def leftovers(world, launch_stub) -> list[Path]:
 
 class TestAValidRun:
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_record_diff_metrics_spend_and_cleanup(self, world, arm_name):
+    def test_the_run_is_recorded_ok(self, world, arm_name):
         outcome, launch_stub, settings = run(world, arm_name)
 
         record = outcome.record
@@ -95,7 +94,7 @@ class TestAValidRun:
         assert not list((world.config_dir / "projects").glob("*/*.jsonl")), "the session store is deleted"
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_launch_argv_prefix_permission_mode_settings_and_allowed_tools_last(self, world, arm_name):
+    def test_the_launch_argv_is_wired(self, world, arm_name):
         _outcome, launch_stub, _settings = run(world, arm_name)
 
         cmd = launch_stub.calls[0].cmd
@@ -117,10 +116,8 @@ class TestAValidRun:
 
 
 class TestForgedLog:
-    """The log is read from the attempt dir alone, so a log written into the fixture is never read."""
-
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_a_real_log_without_the_dispatcher_claude_md_fails_despite_a_forged_good_one(self, world, arm_name):
+    def test_a_forged_good_log_does_not_rescue_a_failing_run(self, world, arm_name):
         scenario = Scenario(
             log_lines=lambda session_id: [_line(str(world.config_dir / "agents" / "reviewer.md"), session_id=session_id)],
             forged_log_lines=lambda session_id: [claude_md_line(world, session_id)],
@@ -131,7 +128,7 @@ class TestForgedLog:
         assert len(launch_stub.calls) == 1
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_a_clean_real_log_passes_despite_a_poisoned_forged_one(self, world, arm_name):
+    def test_a_forged_poisoned_log_does_not_fail_a_clean_run(self, world, arm_name):
         scenario = Scenario(forged_log_lines=lambda session_id: [
             _line(str(world.config_dir / "rules" / "python.md"), session_id=session_id, agent_id=AGENT_ID),
         ])
@@ -147,7 +144,7 @@ def tool_scenario(*tool_calls, **kwargs):
 class TestTranscriptUnreadable:
     @pytest.mark.parametrize("damage", ["skip", "torn"])
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_a_damaged_sidecar_that_passes_validity_fails_only_through_the_path_check(self, world, arm_name, damage):
+    def test_a_damaged_sidecar_fails_transcript_unreadable(self, world, arm_name, damage):
         validity_seen = []
         scenario = Scenario(
             damage_sidecar=damage, after_write=lambda call: validity_seen.append(validity_of(world, call)),
@@ -159,7 +156,7 @@ class TestTranscriptUnreadable:
         assert outcome.record.missing_reason == review_runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
         assert len(launch_stub.calls) == 2, "a path reason is not an instrument reason, so it retries once"
 
-    def test_an_unreadable_sidecar_is_a_control_because_validity_returns_the_same_reason(self, world, monkeypatch):
+    def test_an_unreadable_sidecar_fails_in_validity(self, world, monkeypatch):
         def unreadable(_path):
             raise OSError("synthetic")
 
@@ -170,7 +167,7 @@ class TestTranscriptUnreadable:
 
 class TestPathReasonsReachTheRecord:
     @pytest.mark.parametrize(("arm_name", "relative_path"), [("toolkit", ""), ("toolkit", "projects"), ("bare", "projects")])
-    def test_a_bash_command_naming_the_config_dir_fails_out_of_fixture_path_with_its_token(
+    def test_a_bash_command_on_the_config_dir_fails_out_of_fixture_path(
         self, world, arm_name, relative_path,
     ):
         """For `bare`, a command on the config dir itself is a toolkit reach, which fails `arm-leak` first."""
@@ -184,7 +181,7 @@ class TestPathReasonsReachTheRecord:
         assert command in outcome.record.bash_commands
         assert len(launch_stub.calls) == 2
 
-    def test_a_bash_command_naming_the_config_dir_in_a_bare_run_fails_arm_leak(self, world):
+    def test_a_bare_bash_command_on_the_config_dir_fails_arm_leak(self, world):
         outcome, launch_stub, _settings = run(
             world, arms.BARE.name, tool_scenario(("Bash", {"command": f"ls {world.config_dir}"}, False)),
         )
@@ -203,7 +200,7 @@ class TestPathReasonsReachTheRecord:
         assert len(launch_stub.calls) == 2
 
     @pytest.mark.parametrize("denial_shape", [ENTRY_DENIAL, BLOCK_DENIAL])
-    def test_a_denied_write_outside_the_fixture_reached_nothing_and_fails_nothing(self, world, denial_shape):
+    def test_a_denied_write_outside_the_fixture_fails_nothing(self, world, denial_shape):
         """`ENTRY_DENIAL` is the shape recorded on a live CLI, so the record, the denial count and the out-of-fixture
         exemption are exercised end to end in it as well as in the block-level variant."""
         target = str(world.root / "elsewhere.py")
@@ -234,7 +231,7 @@ class TestInstrumentReasons:
     def leaking_scenario(world, *, timed_out=False):
         return Scenario(timed_out=timed_out, log_lines=leaking_log_lines(world))
 
-    def test_a_bare_arm_leak_launches_no_retry_and_ends_missing(self, world):
+    def test_a_bare_arm_leak_is_not_retried(self, world):
         outcome, launch_stub, _settings = run(world, arms.BARE.name, lambda _n, _a: self.leaking_scenario(world))
 
         assert outcome.record.missing_reason == checks.REASON_ARM_LEAK
@@ -263,7 +260,7 @@ class TestInstrumentReasons:
         assert outcome.record.missing_reason == checks.REASON_FIXTURE_INSTRUCTION_LOAD
         assert len(launch_stub.calls) == 1
 
-    def test_a_missing_account_session_file_is_account_hooks_missing_without_a_retry(self, world):
+    def test_a_missing_account_session_file_is_account_hooks_missing(self, world):
         outcome, launch_stub, _settings = run(
             world, arms.TOOLKIT.name, lambda _n, _a: Scenario(write_account_session_file=False),
         )
@@ -287,7 +284,7 @@ class TestInstrumentReasons:
         ],
         ids=["timeout", "no-result-event", "session-store-not-found", "timeout-with-a-non-object-log-line"],
     )
-    def test_a_run_that_did_not_complete_keeps_its_own_reason_and_is_launched_twice(
+    def test_a_run_that_did_not_complete_keeps_its_own_reason(
         self, world, scenario, expected_reason,
     ):
         outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name, lambda _n, _a: scenario)
@@ -303,7 +300,7 @@ class TestInstrumentReasons:
         ],
         ids=["result-error", "budget"],
     )
-    def test_a_run_that_reached_its_end_with_an_error_result_and_no_account_evidence_is_an_instrument_failure(
+    def test_a_run_that_reached_its_end_with_no_account_evidence_is_instrument_missing(
         self, world, result_event_fields,
     ):
         outcome, launch_stub, _settings = run(
@@ -316,7 +313,7 @@ class TestInstrumentReasons:
 
 
 class TestRetryThenMissing:
-    def test_two_failed_attempts_record_missing_with_summed_cost_and_leave_nothing_behind(self, world):
+    def test_two_failed_attempts_record_missing(self, world):
         outcome, launch_stub, settings = run(world, arms.BARE.name, lambda _n, _a: Scenario(observed_model="other-model"))
 
         record = outcome.record
@@ -325,7 +322,7 @@ class TestRetryThenMissing:
         assert len(spend_lines(settings)) == 2
         assert leftovers(world, launch_stub) == []
 
-    def test_a_fail_once_then_succeed_run_takes_its_diff_from_the_second_fixture(self, world):
+    def test_a_retried_run_takes_its_diff_from_the_second_fixture(self, world):
         def scenario_for(number, _agent):
             edited_file = "failed_attempt.py" if number == 0 else "second_attempt.py"
             return Scenario(
@@ -340,7 +337,7 @@ class TestRetryThenMissing:
         assert launch_stub.calls[0].cwd != launch_stub.calls[1].cwd
         assert leftovers(world, launch_stub) == []
 
-    def test_a_timeout_and_a_launch_exception_are_each_charged_at_the_cap(self, world):
+    def test_failed_launches_are_charged_at_the_cap(self, world):
         outcome, _launch_stub, settings = run(
             world, arms.TOOLKIT.name,
             lambda number, _a: Scenario(timed_out=True, cost=None) if number == 0 else Scenario(raises=OSError("synthetic")),
@@ -356,7 +353,7 @@ class TestRetryThenMissing:
 
         assert outcome.record.missing_reason == attempt.REASON_LAUNCH_NO_OUTPUT and len(launch_stub.calls) == 2
 
-    def test_an_analysis_exception_after_a_launch_records_analysis_error_with_the_cost_and_no_second_launch(
+    def test_an_analysis_exception_records_analysis_error(
         self, world, monkeypatch,
     ):
         def failing_capture(*_args, **_kwargs):
@@ -369,7 +366,7 @@ class TestRetryThenMissing:
         assert outcome.record.total_cost_usd == 0.5 and len(spend_lines(settings)) == 1
         assert leftovers(world, launch_stub) == []
 
-    def test_a_prune_that_raises_records_fixture_error_with_no_launch(self, world, monkeypatch):
+    def test_a_prune_that_raises_records_fixture_error(self, world, monkeypatch):
         def failing_prune(_dest_dir):
             raise RuntimeError("synthetic prune failure")
 
@@ -380,7 +377,7 @@ class TestRetryThenMissing:
         assert spend_lines(settings) == []
         assert leftovers(world, launch_stub) == []
 
-    def test_an_extraction_refusal_after_members_reached_disk_leaves_no_fixture_or_attempt_dir(self, world, monkeypatch):
+    def test_an_extraction_refusal_leaves_nothing_on_disk(self, world, monkeypatch):
         def refusing_extraction(_source, _commit, dest_dir, **_kwargs):
             (dest_dir / "partial.txt").write_text("written before the refusal")
             raise fixture_repo.UnsafeFixtureConfigError("refused member")
@@ -394,7 +391,7 @@ class TestRetryThenMissing:
         assert not list(world.root.glob("tmp/review-bench-*"))
 
     @pytest.mark.parametrize("failing_step", ["build", "capture"])
-    def test_a_git_timeout_names_the_limit_and_the_flag(self, world, monkeypatch, failing_step):
+    def test_a_git_timeout_records_the_limit_detail(self, world, monkeypatch, failing_step):
         def timing_out(*_args, **_kwargs):
             raise subprocess.TimeoutExpired("git", 1)
 
@@ -408,7 +405,7 @@ class TestRetryThenMissing:
         assert outcome.record.missing_reason == expected_reason
         assert outcome.record.missing_detail == "git timed out after 37.5 s; raise --fixture-git-timeout-s"
 
-    def test_a_generator_refusal_records_fixture_error_with_the_path_and_no_launch_or_spend(self, world):
+    def test_a_generator_refusal_records_fixture_error(self, world):
         offending = world.config_dir / "skills" / "we(ird)"
         offending.mkdir()
         (offending / "SKILL.md").write_text("skill\n")
@@ -450,7 +447,7 @@ class TestTheFixtureTheAgentSees:
     """A scripted launch cannot see the fixture unless the test looks, so the launch call records it."""
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_both_arms_get_bare_writer_and_the_opt_out_and_only_bare_gets_the_exclude_settings(self, world, arm_name):
+    def test_each_arm_gets_its_fixture_files(self, world, arm_name):
         _outcome, launch_stub, _settings = run(world, arm_name)
 
         call = launch_stub.calls[0]
@@ -469,7 +466,7 @@ class TestGuardedLocationsThroughAnAttempt:
     def bash(self, command):
         return tool_scenario(("Bash", {"command": command}, False))
 
-    def test_a_command_naming_a_path_under_the_local_dir_fails_out_of_fixture_path(self, world):
+    def test_a_command_reading_the_local_dir_fails_out_of_fixture_path(self, world):
         token = str(world.local_dir / "campaigns" / "other" / "runs" / "t" / "toolkit-0.diff")
 
         outcome, _stub, _settings = run(world, arms.BARE.name, self.bash(f"cat {token}"))
@@ -477,7 +474,7 @@ class TestGuardedLocationsThroughAnAttempt:
         assert outcome.record.missing_reason == checks.REASON_OUT_OF_FIXTURE_PATH
         assert token in outcome.record.out_of_fixture_tokens
 
-    def test_commands_naming_a_live_checkouts_git_dir_or_changed_file_fail_and_an_unrelated_file_passes(self, world):
+    def test_a_live_checkouts_git_dir_and_changed_file_are_guarded(self, world):
         live = world.root / "live-checkout"
         (live / "src").mkdir(parents=True)
         changed_path = world.task.changed_paths[0]
@@ -495,7 +492,7 @@ class TestGuardedLocationsThroughAnAttempt:
         assert outcome.record.missing_reason is None
         assert unrelated in outcome.record.other_outside_fixture_tokens
 
-    def test_the_runs_own_session_files_are_exempt_and_a_sibling_sessions_files_are_not(self, world):
+    def test_only_the_runs_own_session_files_are_exempt(self, world):
         projects = world.config_dir / "projects" / "synthetic-project"
 
         own, _stub, _settings = run(
@@ -510,7 +507,7 @@ class TestGuardedLocationsThroughAnAttempt:
         assert sibling.record.missing_reason == checks.REASON_OUT_OF_FIXTURE_PATH
         assert sibling_path in sibling.record.out_of_fixture_tokens
 
-    def test_the_default_live_roots_join_the_source_repos_worktrees_and_dedupe(self, world, monkeypatch):
+    def test_the_live_roots_join_the_defaults_with_the_worktrees(self, world, monkeypatch):
         first, second = world.root / "live-a", world.root / "live-b"
         monkeypatch.setattr(review_runner, "default_live_checkout_roots", lambda: (first, second))
         monkeypatch.setattr(review_runner, "_worktree_top_levels", lambda checkout: (second, world.root / "live-c"))
@@ -528,7 +525,7 @@ class TestGuardedLocationsThroughAnAttempt:
 
 
 class TestTheRecordHoldsWhatTheCheckSaw:
-    def test_unflagged_absolute_tokens_unparsed_commands_and_out_of_session_reads_reach_the_record(self, world):
+    def test_unflagged_findings_reach_the_record(self, world):
         elsewhere = str(world.root / "elsewhere")
         outside_read = str(world.root / "somewhere" / "notes.txt")
         outcome, _stub, _settings = run(world, arms.BARE.name, tool_scenario(
@@ -563,7 +560,7 @@ class TestAFailingWorkerStopsItsSiblings:
     def stub_environment(self, monkeypatch):
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
 
-    def test_a_spend_file_the_os_will_not_append_to_surfaces_as_spend_append_error_with_the_launch_named(
+    def test_an_unwritable_spend_file_raises_spend_append_error(
         self, world, tmp_path,
     ):
         """Kills: dropping the `OSError` translation in `SpendFile.append`, which would escape as a raw `OSError`
@@ -581,7 +578,7 @@ class TestAFailingWorkerStopsItsSiblings:
 
         assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
 
-    def test_a_failed_spend_append_starts_no_further_launch_and_names_the_uncharged_one(self, world, monkeypatch):
+    def test_a_failed_spend_append_starts_no_further_launch(self, world, monkeypatch):
         def failing_append(self, line):
             raise SpendAppendError("disk full")
 
@@ -599,7 +596,7 @@ class TestAFailingWorkerStopsItsSiblings:
         assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
         assert leftovers(world, launch_stub) == []
 
-    def test_a_launch_that_dies_on_a_disk_that_refuses_the_cap_charge_surfaces_the_append_error_and_names_the_launch(
+    def test_a_refused_cap_charge_surfaces_the_append_error(
         self, world, monkeypatch,
     ):
         """Kills: dropping the `uncharged_launches` append from `run_attempt`'s failed cap charge, which lets the
@@ -617,7 +614,7 @@ class TestAFailingWorkerStopsItsSiblings:
 
         assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
 
-    def test_the_same_launch_failure_on_a_working_disk_is_cap_charged_and_names_no_uncharged_launch(self, world):
+    def test_a_launch_failure_on_a_working_disk_is_cap_charged(self, world):
         launch_stub = world.launch(lambda _n, _a: Scenario(raises=RuntimeError("synthetic")))
         settings = make_settings(world, launch_stub)
 
@@ -640,7 +637,7 @@ class TestAFailingWorkerStopsItsSiblings:
         assert len(launch_stub.calls) == 1
         assert [(line["cost_usd"], line["is_cap_charge"]) for line in spend_lines(settings)] == [(10.0, True)]
 
-    def test_an_interrupt_stops_a_run_still_building_its_fixture_before_it_launches_or_is_charged(
+    def test_an_interrupt_stops_a_run_still_building_its_fixture(
         self, world, monkeypatch,
     ):
         """Kills: the interrupt arm calling `abort_launches()` alone, which leaves `settings.stop` unset so the
@@ -674,7 +671,7 @@ class TestAFailingWorkerStopsItsSiblings:
         assert released_by == {"stop": True}
         assert launch_stub.calls == [] and spend_lines(settings) == []
 
-    def test_an_interrupt_aborts_a_launch_already_in_flight_and_charges_it_once(self, world, monkeypatch):
+    def test_an_interrupt_aborts_a_launch_in_flight(self, world, monkeypatch):
         """Kills: reducing `_stop_further_launches` on the interrupt arm to `settings.stop.set()`, which leaves the
         in-flight paid session running until its own timeout."""
         in_flight = threading.Event()
@@ -704,7 +701,7 @@ class TestAFailingWorkerStopsItsSiblings:
         assert outcome == {"released_by_abort": True}
         assert [line["is_cap_charge"] for line in spend_lines(settings)] == [True]
 
-    def test_a_sibling_failing_at_launch_aborts_a_run_held_in_its_fixture_build_and_the_root_cause_surfaces(
+    def test_a_sibling_failing_at_launch_aborts_a_run_held_in_its_fixture_build(
         self, world, monkeypatch,
     ):
         """Kills: `abort_launches()` missing from the failing worker (the wait times out), the pre-launch recheck
@@ -756,7 +753,7 @@ class TestAFailingWorkerStopsItsSiblings:
 
 
 class TestAWorktreeListFailure:
-    def test_the_exit_status_is_reported_and_the_childs_stderr_is_not(self, world, tmp_path, monkeypatch):
+    def test_only_the_exit_status_is_reported(self, world, tmp_path, monkeypatch):
         monkeypatch.setattr(review_runner, "_worktree_top_levels", REAL_WORKTREE_TOP_LEVELS)
         write_executable(tmp_path / "bin" / "git", 'echo "remote http://user:sentinel-credential@proxy.invalid" >&2\nexit 4\n')
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
@@ -787,7 +784,7 @@ class TestTheCommandLine:
         monkeypatch.setattr(review_runner, "default_live_checkout_roots", lambda: ())
         return directory
 
-    def test_run_without_its_required_flags_exits_two_with_the_parsers_own_message(self, capsys):
+    def test_missing_required_flags_exit_two(self, capsys):
         assert main_run("run", "--tasks", "x", "--cumulative-stop-usd", "10") == 2
         assert "the following arguments are required: --k" in capsys.readouterr().err
         assert main_run("run", "--tasks", "x", "--k", "1") == 2
@@ -797,18 +794,18 @@ class TestTheCommandLine:
         assert main_run("smoke", "--tasks", "x", "--task-id", "00000000-000000000000", "--k", "2") == 2
         assert "unrecognized arguments: --k" in capsys.readouterr().err
 
-    def test_a_task_id_breaking_its_grammar_exits_two_with_the_id_in_the_message(self, capsys):
+    def test_a_malformed_task_id_exits_two(self, capsys):
         assert main_run("smoke", "--tasks", "x", "--task-id", "not-an-id") == 2
         assert "not-an-id" in capsys.readouterr().err
 
-    def test_a_zero_selection_limit_exits_two_naming_the_flag_and_never_mines(self, monkeypatch, capsys):
+    def test_a_zero_selection_limit_exits_two(self, monkeypatch, capsys):
         monkeypatch.setattr(tasks, "mine_tasks", lambda *a, **k: pytest.fail("mine_tasks must not run"))
 
         code = main_run(*TASKS_ARGV, "--max-count", "0")
 
         assert code == 2 and "--max-count" in capsys.readouterr().err
 
-    def test_a_run_whose_task_file_is_malformed_exits_two_naming_the_file(self, local_dir, capsys):
+    def test_a_malformed_task_file_exits_two(self, local_dir, capsys):
         (local_dir / "tasks").mkdir(parents=True)
         (local_dir / "tasks" / "broken.json").write_text("{not json")
 
@@ -819,7 +816,7 @@ class TestTheCommandLine:
         assert main_run("tasks", "--source-repo", "/x", "--trusted-author", "a@b.c", "--name", "../escape") == 2
         assert "invalid campaign ID" in capsys.readouterr().err
 
-    def test_tasks_naming_an_existing_task_set_exits_two_before_mining_and_leaves_the_set_unchanged(
+    def test_tasks_for_an_existing_task_set_exits_two(
         self, world, local_dir, monkeypatch, capsys,
     ):
         existing_path = tasks.write_task_set(local_dir / "tasks", "n", world.tasks)
@@ -831,7 +828,7 @@ class TestTheCommandLine:
         assert "task set 'n' already exists" in capsys.readouterr().err
         assert existing_path.read_text() == before
 
-    def test_an_empty_local_dir_exits_two_naming_the_flag_and_does_not_fall_back_to_the_default(
+    def test_an_empty_local_dir_exits_two(
         self, local_dir, capsys,
     ):
         assert main_run("--local-dir", "", "summarize", "--campaign-id", "c1") == 2
@@ -879,7 +876,7 @@ class TestTheCommandLine:
         # Git exits 128, not 1, outside any work tree, so the refusal cannot claim the path is unignored.
         ("outside-work-tree", "git could not confirm that the directory is ignored"),
     ])
-    def test_a_refused_local_dir_exits_two_naming_its_own_rule_with_the_target_still_absent(
+    def test_a_refused_local_dir_exits_two(
         self, tmp_path, capsys, kind, refusal_fragment,
     ):
         unignored_parent = tmp_path / "unignored-parent"
@@ -905,7 +902,7 @@ class TestTheCommandLine:
         assert refusal_fragment in capsys.readouterr().err
         assert not target.exists()
 
-    def test_a_timed_out_ignore_probe_refuses_naming_the_fixed_limit_and_not_an_unignored_dir(
+    def test_a_timed_out_ignore_probe_refuses_with_the_fixed_limit_not_claiming_the_dir_is_unignored(
         self, tmp_path, monkeypatch,
     ):
         ignored_local_dir = make_ignored_local_dir(tmp_path)
@@ -923,7 +920,7 @@ class TestTheCommandLine:
         assert "no flag" in message and "is not ignored" not in message
 
     @pytest.mark.parametrize("probe_returncode", [2, 128])
-    def test_an_ignore_probe_git_could_not_run_refuses_without_claiming_the_dir_is_unignored(
+    def test_a_failed_ignore_probe_refuses_without_claiming_the_dir_is_unignored(
         self, tmp_path, monkeypatch, probe_returncode,
     ):
         ignored_local_dir = make_ignored_local_dir(tmp_path)
@@ -950,7 +947,7 @@ class TestTheCommandLine:
 
         assert stat.S_IMODE(local_dir.stat().st_mode) == 0o700
 
-    def test_the_local_dir_main_creates_is_owner_only_and_a_file_the_runner_writes_in_it_is_0600(
+    def test_the_local_dir_and_its_files_are_owner_only(
         self, world, local_dir, monkeypatch,
     ):
         monkeypatch.setattr(tasks, "mine_tasks", lambda *a, **k: tasks.MiningReport(tasks=list(world.tasks)))
@@ -960,7 +957,7 @@ class TestTheCommandLine:
         assert stat.S_IMODE(local_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE((local_dir / "tasks" / "n.json").stat().st_mode) == 0o600
 
-    def test_git_below_2_32_exits_two_before_any_preflight(self, tmp_path, monkeypatch, capsys):
+    def test_git_below_2_32_exits_two(self, tmp_path, monkeypatch, capsys):
         fake_bin = tmp_path / "fakebin"
         write_executable(fake_bin / "git", 'echo "git version 2.31.0"\n')
         monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
@@ -968,7 +965,7 @@ class TestTheCommandLine:
         assert main_run("preflight", "--tasks", "x") == 2
         assert "git 2.32" in capsys.readouterr().err
 
-    def test_an_interrupt_aborts_launches_and_a_command_that_launches_nothing_prints_only_a_rerun_hint(
+    def test_an_interrupt_aborts_launches_exits_130_and_prints_a_rerun_hint(
         self, monkeypatch, capsys,
     ):
         aborted = []
@@ -993,12 +990,12 @@ class TestTheCommandLine:
         ],
         ids=["preflight", "summarize"],
     )
-    def test_the_interrupt_hint_of_a_command_that_launches_nothing_names_no_child_wait_and_no_resume(self, argv):
+    def test_the_interrupt_hint_of_a_command_that_launches_nothing_is_a_rerun_hint(self, argv):
         args = run_replay_bench.build_parser().parse_args(list(argv))
 
         assert run_replay_bench._interrupt_hint(args) == f"{argv[0]}: interrupted; rerun the command."
 
-    def test_the_interrupt_hint_of_smoke_names_the_wait_and_the_leftovers_to_remove_by_hand_and_no_resume(
+    def test_the_interrupt_hint_of_smoke_names_the_leftovers(
         self, monkeypatch,
     ):
         monkeypatch.setattr(tempfile, "tempdir", "/synthetic/tmp")
@@ -1011,7 +1008,7 @@ class TestTheCommandLine:
         assert "remove by hand" in hint and "projects/" in hint
         assert "resume with" not in hint and "same TMPDIR" not in hint
 
-    def test_the_interrupt_hint_of_run_names_the_resume_the_wait_and_the_same_tmpdir(self, monkeypatch):
+    def test_the_interrupt_hint_of_run_names_the_resume(self, monkeypatch):
         monkeypatch.setattr(tempfile, "tempdir", "/synthetic/tmp")
         args = run_replay_bench.build_parser().parse_args(
             [*self.RUN_ARGV, "--campaign-id", "interrupted", "--timeout-s", "90"],
@@ -1035,7 +1032,7 @@ class TestTheCommandLine:
         assert f"({tempfile.gettempdir()!r})" in hint
         assert f"({str(tmp_path)!r})" in hint
 
-    def test_a_whole_run_through_main_completes_and_summarize_reads_it_back(self, world, local_dir, monkeypatch, capsys):
+    def test_a_whole_run_through_main_is_summarized(self, world, local_dir, monkeypatch, capsys):
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
         monkeypatch.setattr(account, "preflight_repo", lambda repo, **_k: world.account)
         smoke_pass.write_smoke_pass(local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare"))
@@ -1052,7 +1049,7 @@ class TestTheCommandLine:
         assert main_run("summarize", "--campaign-id", "whole", "--budget-cap-usd", "1.0") == 0
         assert "paired 1 of 1 complete tasks" in capsys.readouterr().out
 
-    def test_an_unreadable_environment_at_a_later_blocks_start_exits_two_and_leaves_that_block_unspent(
+    def test_an_unreadable_environment_at_a_later_blocks_start_exits_two(
         self, tmp_path, local_dir, monkeypatch, capsys,
     ):
         two_task_world = build_replay_world(tmp_path, monkeypatch, task_count=2)
@@ -1084,21 +1081,19 @@ class TestTheCommandLine:
 
     @pytest.fixture
     def run_files(self, world, local_dir):
-        """A world with a smoke pass and a task set on disk, and no stub."""
         smoke_pass.write_smoke_pass(local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare"))
         tasks.write_task_set(local_dir / "tasks", "set", world.tasks)
         return world
 
     @pytest.fixture
     def run_ready(self, run_files, monkeypatch):
-        """`run_files` with the environment reading and the preflight stubbed, so `run` can start."""
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
         monkeypatch.setattr(account, "preflight_repo", lambda repo, **_k: run_files.account)
         return run_files
 
     RUN_ARGV = ("run", "--tasks", "set", "--k", "1", "--cumulative-stop-usd", "1000", "--budget-cap-usd", "1.0")
 
-    def test_an_interrupted_run_without_a_campaign_id_prints_the_generated_id_in_its_resume_command(
+    def test_an_interrupted_run_prints_the_generated_id_in_its_resume_command(
         self, run_ready, monkeypatch, capsys,
     ):
         interrupting = run_ready.launch(lambda _n, _a: Scenario(raises=KeyboardInterrupt()))
@@ -1120,7 +1115,7 @@ class TestTheCommandLine:
         return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
 
     @pytest.mark.parametrize("campaign_id", ["", "..", "../x", ".hidden", "a/b"])
-    def test_a_run_campaign_id_that_is_not_one_path_component_is_refused_and_creates_nothing(
+    def test_a_run_campaign_id_that_is_not_one_path_component_is_refused(
         self, run_ready, tmp_path, local_dir, monkeypatch, capsys, campaign_id,
     ):
         launch_stub = run_ready.launch()
@@ -1133,7 +1128,7 @@ class TestTheCommandLine:
         assert launch_stub.calls == [] and self.paths_under(tmp_path) == before
         assert not (local_dir / campaign.CAMPAIGNS_DIR_NAME).exists()
 
-    def test_a_run_campaign_id_of_one_path_component_reaches_the_launch_and_a_campaign_directory(
+    def test_a_run_campaign_id_of_one_path_component_is_accepted(
         self, run_ready, local_dir, monkeypatch,
     ):
         launch_stub = run_ready.launch()
@@ -1144,7 +1139,7 @@ class TestTheCommandLine:
         assert launch_stub.calls != [] and (local_dir / campaign.CAMPAIGNS_DIR_NAME / "accepted.1").is_dir()
 
     @pytest.mark.parametrize("campaign_id", ["", "..", "../x", ".hidden", "a/b"])
-    def test_a_summarize_campaign_id_that_is_not_one_path_component_is_refused_even_where_it_would_resolve_to_a_campaign(
+    def test_a_summarize_campaign_id_that_is_not_one_path_component_is_refused(
         self, local_dir, tmp_path, capsys, campaign_id,
     ):
         """A manifest where `../x` would land makes the summary succeed if the ID is not validated."""
@@ -1159,7 +1154,7 @@ class TestTheCommandLine:
         assert self.paths_under(tmp_path) == before
 
     @pytest.mark.parametrize("k", ["0", "-1"])
-    def test_a_k_below_one_is_refused_naming_the_flag_before_any_launch_and_pins_nothing(
+    def test_a_k_below_one_is_refused(
         self, run_ready, local_dir, monkeypatch, capsys, k,
     ):
         launch_stub = run_ready.launch()
@@ -1172,7 +1167,7 @@ class TestTheCommandLine:
         assert "--k must be at least 1" in capsys.readouterr().err
         assert launch_stub.calls == [] and not (local_dir / campaign.CAMPAIGNS_DIR_NAME).exists()
 
-    def test_an_empty_task_set_is_refused_naming_it_before_any_launch_and_pins_nothing(
+    def test_an_empty_task_set_is_refused(
         self, run_ready, local_dir, monkeypatch, capsys,
     ):
         tasks.write_task_set(local_dir / "tasks", "empty", [])
@@ -1185,7 +1180,7 @@ class TestTheCommandLine:
         assert "task set 'empty' holds no tasks" in capsys.readouterr().err
         assert launch_stub.calls == [] and not (local_dir / campaign.CAMPAIGNS_DIR_NAME).exists()
 
-    def test_a_smoke_task_id_the_set_lacks_is_refused_naming_the_id_before_any_launch(
+    def test_a_smoke_task_id_the_set_lacks_is_refused(
         self, run_ready, monkeypatch, capsys,
     ):
         launch_stub = run_ready.launch()
@@ -1201,7 +1196,7 @@ class TestTheCommandLine:
         assert launch_stub.calls == []
 
     @pytest.mark.timing
-    def test_direnv_timeout_s_reaches_the_probe_and_the_refusal_names_the_flag(self, run_files, tmp_path, monkeypatch, capsys):
+    def test_direnv_timeout_s_reaches_the_probe(self, run_files, tmp_path, monkeypatch, capsys):
         fake_direnv = write_executable(tmp_path / "bin" / "direnv", "exec sleep 10\n")
         monkeypatch.setenv("PATH", f"{fake_direnv.parent}:{os.environ['PATH']}")
         started = time.monotonic()
@@ -1211,7 +1206,7 @@ class TestTheCommandLine:
         assert code == 2 and "--direnv-timeout-s" in capsys.readouterr().err
         assert time.monotonic() - started < 5
 
-    def test_fixture_git_timeout_s_reaches_every_post_run_git_call_and_defaults_to_the_runner_constant(
+    def test_fixture_git_timeout_s_reaches_every_post_run_git_call(
         self, run_ready, monkeypatch,
     ):
         parsed = run_replay_bench.build_parser().parse_args(["summarize", "--campaign-id", "x"])
@@ -1230,7 +1225,7 @@ class TestTheCommandLine:
         assert main_run("--fixture-git-timeout-s", "37.5", *self.RUN_ARGV, "--campaign-id", "limits") == 0
         assert limits and set(limits) == {37.5}
 
-    def test_a_failing_environment_read_prints_the_exit_status_and_never_the_childs_stderr(
+    def test_a_failing_environment_read_prints_only_the_exit_status(
         self, run_files, tmp_path, monkeypatch, capsys,
     ):
         # The real `read_environment_record` runs, with a `claude` that fails. Only the preflight is stubbed.
@@ -1248,7 +1243,7 @@ class TestTheCommandLine:
         "color" not in inspect.signature(argparse.ArgumentParser).parameters,
         reason="argparse colours its output only where ArgumentParser accepts `color` (Python 3.14+)",
     )
-    def test_argparses_own_help_and_error_output_is_not_escaped_even_with_colour_forced(self, monkeypatch, capsys):
+    def test_argparses_own_output_is_not_escaped_under_forced_colour(self, monkeypatch, capsys):
         """Kills: parsing inside the wrapper. On Python 3.14 argparse colours its output when `FORCE_COLOR` is set,
         and the wrapper would turn each escape into literal `\\x1b` text."""
         monkeypatch.delenv("NO_COLOR", raising=False)
@@ -1267,7 +1262,7 @@ class TestTheCommandLine:
         assert literal_escape not in help_output.out + help_output.err + error_output.out + error_output.err
         assert "usage:" in help_output.out and "usage:" in error_output.err
 
-    def test_hostile_text_printed_to_stdout_reaches_it_escaped_with_its_line_breaks_kept(self, monkeypatch, capsys):
+    def test_hostile_stdout_text_is_escaped(self, monkeypatch, capsys):
         """Kills: deleting `redirect_stdout`, and flipping `keep_line_breaks` to False."""
         monkeypatch.setattr(tasks, "mine_tasks", lambda *a, **k: tasks.MiningReport())
         monkeypatch.setattr(
@@ -1282,7 +1277,7 @@ class TestTheCommandLine:
 
     @pytest.mark.parametrize("flag", ["--cumulative-stop-usd", "--account-stop-usd"])
     @pytest.mark.parametrize("value", ["nan", "inf"])
-    def test_a_non_finite_stop_is_refused_with_exit_two_before_any_launch(self, run_ready, monkeypatch, flag, value):
+    def test_a_non_finite_stop_is_refused_with_exit_two(self, run_ready, monkeypatch, flag, value):
         launch_stub = run_ready.launch()
         monkeypatch.setattr(msmr, "_run_claude_to_completion", launch_stub)
         stops = {"--cumulative-stop-usd": "1000", "--account-stop-usd": "1000", flag: value}
@@ -1310,7 +1305,7 @@ class TestTheCommandLine:
         assert (config.cumulative_stop_usd, config.account_stop_usd, config.seed) == (900.0, 500.0, 7)
         assert config.allow_early_stop is True and config.arm_names == ("bare",)
 
-    def test_run_without_the_optional_flags_defaults_the_account_stop_to_the_cumulative_stop_and_every_arm(
+    def test_run_without_the_optional_flags_takes_the_defaults(
         self, campaign_config_seen_by_run,
     ):
         assert main_run(*self.RUN_ARGV) == 0
@@ -1329,7 +1324,7 @@ class TestTheCommandLine:
 
     @pytest.mark.parametrize("value", ["0", "-5"])
     @pytest.mark.parametrize("subcommand", ["smoke", "run"])
-    def test_a_timeout_s_that_is_not_positive_is_refused_with_exit_two_naming_the_flag_before_any_launch(
+    def test_a_non_positive_timeout_s_is_refused(
         self, run_ready, monkeypatch, capsys, subcommand, value,
     ):
         launch_stub = run_ready.launch()
@@ -1349,7 +1344,7 @@ class TestTheCommandLine:
         assert launch_stub.calls != []
 
     @pytest.mark.parametrize("subcommand", ["smoke", "run"])
-    def test_a_held_run_store_lock_exits_one_naming_the_other_run_before_any_launch(
+    def test_a_held_run_store_lock_exits_one(
         self, run_ready, local_dir, monkeypatch, capsys, subcommand,
     ):
         """A double start of one campaign must read as "another run in progress" (1), not a refusal (2) or a traceback."""
@@ -1373,7 +1368,7 @@ class TestTheCommandLine:
         assert f"held by pid {os.getpid()}" in error and "another run on this store is still in progress" in error
         assert launch_stub.calls == []
 
-    def test_the_campaign_id_line_reaches_a_redirected_stdout_before_the_campaign_returns(
+    def test_the_campaign_id_line_is_flushed_to_a_redirected_stdout(
         self, run_ready, monkeypatch, tmp_path,
     ):
         """Kills: dropping `flush=True` from the `campaign <id>` print. A detached run's stdout is a block-buffered
@@ -1394,7 +1389,7 @@ class TestTheCommandLine:
         assert code == 0
         assert len(seen_while_running) == 1 and seen_while_running[0].endswith("campaign detached\n")
 
-    def test_a_refusal_carrying_an_escape_an_osc_sequence_and_a_bell_reaches_stderr_with_none_of_them_raw(
+    def test_a_hostile_refusal_reaches_stderr_escaped(
         self, run_ready, monkeypatch, capsys,
     ):
         hostile = "refused \x1b[31mred\x1b]0;forged title\x07 and\rcarriage"

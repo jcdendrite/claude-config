@@ -61,7 +61,6 @@ class TestTheAgentRewritesItsOwnHistory:
 
 
 def plant_hostile_git_config(fixture_dir: Path, sentinel_dir: Path) -> None:
-    """Config that runs `touch` on a sentinel under `core.fsmonitor` and under a `clean` filter."""
     git_dir = fixture_dir / ".git"
     with (git_dir / "config").open("a") as config:
         config.write(
@@ -105,7 +104,7 @@ class TestAHostileFixture:
         assert sorted(path.name for path in sentinel_dir.iterdir()) == ["filter", "fsmonitor"]
 
     @pytest.mark.timing
-    def test_no_planted_command_runs_the_fifo_is_skipped_and_the_symlink_is_a_non_file_entry(self, world, hostile_edit):
+    def test_no_planted_command_runs(self, world, hostile_edit):
         edit, sentinel_dir = hostile_edit
 
         outcome, _stub = call_with_deadline(
@@ -158,7 +157,7 @@ class TestUntrackedTrees:
 
 
 class TestAgentEditsReachTheDiffOnlyAsIntended:
-    def test_a_deleted_file_shows_as_a_deletion_and_the_run_is_valid(self, world):
+    def test_a_deleted_file_shows_as_a_deletion(self, world):
         def edit(fixture_dir: Path) -> None:
             (fixture_dir / "src" / "app.py").unlink()
 
@@ -167,7 +166,7 @@ class TestAgentEditsReachTheDiffOnlyAsIntended:
         assert outcome.record.missing_reason is None
         assert "deleted file mode" in outcome.diff_text
 
-    def test_an_added_binary_is_valid_and_adds_no_classified_line(self, world):
+    def test_an_added_binary_adds_no_classified_line(self, world):
         def edit(fixture_dir: Path) -> None:
             (fixture_dir / "blob.bin").write_bytes(b"\x00\x01\x02binary")
 
@@ -176,7 +175,7 @@ class TestAgentEditsReachTheDiffOnlyAsIntended:
         assert outcome.record.missing_reason is None
         assert sum(outcome.record.metrics["line_counts"]["non_test"].values()) == 0
 
-    def test_a_write_under_the_excluded_claude_dir_never_reaches_the_diff_or_ignored_paths(self, world):
+    def test_a_write_under_the_excluded_claude_dir_is_left_out_of_the_capture(self, world):
         def edit(fixture_dir: Path) -> None:
             default_edit(fixture_dir)
             (fixture_dir / ".claude" / "notes.md").write_text("notes\n")
@@ -188,8 +187,6 @@ class TestAgentEditsReachTheDiffOnlyAsIntended:
 
 
 class SleepLog(list):
-    """The sleeps a patched `time.sleep` recorded, with the hook to run on each."""
-
     def __init__(self) -> None:
         super().__init__()
         self.on_sleep = {"call": lambda count: None}
@@ -222,7 +219,7 @@ class TestTheHookLogRead:
         attempt.wait_for_hook_log_to_settle(log_path, timed_out=False)
         assert sleeps == [0.25]
 
-    def test_a_line_appended_during_the_first_interval_is_read_after_a_second_sample(self, log_path, sleeps):
+    def test_a_line_appended_during_the_first_interval_takes_a_second_sample(self, log_path, sleeps):
         def append_once(count):
             if count == 1:
                 with log_path.open("a") as log:
@@ -233,7 +230,7 @@ class TestTheHookLogRead:
 
         assert len(sleeps) == 2
 
-    def test_a_log_that_grows_on_every_poll_stops_at_the_timeout_and_a_torn_tail_is_invalid(
+    def test_a_log_that_grows_on_every_poll_stops_at_the_timeout(
         self, tmp_path, monkeypatch,
     ):
         log_path = tmp_path / "instructions-loaded.jsonl"
@@ -261,7 +258,7 @@ class TestTheHookLogRead:
         assert len(sleeps) == 4, "it kept sampling until the fake clock reached the one-second timeout, then stopped"
         assert checks.parse_instruction_log(log_path, session_id="s").reason == checks.REASON_INSTRUMENT_LOG_INVALID
 
-    def test_a_log_absent_at_the_first_poll_and_present_at_the_second_counts_as_growth(self, tmp_path, sleeps):
+    def test_a_log_that_appears_at_the_second_poll_counts_as_growth(self, tmp_path, sleeps):
         log_path = tmp_path / "late-log.jsonl"
 
         def create_log(count):

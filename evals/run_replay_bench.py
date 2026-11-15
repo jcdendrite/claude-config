@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
 """Replay bench CLI: replays a source repo's past commits as coding tasks under two configuration arms and
 counts the comment and docstring words each arm adds per added non-test code line.
-
-Subcommands:
-- `tasks`: mines a source repo's first-parent commits into a task set. It spends nothing.
-- `preflight`: probes each task set's source repos for their Claude Code account. It spends nothing.
-- `smoke`: runs one block of one run per arm on one task.
-- `run`: runs the campaign block by block, under spend stops. It needs a passing `smoke` per account.
-- `summarize`: prints the paired arm difference over a campaign's complete blocks to the terminal only.
-
-Local only, never CI: every run is a paid `claude -p` session. `.local/` holds task sets, run records and diffs.
-The design lives in .claude/plans/docstring-verbosity-experiment.md.
-Needs Python 3.12 or newer and git 2.32 or newer.
 """
 from __future__ import annotations
 
@@ -233,8 +222,6 @@ def cmd_summarize(args: argparse.Namespace, local_dir: Path) -> int:
 
 
 class _SignalInterrupt(KeyboardInterrupt):
-    """A KeyboardInterrupt that remembers which signal raised it, so `main()` can exit 128 plus its number."""
-
     def __init__(self, signum: int) -> None:
         super().__init__()
         self.signum = signum
@@ -262,8 +249,6 @@ def _refuse_old_git() -> None:
 
 
 def check_local_dir(local_dir: Path) -> None:
-    """Raises HarnessInvalidatedError, naming the path, unless it is absolute, equal to its own resolved
-    path, named `.local`, and ignored by the work tree that holds it. It creates nothing."""
     shown = repr(str(local_dir))
     if not local_dir.is_absolute():
         raise HarnessInvalidatedError(f"--local-dir {shown} is not an absolute path")
@@ -293,8 +278,6 @@ def check_local_dir(local_dir: Path) -> None:
 
 
 def _interrupt_hint(args: argparse.Namespace) -> str:
-    """Only `run` and `smoke` launch a `claude` child. Only `run` has a campaign to resume and a sweep of abandoned
-    fixtures, because `smoke` opens a fresh store on every start."""
     if args.subcommand not in ("run", "smoke"):
         return f"{args.subcommand}: interrupted; rerun the command."
     wait = (
@@ -350,8 +333,7 @@ def _check_git() -> int | None:
 def _run_main(args: argparse.Namespace) -> int:
     os.umask(0o077)
     local_dir = Path(args.local_dir) if args.local_dir else DEFAULT_LOCAL_DIR
-    # A `claude -p` child leads its own session, so a hangup never reaches it. `nohup` starts the process with
-    # SIGHUP ignored, and that must stand, or a detached campaign would abort at logout.
+    # `nohup` starts the process with SIGHUP ignored, and that must stand, or a detached campaign would abort at logout.
     if signal.getsignal(signal.SIGHUP) is not signal.SIG_IGN:
         signal.signal(signal.SIGHUP, _raise_signal_interrupt)
     signal.signal(signal.SIGTERM, _raise_signal_interrupt)

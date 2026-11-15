@@ -1,8 +1,4 @@
-"""Retry-then-missing for one replay run, and one task's block of runs.
-
-A failed attempt retries once on a fresh fixture, then the run is recorded missing with its reason.
-`NO_RETRY_REASONS` names the reasons that skip the retry.
-"""
+"""Retry-then-missing for one replay run, and one task's block of runs."""
 from __future__ import annotations
 
 import re
@@ -76,7 +72,6 @@ def _build_record(
 
 
 def execute_run(settings: RunSettings, block: BlockContext, arm_name: str, run_index: int) -> RunOutcome:
-    """Each attempt's fixture is gone before the next starts."""
     arm = ARMS[arm_name]
     results: list[AttemptResult] = []
     for attempt_number in range(1, review_runner.ATTEMPTS_PER_RUN + 1):
@@ -118,8 +113,8 @@ _EXIT_STATUS_RE = re.compile(r"exited (\d+)")
 
 
 def _without_child_output[ResultT](call: Callable[[], ResultT], description: str) -> ResultT:
-    """Runs a bench call that shells out. A failure carries the exit status only, since the bench's own message
-    holds the child's stderr, which can name an environment-derived value."""
+    """A failure carries the exit status only, since the bench's own message holds the child's stderr, which can
+    name an environment-derived value."""
     try:
         return call()
     except HarnessInvalidatedError as exc:
@@ -146,8 +141,6 @@ def read_environment(checkout_root: Path) -> review_runner.EnvironmentRecord:
 
 
 def _read_end_environment(checkout_root: Path) -> review_runner.EnvironmentRecord:
-    """The block's end reading, read again after one failure, as a run is retried once. A read that fails twice
-    raises HarnessInvalidatedError."""
     for _attempt in range(review_runner.ATTEMPTS_PER_RUN - 1):
         try:
             return read_environment(checkout_root)
@@ -157,7 +150,6 @@ def _read_end_environment(checkout_root: Path) -> review_runner.EnvironmentRecor
 
 
 def _stop_further_launches(settings: RunSettings) -> None:
-    """Stops every run that has not launched yet, and kills the children of those that have."""
     settings.stop.set()
     msmr.abort_launches()
 
@@ -166,9 +158,7 @@ def run_block(
     settings: RunSettings, task: tasks.ReplayTask, account: Account, arm_names: tuple[str, ...], k: int, seed: int,
     environment_reference: EnvironmentReference, *, workers: int = run_skill_evals.DEFAULT_WORKERS,
 ) -> BlockOutcome:
-    """Runs the task's block through a worker pool. Raises EnvironmentMismatchError when the start reading
-    differs from the reference. A differing end reading comes back as `end_drift`, and one that cannot be read as
-    `end_unread`, each with the runs."""
+    """Raises EnvironmentMismatchError when the start reading differs from the reference."""
     checkout_root = checkout_root_for(account)
     environment = read_environment(checkout_root)
     environment_reference.require_match(environment, where=f"{task.id}'s block start")

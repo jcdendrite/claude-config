@@ -43,7 +43,6 @@ def _git(
 
 
 def _read_blobs(oids: list[str], **git_kwargs) -> dict[str, bytes]:
-    """One `git cat-file --batch` call. Raises ValueError for a reply that does not name each object in order."""
     unique_oids = list(dict.fromkeys(oids))
     if not unique_oids:
         return {}
@@ -63,9 +62,8 @@ def _read_blobs(oids: list[str], **git_kwargs) -> dict[str, bytes]:
 
 
 def capture_change(baseline_git_dir: Path, fixture_dir: Path, base_commit: str, *, timeout_s: float) -> ChangeCapture:
-    """The diff against `base_commit`, its classification, and the untracked paths the work tree's ignore
-    rules kept out of the diff. Raises CalledProcessError, TimeoutExpired, OSError or ValueError when a git
-    call or the classifier fails, such as `add -A` on a nested repository that has no commit."""
+    """Raises CalledProcessError, TimeoutExpired, OSError or ValueError when a git call or the classifier fails,
+    such as `add -A` on a nested repository that has no commit."""
     git_kwargs = {"baseline_git_dir": baseline_git_dir, "fixture_dir": fixture_dir, "timeout_s": timeout_s}
     _git(["add", "-A"], **git_kwargs)
     diff_bytes = _git(

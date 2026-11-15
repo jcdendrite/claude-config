@@ -163,7 +163,6 @@ def _test_corpus(repo_root: Path) -> list[str]:
 
 
 def _expand_target_paths(repo_root: Path, target_paths: list[str]) -> set[Path]:
-    """The on-disk paths that globbing each selected target finds."""
     return {path for target in target_paths for path in repo_root.glob(target)}
 
 
@@ -835,7 +834,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
 
-    def test_replay_bench_runner_change_selects_the_replay_tests_and_test_select_tests(self):
+    def test_replay_bench_runner_change_selects_the_replay_bench_target_set(self):
         """The runner joins the scanned set of the guards in test_select_tests.py, so a scoped run
         after a runner edit must include that file."""
         result = _mod.select_pytest_targets([_mod.REPLAY_BENCH_RUNNER])
@@ -847,7 +846,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB}
 
-    def test_every_replay_bench_test_and_helper_file_on_disk_selects_the_replay_tests(self):
+    def test_every_replay_bench_test_file_on_disk_selects_the_replay_tests(self):
         """The helper-only *_support.py modules hold no test of their own, so a
         narrowed predicate could leave an edit to one unselected without any test failing. The selected
         targets are expanded on disk, so a narrowed REPLAY_BENCH_TEST_GLOB fails here too."""

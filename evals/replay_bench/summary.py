@@ -1,7 +1,5 @@
-"""`summarize`: the terminal-only summary of one campaign's complete blocks. It writes no file.
+"""`summarize`: the terminal-only summary of one campaign's complete blocks.
 
-The primary outcome, fixed before any run, is comment-plus-docstring words per added non-test code line.
-For a task and an arm it is a ratio of sums over that arm's valid runs of the task.
 What a null difference does and does not show is stated in `evals/README.md` § "Replay bench".
 """
 from __future__ import annotations
@@ -73,7 +71,6 @@ def _refuse_mixed_environments(all_records: Sequence[ReplayRunRecord]) -> None:
 def _read_reference_metrics(
     local_dir: Path, tasks_name: str | None, pinned_hash: object,
 ) -> tuple[dict[str, dict], str | None]:
-    """The reference metrics by task ID, and the reason they are empty when the task set cannot be used."""
     if not tasks_name:
         return {}, "the manifest names no task set"
     try:
@@ -88,7 +85,6 @@ def _read_reference_metrics(
 
 
 def _read_manifest(manifest_path: Path) -> tuple[dict, str | None]:
-    """The manifest, and the reason it is empty when the manifest is absent, unreadable or not a JSON object."""
     if not manifest_path.exists():
         return {}, "the campaign has no manifest"
     try:
@@ -112,9 +108,6 @@ def _number(value: float | None) -> str:
 
 @dataclass(frozen=True)
 class PairedOutcome:
-    """The primary outcome as values, before any formatting. `differences` maps each paired task to its
-    `toolkit - bare` ratio difference. The interval is None below two paired tasks."""
-
     differences: dict[str, float]
     mean: float | None
     interval: tuple[float, float] | None
@@ -151,8 +144,6 @@ def paired_outcome(block_records: Mapping[str, Sequence[ReplayRunRecord]]) -> Pa
 
 
 def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> list[str]:
-    """The summary lines. Raises HarnessInvalidatedError for a campaign that does not exist, a record that
-    does not parse, or one account whose records span more than one environment reading."""
     if not (campaign_dir / records.RUNS_DIR_NAME).is_dir() and not (campaign_dir / MANIFEST_NAME).exists():
         raise HarnessInvalidatedError(f"{str(campaign_dir)!r} holds no campaign")
     store_dir = campaign_dir / STORE_DIR_NAME

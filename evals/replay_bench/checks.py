@@ -5,10 +5,7 @@ size, and the block calibration over a `toolkit` run and a `bare` run.
 The log is untrusted input: its `file_path` values are only classified, and none reaches
 `os.path.realpath` before every line of the log has passed its field checks.
 
-Steered agents are out of scope, so these checks detect an honest agent's leak after the fact and do
-not contain a hostile one.
-
-Command-text scan. A Bash command is scanned for guarded paths as text, not executed or parsed as shell:
+Command-text scan:
 - A candidate longer than `MAX_PATH_CHARS` is skipped and recorded, so a guarded path inside a long word is
   still found through its shorter pieces.
 - A candidate hits a guarded location when it names the location, is below it, or is a directory holding it
@@ -32,8 +29,6 @@ The scan cannot see these shapes, which are illustrative, not exhaustive:
 - a Bash command that writes outside the fixture, which is recorded but never an `out-of-fixture-write`;
 - a symlink created in the fixture, written through and removed before the check;
 - a read or write of the run's own session files, which the own-session exemption allows.
-
-A guarded path that appears only as text, in a heredoc body or a quoted search pattern, is a false hit.
 """
 from __future__ import annotations
 
@@ -131,8 +126,7 @@ def _relative_to_any(path: Path, bases: Collection[Path]) -> Path | None:
 
 
 def _expand_word(word: str, base_dir: Path) -> str:
-    """Expands a leading `~`, `$HOME` or `${HOME}` to the home directory and a leading `$PWD` or `${PWD}` to
-    `base_dir`, the fixture. The agent's home is the runner's, since the launch environment passes `HOME`."""
+    """The agent's home is the runner's, since the launch environment passes `HOME`."""
     home = os.path.expanduser("~")
     if not home.startswith("~"):
         if word == "~" or word.startswith("~/"):
@@ -143,7 +137,7 @@ def _expand_word(word: str, base_dir: Path) -> str:
 
 def _path_forms(raw_path: str, base_dir: Path) -> tuple[Path, Path] | None:
     """The path as a shell would name it (expanded, joined to `base_dir`, `..` collapsed) and the path it
-    resolves to. None for a path that cannot be resolved, such as one holding a NUL byte or longer than a path can be."""
+    resolves to."""
     if "\x00" in raw_path or len(raw_path) > MAX_PATH_CHARS:
         return None
     try:
@@ -163,12 +157,9 @@ def _chain(path: Path) -> tuple[Path, ...]:
 
 @dataclass(frozen=True)
 class ToolkitPaths:
-    """The account's toolkit files. A path belongs when its normalized form or its `realpath` does, so a
-    stowed file reported by its link target still classifies, including where `rules/`, `agents/` or
-    `skills/` is a real directory of per-file links.
-
-    Membership is a set lookup on the path and its parents, so its cost does not grow with the number of
-    toolkit files. A directory above the toolkit belongs only up to the config dir, so `ancestors` stops there.
+    """A path belongs when its normalized form or its `realpath` does, so a stowed file reported by its link
+    target still classifies, including where `rules/`, `agents/` or `skills/` is a real directory of per-file
+    links. A directory above the toolkit belongs only up to the config dir, so `ancestors` stops there.
     """
 
     claude_md_forms: frozenset[Path]
@@ -223,7 +214,6 @@ class ToolkitPaths:
         )
 
     def contains(self, *forms: Path) -> bool:
-        """True for a toolkit file, a path below a toolkit root, or a directory holding one up to the config dir."""
         return any(
             form in self.anchors or form in self.ancestors or any(parent in self.roots for parent in form.parents)
             for form in forms
@@ -240,7 +230,6 @@ class ToolkitPaths:
         )
 
     def display_path(self, *forms: Path) -> str:
-        """The config-relative name where a form falls under a toolkit root or is a listed file, else the last form."""
         for form in forms:
             if form in self.claude_md_forms:
                 return "CLAUDE.md"
@@ -253,7 +242,6 @@ class ToolkitPaths:
 
 
 def _parents_within(path: Path, tree_roots: Collection[Path]) -> tuple[Path, ...]:
-    """The directories above `path` up to and including the first of `tree_roots`; empty when `path` is not below one."""
     chain = []
     for parent in path.parents:
         chain.append(parent)
@@ -391,9 +379,7 @@ def classify_loads(log: InstructionLog, *, toolkit: ToolkitPaths, fixture_dir: P
 
 @dataclass(frozen=True)
 class LoadExpectation:
-    """What an arm's instruction loads must look like.
-
-    `excludes_toolkit` arms fail on any subagent load outside the fixture and on any dispatcher load
+    """`excludes_toolkit` arms fail on any subagent load outside the fixture and on any dispatcher load
     other than the expected one, since the hook logs nothing for what a subagent inherits from its
     dispatcher. `allowed_fixture_loads` are fixture-relative paths.
     """
@@ -406,7 +392,7 @@ class LoadExpectation:
 @dataclass(frozen=True)
 class InstructionLoadCheck:
     reasons: tuple[str, ...]
-    # Class name -> path -> load count, for the subagent's loads. A duplicate load is counted, never failed.
+    # A duplicate load is counted, never failed.
     subagent_loads_by_class: Mapping[str, Mapping[str, int]]
 
 
@@ -466,7 +452,7 @@ def _first_line_matches(path: str, expected_first_line: bytes) -> bool:
 
 def check_account_hooks(config_dir: Path, session_id: str) -> str | None:
     """`REASON_ACCOUNT_HOOKS_MISSING` unless the account's `sessions/` holds a non-symlink file whose
-    first line is the run's session ID. An empty session ID matches nothing."""
+    first line is the run's session ID."""
     if not session_id:
         return REASON_ACCOUNT_HOOKS_MISSING
     try:
@@ -510,7 +496,6 @@ def _is_count(value: object) -> TypeGuard[int]:
 
 
 def _prompt_size(message: Mapping) -> int | None:
-    """None when a usage field is absent or not a count, and when all three are zero."""
     usage = message.get("usage")
     if not isinstance(usage, dict):
         return None
@@ -522,7 +507,6 @@ def _prompt_size(message: Mapping) -> int | None:
 
 
 def _marks_permission_denial(carrier: object) -> bool:
-    """True when the carrier holds any of the three denial shapes named in `read_subagent_transcript`."""
     if not isinstance(carrier, dict):
         return False
     meta = carrier.get("tool_result_meta")
@@ -538,7 +522,6 @@ def _marks_permission_denial(carrier: object) -> bool:
 
 
 def _read_transcript_entries(subagent_jsonl: Path) -> tuple[list[dict], int, bool]:
-    """The JSON-object lines, the count of other non-blank lines, and whether the last non-blank line failed to parse."""
     text = subagent_jsonl.read_text(encoding="utf-8", errors="replace")
     entries: list[dict] = []
     skipped = 0
@@ -562,8 +545,6 @@ def read_subagent_transcript(subagent_jsonl: Path) -> SubagentTranscript:
     - A `tool_result_meta` item whose `non_execution_kind` is `permission-rule`.
     - A `toolDenialKind` in `NEVER_EXECUTED_DENIAL_KINDS`.
     - A `permissionDecision` object whose `decision` is `reject`.
-
-    A `toolDenialKind` of `interrupted`, or any value outside that set, leaves the call counted as executed.
 
     The carrier is the `tool_result` block, or the enclosing user entry when it holds exactly one result, since
     an entry-level marker cannot name which of several results it denied. A main-session transcript recorded on
@@ -621,9 +602,7 @@ def read_subagent_transcript(subagent_jsonl: Path) -> SubagentTranscript:
 
 
 def _bash_candidates(call: ToolCall, call_number: int, unparsed: list[str]) -> list[str]:
-    """The candidate path strings of a Bash command: each word whole and its pieces split on shell operators.
-
-    Each line is tokenized on its own, so quotes in prose never pair across lines and hide a later command.
+    """Each line is tokenized on its own, so quotes in prose never pair across lines and hide a later command.
     A line `shlex` cannot split, such as one holding an apostrophe, is scanned as whitespace-separated raw
     text instead of skipped.
     """
@@ -661,7 +640,6 @@ class PathCheck:
     failure_reasons: tuple[str, ...]
     out_of_fixture_writes: tuple[str, ...]
     out_of_fixture_tokens: tuple[str, ...]
-    # Tokens that resolve outside the fixture and fail no rule.
     other_outside_fixture_tokens: tuple[str, ...]
     bash_commands: tuple[str, ...]
     unparsed: tuple[str, ...]
@@ -675,11 +653,7 @@ def check_tool_call_paths(
     """A transcript that is unreadable, has a skipped or torn line, or may be missing calls fails as
     `REASON_TRANSCRIPT_UNREADABLE`, since a clean verdict over missing calls proves nothing.
 
-    A live checkout's `.git` directory is guarded beside its changed files.
-
-    A call the permission flow denied reached nothing, so the kinds checked here are skipped once denied:
-    - A denied Bash command is only recorded.
-    - A denied Write, Edit, MultiEdit or NotebookEdit adds no `out-of-fixture-write`.
+    A call the permission flow denied reached nothing, so it is skipped once denied.
 
     Read, Grep and Glob targets are checked by the runner's validity step, not here.
     """
@@ -763,9 +737,7 @@ class ToolkitReaches:
 
 
 def find_toolkit_file_reaches(transcript: SubagentTranscript, *, toolkit: ToolkitPaths, fixture_dir: Path) -> ToolkitReaches:
-    """The raw Read, Grep, Glob and Bash-candidate paths that resolve to a toolkit file or a directory holding
-    one up to the config dir, a read `toolkit` makes by design and `bare` fails `arm-leak` on. A denied call
-    still counts, since the attempt is evidence about the arm."""
+    """A denied call still counts, since the attempt is evidence about the arm."""
     reaches: list[str] = []
     unparsed: list[str] = []
     for call_number, call in enumerate(transcript.tool_calls):
@@ -807,8 +779,6 @@ class ReadGrantRecords:
 
 
 def record_read_grants(transcript: SubagentTranscript, *, toolkit: ToolkitPaths, fixture_dir: Path) -> ReadGrantRecords:
-    """Reads of Read-allow-list paths that ran or were denied, and the paths of denied Reads of any other
-    toolkit file. A Read with no result in the transcript is in neither."""
     allow_list_reads: list[AllowListRead] = []
     denied_other: list[str] = []
     for call in transcript.tool_calls:
@@ -839,8 +809,7 @@ def rule_control_loads(log: InstructionLog, toolkit: ToolkitPaths, *, fixture_di
 
 
 def dispatcher_rule_files(log: InstructionLog, toolkit: ToolkitPaths, *, fixture_dir: Path) -> tuple[Path, ...]:
-    """The rule files the dispatcher loaded at `session_start`. `bare`'s exclude drops them, so each
-    one raises the inheritance margin."""
+    """`bare`'s exclude drops these `session_start` rule files, so each one raises the inheritance margin."""
     return tuple(dict.fromkeys(
         item.resolved for item in classify_loads(log, toolkit=toolkit, fixture_dir=fixture_dir)
         if not item.load.is_subagent and item.load.load_reason == LOAD_REASON_SESSION_START
@@ -865,9 +834,7 @@ def block_calibration_verdict(
     toolkit: ToolkitPaths, fixture_dir: Path, claude_md_chars: int, code_writer_body_chars: int,
     bare_writer_body_chars: int, dispatcher_rule_chars: Sequence[int],
 ) -> tuple[str, ...]:
-    """Every failed condition, in order: the rule-load control, then the inheritance gap.
-
-    The gap, the `toolkit` first-turn size minus the `bare` one minus the body term, must be at least the
+    """The gap, the `toolkit` first-turn size minus the `bare` one minus the body term, must be at least the
     margin. The body term is the one other known difference between the two subagents' first turns.
     """
     reasons: list[str] = []
