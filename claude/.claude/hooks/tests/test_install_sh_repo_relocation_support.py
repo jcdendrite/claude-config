@@ -100,7 +100,7 @@ class TestManifestAndSelfCopy:
         assert lines == [str(repo_dir)]
 
     def test_relocate_claude_config_copied_as_real_executable_file(self, tmp_path: Path) -> None:
-        """Real file copy (install -m 755), not a symlink — row2a: this
+        """Real file copy (install -m 755), not a symlink: this
         wrapper's whole purpose is to keep working after the stow symlink
         chain it repairs has already broken, so it cannot itself be one."""
         home = tmp_path / "home"
@@ -219,9 +219,9 @@ class TestMarketplaceRegistrationIdempotency:
         assert "already registered" in result.stdout
 
     def test_registered_at_stale_path_re_registers(self, tmp_path: Path) -> None:
-        """The row3a defect this fix closes: a post-move registration whose
-        recorded path no longer matches REPO_DIR must be removed and re-added,
-        not reported as already registered."""
+        """A post-move registration whose recorded path no longer matches
+        REPO_DIR must be removed and re-added, not reported as already
+        registered."""
         repo_dir = _make_repo_dir(tmp_path, name="new-repo")
         stale_path = tmp_path / "old-repo-that-moved-away"
         entries = [{"name": "claude-config", "source": "directory", "path": str(stale_path)}]
@@ -236,7 +236,7 @@ class TestMarketplaceRegistrationIdempotency:
     def test_path_comparison_uses_canonicalized_form_not_raw_string_equality(
         self, tmp_path: Path
     ) -> None:
-        """row3b: the recorded .path and REPO_DIR are compared via readlink
+        """The recorded .path and REPO_DIR are compared via readlink
         -f on both sides, not byte-for-byte — a recorded path that resolves
         to the same real directory through a different (symlinked) spelling
         must still read as 'already registered', not thrash remove+re-add

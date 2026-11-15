@@ -194,3 +194,6 @@ docs/cost-ledger.md.lock
 # --exclude-standard`, which trips select-tests.py's full-suite fallback
 # on every unrelated change.
 claude-skills/skills/.trash/
+
+# The Cursor adapter's runtime state (log, first-call marks). A stow-folded config dir could otherwise stage it.
+cursor-adapter-state/

@@ -463,9 +463,8 @@ class TestThisRepoUnionsAcrossRoots:
     def test_this_repo_slug_collision_admits_foreign_project_with_identical_slug(
         self, tmp_path, monkeypatch
     ):
-        """Pins a known, plan-accepted residual risk (see Step 21 of
-        .claude/plans/transcript-corpus-multi-account-scope.md: "[/.]→- is
-        not injective, so /a/b.c and /a/b/c collide"), not a bug to fix here.
+        """Pins a known, accepted residual risk: the slug mapping [/.]→- is
+        not injective, so /a/b.c and /a/b/c collide, not a bug to fix here.
         _iter_scoped_sessions matches by basename equality alone, so it
         cannot distinguish this repo's own project dir from a foreign
         account's unrelated project dir that happens to collide onto the
@@ -538,7 +537,7 @@ class TestThisRepoUnionsAcrossRoots:
         multi-element `roots` list (unreachable through the real CLI today,
         since an explicit top-level --config-dir always collapses `roots` to
         one element — see scope.resolve_scan_roots) as a robustness pin against a
-        future precedence change, per the plan's own framing."""
+        future precedence change."""
         root_a = tmp_path / "acct-a"
         root_a.mkdir()
         root_b = tmp_path / "acct-b"
@@ -854,7 +853,7 @@ class TestResolvedScopeHeaderDirectUnit:
 
 
 class TestRootCountDescDirectUnit:
-    """Mechanism 2: _root_count_desc's one-root branch must distinguish the
+    """_root_count_desc's one-root branch must distinguish the
     roots file being absent from it being present but contributing no
     additional root -- claiming "no ... declared" about a file that exists
     would misrepresent it."""

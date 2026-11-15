@@ -1092,6 +1092,19 @@ class TestHookRecognizesNewManifestFormats:
         assert reason is not None
         assert "flask@==2.0.0" in reason
 
+    def test_requirements_txt_edit_carrying_content_and_no_old_or_new_string_asks_as_the_write_does(
+        self, isolated_home, tmp_path
+    ):
+        """The Cursor adapter's shim translates an overwrite Write to an Edit whose tool_input holds file_path and
+        content alone, because Cursor sends no old or new text. The helper reads a `content` key as a Write."""
+        manifest = _manifest_file(tmp_path, "requests==2.30.0\n", name="requirements.txt")
+        tool_input = {"file_path": str(manifest), "content": "requests==2.30.0\nflask==2.0.0\n"}
+        write_reason = run_hook_reason(DISCLOSURE_HOOK, {"tool_name": "Write", "tool_input": tool_input}, home=isolated_home)
+        edit_reason = run_hook_reason(DISCLOSURE_HOOK, {"tool_name": "Edit", "tool_input": tool_input}, home=isolated_home)
+        assert edit_reason is not None
+        assert "flask@==2.0.0" in edit_reason
+        assert edit_reason == write_reason
+
     def test_requirements_dev_txt_glob_match_asks(self, isolated_home, tmp_path):
         manifest = _manifest_file(tmp_path, "", name="requirements-dev.txt")
         payload = write_input(str(manifest), content="pytest==8.0.0\n")
@@ -1392,9 +1405,8 @@ class TestHookEnvelopeIntegrity:
 
 class TestHookSubagentBehavior:
     def test_code_writer_subagent_gets_an_identical_ask(self, isolated_home, tmp_path):
-        """Resolves the assumption ledger's [unverified] subagent row for
-        the hook's own behavior — whether the hook fires identically for a
-        code-writer subagent's tool calls as for the top-level session.
+        """Pins the hook's own behavior: whether the hook fires identically
+        for a code-writer subagent's tool calls as for the top-level session.
         Whether the ask actually RENDERS to the human for a subagent stays
         Anthropic's contract, not something this hook controls."""
         manifest = _manifest_file(tmp_path, '{"dependencies":{}}')

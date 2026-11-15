@@ -559,7 +559,7 @@ class TestDenyNoOpDispatch:
 
     def test_multibyte_idiom_bearing_prompt_denied_under_utf8_locale(self, isolated_home):
         """`${#PROMPT}` counts characters, not bytes, under a UTF-8 locale
-        (the hook header's documented claim, design-decision row 24). This
+        (the hook header's documented claim). This
         fixture's character count (211) sits well under
         NOOP_MAX_PROMPT_LEN, so the idiom it carries still denies."""
         prompt = "do nothing " + "中" * 200

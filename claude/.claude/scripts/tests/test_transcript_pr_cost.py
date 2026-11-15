@@ -628,8 +628,8 @@ class TestPrCostReportOrchestration:
         the targeted PR's resolved head branch is "new-name" (a mid-work
         rename) -- branch_totals.get(branch) misses even though the scan
         wasn't branch-idle, so the mismatch warning must fire on stderr and
-        the row must still be written (visibility only, not a skip -- ledger
-        Row 8). --pr targets the PR by its current head branch directly,
+        the row must still be written (visibility only, not a skip).
+        --pr targets the PR by its current head branch directly,
         which is what surfaces the mismatch: sweep mode instead iterates
         branch_totals's own keys, so "old-name" would never even match this
         PR's "new-name" headRefName."""

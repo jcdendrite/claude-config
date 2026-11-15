@@ -36,6 +36,7 @@ _CACHE_READ_MULTIPLIER = 0.1
 # than gaining a cache-read-only entry here.
 _CACHE_READ_MULTIPLIER_OVERRIDES: dict[str, float] = {
     "claude-fable-5-1": 0.025,
+    "claude-fable-5-2": 0.025,
     "claude-opus-5-5": 0.05,
 }
 
@@ -74,18 +75,18 @@ _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     # "claude-sonnet-4-5-20260115" still 200k-buckets correctly but prices as
     # unpriced here.
     "claude-sonnet-4-5": 3.00,
-    # claude-fable-5 / claude-fable-5-1: the vendor's published claude-api
-    # platform model ID for each generation (platform.claude.com/docs/en/
-    # models/fable-5/overview and .../fable-5-1/overview). [unverified] that
-    # this is the exact string Claude Code writes to message.model -- no
-    # claude-fable-* string has been observed in this account's own declared
-    # corpus (see _reportable_unpriced_model_ids for the loud-on-miss
-    # backstop this leans on until one is observed). Pricing this family also
-    # means its usage now appears by name in every published --summary Cost
-    # block, the same as every other priced model, instead of folding into an
-    # anonymous unpriced-ID count.
+    # claude-fable-5 / -5-1 / -5-2: the vendor's published claude-api model ID
+    # for each generation (platform.claude.com/docs/en/models/fable-5/overview,
+    # .../fable-5-1/overview, and about-claude/models/overview for 5.2).
+    # claude-fable-5-2 is confirmed as the string Claude Code writes to
+    # message.model; the 5 and 5-1 strings remain [unverified]. See
+    # _reportable_unpriced_model_ids for the loud-on-miss backstop. Pricing
+    # this family means its usage appears by name in every published --summary
+    # Cost block, not folded into an anonymous unpriced-ID count.
     "claude-fable-5": 10.00,
     "claude-fable-5-1": 10.00,
+    # Fable 5.2 base input $8 per the pricing page's Fable 5.2 row.
+    "claude-fable-5-2": 8.00,
 }
 
 # Re-verify-by date per model ID: fetch-date+90d for every model, since none

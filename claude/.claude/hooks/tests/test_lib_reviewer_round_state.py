@@ -1,6 +1,5 @@
 """Tests for _lib.sh's _lib_reviewer_round_state_key,
-_lib_reviewer_round_state_value, and the branch state path helpers
-(round3-review-consult-trigger plan).
+_lib_reviewer_round_state_value, and the branch state path helpers.
 Relational assertions only -- never a golden sha256 literal -- mirroring
 test_marker_lib.py's TestLibActivePlanHash precedent for
 _lib_active_plan_hash: the exact digest recipe is free to evolve as long as

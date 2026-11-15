@@ -193,7 +193,7 @@ class TestCacheRebuild1hTo5mDeltaArithmetic:
 
 class TestCacheRebuildMarginClears:
     """Direct unit coverage for _cache_rebuild_margin_clears -- shared by
-    both directions' own per-root check, at, above, and below the plan's
+    both directions' own per-root check, at, above, and below the
     10% margin threshold (_CACHE_REBUILD_TTL_MARGIN_FRACTION)."""
 
     def test_exactly_at_the_margin_threshold_clears(self):

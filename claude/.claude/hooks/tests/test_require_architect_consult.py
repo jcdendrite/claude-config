@@ -594,7 +594,7 @@ class TestRound2PilotCap:
         ) == "allow"
 
     def test_live_plan_review_active_marker_allows_under_pilot(self, isolated_home, tmp_path):
-        """Regression guard for the pilot plan's row 15: under cap=1, the
+        """Regression guard: under cap=1, the
         active-bypass marker check must still run BEFORE cap resolution, or
         the pilot silently degrades into the round-1 trigger design the
         case study rejected. The sibling sentinel-absent test

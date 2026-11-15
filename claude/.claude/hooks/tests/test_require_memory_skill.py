@@ -306,7 +306,7 @@ class TestRequireMemorySkill:
         assert decision == "deny"
 
     def test_unresolvable_config_dir_allows_through(self):
-        """Ledger row 6 fail-open regression: $HOME empty and
+        """Fail-open regression: $HOME empty and
         CLAUDE_CONFIG_DIR unset means _lib_config_dir cannot resolve, so no
         path is classified as a memory-file candidate and the gate allows
         the write through instead of blocking every Write/Edit/MultiEdit."""

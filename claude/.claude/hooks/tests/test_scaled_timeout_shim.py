@@ -63,8 +63,8 @@ def _install_recording_real_timeout(monkeypatch, tmp_path: Path) -> None:
 
 @pytest.mark.timing
 def test_scaled_shim_kills_a_real_hung_command_and_records_both_directions(tmp_path):
-    """End-to-end against the genuine timeout(1)/gtimeout(1) binary (ledger
-    row 5, both directions): a killed invocation records its duration in `started`
+    """End-to-end against the genuine timeout(1)/gtimeout(1) binary (both
+    directions): a killed invocation records its duration in `started`
     and not `completed`, while a completing one records it in both, leaving
     caps_that_fired unchanged."""
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
@@ -106,7 +106,7 @@ def test_duration_scaling_produces_exact_values(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("raw_arg", ["019", "0", "2.5", "", "abc", "-5"])
 def test_regex_rejected_inputs_pass_through_unscaled_and_record_nothing(monkeypatch, tmp_path, raw_arg):
-    """`019` is the regression case ledger row 9 names (bash octal landmine); `0`,
+    """`019` is the regression case (bash octal landmine); `0`,
     `2.5`, an empty $1, a non-numeric $1, and a negative $1 round out the
     regex-boundary enumeration. All six take the same unscaled passthrough
     and leave no marker record."""
@@ -248,7 +248,7 @@ def test_multiple_invocations_are_counted_not_overwritten(monkeypatch, tmp_path)
 
 def test_assert_cap_not_engaged_passes_on_completion_and_raises_on_kill(monkeypatch, tmp_path):
     """assert_cap_not_engaged is the inverse of assert_cap_engaged, for the
-    one inverted site (ledger row 7) whose shim sleep must finish inside
+    one inverted site whose shim sleep must finish inside
     its cap: it must pass when the shim ran and nothing was killed, and
     raise when it was."""
     _install_recording_real_timeout(monkeypatch, tmp_path)
@@ -274,7 +274,7 @@ def test_scaled_shim_sleep_always_outlasts_its_tier_cap():
 
 
 def test_scaled_under_cap_sleep_stays_below_its_cap():
-    """The one inverted site (ledger row 7): its sleep must finish inside its
+    """The one inverted site: its sleep must finish inside its
     cap, not outlast it."""
     assert scaled_under_cap_sleep(3.5) < scaled_cap(10)
 
@@ -299,7 +299,7 @@ class TestProtectedProbeOrderTestsAreUnscaled:
         for forbidden in ("write_scaled_timeout_shim", "scaled_shim_sleep", "TIMEOUT_SCALE_DIVISOR"):
             assert forbidden not in source, (
                 f"{fn.__name__} references {forbidden!r} — this test's own premise is "
-                f"that no scaled timeout(1) shim exists on its PATH (ledger row 4); routing it "
+                f"that no scaled timeout(1) shim exists on its PATH; routing it "
                 f"through the shared scaling helper defeats that premise"
             )
 

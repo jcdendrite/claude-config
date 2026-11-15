@@ -139,7 +139,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert subagent_row["Clears"] == "excluded(near-tie)"
 
     def test_per_root_w5m_cells_sum_to_the_pooled_per_origin_w5m_row(self, tmp_path, capsys):
-        """Reconciliation guard (plan Verification section): the new
+        """Reconciliation guard: the
         per-(origin, root_ordinal) W5m accumulator must never drift from
         the existing pooled w5m_by_origin figure it duplicates at finer
         grain -- reuses the dispersion coverage-disclosure extractor's own
@@ -469,8 +469,7 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
     """Full-pipeline coverage that a dominance-resolved mixed root's own
     dominant-tier accumulators, and only those, reach
     _cache_rebuild_root_verdict_input and the bucket's consistent-root
-    counts -- the reduction mechanics .claude/plans/cache-ttl-verdict-gate-fix.md's
-    Approach section describes."""
+    counts."""
 
     def test_minority_5m_write_outside_the_idle_band_never_changes_the_1h_rows_own_verdict_inputs(
         self, tmp_path, capsys

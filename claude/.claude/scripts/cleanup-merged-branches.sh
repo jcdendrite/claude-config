@@ -57,6 +57,11 @@
 # so a worktree first entered during that wait is not seen as in-use. So
 # still prefer to run this only once other Claude Code sessions are idle.
 #
+# Branch-records archive: with the `agent_branch_records` key on, the real run
+# copies a worktree's agent-reviews/ into a snapshot before every `git worktree
+# remove` and keeps the worktree and its branches when that copy fails. See
+# docs/agent-branch-records.md.
+#
 # Usage:
 #   cleanup-merged-branches.sh
 #   cleanup-merged-branches.sh --dry-run
@@ -85,6 +90,8 @@
 # The script puts no deadline on its `gh` calls or its fetch of the default
 # branch. A caller must impose its own and treat a timeout kill as a nonzero
 # exit.
+# With the key on and the archive unavailable, list mode prints no list line,
+# names the reason on stderr, and exits 1, because a real run removes nothing.
 # A listed worktree can be locked by a holder this user cannot signal: a dead
 # pid, or another user's process. The real run unlocks it first, and a plain
 # `git worktree remove` is refused until `git worktree unlock`.
@@ -94,6 +101,7 @@
 #   - a gitlink inactive in config whose directory has its own `.git`, which
 #     `git submodule status` marks uninitialized and git counts as populated;
 #   - a `.git` file whose back-link names another worktree's admin dir.
+# A failed archive also keeps a listed worktree in the real run.
 # A Tier A branch it could not evaluate is left out with one stderr line naming
 # the branch and the reason, and the run exits 1 after printing every other
 # line. The cases are:
@@ -142,10 +150,16 @@
 #      unreadable roots config file, or set post-hoc if any repo's cleanup
 #      crashed outright — a handled per-branch failure (worktree remove or
 #      remote delete printed as "manual step needed") does not trip this;
-#      check each repo's own output for those. Under --all-projects with
-#      direnv installed, an unauthenticated invoking-shell `gh` no longer
-#      causes exit 1 by itself — it's downgraded to a warning, since each
-#      swept repo's own gh auth state is what actually governs that repo.
+#      check each repo's own output for those. The exception is a worktree
+#      kept because its archive failed, which exits 1 after the summary.
+#      A real run or --list-removable also exits 1, before any work in the
+#      repo being processed, when the archive is unavailable. Under
+#      --all-projects the refusal is per repo, so earlier repos have already
+#      done their work.
+#      Under --all-projects with direnv installed, an unauthenticated
+#      invoking-shell `gh` no longer causes exit 1 by itself — it's
+#      downgraded to a warning, since each swept repo's own gh auth state is
+#      what actually governs that repo.
 #      Without direnv, or in single-repo mode, unauthenticated `gh` still
 #      hard-exits 1.
 #   2  bad arguments, including --dry-run combined with --list-removable
@@ -166,6 +180,10 @@ set -euo pipefail
 # with ci-watch.sh.
 # shellcheck source=_direnv-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_direnv-lib.sh"
+# branch_records_status / branch_records_archive_worktree, shared with
+# cleanup-idle-open-pr-worktrees.sh.
+# shellcheck source=_branch-records-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/_branch-records-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -358,6 +376,28 @@ if [ "$(git rev-parse --show-toplevel)" != "$REPO_ROOT" ] \
   echo "ERROR: this repo's environment changed git's repo root, git dir, or common dir (an .envrc exporting GIT_DIR, GIT_WORK_TREE, or GIT_COMMON_DIR?); aborting this repo untouched." >&2
   exit 1
 fi
+
+# Per repo, because load_repo_environment can change CLAUDE_CONFIG_DIR and with it the account that owns this repo's snapshots.
+branch_records_status
+case "$BRANCH_RECORDS_STATE" in
+  ready)
+    # List mode's stdout carries list lines only.
+    if [ "$LIST_REMOVABLE" -eq 0 ]; then
+      echo "Archive: ready (${BRANCH_RECORDS_ACCOUNT_DIR})"
+    fi
+    ;;
+  unavailable)
+    if [ "$LIST_REMOVABLE" -eq 1 ]; then
+      echo "cleanup-merged-branches.sh: --list-removable: archive unavailable (${BRANCH_RECORDS_REASON}); a real run removes nothing" >&2
+      exit 1
+    elif [ "$DRY_RUN" -eq 1 ]; then
+      echo "Archive: unavailable (${BRANCH_RECORDS_REASON}); a real run removes nothing in this repo and exits 1"
+    else
+      echo "cleanup-merged-branches.sh: archive unavailable (${BRANCH_RECORDS_REASON}); nothing was removed in this repo. See docs/agent-branch-records.md and ask the engineer." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 # The main worktree is what `git worktree remove` never removes.
 # REPO_ROOT is a linked worktree when the script runs from one.
@@ -1016,6 +1056,7 @@ fi
 declare -a SKIPPED_LIVE_LOCK=()
 declare -a SKIPPED_IN_USE=()
 declare -a SKIPPED_IN_USE_REASON_VALUES=()
+declare -a SKIPPED_ARCHIVE_FAILED=()
 
 echo "Cleaned up:"
 
@@ -1076,6 +1117,14 @@ for BRANCH in "${TO_DELETE[@]}"; do
       # The list needs none: its `*` arm already omits a token it does not name.
       # dirty, submodules, the two unverifiable probes, unlock-remove and
       # remove: git decides, so a refusal is reported, not predicted.
+      if ! branch_records_archive_worktree "$WORKTREE_PATH" "$BRANCH" "$MAIN_WORKTREE_PATH" "${BASH_SOURCE[0]##*/}"; then
+        echo "    worktree:       kept (archive failed: ${BRANCH_RECORDS_REASON})"
+        SKIPPED_ARCHIVE_FAILED+=("$BRANCH")
+        continue
+      fi
+      if [ -n "$BRANCH_RECORDS_SNAPSHOT" ]; then
+        echo "    archive:        ${BRANCH_RECORDS_SNAPSHOT}"
+      fi
       WORKTREE_UNLOCKED=0
       if [ "$WORKTREE_LOCKED" -eq 1 ]; then
         if git worktree unlock "$WORKTREE_PATH" 2>/dev/null; then
@@ -1203,6 +1252,14 @@ for BRANCH in "${SKIPPED_BRANCHES[@]}"; do
 done
 
 checked_out_skip_line
+
+for BRANCH in "${SKIPPED_ARCHIVE_FAILED[@]}"; do
+  echo "Skipped (archive failed): ${BRANCH}"
+done
+
+if [ "${#SKIPPED_ARCHIVE_FAILED[@]}" -gt 0 ]; then
+  exit 1
+fi
 
 }
 

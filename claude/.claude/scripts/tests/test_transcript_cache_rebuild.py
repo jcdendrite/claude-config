@@ -79,8 +79,7 @@ class TestCacheRebuildExcessPricing:
 class TestCacheRebuildClassification:
     """Direct coverage for _cache_rebuild_report's per-call cause
     classification and priced excess, against a single hand-built
-    transcript exercising every case Verification item 1 in
-    .claude/plans/context-cost-root-cause.md names."""
+    transcript exercising every classification case the test below lists."""
 
     def test_dedup_synthetic_exclusion_cause_classification_and_priced_excess(
         self, fake_projects, capsys
@@ -188,8 +187,7 @@ class TestCacheRebuildClassification:
 
 
 class TestCacheRebuildGroupBoundary:
-    """Verification item 1 (.claude/plans/context-cost-root-cause.md):
-    is_first_call/gap_seconds/model_changed must reset at every
+    """is_first_call/gap_seconds/model_changed must reset at every
     _read_session_file_partitioned group boundary, not just once at the top
     of the whole flattened (main thread + subagent files) session."""
 
@@ -229,8 +227,7 @@ class TestCacheRebuildGroupBoundary:
 
 
 class TestCacheRebuildOriginSplit:
-    """Verification items 1-2 (.claude/plans/subagent-idle-gap-cache-rebuild-split.md):
-    origin classification must be per-record via isSidechain, not by which
+    """Origin classification must be per-record via isSidechain, not by which
     source file (group) a record came from, and the sequential gap-chain
     used for cause classification must be keyed per (group, origin), not
     per group alone."""
@@ -327,7 +324,7 @@ class TestCacheRebuildOriginSplit:
 
 
 class TestCacheRebuildCacheTierGapMismatch:
-    """Verification item 4: a call's cache-write tier, not just its elapsed
+    """A call's cache-write tier, not just its elapsed
     gap, gates the idle-5m-1h cause -- a purely ephemeral_1h-tier write
     inside a <1h gap cannot have been forced by that gap's TTL expiry, since
     the 1h-tier cache would still be warm."""
@@ -385,7 +382,7 @@ class TestCacheRebuildConcurrencySplit:
     def test_own_subagent_activity_never_self_matches_and_cross_root_activity_flags_concurrent(
         self, tmp_path, capsys
     ):
-        """Three-root fixture (Verification item 3): root A's own session
+        """Three-root fixture: root A's own session
         has two idle-gap tail calls, and between them a subagent record
         whose own timestamp falls INSIDE the first gap despite being
         processed after both main-thread calls (subagent files are appended
@@ -442,7 +439,7 @@ class TestCacheRebuildMultiRootRegression:
     def test_hand_computed_rebuild_count_and_dollar_total_match_the_union_across_two_roots(
         self, tmp_path, capsys
     ):
-        """Verification item 4: a generated corpus of known composition
+        """A generated corpus of known composition
         (150 calls per root, 300 total), split across two synthetic roots.
         Every 5th call after the first is a large (150,000-token, 5m-tier)
         idle-gap rebuild, reached by a 400-second gap (inside the 5m-1h
