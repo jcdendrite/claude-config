@@ -1287,7 +1287,8 @@ run-store lock exits 1. Two commands have further rules:
 
 `tasks` walks each source repo's first-parent commits, newest first, and keeps
 the commits that qualify as tasks. Each source repo must be a git repository's
-top level. The brief is the commit message. `--name` must not name an existing
+top level. The brief is the commit message, plus the subjects of the merged
+commits for a merge commit. `--name` must not name an existing
 task set, because a campaign pins its task set by hash and refuses to resume
 once the set changes.
 

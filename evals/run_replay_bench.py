@@ -268,7 +268,9 @@ def check_local_dir(local_dir: Path) -> None:
     if not local_dir.is_absolute():
         raise HarnessInvalidatedError(f"--local-dir {shown} is not an absolute path")
     if str(local_dir) != os.path.realpath(local_dir):
-        raise HarnessInvalidatedError(f"--local-dir {shown} is not its own resolved path; it passes through a symlink")
+        raise HarnessInvalidatedError(
+            f"--local-dir {shown} is not its own resolved path; it passes through a symlink or is not normalized"
+        )
     if local_dir.name != LOCAL_DIR_NAME:
         raise HarnessInvalidatedError(f"--local-dir {shown} must end in {LOCAL_DIR_NAME!r}")
     existing_ancestor = next(parent for parent in local_dir.parents if parent.exists())

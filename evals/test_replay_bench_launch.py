@@ -111,7 +111,7 @@ class TestTheSharedCharacterCheck:
 
 
 class TestEachEmittedFormIsChecked:
-    def test_the_exclude_generator_checks_a_link_path_and_a_realpath_alone(self, tmp_path):
+    def test_the_exclude_generator_checks_a_realpath_alone(self, tmp_path):
         config_dir = tmp_path / "config"
         (config_dir / "rules").mkdir(parents=True)
         target = tmp_path / "targets" / "ok[1].md"
@@ -122,7 +122,7 @@ class TestEachEmittedFormIsChecked:
         with pytest.raises(launch.UnsafeConfigPathError, match=r"ok\[1\]"):
             arms.claude_md_excludes(config_dir)
 
-    def test_the_read_allow_generator_checks_a_link_path_and_a_realpath_alone(self, tmp_path):
+    def test_the_read_allow_generator_checks_a_realpath_alone(self, tmp_path):
         config_dir = tmp_path / "config"
         (config_dir / "skills" / "we(ird)").mkdir(parents=True)
         (config_dir / "skills" / "we(ird)" / "SKILL.md").write_text("skill")

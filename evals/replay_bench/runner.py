@@ -124,7 +124,7 @@ def _without_child_output[ResultT](call: Callable[[], ResultT], description: str
         return call()
     except HarnessInvalidatedError as exc:
         status = _EXIT_STATUS_RE.search(str(exc))
-        cause = f"exit {status[1]}" if status else "the command did not run or timed out"
+        cause = f"exit {status[1]}" if status else "no exit status reported"
         raise HarnessInvalidatedError(f"{description} ({cause})") from None
 
 

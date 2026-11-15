@@ -131,7 +131,7 @@ def _refuse_without_smoke_pass(config: CampaignConfig, readings: Mapping[str, re
 
 
 def stop_would_be_passed(spent_usd: float, ceiling_usd: float, stop_usd: float) -> bool:
-    """True when the next block could carry spend past the stop. A non-finite figure fails closed."""
+    """True when the next block could carry spend past the stop."""
     projected = spent_usd + ceiling_usd
     return not math.isfinite(projected) or projected > stop_usd
 

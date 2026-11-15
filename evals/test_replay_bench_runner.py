@@ -327,11 +327,16 @@ class TestRetryThenMissing:
 
     def test_a_fail_once_then_succeed_run_takes_its_diff_from_the_second_fixture(self, world):
         def scenario_for(number, _agent):
-            return Scenario(observed_model="other-model") if number == 0 else Scenario()
+            edited_file = "failed_attempt.py" if number == 0 else "second_attempt.py"
+            return Scenario(
+                observed_model="other-model" if number == 0 else MODEL_ID,
+                edit=lambda fixture_dir: (fixture_dir / "src" / edited_file).write_text("value = 1\n"),
+            )
 
         outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name, scenario_for)
 
         assert outcome.record.status == "ok" and outcome.record.attempts == 2
+        assert "second_attempt.py" in outcome.diff_text and "failed_attempt.py" not in outcome.diff_text
         assert launch_stub.calls[0].cwd != launch_stub.calls[1].cwd
         assert leftovers(world, launch_stub) == []
 

@@ -509,7 +509,7 @@ def _verdict(
     checks_world: World, log: InstructionLog | None = None, *, gap: int | None = 1000, bare_size: int | None = BARE_SIZE,
     code_writer_extra_chars: int = 0, dispatcher_rule_chars: tuple[int, ...] = (), toolkit: ToolkitPaths | None = None,
 ) -> tuple[str, ...]:
-    toolkit_size = None if gap is None or bare_size is None else bare_size + gap
+    toolkit_size = None if gap is None else BARE_SIZE + gap
     return checks.block_calibration_verdict(
         _control_log(checks_world) if log is None else log, toolkit_first_turn_size=toolkit_size, bare_first_turn_size=bare_size,
         toolkit=toolkit or checks_world.toolkit, fixture_dir=checks_world.fixture_dir, claude_md_chars=CLAUDE_MD_CHARS,

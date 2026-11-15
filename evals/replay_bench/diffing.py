@@ -3,7 +3,7 @@
 Every call uses the runner-owned copy of the fixture's pre-launch `.git` (`baseline.git`) with the
 fixture as the work tree, so the diff compares the work tree with the pristine base whatever the agent did to
 the fixture's own `.git`. A changed file is never read through its work-tree path: a blob is read from the
-copy's object store, so a symlink the agent made is read as its link text and a FIFO is never opened.
+copy's object store and only regular-file blobs are read.
 """
 from __future__ import annotations
 

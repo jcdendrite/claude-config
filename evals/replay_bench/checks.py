@@ -106,10 +106,7 @@ EXCLUDE_NOTE_NOT_EXERCISED = (
     "exclude note: the `bare` run read none of the files that triggered a rule load in the `toolkit` run, "
     "so it did not test the exclude."
 )
-EXCLUDE_NOTE_RESIDUAL = (
-    "A `bare` run that read no rule-matching file passes without testing the exclude, "
-    "and a later `bare` run that reads one fails `arm-leak`."
-)
+EXCLUDE_NOTE_RESIDUAL = "A `bare` run that read no rule-matching file passes without testing the exclude."
 
 
 class LoadClass(StrEnum):

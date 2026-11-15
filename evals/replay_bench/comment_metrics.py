@@ -1,7 +1,7 @@
 """Classifies the lines a diff adds as code, comment, docstring, blank, prose or
 unclassified, and groups comment and docstring lines into blocks.
 
-Classification is whole-line and lexical, by file extension. It reads each
+Classification is whole-line, by file extension. It reads each
 file's post-change bytes, which the caller supplies, so a line added inside an
 existing Python docstring still classifies as docstring.
 """
@@ -175,8 +175,9 @@ class FileClassification:
 
 
 def classify_file(path: str, data: bytes, added_line_numbers: Iterable[int]) -> FileClassification:
-    """Classifies the given 1-based lines of a file's post-change `data`. Raises ValueError for
-    a line number past the end of the file, which means `data` is not the diff's post-change text."""
+    """Classifies the given 1-based lines of a file's post-change `data`. For a decodable file with
+    recognized comment syntax, raises ValueError for a line number past the end of the file, which means
+    `data` is not the diff's post-change text."""
     numbers = tuple(added_line_numbers)
     extension = PurePosixPath(path).suffix.removeprefix(".").lower()
     syntax = COMMENT_SYNTAX_BY_FILENAME.get(PurePosixPath(path).name) or COMMENT_SYNTAX_BY_EXTENSION.get(extension)

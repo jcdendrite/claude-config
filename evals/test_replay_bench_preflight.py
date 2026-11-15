@@ -155,7 +155,7 @@ class TestTheProbe:
             assert "PATH" in preflight.refusal()
         assert not preflight.claude_ran.exists()
 
-    def test_a_relative_source_repo_path_is_refused_before_any_probe(self, preflight):
+    def test_a_relative_source_repo_path_is_refused(self, preflight):
         with pytest.raises(HarnessInvalidatedError, match="not absolute"):
             account.preflight_repo(Path("relative/repo"))
 

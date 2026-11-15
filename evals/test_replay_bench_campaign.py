@@ -140,7 +140,7 @@ class TestACompletedCampaign:
         assert printed.count("arms with no valid run: none") == 2
         assert "cumulative $2.00 of $100.00" in printed
 
-    def test_the_first_start_prints_the_run_count_and_the_nominal_ceiling_before_any_launch(self, env, capsys):
+    def test_the_first_start_prints_the_run_count_and_the_nominal_ceiling(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
 
         env.run(env.world.launch())
@@ -428,7 +428,7 @@ class TestThePerArmStop:
             if call.agent_name == arms.BARE.agent_name:
                 brief = next(brief for brief in briefs if brief in call.inner_prompt)
                 bare_attempts_seen_per_task[brief] += 1
-                # A failed attempt retries once, so both of run 0's attempts fail.
+                # A failed attempt retries once, so a task's first two bare attempts fail.
                 if bare_attempts_seen_per_task[brief] <= review_runner.ATTEMPTS_PER_RUN:
                     return Scenario(observed_model="other-model")
             return Scenario()
@@ -562,7 +562,7 @@ class TestTheManifestAndTheSmokeGate:
 
         assert env.run(env.world.launch(), fixture_git_timeout_s=99.0) == 0
 
-    def test_a_resume_after_an_accounts_environment_changed_exits_two_naming_the_account_and_field(self, env):
+    def test_a_resume_after_an_accounts_environment_changed_exits_two_naming_the_field(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         env.readings = [dataclasses.replace(READING, ambient_config_commit="synthetic-commit-b")]
@@ -572,7 +572,7 @@ class TestTheManifestAndTheSmokeGate:
             env.run(resumed)
         assert resumed.calls == []
 
-    def test_a_resume_whose_repo_resolves_to_another_account_key_exits_two_naming_the_repo(self, env):
+    def test_a_resume_whose_repo_resolves_to_another_account_key_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         moved = dataclasses.replace(env.world.account, key="/another/account")
@@ -645,9 +645,12 @@ class TestTheManifestAndTheSmokeGate:
 
         assert accepted is (field_name == "control")
 
-    @pytest.mark.parametrize("damage", ["not json", "{}", '{"account_key": "different"}'])
+    @pytest.mark.parametrize("damage", ["not json", "{}", {"account_key": "different"}])
     def test_a_record_that_does_not_parse_lacks_a_key_or_holds_another_account_refuses_without_a_traceback(self, env, damage):
-        smoke_pass.smoke_pass_path(env.world.local_dir, env.world.account.key).write_text(damage)
+        record_path = smoke_pass.smoke_pass_path(env.world.local_dir, env.world.account.key)
+        if isinstance(damage, dict):
+            damage = json.dumps({**json.loads(record_path.read_text()), **damage})
+        record_path.write_text(damage)
         assert "no passing smoke" in self.smoke_gate_refusal(env)
 
 

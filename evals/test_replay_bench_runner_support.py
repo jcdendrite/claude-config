@@ -1,6 +1,6 @@
 """Helpers the replay_bench tests share. A scripted launch stands in for
-`claude`: it writes a synthetic dispatcher transcript, subagent sidecar, hook log and account session file
-under a `tmp_path` config dir, with every value synthetic. No test launches `claude`.
+`claude`: it writes a synthetic dispatcher transcript, subagent sidecar and account session file under a
+`tmp_path` config dir and the hook log in the attempt dir, with every value synthetic. No test launches `claude`.
 """
 from __future__ import annotations
 

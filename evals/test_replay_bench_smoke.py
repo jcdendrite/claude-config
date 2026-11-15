@@ -77,7 +77,7 @@ class TestAPassingSmoke:
         assert exit_code == 0 and smoke_pass_exists(world)
         assert checks.EXCLUDE_NOTE_NOT_EXERCISED in output
 
-    def test_the_printed_ceiling_equals_the_cost_ceiling_for_one_block_and_comes_before_any_launch(self, world, capsys):
+    def test_the_first_printed_line_names_the_cost_ceiling_for_one_block(self, world, capsys):
         run_smoke(world)
 
         first_line = capsys.readouterr().out.splitlines()[0]
