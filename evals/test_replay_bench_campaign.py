@@ -656,8 +656,11 @@ class TestEnvironmentDrift:
         env.world.tasks[:] = env.world.tasks[:1]
         env.readings = [READING, dataclasses.replace(READING, cli_version="2.9.9")]
 
-        assert env.run(env.world.launch()) == 1
+        launch_stub = env.world.launch()
 
+        assert env.run(launch_stub) == 1
+
+        assert launch_stub.calls == []
         assert env.completed() == set() and not (env.campaign_dir / "runs").exists()
         stderr = capsys.readouterr().err
         assert "0 attempts" in stderr
@@ -1099,7 +1102,7 @@ class TestTheSpendFile:
         assert totals.total_usd == 2.0 + CAP + 3.0
         assert totals.account_usd("account-a") == 2.0 + CAP and totals.account_usd("account-b") == 3.0 + CAP
 
-    def test_two_repos_with_one_config_dir_share_one_accounts_spend(self, tmp_path):
+    def test_lines_under_one_account_key_sum_into_one_account_total(self, tmp_path):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
         for task in ("repo-a-task", "repo-b-task"):
             spend.append(self.line(1.5, "shared-account", task))

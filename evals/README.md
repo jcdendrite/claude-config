@@ -1310,7 +1310,10 @@ once the set changes.
   over the network with no timeout. It also refuses a repo whose
   `info/attributes` sets `export-ignore` or `export-subst`. It skips, under the
   reason `export-attributes`, a commit whose tree holds a `.gitattributes`
-  that sets either one, since `git archive` honors both.
+  that sets either one, since `git archive` honors both. It skips, under the
+  reason `claude-dir-file`, a commit whose parent tree holds a regular file
+  named `.claude` at the root, matched case-insensitively, since the fixture
+  build writes `.claude/agents` beneath that name.
 
 The trusted-author list is risk reduction, not containment: it limits how much
 third-party text reaches an agent that holds Bash. Its limits:

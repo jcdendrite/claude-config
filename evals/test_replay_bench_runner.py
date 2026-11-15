@@ -563,8 +563,8 @@ class TestAFailingWorkerStopsItsSiblings:
     def test_an_unwritable_spend_file_raises_spend_append_error(
         self, world, tmp_path,
     ):
-        """Kills: dropping the `OSError` translation in `SpendFile.append`, which would escape as a raw `OSError`
-        that `run_attempt` does not catch, so the uncharged launch is never reported."""
+        """Kills: dropping the `OSError` translation in `SpendFile.append`, which would escape as a raw `OSError`,
+        so the uncharged launch is never reported."""
         blocker = tmp_path / "blocker"
         blocker.write_text("a file, not a directory")
         launch_stub = world.launch()
@@ -704,8 +704,10 @@ class TestAFailingWorkerStopsItsSiblings:
     def test_a_sibling_failing_at_launch_aborts_a_run_held_in_its_fixture_build(
         self, world, monkeypatch,
     ):
-        """Kills: `abort_launches()` missing from the failing worker (the wait times out), the pre-launch recheck
-        missing (the held run launches), and the root-cause remap missing (LaunchAbortedError surfaces)."""
+        """Kills:
+        - `abort_launches()` missing from the failing worker: the wait times out.
+        - The pre-launch recheck missing: the held run launches.
+        - The root-cause remap missing: LaunchAbortedError surfaces."""
         first_arm, _index = review_runner.build_block_plan(world.task.id, ("toolkit", "bare"), 1, 0).ordered_runs[0]
         real_build = tasks.build_task_fixture
         released_by = {}

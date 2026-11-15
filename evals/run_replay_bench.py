@@ -259,7 +259,7 @@ def check_local_dir(local_dir: Path) -> None:
     if local_dir.name != LOCAL_DIR_NAME:
         raise HarnessInvalidatedError(f"--local-dir {shown} must end in {LOCAL_DIR_NAME!r}")
     existing_ancestor = next(parent for parent in local_dir.parents if parent.exists())
-    # A path inside the directory, since a directory-only ignore pattern cannot match one that is absent.
+    # The probe is a path inside the directory, since a directory-only ignore pattern cannot match a path that does not exist yet.
     try:
         probe_returncode = subprocess.run(
             ["git", "-C", str(existing_ancestor), "check-ignore", "-q", "--", str(local_dir / "ignore-probe")],

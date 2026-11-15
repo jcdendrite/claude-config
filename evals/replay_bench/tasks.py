@@ -100,6 +100,7 @@ class SkipReason(StrEnum):
     BASE_TREE_TOO_MANY_ENTRIES = "base-tree-too-many-entries"
     MISSING_OBJECT = "missing-object"
     CLAUDE_DIR_SYMLINK = "claude-dir-symlink"
+    CLAUDE_DIR_FILE = "claude-dir-file"
     ABSOLUTE_SYMLINK = "absolute-symlink"
     ESCAPING_SYMLINK = "escaping-symlink"
     GIT_PATH_COMPONENT = "git-path-component"
@@ -518,6 +519,16 @@ def base_tree_refusal(path: str, link_target: str | None) -> SkipReason | None:
     return None
 
 
+def _is_root_claude_file(entry: TreeEntry) -> bool:
+    """The prune keeps a regular file named `.claude`, and the fixture build then cannot create
+    `.claude/agents` beneath it. Case is folded like the sibling rules, since the collision holds on
+    case-insensitive volumes."""
+    return (
+        entry.mode in comment_metrics.REGULAR_FILE_MODES
+        and entry.path.casefold() == fixture_repo._PROJECT_CONFIG_DIR_NAME
+    )
+
+
 # --- base density ------------------------------------------------------------
 
 
@@ -711,7 +722,8 @@ def _measure_change(
 
 
 def _inspect_base_tree(repo: Path, base_commit: str, limits: SelectionLimits) -> list[TreeEntry] | SkipReason:
-    """The base tree's entries, or the first bound, export-attribute or extraction refusal the tree hits."""
+    """The base tree's entries, or the first bound, export-attribute, extraction refusal or root `.claude`
+    regular file the tree hits."""
     # Known boundary: the entry bound is checked after the whole listing is read, and changed blobs have no
     # size ceiling. Both are acceptable at the interactive, local scale this miner runs at.
     base_entries = _list_tree(repo, base_commit)
@@ -736,6 +748,8 @@ def _inspect_base_tree(repo: Path, base_commit: str, limits: SelectionLimits) ->
     }
     for entry in base_entries:
         refusal = base_tree_refusal(entry.path, link_target_by_path.get(entry.path))
+        if refusal is None and _is_root_claude_file(entry):
+            refusal = SkipReason.CLAUDE_DIR_FILE
         if refusal is not None:
             return refusal
     return base_entries

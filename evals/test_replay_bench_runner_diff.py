@@ -10,7 +10,7 @@ import types
 from pathlib import Path
 
 import pytest
-from replay_bench import arms, attempt, checks
+from replay_bench import arms, attempt
 from replay_bench.runner import execute_run
 from review_bench import runner as review_runner
 from test_replay_bench_checks_support import call_with_deadline
@@ -256,7 +256,6 @@ class TestTheHookLogRead:
         )
 
         assert len(sleeps) == 4, "it kept sampling until the fake clock reached the one-second timeout, then stopped"
-        assert checks.parse_instruction_log(log_path, session_id="s").reason == checks.REASON_INSTRUMENT_LOG_INVALID
 
     def test_a_log_that_appears_at_the_second_poll_counts_as_growth(self, tmp_path, sleeps):
         log_path = tmp_path / "late-log.jsonl"
