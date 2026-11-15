@@ -37,10 +37,9 @@ _FIXTURE_END = "# INSTALL_TEST_FIXTURE: python-floor-check — end"
 
 _AFTER_BLOCK_SENTINEL = "reached the line after the block"
 
-# The four places a floor change touches, named in every tie's failure message.
 _FLOOR_CHANGE_SITES = (
-    'A floor change touches _config.sh (_PYTHON_FLOOR_MAJOR and _PYTHON_FLOOR_MINOR), the python-version pin in '
-    '.github/workflows/tests.yml, pyproject.toml\'s [tool.ruff] target-version, and README.md § "Requirements".'
+    "A floor change starts at _config.sh's _PYTHON_FLOOR_MAJOR and _PYTHON_FLOOR_MINOR. "
+    "Each statement tied to them then fails its own test."
 )
 
 

@@ -5,7 +5,7 @@ Usage: hook-shim.py --contract-version V --claude-event CLAUDE_EVENT [--mode hoo
   [--matcher REGEX] [--script PATH] [--label NAME] [--deadline SECONDS] [--fail-closed|--fail-open]
 
 Cursor's payload arrives on stdin and Cursor's output leaves on stdout as one JSON document.
-The launch guard that the installer (not yet written) generates runs this file with the recorded python3 under
+The launch guard that `cursor-adapter.py generate` writes runs this file with the recorded python3 under
 `-I -S` and turns a missing document into the entry's deny or `{}`. A test can load the module in-process. The install record at
 $HOME/.cursor/cursor-adapter/install.json fixes the routed config dir, the tool paths and the tool map.
 """
@@ -30,7 +30,7 @@ from types import MappingProxyType
 CONTRACT_VERSION = "1"
 STALE_INSTALL_DETAIL = "stale install: the engineer quits Cursor, re-runs install and relaunches."
 
-# The command-line vocabulary. The command grammar of the installer (cursor-adapter.py, not yet written) must stay equal to it.
+# The command-line vocabulary. The command grammar in cursor-adapter.py must stay equal to it.
 VALUE_FLAGS = ("--contract-version", "--claude-event", "--mode", "--matcher", "--script", "--label", "--deadline")
 SWITCH_FLAGS = ("--fail-closed", "--fail-open")
 MODES = ("hook", "pin", "pin-check", "classify")
@@ -73,7 +73,7 @@ HOOK_REASON_CAP_CHARS = 16384
 # A project choice: the size of one read or write on a hook's pipes, small enough that the deadline is checked often.
 IO_CHUNK_BYTES = 32 * 1024
 
-# Sentence the Recovery section of docs/cursor-adapter.md (not yet written) opens with.
+# Sentence the Recovery section of docs/cursor-adapter.md opens with.
 RECOVERY_SENTENCE = (
     "The engineer, not the agent, follows the Recovery section. An agent runs no command from that section, "
     "retries only where this deny's own text says to, and otherwise stops and reports this deny in chat."
@@ -104,7 +104,7 @@ LOG_OVERFLOW_TOKEN = "overflow"
 LOG_VALUE_PATTERN = r"[0-9A-Za-z._:+-]+"
 # One line is at most this many bytes with its newline. A project choice with no documented source.
 LOG_LINE_MAX_BYTES = 1024
-# Field order and maxima. `runmode` is first written by the installer (not yet written).
+# Field order and maxima. `runmode` is written by cursor-adapter.py.
 LOG_FIELDS = (
     ("ts", 12),
     ("reg", 64),
@@ -169,10 +169,12 @@ MATCHER_EVENTS = frozenset({"PreToolUse", "PostToolUse", "SessionStart", "Subage
 class Refusal(Exception):
     """A call the shim decides by an outcome of its own: a deny on a fail-closed entry, `{}` on an informational one."""
 
-    def __init__(self, outcome, detail):
+    def __init__(self, outcome, detail, cause=""):
         super().__init__(outcome)
         self.outcome = outcome
         self.detail = detail
+        # The closed-vocabulary name of an error or a signal behind the outcome, or "" when it has none.
+        self.cause = cause
 
 
 class CallState:
@@ -224,13 +226,18 @@ def is_valid_session_id(value):
     return isinstance(value, str) and _SESSION_ID_RE.fullmatch(value) is not None
 
 
+def is_absolute_without_parent_component(value):
+    """The first condition of the tool-path rule: absolute, with no `..` component."""
+    return isinstance(value, str) and value.startswith("/") and ".." not in value.split("/")
+
+
+def holds_no_path_list_character(value):
+    """The second condition of the tool-path rule: no `:`, newline or NUL, which would split or end a PATH entry."""
+    return isinstance(value, str) and not any(character in value for character in (":", "\n", "\0"))
+
+
 def is_valid_tool_path(value):
-    return (
-        isinstance(value, str)
-        and value.startswith("/")
-        and not any(character in value for character in (":", "\n", "\0"))
-        and ".." not in value.split("/")
-    )
+    return is_absolute_without_parent_component(value) and holds_no_path_list_character(value)
 
 
 def log_value(field, value):
@@ -478,7 +485,7 @@ def install_record_path():
     return os.path.join(home, INSTALL_RECORD_RELATIVE_PATH)
 
 
-def _tool_map_is_usable(tool_map):
+def tool_map_is_usable(tool_map):
     if not isinstance(tool_map, dict):
         return False
     tools = tool_map.get("tools")
@@ -527,7 +534,7 @@ def read_install_record(call, require_wrapper=False):
     if tool_paths is None:
         tool_paths = {}
     if (
-        not _tool_map_is_usable(record.get("tool_map"))
+        not tool_map_is_usable(record.get("tool_map"))
         or not isinstance(tool_paths, dict)
         or not all(is_valid_tool_path(path) for path in tool_paths.values())
         or (require_wrapper and recorded_wrapper({"tool_paths": tool_paths}) is None)
@@ -1344,7 +1351,7 @@ def retry_sentence(cause):
 
 
 def start_failed(program, cause):
-    return Refusal("start-failed", f"The {program} could not be started (cause {cause}). {retry_sentence(cause)}")
+    return Refusal("start-failed", f"The {program} could not be started (cause {cause}). {retry_sentence(cause)}", cause)
 
 
 def interpret_status(returncode, deadline_reached):
@@ -1360,9 +1367,10 @@ def interpret_status(returncode, deadline_reached):
     if returncode == TIMEOUT_STATUS_TIMED_OUT:
         return TIMEOUT_STATUS_TIMED_OUT
     if returncode < 0:
-        raise Refusal("signal", f"The hook was killed by a signal ({signal_name(-returncode)}).")
+        raise Refusal("signal", f"The hook was killed by a signal ({signal_name(-returncode)}).", signal_name(-returncode))
     if returncode > SIGNAL_STATUS_BASE:
-        raise Refusal("signal", f"The hook was killed by a signal ({signal_name(returncode - SIGNAL_STATUS_BASE)}).")
+        name = signal_name(returncode - SIGNAL_STATUS_BASE)
+        raise Refusal("signal", f"The hook was killed by a signal ({name}).", name)
     return returncode
 
 
@@ -1700,13 +1708,29 @@ def run(argv):
 
 
 class SelfCheckMismatch(Exception):
-    pass
+    """A check whose comparison failed. A `hook-run` mismatch carries its outcome and, for `status`, the status seen."""
+
+    def __init__(self, name, outcome="", cause=""):
+        super().__init__(name)
+        self.outcome = outcome
+        self.cause = cause
 
 
 SELF_CHECK_SHELL = "/bin/sh"
 SELF_CHECK_PROGRAM = b"printf out-token; printf err-token >&2; exit 3\n"
 SELF_CHECK_TOKENS = (b"out-token", b"err-token")
 SELF_CHECK_EXIT_STATUS = 3
+# The outcomes a failed `hook-run` check names: the two mismatches of a call that returned, and the outcomes of a call that
+# raised Refusal. `cursor-adapter.py` renders its child-failure text from this set.
+HOOK_RUN_OUTCOMES = (
+    "status",
+    "streams",
+    "start-failed",
+    "timeout",
+    "signal",
+    "hook-output-cap",
+    "unenterable-dir",
+)
 
 
 def _self_check_payload():
@@ -1726,16 +1750,26 @@ def _self_check_record():
     }
 
 
+def outcome_suffix(check_name, error):
+    """The ` <outcome>[ <value>]` a `hook-run` failure adds to its class, or "" for another check or an unnamed outcome."""
+    outcome = getattr(error, "outcome", "")
+    if check_name != "hook-run" or outcome not in HOOK_RUN_OUTCOMES:
+        return ""
+    cause = getattr(error, "cause", "")
+    return f" {outcome} {cause}" if cause else f" {outcome}"
+
+
 def self_check(wrapper):
-    """Runs the checks that the installer's `install` and `check` commands (not yet written) run under the recorded python3.
-    Returns the failures, one `name: class` each."""
+    """Runs the checks that `cursor-adapter.py install` and `check` run under the recorded python3.
+    Returns the failures, one string each: the check's name, `: ` and the exception's class. A `hook-run` failure adds
+    the outcome it observed from HOOK_RUN_OUTCOMES and, for an outcome with a status or a cause, that value."""
     failures = []
 
     def attempt(name, step):
         try:
             step()
         except Exception as error:  # the report names the class, never the message
-            failures.append(f"{name}: {type(error).__name__}")
+            failures.append(f"{name}: {type(error).__name__}{outcome_suffix(name, error)}")
 
     state = {}
 
@@ -1763,8 +1797,10 @@ def self_check(wrapper):
         status, stdout, stderr = run_wrapped_hook(
             wrapper, SELF_CHECK_SHELL, SELF_CHECK_PROGRAM, "/", dict(os.environ), deadline_at
         )
-        if status != SELF_CHECK_EXIT_STATUS or (stdout, stderr) != SELF_CHECK_TOKENS:
-            raise SelfCheckMismatch("hook-run")
+        if status != SELF_CHECK_EXIT_STATUS:
+            raise SelfCheckMismatch("hook-run", "status", str(status))
+        if (stdout, stderr) != SELF_CHECK_TOKENS:
+            raise SelfCheckMismatch("hook-run", "streams")
 
     attempt("field-table", check_field_table)
     attempt("parity-exceptions", check_parity_exceptions)

@@ -1,8 +1,9 @@
-"""Behavioral parity between two helpers the Cursor adapter's Python shim copies and their hooks/_lib.sh originals.
+"""Parity between what the Cursor adapter's Python files hold and the originals they stand in for or must equal.
 
-The shim cannot call _lib.sh, so each copy needs its own check: the session-id grammar, and path resolution, where the
-shim's os.path.realpath stands in for `_lib_realpath_m`. The classes sit under hooks/tests/ so an edit to _lib.sh selects
-them."""
+The shim cannot call _lib.sh, so two helpers need their own checks: the session-id grammar, and path resolution, where the
+shim's os.path.realpath stands in for `_lib_realpath_m`. cursor-adapter.py holds its own Python and bash floor constants, which
+further checks tie to hooks/_config.sh, and its own copy of the shim's tool-path rule, which a check ties to the shim's.
+The classes sit under hooks/tests/ so an edit to _lib.sh or _config.sh selects them."""
 
 from __future__ import annotations
 
@@ -16,12 +17,16 @@ from ._cursor_payloads import (
     LIB_SH,
     build_spec,
     hook_args,
+    load_adapter,
     load_shim,
     make_shim_env,
     recording_probe_script,
     run_shim,
     shim_json,
 )
+from .test_bash_floor import _CONFIG_SH, _floor_constants
+from .test_git_floor import python_floor_fields
+from .test_python_floor import _run_predicate
 
 SHIM = load_shim()
 
@@ -178,3 +183,127 @@ class TestRealpathParity:
     def test_a_target_holding_a_nul_raises_the_error_the_shim_catches_before_any_resolution(self) -> None:
         with pytest.raises(ValueError):
             SHIM.Roots([], "").canonicalize("/tmp/a\x00b")
+
+
+class TestBashFloorParity:
+    """cursor-adapter.py judges the hooks' bash by one constant, and _config.sh holds the toolkit's floor."""
+
+    def test_the_adapters_bash_floor_constant_equals_the_floor_config_sh_holds(self) -> None:
+        major, minor = _floor_constants(_CONFIG_SH)
+        floor = load_adapter(name="cursor_adapter_bash_floor_parity").BASH_FLOOR
+        assert floor == (major, minor), (
+            f"cursor-adapter.py's BASH_FLOOR is {floor} but _config.sh's _BASH_FLOOR_MAJOR and _BASH_FLOOR_MINOR are "
+            f"{major} and {minor}. Change them together."
+        )
+
+    def test_the_refusal_text_renders_the_same_constant(self) -> None:
+        module = load_adapter(name="cursor_adapter_bash_floor_text")
+        major, minor = _floor_constants(_CONFIG_SH)
+        assert f"{major}.{minor} or later" in module.floor_text("bash", "/b", module.BASH_FLOOR, "below", (4, 0))
+
+
+class TestSharedNameParity:
+    """cursor-adapter.py reads, rotates and removes what the shim writes, under names each file holds for itself."""
+
+    @pytest.mark.parametrize("name", ["STATE_DIR_NAME", "LOG_FILE_NAME", "FIRST_CALL_DIR_NAME"])
+    def test_the_adapters_name_equals_the_shims(self, name: str) -> None:
+        adapter = load_adapter(name="cursor_adapter_shared_name_parity")
+        assert getattr(adapter, name) == getattr(SHIM, name)
+
+    def test_the_adapters_install_record_path_equals_the_shims(self) -> None:
+        adapter = load_adapter(name="cursor_adapter_shared_name_parity")
+        assert f"{adapter.RECORD_RELATIVE_DIR}/{adapter.INSTALL_RECORD_NAME}" == SHIM.INSTALL_RECORD_RELATIVE_PATH
+
+
+# Values on each side of every tool-path condition: absolute or not, a `..` component, and each list character.
+TOOL_PATH_CORPUS = [
+    "/usr/bin/python3",
+    "/",
+    "/a b/it's",
+    "relative/path",
+    "",
+    "/a/../b",
+    "/a/..",
+    "/..a/b",
+    "/a/.../b",
+    "/a:b",
+    "/a\nb",
+    "/a\0b",
+    "//a",
+    "/a//b",
+    "/a/",
+]
+
+
+class TestToolPathRuleParity:
+    """cursor-adapter.py holds its own copy of the shim's tool-path rule, because `uninstall` must read the install record
+    when the shim does not load. The two must judge every value alike."""
+
+    @pytest.mark.parametrize("value", TOOL_PATH_CORPUS, ids=repr)
+    def test_the_adapters_predicate_judges_a_value_as_the_shims_does(self, value: str) -> None:
+        adapter = load_adapter(name="cursor_adapter_tool_path_parity")
+        assert adapter.is_valid_tool_path(value) is SHIM.is_valid_tool_path(value)
+
+    @pytest.mark.parametrize("value", [None, 7, b"/a", ["/a"]], ids=repr)
+    def test_both_predicates_refuse_a_value_that_is_not_a_string(self, value: object) -> None:
+        adapter = load_adapter(name="cursor_adapter_tool_path_parity")
+        assert adapter.is_valid_tool_path(value) is False
+        assert SHIM.is_valid_tool_path(value) is False
+
+    @pytest.mark.parametrize("value", [value for value in TOOL_PATH_CORPUS if "\0" not in value], ids=repr)
+    def test_home_directory_accepts_exactly_the_values_the_shims_rule_accepts(
+        self, value: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = load_adapter(name="cursor_adapter_home_parity")
+        monkeypatch.setenv("HOME", value)
+
+        if SHIM.is_valid_tool_path(value):
+            assert adapter.home_directory() == value
+        else:
+            with pytest.raises(adapter.AdapterError):
+                adapter.home_directory()
+
+    def test_home_directory_refuses_an_unset_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        adapter = load_adapter(name="cursor_adapter_home_parity")
+        monkeypatch.delenv("HOME", raising=False)
+        with pytest.raises(adapter.AdapterError):
+            adapter.home_directory()
+
+
+class TestPythonFloorParity:
+    """cursor-adapter.py judges both python3 interpreters by one constant, and _config.sh holds the toolkit's floor."""
+
+    def test_the_adapters_floor_constant_equals_the_floor_config_sh_holds(self) -> None:
+        major, minor = python_floor_fields()
+        floor = getattr(load_adapter(name="cursor_adapter_floor_parity"), "PYTHON_FLOOR", None)
+        assert floor is not None, (
+            "cursor-adapter.py defines no PYTHON_FLOOR. It must equal _config.sh's _PYTHON_FLOOR_MAJOR and _PYTHON_FLOOR_MINOR."
+        )
+        assert floor == (int(major), int(minor)), (
+            f"cursor-adapter.py's PYTHON_FLOOR is {floor} but _config.sh's _PYTHON_FLOOR_MAJOR and "
+            f"_PYTHON_FLOOR_MINOR are {major} and {minor}. Change them together."
+        )
+
+    def test_the_refusal_text_renders_the_same_constant(self) -> None:
+        module = load_adapter(name="cursor_adapter_floor_text")
+        major, minor = python_floor_fields()
+        assert f"{major}.{minor} or later" in module.floor_text("python3", "/p", module.PYTHON_FLOOR, "below", (2, 0))
+
+
+class TestProbeVersionFieldParity:
+    """The adapter reads a probe's version fields as `_config.sh` does: one to nine digits, and no more."""
+
+    @pytest.mark.parametrize("digits", [1, 9, 10, 20])
+    @pytest.mark.parametrize("position", ["major", "minor"])
+    def test_a_field_of_each_length_is_read_or_refused_by_the_adapter_as_the_floor_predicate_reads_or_refuses_it(
+        self, digits: int, position: str
+    ) -> None:
+        adapter = load_adapter(name="cursor_adapter_probe_field_parity")
+        field = "9" * digits
+        major, minor = (field, "0") if position == "major" else ("1", field)
+
+        predicate_refused_the_field = _run_predicate(major, minor).returncode == 2
+        adapter_read_the_field = adapter.parse_version_fields(f"{major} {minor}") is not None
+
+        assert adapter_read_the_field is not predicate_refused_the_field
+        assert adapter_read_the_field is (digits <= 9)

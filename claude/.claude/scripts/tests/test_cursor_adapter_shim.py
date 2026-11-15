@@ -29,6 +29,7 @@ sys.path.insert(0, str(CLAUDE_DIR))
 from hooks.tests._cursor_payloads import (  # noqa: E402
     CONTRACT_VERSION,
     CONVERSATION_ID,
+    IS_ROOT,
     PARITY_EXCEPTIONS_JSON,
     SHIM,
     SHIM_INTERPRETER_FLAGS,
@@ -54,12 +55,12 @@ from hooks.tests._cursor_payloads import (  # noqa: E402
     shim_json,
     shim_process_env,
     symlink_bin_dir,
+    wrapper_name,
     write_hook_script,
 )
 
 SHIM_MODULE = load_shim()
 RECOVERY_SENTENCE = SHIM_MODULE.RECOVERY_SENTENCE
-IS_ROOT = os.geteuid() == 0
 OUTPUT_CAP = SHIM_MODULE.HOOK_OUTPUT_CAP_BYTES
 PAYLOAD_CAP = SHIM_MODULE.PAYLOAD_CAP_BYTES
 # The PATH the shim fixes after the install record, behind the recorded tool directories.
@@ -1266,14 +1267,14 @@ class TestShimPrologue:
     def test_the_path_the_hook_sees_is_the_recorded_tool_directories_then_the_system_ones(self, tmp_path: Path) -> None:
         paths = recorded_tool_paths()
         env = make_shim_env(
-            tmp_path, tool_paths={"jq": paths["jq"], "bash": paths["bash"], "timeout": paths.get("timeout") or paths["gtimeout"]}
+            tmp_path, tool_paths={"jq": paths["jq"], "bash": paths["bash"], "timeout": paths[wrapper_name()]}
         )
         root = _workspace(tmp_path)
         script = write_hook_script(tmp_path / "hook.sh", f"printf '%s' \"$PATH\" > '{tmp_path / 'path'}'\n")
         run_shim(env, shell_pre_payload(root, "ls"), hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path))
         directories = []
         for tool in ("jq", "bash", "timeout"):
-            directory = str(Path(paths.get(tool) or paths["gtimeout"]).parent)
+            directory = str(Path(paths[wrapper_name() if tool == "timeout" else tool]).parent)
             if directory not in directories:
                 directories.append(directory)
         assert (tmp_path / "path").read_text() == ":".join([*directories, *SYSTEM_PATH.split(":")])
@@ -1285,7 +1286,7 @@ class TestShimPrologue:
             "jq": paths["jq"],
             "extra-one": str(extra_directory / "one"),
             "extra-two": str(extra_directory / "two"),
-            "timeout": paths.get("timeout") or paths["gtimeout"],
+            "timeout": paths[wrapper_name()],
         }
         env = make_shim_env(tmp_path, tool_paths=recorded)
         script = write_hook_script(tmp_path / "hook.sh", f"printf '%s' \"$PATH\" > '{tmp_path / 'path'}'\n")
@@ -2062,9 +2063,7 @@ CONTENTION_HOG_LIFETIME_SECONDS = 300
 
 def _recorded_wrapper() -> str:
     """The recorded GNU `timeout` or `gtimeout`. A host with none fails the hook-run rows, never skips them."""
-    paths = recorded_tool_paths()
-    wrapper = paths.get("timeout") or paths.get("gtimeout")
-    assert wrapper, "no timeout or gtimeout resolves on this host"
+    wrapper = recorded_tool_paths()[wrapper_name()]
     version = subprocess.run([wrapper, "--version"], capture_output=True, text=True, check=False).stdout
     assert "GNU coreutils" in version, f"{wrapper} is not GNU timeout"
     return wrapper
@@ -2788,15 +2787,84 @@ class TestShimFaults:
         assert SHIM_MODULE.self_check(wrapper) == ["hook-run: RuntimeError"]
 
     @pytest.mark.parametrize(
-        "returned",
-        [(4, b"out-token", b"err-token"), (3, b"other", b"err-token"), (3, b"out-token", b""), (3, b"out-token", b"err-token!")],
-        ids=["other-status", "other-stdout", "no-stderr", "extra-stderr"],
+        ("returned", "expected"),
+        [
+            ((4, b"out-token", b"err-token"), "hook-run: SelfCheckMismatch status 4"),
+            ((0, b"out-token", b"err-token"), "hook-run: SelfCheckMismatch status 0"),
+            ((3, b"other", b"err-token"), "hook-run: SelfCheckMismatch streams"),
+            ((3, b"out-token", b""), "hook-run: SelfCheckMismatch streams"),
+            ((3, b"out-token", b"err-token!"), "hook-run: SelfCheckMismatch streams"),
+        ],
+        ids=["other-status", "status-zero", "other-stdout", "no-stderr", "extra-stderr"],
     )
-    def test_a_hook_run_that_returns_another_status_or_other_output_fails_the_hook_run_check(
-        self, monkeypatch: pytest.MonkeyPatch, wrapper: str, returned: tuple
+    def test_a_hook_run_that_returns_another_status_or_other_output_fails_the_hook_run_check_naming_its_outcome(
+        self, monkeypatch: pytest.MonkeyPatch, wrapper: str, returned: tuple, expected: str
     ) -> None:
         monkeypatch.setattr(SHIM_MODULE, "run_wrapped_hook", lambda *arguments, **keywords: returned)
-        assert SHIM_MODULE.self_check(wrapper) == ["hook-run: SelfCheckMismatch"]
+        assert SHIM_MODULE.self_check(wrapper) == [expected]
+
+    # One row per member of HOOK_RUN_OUTCOMES, each reached through the real run_wrapped_hook with a stand-in wrapper, clock
+    # or Popen error. The ids are literals, so a member added to the constant without a row fails the equality row below.
+    HOOK_RUN_OUTCOME_ROWS = (
+        ("status", "hook-run: SelfCheckMismatch status 0"),
+        ("streams", "hook-run: SelfCheckMismatch streams"),
+        ("start-failed", "hook-run: Refusal start-failed ENOENT"),
+        ("start-failed", "hook-run: Refusal start-failed status:125"),
+        ("timeout", "hook-run: Refusal timeout"),
+        ("signal", "hook-run: Refusal signal SIGTERM"),
+        ("hook-output-cap", "hook-run: Refusal hook-output-cap"),
+        ("unenterable-dir", "hook-run: Refusal unenterable-dir"),
+    )
+
+    def _stand_in_wrapper(self, tmp_path: Path, body: str) -> str:
+        return str(write_hook_script(tmp_path / "stand-in-wrapper", body))
+
+    @pytest.mark.parametrize(("outcome", "expected"), HOOK_RUN_OUTCOME_ROWS, ids=[row[1] for row in HOOK_RUN_OUTCOME_ROWS])
+    def test_each_hook_run_outcome_is_reached_through_the_real_run_and_named_in_the_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str, expected: str
+    ) -> None:
+        wrapper = {
+            "hook-run: SelfCheckMismatch status 0": lambda: self._stand_in_wrapper(tmp_path, "exit 0\n"),
+            "hook-run: SelfCheckMismatch streams": lambda: self._stand_in_wrapper(tmp_path, "printf x\nexit 3\n"),
+            "hook-run: Refusal start-failed ENOENT": lambda: str(tmp_path / "no-such-wrapper"),
+            "hook-run: Refusal start-failed status:125": lambda: self._stand_in_wrapper(tmp_path, "exit 125\n"),
+            "hook-run: Refusal timeout": lambda: self._stand_in_wrapper(tmp_path, "exit 3\n"),
+            "hook-run: Refusal signal SIGTERM": lambda: self._stand_in_wrapper(tmp_path, "kill -TERM $$\n"),
+            "hook-run: Refusal hook-output-cap": lambda: self._stand_in_wrapper(tmp_path, "printf out-token\nexit 3\n"),
+            "hook-run: Refusal unenterable-dir": lambda: self._stand_in_wrapper(tmp_path, "exit 3\n"),
+        }[expected]()
+        if outcome == "timeout":
+            # A deadline already in the past, so the run times out whatever order the shim reads the clock in.
+            monkeypatch.setattr(SHIM_MODULE, "MIN_DEADLINE_SECONDS", -1000)
+        if outcome == "hook-output-cap":
+            monkeypatch.setattr(SHIM_MODULE, "HOOK_OUTPUT_CAP_BYTES", 4)
+        if outcome == "unenterable-dir":
+
+            def popen_naming_the_directory(*arguments, **keywords):
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", "/")
+
+            monkeypatch.setattr(
+                SHIM_MODULE,
+                "subprocess",
+                SimpleNamespace(
+                    Popen=popen_naming_the_directory, PIPE=subprocess.PIPE, TimeoutExpired=subprocess.TimeoutExpired
+                ),
+            )
+        failures = SHIM_MODULE.self_check(wrapper)
+        assert [failure for failure in failures if failure.startswith("hook-run")] == [expected]
+
+    def test_the_rows_above_reach_exactly_the_exported_outcome_set(self) -> None:
+        assert {outcome for outcome, _ in self.HOOK_RUN_OUTCOME_ROWS} == set(SHIM_MODULE.HOOK_RUN_OUTCOMES)
+
+    def test_a_refusal_carries_the_cause_that_start_failed_and_the_signal_raises_set(self) -> None:
+        assert SHIM_MODULE.start_failed("wrapper", "EAGAIN").cause == "EAGAIN"
+        with pytest.raises(SHIM_MODULE.Refusal) as raised:
+            SHIM_MODULE.interpret_status(-signal.SIGTERM, deadline_reached=False)
+        assert raised.value.cause == "SIGTERM"
+        with pytest.raises(SHIM_MODULE.Refusal) as raised:
+            SHIM_MODULE.interpret_status(128 + signal.SIGHUP, deadline_reached=False)
+        assert raised.value.cause == "SIGHUP"
+        assert SHIM_MODULE.Refusal("timeout", "late").cause == ""
 
     @pytest.mark.parametrize(
         ("field_table_present", "expected_names"),
@@ -3895,3 +3963,34 @@ def test_the_recorded_bash_is_probed_as_having_builtin_and_runs_every_shell_inde
     rows_for_bash = {row for row, shell in BEHAVIOUR_PARAMS_BY_ROW_ORDER if shell == "bash"}
     assert rows_for_bash == set(BEHAVIOUR_ROW_IDS) - ZSH_ONLY_ROWS
     assert BEHAVIOUR_PARAMS, "no behaviour row has a shell to run under"
+
+
+# --- the tool-path rule's two conditions ---
+
+
+class TestToolPathPredicates:
+    """`is_valid_tool_path` is the conjunction of one predicate per condition, so `install` can name the first that fails."""
+
+    @pytest.mark.parametrize(
+        ("value", "absolute_without_parent", "no_list_character"),
+        [
+            ("/usr/bin/jq", True, True),
+            ("bin/jq", False, True),
+            ("/a/../b", False, True),
+            ("/a..b/c", True, True),
+            ("/a:b", True, False),
+            ("/a\nb", True, False),
+            ("/a\0b", True, False),
+            ("/x/../y:z", False, False),
+            ("", False, True),
+            (5, False, False),
+            (None, False, False),
+        ],
+        ids=["good", "relative", "dot-dot", "dots-in-a-name", "colon", "newline", "nul", "both-fail", "empty", "int", "none"],
+    )
+    def test_each_predicate_judges_only_its_own_condition(
+        self, value: object, absolute_without_parent: bool, no_list_character: bool
+    ) -> None:
+        assert SHIM_MODULE.is_absolute_without_parent_component(value) is absolute_without_parent
+        assert SHIM_MODULE.holds_no_path_list_character(value) is no_list_character
+        assert SHIM_MODULE.is_valid_tool_path(value) is (absolute_without_parent and no_list_character)
