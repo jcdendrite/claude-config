@@ -23,6 +23,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import fields
 from pathlib import Path
@@ -260,18 +261,20 @@ def check_local_dir(local_dir: Path) -> None:
     existing_ancestor = next(parent for parent in local_dir.parents if parent.exists())
     # A path inside the directory, since a directory-only ignore pattern cannot match one that is absent.
     try:
-        ignored = subprocess.run(
+        probe_returncode = subprocess.run(
             ["git", "-C", str(existing_ancestor), "check-ignore", "-q", "--", str(local_dir / "ignore-probe")],
             capture_output=True, env=isolated_git_environment(), check=False,
             timeout=review_runner._ENVIRONMENT_READ_TIMEOUT_S,
-        ).returncode == 0
+        ).returncode
     except subprocess.TimeoutExpired:
         raise HarnessInvalidatedError(
             f"--local-dir {shown}: the git check-ignore probe timed out after "
             f"{review_runner._ENVIRONMENT_READ_TIMEOUT_S} s, a fixed limit with no flag to raise it"
         ) from None
-    if not ignored:
+    if probe_returncode == 1:
         raise HarnessInvalidatedError(f"--local-dir {shown} is not ignored by the git work tree that holds it")
+    if probe_returncode != 0:
+        raise HarnessInvalidatedError(f"--local-dir {shown}: git could not confirm that the directory is ignored")
 
 
 def _interrupt_hint(args: argparse.Namespace) -> str:
@@ -283,7 +286,7 @@ def _interrupt_hint(args: argparse.Namespace) -> str:
         f"After a hard kill, wait at least --timeout-s ({args.timeout_s} s) first, since a surviving claude child "
         "can still be writing."
     )
-    temp_dir = os.environ.get("TMPDIR", "/tmp")
+    temp_dir = tempfile.gettempdir()
     if args.subcommand == "smoke":
         return (
             f"smoke: interrupted; rerun the command. {wait} A hard kill also leaves the smoke run's fixtures, "

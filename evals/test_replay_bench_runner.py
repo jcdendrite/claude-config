@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -849,12 +850,16 @@ class TestTheCommandLine:
         ("symlink", "passes through a symlink"),
         ("name", "must end in"),
         ("unignored", "is not ignored by the git work tree"),
+        # Git exits 128, not 1, outside any work tree, so the refusal cannot claim the path is unignored.
+        ("outside-work-tree", "git could not confirm that the directory is ignored"),
     ])
     def test_a_refused_local_dir_exits_two_naming_its_own_rule_with_the_target_still_absent(
         self, tmp_path, capsys, kind, refusal_fragment,
     ):
         unignored_parent = tmp_path / "unignored-parent"
         unignored_parent.mkdir()
+        if kind == "unignored":
+            subprocess.run(["git", "init", "-q"], cwd=unignored_parent, check=True, capture_output=True)
         if kind == "symlink":
             (tmp_path / "link-parent").symlink_to(make_ignored_local_dir(tmp_path).parent)
         if kind == "name":
@@ -867,6 +872,7 @@ class TestTheCommandLine:
             "symlink": tmp_path / "link-parent" / ".local",
             "name": tmp_path / "name-checkout" / "ignored-but-misnamed",
             "unignored": unignored_parent / ".local",
+            "outside-work-tree": unignored_parent / ".local",
         }[kind]
 
         assert main_run("--local-dir", str(target), "summarize", "--campaign-id", "c1") == 2
@@ -889,6 +895,23 @@ class TestTheCommandLine:
         message = str(refusal.value)
         assert "timed out" in message and f"{review_runner._ENVIRONMENT_READ_TIMEOUT_S} s" in message
         assert "no flag" in message and "is not ignored" not in message
+
+    @pytest.mark.parametrize("probe_returncode", [2, 128])
+    def test_an_ignore_probe_git_could_not_run_refuses_without_claiming_the_dir_is_unignored(
+        self, tmp_path, monkeypatch, probe_returncode,
+    ):
+        ignored_local_dir = make_ignored_local_dir(tmp_path)
+
+        def probe_that_fails(command, **_kwargs):
+            return subprocess.CompletedProcess(command, probe_returncode, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(run_replay_bench.subprocess, "run", probe_that_fails)
+
+        with pytest.raises(review_runner.HarnessInvalidatedError) as refusal:
+            run_replay_bench.check_local_dir(ignored_local_dir)
+
+        message = str(refusal.value)
+        assert "could not confirm" in message and "is not ignored" not in message
 
     def test_the_default_local_dir_is_ignored_by_this_checkout(self):
         run_replay_bench.check_local_dir(REAL_DEFAULT_LOCAL_DIR)
@@ -952,7 +975,7 @@ class TestTheCommandLine:
     def test_the_interrupt_hint_of_smoke_names_the_wait_and_the_leftovers_to_remove_by_hand_and_no_resume(
         self, monkeypatch,
     ):
-        monkeypatch.setenv("TMPDIR", "/synthetic/tmp")
+        monkeypatch.setattr(tempfile, "tempdir", "/synthetic/tmp")
         args = run_replay_bench.build_parser().parse_args(["smoke", "--tasks", "set", "--task-id", "t", "--timeout-s", "90"])
 
         hint = run_replay_bench._interrupt_hint(args)
@@ -963,7 +986,7 @@ class TestTheCommandLine:
         assert "resume with" not in hint and "same TMPDIR" not in hint
 
     def test_the_interrupt_hint_of_run_names_the_resume_the_wait_and_the_same_tmpdir(self, monkeypatch):
-        monkeypatch.setenv("TMPDIR", "/synthetic/tmp")
+        monkeypatch.setattr(tempfile, "tempdir", "/synthetic/tmp")
         args = run_replay_bench.build_parser().parse_args(
             [*self.RUN_ARGV, "--campaign-id", "interrupted", "--timeout-s", "90"],
         )
@@ -973,6 +996,18 @@ class TestTheCommandLine:
         assert "resume with --campaign-id interrupted" in hint
         assert "wait at least --timeout-s (90 s)" in hint
         assert "same TMPDIR ('/synthetic/tmp')" in hint
+
+    def test_the_interrupt_hint_names_the_system_temp_dir_when_only_temp_is_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TMPDIR", raising=False)
+        monkeypatch.delenv("TMP", raising=False)
+        monkeypatch.setenv("TEMP", str(tmp_path))
+        monkeypatch.setattr(tempfile, "tempdir", None)
+        args = run_replay_bench.build_parser().parse_args([*self.RUN_ARGV, "--campaign-id", "interrupted"])
+
+        hint = run_replay_bench._interrupt_hint(args)
+
+        assert f"({tempfile.gettempdir()!r})" in hint
+        assert f"({str(tmp_path)!r})" in hint
 
     def test_a_whole_run_through_main_completes_and_summarize_reads_it_back(self, world, local_dir, monkeypatch, capsys):
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)

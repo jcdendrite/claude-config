@@ -58,8 +58,6 @@ def readiness_argv(prefix: list[str]) -> list[str]:
 
 
 def instrument_hook_command(log_path: Path) -> str:
-    """One `printf` of the captured payload reaches the log in one write, so two hooks firing at once cannot
-    split one payload from its newline."""
     return f"payload=$(cat); printf '%s\\n' \"$payload\" >> {shlex.quote(str(log_path))}"
 
 
