@@ -2247,7 +2247,7 @@ class TestCostTokensColumn:
 
 
 class TestFablePricing:
-    """Fable 5 / 5.1 rate arithmetic against the vendor-published figures
+    """Fable 5 / 5.1 / 5.2 rate arithmetic against the vendor-published figures
     (platform.claude.com/docs/en/about-claude/pricing). These validate rate
     arithmetic only, never the model-ID string -- an exact-match dict test
     supplies the same key it looks up, so no test shape here can catch a
@@ -2276,6 +2276,17 @@ class TestFablePricing:
         assert rates["cache_write_5m"] == pytest.approx(12.50)
         assert rates["cache_write_1h"] == pytest.approx(20.00)
         assert rates["cache_read"] == pytest.approx(0.25)
+
+    def test_fable_5_2_rates_use_reduced_cache_read_multiplier(self):
+        """Fable 5.2: vendor base $8 and 0.025x cache read; derived output $40, 5m write $10, 1h write $16,
+        cache_read 0.025x = $0.20."""
+        rates = pricing._model_rates("claude-fable-5-2")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(8.00)
+        assert rates["output"] == pytest.approx(40.00)
+        assert rates["cache_write_5m"] == pytest.approx(10.00)
+        assert rates["cache_write_1h"] == pytest.approx(16.00)
+        assert rates["cache_read"] == pytest.approx(0.20)
 
     def test_fable_5_1_priced_turn_hand_computed_dollar_total(self, fake_projects, capsys):
         """End-to-end through _cost_report: a Fable 5.1 turn's cache_read
