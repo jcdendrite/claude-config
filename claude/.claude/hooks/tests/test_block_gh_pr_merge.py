@@ -222,7 +222,7 @@ class TestBlockGhPrMerge:
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('echo "gh pr merge"')) == "allow"
 
     def test_value_taking_global_flag_before_subcommand_denied(self):
-        """Row 4's exact naive-implementation failure case: without
+        """The exact naive-implementation failure case: without
         skipping -R/--repo's own value, `o/r` would misread as the
         subcommand and the match would miss."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh --repo o/r pr merge")) == "deny"

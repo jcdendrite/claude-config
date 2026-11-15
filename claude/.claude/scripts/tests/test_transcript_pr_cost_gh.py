@@ -74,7 +74,7 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
         self, fake_projects, tmp_path, monkeypatch,
     ):
         """An auth-shaped failure on the per-PR `gh pr view` enrichment call
-        (distinct from the M9-equivalent identity-resolution call) folds
+        (distinct from the identity-resolution call) folds
         into _PR_COST_STATUS_DEGRADED_NETWORK before reaching the row --
         _GH_CALL_DEGRADED_AUTH is never a valid ledger status value."""
         _enable_pr_cost(tmp_path)

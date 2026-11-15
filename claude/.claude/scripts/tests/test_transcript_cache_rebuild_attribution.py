@@ -50,8 +50,7 @@ class TestAttributeIdleGapCause:
     prior_turn/window dicts, no fixture transcript and no
     _cache_rebuild_report run, so a marker-shape bug is pinned without
     needing a full transcript fixture. Covers
-    .claude/plans/subagent-idle-gap-cause-attribution.md's Verification
-    section's precedence, self-scoping, and clock-skew cases, plus the
+    precedence, self-scoping, and clock-skew cases, plus the
     bash_shape/no-command/other-command split. Sleep-poll wait follows the
     winning Bash marker, not window order."""
 
@@ -225,8 +224,7 @@ class TestAttributeIdleGapCause:
 
     def test_two_bash_pairs_poll_loop_last_marker_wins_the_later_tool_result(self):
         """Two Bash tool_use/tool_result pairs in one window (the poll-loop
-        shape .claude/plans/subagent-idle-gap-cause-attribution.md's
-        Context section hand-sampled) -- last-marker-wins must pick the
+        shape) -- last-marker-wins must pick the
         LATER tool_result's timestamp, not the first."""
         prior_turn = _asst(
             "claude-sonnet-5", content=[_bash_use("tool-1", "sleep 30"), _bash_use("tool-2", "sleep 30")]
@@ -427,8 +425,7 @@ class TestClassifyBashWaitShape:
 
 
 class TestCacheRebuildIdleGapAttribution:
-    """.claude/plans/subagent-idle-gap-cause-attribution.md's Verification
-    section's report-level cases for the subagent idle-gap cause-attribution
+    """Report-level cases for the subagent idle-gap cause-attribution
     table, modeled on TestCacheRebuildOriginSplit's own fixture-per-case
     style. Precedence/self-scoping/clock-skew are covered directly against
     _attribute_idle_gap_cause in TestAttributeIdleGapCause above; these

@@ -280,8 +280,7 @@ class TestHandoffSignalForwardContext:
 
 class TestHandoffSignalResponseSessionRows:
     """_handoff_signal_response_session_rows' own signal-detection and
-    row-composition contract, per
-    .claude/plans/handoff-nudge-rationalization-gap.md."""
+    row-composition contract."""
 
     def test_over_threshold_true_already_fired_false_emits_one_check_signal(self):
         records = [

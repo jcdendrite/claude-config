@@ -1,7 +1,7 @@
 """Tests for transcript_analysis/context_composition.py's context-composition subcommand.
 
 Every fixture here is synthetic -- hand-built records, never sampled or copied from a real
-transcript. See .claude/plans/context-composition-analyzer.md for the algorithm this pins.
+transcript.
 """
 import math
 import re

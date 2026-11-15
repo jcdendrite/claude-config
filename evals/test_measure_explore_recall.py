@@ -1126,7 +1126,7 @@ class TestEvaluateGate:
     def test_per_case_cliff_check_runs_before_the_wilson_lower_bound_check(self) -> None:
         """Term ordering: when term 2's cliff guard and term 3's Wilson
         lower bound would independently disagree (FAIL vs UNCALLABLE), term
-        2 is checked first per the plan's exact ordering (1, 2, then 3), so
+        2 is checked first (the order is 1, 2, then 3), so
         the verdict is FAIL."""
         verdict = m.evaluate_gate(
             stratum_recall_gaps={"A": 0.0, "B": 0.0}, min_per_case_recall_gap=-0.5,
@@ -1137,7 +1137,7 @@ class TestEvaluateGate:
     def test_stratum_gap_check_runs_before_the_precision_terms(self) -> None:
         """Term ordering: a term-1 failure is reported even though term 3's
         inputs here would otherwise drive an UNCALLABLE verdict -- pins that
-        term 1 is checked first, per the plan's exact ordering."""
+        term 1 is checked first."""
         verdict = m.evaluate_gate(
             stratum_recall_gaps={"A": 0.5}, min_per_case_recall_gap=-0.5,
             haiku_precision_point_estimate=0.1, haiku_precision_wilson_lower_bound=0.1,
@@ -1803,7 +1803,7 @@ class TestRunRecallGate:
 
     def test_uncallable_a_second_time_stays_uncallable(self) -> None:
         """A single-site case never pools enough n to clear the Wilson
-        floor even after the +3 retry -- the plan's "not decidable within
+        floor even after the +3 retry -- a "not decidable within
         budget" outcome, distinct from a FAIL."""
         case = m.RecallCase(id="c1", stratum=m.STRATUM_A, question="q", key=frozenset({"x.py"}))
 

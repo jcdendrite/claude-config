@@ -12,8 +12,8 @@ class TestNudgeConversionFromLog:
     """Pure unit tests against _nudge_conversion_from_log, mirroring
     TestOperatorResponseLagFromLog's own convention for its sibling
     function -- plain session_traces/log_entries_by_root dicts, no
-    filesystem or report-rendering plumbing. Pins the pre-registered
-    classification from .claude/plans/handoff-nudge-deep-tail-lever.md."""
+    filesystem or report-rendering plumbing. Pins the four conversion
+    buckets documented in _nudge_conversion_from_log's own docstring."""
 
     def test_nudged_then_handoff_is_voluntary(self):
         session_traces = {"s": [100]}

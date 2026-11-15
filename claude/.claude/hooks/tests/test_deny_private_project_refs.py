@@ -1730,12 +1730,11 @@ class TestDenyPrivateProjectRefs:
         )
 
     # -- Short-form and template body sources ------------------------------
-    # Regression: the initial implementation only handled the long-form
-    # --body-file flag. `gh pr create -F <path>` is documented as the short
-    # form of --body-file and is the exact same leak vector. `--template`
-    # / `-T` is a separate gh-documented body-text source that also needs
-    # scanning. Missing any of these means the plan's stated goal (close
-    # PR-body leak vectors in gh pr create/edit) is not actually met.
+    # `gh pr create -F <path>` is documented as the short form of
+    # --body-file and is the exact same leak vector as the long form.
+    # `--template` / `-T` is a separate gh-documented body-text source that
+    # also needs scanning. Missing any of these leaves a PR-body leak vector
+    # in gh pr create/edit open.
 
     @pytest.mark.parametrize(
         "flag_form",
