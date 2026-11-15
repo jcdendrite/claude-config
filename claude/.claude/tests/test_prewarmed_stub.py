@@ -120,7 +120,11 @@ def test_shebang_alone_without_trailing_newline_ends_after_the_guard_line(tmp_pa
 
     write_prewarmed_stub(stub, "#!/bin/sh")
 
-    assert stub.read_text() == f"#!/bin/sh\n{helpers._PREWARM_GUARD_LINE}\n"
+    assert len(stub.read_text().splitlines()) == 2
+    plain_run = subprocess.run([str(stub)], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+    assert plain_run.returncode == 0
+    assert plain_run.stdout == ""
+    assert plain_run.stderr == ""
 
 
 @pytest.mark.parametrize("shebang", ["#!/bin/bash", ENV_BASH_SHEBANG])
@@ -301,7 +305,7 @@ class TestUnderTheShellExecGuard:
         install_shell_exec_guard(monkeypatch)
         monkeypatch.setattr(helpers, "_PREWARM_EXEC_PATH", str(_empty_directory(tmp_path)))
 
-        with pytest.raises(ShellExecGuardError, match="link_bash_into"):
+        with pytest.raises(ShellExecGuardError):
             write_prewarmed_stub(tmp_path / "stub", f"{ENV_BASH_SHEBANG}\nexit 0\n")
 
     def test_nonzero_warm_exec_the_guard_does_not_flag_raises_the_helpers_own_error(

@@ -297,8 +297,7 @@ def test_scaled_under_cap_sleep_stays_below_its_cap():
 def test_every_stub_a_shim_writer_leaves_is_warm_exec_ed_once_with_the_guard_variable(
     monkeypatch, tmp_path, write_shims, expected_stub_names
 ):
-    """A fresh executable's first exec can outlast a scaled cap, so each writer pays it at write time and
-    no other exec happens. Each exec sets the guard variable to its own file's path, so it ends at the guard."""
+    """No exec happens other than the one warm exec per stub file."""
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — write_scaled_timeout_shim writes nothing")
     recorded_calls = record_subprocess_runs(monkeypatch)

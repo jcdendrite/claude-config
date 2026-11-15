@@ -3078,7 +3078,7 @@ _SCALED_TIMEOUT_MARKER_DIRNAME = "scaled-timeout-markers"
 
 _PREWARM_GUARD_VARIABLE = "CLAUDE_CONFIG_TEST_PREWARM"
 
-# The shebang lines a stub may start with: each names an sh-family interpreter that runs the guard line below.
+# Each accepted interpreter runs the POSIX guard line below.
 _PREWARM_SHEBANGS = frozenset({"#!/usr/bin/env bash", "#!/usr/bin/env sh", "#!/bin/bash", "#!/bin/sh"})
 
 # Prints the variable's value and exits when it is set, even to an empty value. POSIX syntax only, since a stub may run under sh.
@@ -3088,7 +3088,6 @@ _PREWARM_GUARD_LINE = (
 
 
 def _prewarm_exec_path() -> str:
-    """The session's `bash` directory ahead of `os.defpath`, or `os.defpath` alone when the session has no `bash`."""
     session_bash = shutil.which("bash")
     if session_bash is None:
         return os.defpath
@@ -3162,7 +3161,6 @@ def record_subprocess_runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple,
 
 
 def assert_each_stub_warm_exec_ed_once(recorded_calls: list[tuple[tuple, dict]], stub_paths: list[Path]) -> None:
-    """Assert `recorded_calls` holds exactly one exec per path in `stub_paths`, each with the guard variable set to that path."""
     assert sorted(args[0] for args, _ in recorded_calls) == sorted([str(stub_path)] for stub_path in stub_paths)
     for args, kwargs in recorded_calls:
         assert kwargs["env"][_PREWARM_GUARD_VARIABLE] == args[0][0]
@@ -3180,8 +3178,7 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
     _lib_capped_for probes `timeout` first, so a `gtimeout` fake would be
     unreachable on every host.
 
-    Write each sh-family stub a capped call can reach with write_prewarmed_stub,
-    since a newly written executable's first exec can outlast a scaled cap.
+    Write each sh-family stub a capped call can reach with `write_prewarmed_stub`.
     """
     real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
     if real_timeout is None:
