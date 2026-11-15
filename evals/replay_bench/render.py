@@ -19,8 +19,7 @@ def safe_text(text: str, *, keep_line_breaks: bool = False) -> str:
 
 
 class SafeStream:
-    """A text stream whose every write goes through `safe_text`, so no line the runner prints can carry an escape
-    sequence, whichever site composed it. Every other attribute is the wrapped stream's."""
+    """A text stream whose every write goes through `safe_text`. Every other attribute is the wrapped stream's."""
 
     def __init__(self, stream) -> None:
         self._stream = stream

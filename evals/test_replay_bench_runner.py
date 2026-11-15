@@ -1,5 +1,5 @@
-"""Tests for replay_bench's attempt and retry logic: each run is driven by a scripted launch that writes a
-synthetic session under a `tmp_path` config dir. Real git builds the fixtures. No test launches `claude`.
+"""Tests for replay_bench's attempt and retry logic and for the `run_replay_bench` command line. Real git builds
+the fixtures.
 """
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ class TestAValidRun:
 
 
 class TestForgedLog:
-    """The verdict derives from the attempt dir alone, so a log written into the fixture is never read."""
+    """The log is read from the attempt dir alone, so a log written into the fixture is never read."""
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
     def test_a_real_log_without_the_dispatcher_claude_md_fails_despite_a_forged_good_one(self, world, arm_name):
@@ -814,6 +814,27 @@ class TestTheCommandLine:
         assert main_run("tasks", "--source-repo", "/x", "--trusted-author", "a@b.c", "--name", "../escape") == 2
         assert "invalid campaign ID" in capsys.readouterr().err
 
+    def test_tasks_naming_an_existing_task_set_exits_two_before_mining_and_leaves_the_set_unchanged(
+        self, world, local_dir, monkeypatch, capsys,
+    ):
+        existing_path = tasks.write_task_set(local_dir / "tasks", "n", world.tasks)
+        before = existing_path.read_text()
+        monkeypatch.setattr(tasks, "mine_tasks", lambda *a, **k: pytest.fail("mine_tasks must not run"))
+
+        assert main_run(*TASKS_ARGV) == 2
+
+        assert "task set 'n' already exists" in capsys.readouterr().err
+        assert existing_path.read_text() == before
+
+    def test_an_empty_local_dir_exits_two_naming_the_flag_and_does_not_fall_back_to_the_default(
+        self, local_dir, capsys,
+    ):
+        assert main_run("--local-dir", "", "summarize", "--campaign-id", "c1") == 2
+
+        error = capsys.readouterr().err
+        assert "argument --local-dir: must not be empty" in error
+        assert not local_dir.exists()
+
     def test_tasks_with_no_limit_flag_passes_the_default_limits(self, monkeypatch):
         captured = {}
 
@@ -1265,6 +1286,34 @@ class TestTheCommandLine:
 
         assert main_run(*argv) == 2
         assert launch_stub.calls == []
+
+    @pytest.fixture
+    def campaign_config_seen_by_run(self, run_ready, monkeypatch):
+        seen = []
+        monkeypatch.setattr(campaign, "run_campaign", lambda config, *_args, **_kwargs: seen.append(config) or 0)
+        return seen
+
+    def test_run_flags_land_in_the_campaign_config(self, campaign_config_seen_by_run):
+        argv = [
+            "run", "--tasks", "set", "--k", "2", "--budget-cap-usd", "1.0", "--cumulative-stop-usd", "900",
+            "--account-stop-usd", "500", "--seed", "7", "--allow-early-stop", "--arm", "bare",
+        ]
+
+        assert main_run(*argv) == 0
+
+        (config,) = campaign_config_seen_by_run
+        assert (config.cumulative_stop_usd, config.account_stop_usd, config.seed) == (900.0, 500.0, 7)
+        assert config.allow_early_stop is True and config.arm_names == ("bare",)
+
+    def test_run_without_the_optional_flags_defaults_the_account_stop_to_the_cumulative_stop_and_every_arm(
+        self, campaign_config_seen_by_run,
+    ):
+        assert main_run(*self.RUN_ARGV) == 0
+
+        (config,) = campaign_config_seen_by_run
+        assert config.account_stop_usd == config.cumulative_stop_usd == 1000.0
+        assert config.allow_early_stop is False and config.seed == run_replay_bench.DEFAULT_SEED
+        assert config.arm_names == arms.DEFAULT_ARM_NAMES
 
     @staticmethod
     def launching_argv(world, subcommand):

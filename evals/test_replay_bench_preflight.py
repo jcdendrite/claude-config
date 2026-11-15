@@ -70,9 +70,20 @@ class TestTheProbe:
         resolved = preflight.run()
 
         assert resolved.config_dir == preflight.config_dir
-        assert resolved.key == os.path.realpath(preflight.config_dir)
         assert resolved.config_dir_value is None
         assert resolved.code_writer_tools == frozenset({"Read", "Edit", "Write", "Bash", "Grep", "Glob"})
+
+    def test_the_key_of_a_config_dir_reached_through_a_symlink_is_its_resolved_path(self, preflight, tmp_path):
+        real_config_dir = tmp_path.resolve() / "real-config"
+        build_config_dir(real_config_dir)
+        linked_config_dir = tmp_path / "linked-config"
+        linked_config_dir.symlink_to(real_config_dir)
+        preflight.monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(linked_config_dir))
+
+        resolved = preflight.run()
+
+        assert resolved.config_dir == linked_config_dir
+        assert resolved.key == str(real_config_dir)
 
     def test_a_fake_that_changes_into_the_source_repo_first_is_refused(self, preflight):
         preflight.install_direnv('cd "$2" && shift 2 && exec "$@"\n')
@@ -243,7 +254,7 @@ class TestTheReadinessCheck:
 
 
 class TestPrintHygiene:
-    """With a proxy URL carrying credentials in the runner's environment, no refusal or record carries it."""
+    """With a proxy URL carrying credentials in the runner's environment, no refusal or printed line carries it."""
 
     @pytest.fixture(autouse=True)
     def proxy(self, preflight):

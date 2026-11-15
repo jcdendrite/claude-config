@@ -1,9 +1,4 @@
-"""The account's smoke-pass record, which `run` requires before any paid block on that account.
-
-A record that is absent, unparseable, lacks a key, or whose account key does not hash to its file name reads
-as absent, and so does one for another environment reading or model ID, or one whose arms do not cover every
-requested arm.
-"""
+"""The account's smoke-pass record, which `run` requires before any paid block on that account."""
 from __future__ import annotations
 
 import hashlib
@@ -45,7 +40,7 @@ def has_smoke_pass(
         record = json.loads(path.read_text(encoding="utf-8"))
         stored_key = record["account_key"]
         matches = (
-            stored_key == account_key and account_digest(stored_key) == path.stem
+            stored_key == account_key
             and record["cli_version"] == environment.cli_version
             and record["ambient_config_commit"] == environment.ambient_config_commit
             and record["model_id"] == model_id and set(arm_names) <= set(record["arms"])

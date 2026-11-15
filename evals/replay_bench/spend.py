@@ -1,4 +1,4 @@
-"""The campaign's spend file: one JSON line per ended attempt, which `run`'s stops sum.
+"""The campaign's spend file: one JSON line per launched attempt, which `run`'s stops sum.
 
 An attempt with no cost figure is charged at the per-run budget cap, and a line that does not parse counts
 at the cap against the cumulative stop and every account.
@@ -69,11 +69,10 @@ class SpendFile:
         self.path = path
         self.budget_cap_usd = budget_cap_usd
         self._lock = threading.Lock()
-        # Set by a short write: the file's last line is then unterminated, and the next append must end it first.
         self._tail_is_torn = False
 
     def repair_torn_tail(self) -> None:
-        """Truncates a torn last line, left by a killed process, so it never fuses with the next append."""
+        """Repairs a torn last line at resume."""
         review_runner._repair_torn_tail(self.path)
 
     def append(self, line: SpendLine) -> None:

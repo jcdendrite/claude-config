@@ -1,6 +1,6 @@
 """Account preflight: which Claude Code account a source repo launches under, and whether that account can run
 a replay. Every refusal is a `HarnessInvalidatedError` that names one failure shape, and never
-carries the child's stdout, stderr, argv or an environment value.
+carries the child's stdout, stderr or argv.
 """
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ def preflight_repo(
     repo: Path, *, direnv_timeout_s: float | None = None, readiness_timeout_s: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Account:
-    """Probes `repo`'s account and refuses it, with HarnessInvalidatedError, for any of these:
+    """Probes `repo`'s account and refuses it, with HarnessInvalidatedError, in these cases among others:
     - a relative repo path;
     - an unsafe `PATH`;
     - a direnv probe that fails or times out;

@@ -162,6 +162,11 @@ def _test_corpus(repo_root: Path) -> list[str]:
     return sorted(corpus)
 
 
+def _expand_target_paths(repo_root: Path, target_paths: list[str]) -> set[Path]:
+    """The on-disk paths that globbing each selected target finds."""
+    return {path for target in target_paths for path in repo_root.glob(target)}
+
+
 class TestModuleLevelRepoPathResolver:
     """Pins _resolve_module_level_repo_paths' grammar directly against small
     ast.parse-able fixture strings, one case per row of the grammar table
@@ -844,7 +849,8 @@ class TestSelectPytestTargets:
 
     def test_every_replay_bench_test_and_helper_file_on_disk_selects_the_replay_tests(self):
         """The helper-only *_support.py modules and evals/conftest.py hold no test of their own, so a
-        narrowed predicate could leave an edit to one unselected without any test failing."""
+        narrowed predicate could leave an edit to one unselected without any test failing. The selected
+        targets are expanded on disk, so a narrowed REPLAY_BENCH_TEST_GLOB fails here too."""
         evals_dir = _REPO_ROOT / "evals"
         replay_test_files = sorted(evals_dir.glob("test_replay_bench*.py"))
         assert {path.name for path in replay_test_files} >= {
@@ -855,16 +861,19 @@ class TestSelectPytestTargets:
             relative_path = changed_file.relative_to(_REPO_ROOT).as_posix()
             result = _mod.select_pytest_targets([relative_path])
             assert result.is_full_suite is False, relative_path
-            assert _mod.REPLAY_BENCH_TEST_GLOB in result.target_paths, relative_path
+            selected_files = _expand_target_paths(_REPO_ROOT, result.target_paths)
+            assert set(replay_test_files) <= selected_files, relative_path
 
     def test_every_replay_bench_package_module_on_disk_selects_the_replay_tests(self):
         module_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
         assert {path.name for path in module_files} >= {"tasks.py", "runner.py", "checks.py"}
+        replay_test_files = set((_REPO_ROOT / "evals").glob("test_replay_bench*.py"))
+        assert replay_test_files
         for module_file in module_files:
             relative_path = module_file.relative_to(_REPO_ROOT).as_posix()
             result = _mod.select_pytest_targets([relative_path])
             assert result.is_full_suite is False, relative_path
-            assert _mod.REPLAY_BENCH_TEST_GLOB in result.target_paths, relative_path
+            assert replay_test_files <= _expand_target_paths(_REPO_ROOT, result.target_paths), relative_path
 
     def test_replay_bench_scripts_dependency_change_also_selects_replay_bench_tests(self):
         """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REPLAY_BENCH_TEST_GLOB:

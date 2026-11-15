@@ -1,4 +1,4 @@
-"""Helpers the replay_bench runner, campaign, smoke and CLI tests share. A scripted launch stands in for
+"""Helpers the replay_bench tests share. A scripted launch stands in for
 `claude`: it writes a synthetic dispatcher transcript, subagent sidecar, hook log and account session file
 under a `tmp_path` config dir, with every value synthetic. No test launches `claude`.
 """
@@ -70,15 +70,15 @@ class Scenario:
     no_output: bool = False
     raises: BaseException | None = None
     first_turn_size: int | None = None
-    damage_sidecar: str | None = None  # "skip" puts a non-JSON line before the last line, "torn" tears the last line
+    damage_sidecar: str | None = None  # "skip" puts a non-JSON line before the last line, "torn" appends a truncated line
     write_account_session_file: bool = True
     # The stream carries no `result` event, as a `claude` killed before it finished leaves it.
     omit_result_event: bool = False
     # Keys that replace the clean `result` event's, such as `is_error` or `terminal_reason`.
     result_event_fields: dict | None = None
     observed_model: str = MODEL_ID
-    # How a denied tool call is recorded: `ENTRY_DENIAL` is the shape a live CLI 2.1.323 session wrote, and
-    # `BLOCK_DENIAL` is the `tool_result_meta` shape a subagent transcript may carry.
+    # How a denied tool call is recorded: on the user entry or on the `tool_result_meta` block, the shapes
+    # `checks.read_subagent_transcript` describes.
     denial_shape: str = ENTRY_DENIAL
     # Runs after the session is written and before the launch returns, with the call.
     after_write: Callable[..., None] | None = None
@@ -322,7 +322,7 @@ def make_account(config_dir: Path, home: Path) -> Account:
 
 
 def make_ignored_local_dir(root: Path) -> Path:
-    """A `.local` directory in a git work tree whose `.gitignore` ignores it, as the checkout's is."""
+    """The path of a `.local` directory, not yet created, in a git work tree whose `.gitignore` ignores it."""
     checkout = root / "checkout"
     (checkout / "evals" / "replay_bench").mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, capture_output=True)

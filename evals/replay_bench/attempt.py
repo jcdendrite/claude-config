@@ -4,8 +4,8 @@ Every attempt ends in a `finally` that deletes its fixture, its session store an
 was valid, invalid, timed out, raised or was interrupted. Its `sessions/` file stays, as every Claude Code
 session leaves one.
 
-The instruction-load verdict derives from the attempt dir alone: the log read is
-`<attempt dir>/instructions-loaded.jsonl`, and nothing in the fixture is read as a log.
+The instruction-load log is read from `<attempt dir>/instructions-loaded.jsonl`, and nothing in the fixture is read
+as a log.
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class RunSettings:
     spend: SpendFile
     runner_environ: Mapping[str, str]
     launch: Launch
-    # Set by the first fatal worker failure. No run that has not launched yet launches after it.
+    # Set when a worker fails or the run is interrupted. No run that has not launched yet launches after it.
     stop: threading.Event = field(default_factory=threading.Event)
     # (task ID, session ID) of each launch that began and could not be charged.
     uncharged_launches: list[tuple[str, str]] = field(default_factory=list)
@@ -76,7 +76,7 @@ class RunSettings:
 
 @dataclass(frozen=True)
 class BlockContext:
-    """Inputs one task's block shares: the task, its account, and the block's start-of-block environment reading."""
+    """Inputs one task's block shares."""
 
     task: tasks.ReplayTask
     account: account_mod.Account
@@ -138,7 +138,6 @@ def git_timeout_detail(limit_s: float) -> str:
 
 
 def exception_detail(exc: BaseException) -> str:
-    """The class and a message that cannot hold a child's output or argv."""
     if isinstance(exc, subprocess.TimeoutExpired):
         return "a git call timed out"
     if isinstance(exc, subprocess.CalledProcessError):
@@ -370,7 +369,6 @@ def _evaluate_launched(
                 live_checkout_roots=block.live_checkout_roots, changed_relpaths=task.changed_paths,
             )
 
-    # The log path comes from the attempt dir, never from the fixture the agent could write into.
     wait_for_hook_log_to_settle(log_path, timed_out=timed_out)
     log = checks.parse_instruction_log(log_path, session_id=session_id)
     expectation = arm.load_expectation(account.config_dir / "CLAUDE.md")

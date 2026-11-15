@@ -214,8 +214,8 @@ def run_campaign(
     run_store = RunStore(campaign_dir / STORE_DIR_NAME)
     run_store.acquire_lock()
     try:
-        # The manifest is read and written only under the lock, so two invocations of one campaign ID cannot
-        # each see no manifest and pin their own inputs over the other's.
+        # The existence check and the manifest write both run under the lock, so two invocations of one
+        # campaign ID cannot each see no manifest and pin their own inputs over the other's.
         manifest_path = campaign_dir / MANIFEST_NAME
         is_resume = manifest_path.exists()
         if is_resume:

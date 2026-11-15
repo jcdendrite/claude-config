@@ -4,14 +4,14 @@ counts the comment and docstring words each arm adds per added non-test code lin
 
 Subcommands:
 - `tasks`: mines a source repo's first-parent commits into a task set. It spends nothing.
-- `preflight`: probes each task set's source repos for their Claude Code account. It launches nothing.
-- `smoke`: runs one block of one run per arm on one task, and writes the account's smoke-pass record.
+- `preflight`: probes each task set's source repos for their Claude Code account. It spends nothing.
+- `smoke`: runs one block of one run per arm on one task.
 - `run`: runs the campaign block by block, under spend stops. It needs a passing `smoke` per account.
 - `summarize`: prints the paired arm difference over a campaign's complete blocks to the terminal only.
 
 Local only, never CI: every run is a paid `claude -p` session. `.local/` holds task sets, run records and diffs.
-The design lives in .claude/plans/docstring-verbosity-experiment.md. Exit codes: 0 done, 1 a run that stopped
-short, 2 a refusal. Needs Python 3.12 or newer and git 2.32 or newer.
+The design lives in .claude/plans/docstring-verbosity-experiment.md.
+Needs Python 3.12 or newer and git 2.32 or newer.
 """
 from __future__ import annotations
 
@@ -64,6 +64,13 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def _non_empty_text(text: str) -> str:
+    """An empty value would read as unset, and the disposable default directory would take the run's state."""
+    if not text:
+        raise argparse.ArgumentTypeError("must not be empty")
+    return text
+
+
 def _flag(field_name: str) -> str:
     return "--" + field_name.replace("_", "-")
 
@@ -71,7 +78,8 @@ def _flag(field_name: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--local-dir", default=None, help="Where task sets, records and diffs live. Default: evals/replay_bench/.local/.",
+        "--local-dir", type=_non_empty_text, default=None,
+        help="Where task sets, records and diffs live. Default: evals/replay_bench/.local/.",
     )
     parser.add_argument("--fixture-git-timeout-s", type=_positive_float, default=replay_runner.FIXTURE_GIT_TIMEOUT_S,
                         help="Bounds every git call that builds a fixture or reads it after a run.")
@@ -88,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
         p_tasks.add_argument(_flag(limit_field.name), type=limit_type, default=None, help=f"Default: {limit_field.default}.")
     p_tasks.set_defaults(func=cmd_tasks)
 
-    p_preflight = subparsers.add_parser("preflight", help="Probe each source repo's account; launches nothing.")
+    p_preflight = subparsers.add_parser("preflight", help="Probe each source repo's account; spends nothing.")
     p_preflight.add_argument("--tasks", required=True, help="The task set's name.")
     _add_preflight_flags(p_preflight)
     p_preflight.set_defaults(func=cmd_preflight)
@@ -138,7 +146,12 @@ def _add_launch_flags(parser: argparse.ArgumentParser) -> None:
 def cmd_tasks(args: argparse.Namespace, local_dir: Path) -> int:
     given_limits = {limit.name: getattr(args, limit.name) for limit in fields(tasks.SelectionLimits)}
     limits = tasks.SelectionLimits(**{name: value for name, value in given_limits.items() if value is not None})
-    tasks.task_set_path(local_dir / TASKS_DIR_NAME, args.name)  # validates the name before any mining
+    task_set_file = tasks.task_set_path(local_dir / TASKS_DIR_NAME, args.name)  # validates the name before any mining
+    if task_set_file.exists():
+        raise HarnessInvalidatedError(
+            f"task set {args.name!r} already exists at {str(task_set_file)!r}; pick a new --name, since a campaign "
+            "pinned to the set's hash refuses to resume once the set changes"
+        )
     report = tasks.mine_tasks([Path(repo) for repo in args.source_repo], args.trusted_author, limits)
     path = tasks.write_task_set(local_dir / TASKS_DIR_NAME, args.name, report.tasks)
     print("\n".join(tasks.format_mining_summary(report)))

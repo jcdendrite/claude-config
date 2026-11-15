@@ -1243,7 +1243,7 @@ because the runner refuses no wider corpus. The design lives in
 scripts/venv-run.sh python3 evals/run_replay_bench.py tasks \
   --source-repo <repo top level> --trusted-author <email> --name <task-set>
 
-# Probe each repo's account; launches nothing:
+# Probe each repo's account; spends nothing:
 scripts/venv-run.sh python3 evals/run_replay_bench.py preflight --tasks <task-set>
 
 # One block of one run per arm on one task; run it once per account:
@@ -1287,7 +1287,9 @@ run-store lock exits 1. Two commands have further rules:
 
 `tasks` walks each source repo's first-parent commits, newest first, and keeps
 the commits that qualify as tasks. Each source repo must be a git repository's
-top level. The brief is the commit message.
+top level. The brief is the commit message. `--name` must not name an existing
+task set, because a campaign pins its task set by hash and refuses to resume
+once the set changes.
 
 - `--trusted-author` is required and repeatable. It reads raw author
   identities, so a `.mailmap` cannot widen it.
@@ -1456,7 +1458,8 @@ version and config commit) at its first start. A resume passes `--campaign-id`
 again. Before the first launch `run` prints the run count and the campaign's
 nominal ceiling. It exits 2 when:
 
-- any pinned input differs, or the manifest lacks a pinned key or has the wrong
+- the task set, arms, `--k`, `--seed`, model, `--budget-cap-usd` or
+  `--timeout-s` differs, or the manifest lacks a pinned key or has the wrong
   shape. The refusal names a new `--campaign-id`;
 - a repo-to-account pin, the CLI version or the config commit changed, or the
   manifest cannot be read or parsed. The refusal does not name a new
@@ -1598,8 +1601,6 @@ missing with its reason.
   its attempt. An interrupt can take as long as one fixture build.
 - **Instrument log.** The instrument log's absolute path appears in the
   child's `--settings` argv.
-- **Lost hook line.** A hook line can be lost only when its append takes
-  longer than the model turn that follows its load.
 - **Containment.** Nothing contains a replay agent beyond `acceptEdits`'
   working-directory scope, the account's permission rules and the runner's
   Read grants. A steered agent can read or write anything those allow. Run the

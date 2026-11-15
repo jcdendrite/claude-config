@@ -44,7 +44,7 @@ def _shown(values) -> str:
 
 
 def format_run_report(arm_name: str, outcome: RunOutcome) -> list[str]:
-    """Everything the engineer reads about one run. Agent-supplied text prints in `!r` form."""
+    """Everything the engineer reads about one run."""
     record = outcome.record
     status = "ok" if record.is_ok else f"missing ({record.missing_reason})"
     lines = [f"[{arm_name}] status: {status}"]
@@ -99,8 +99,10 @@ def calibration_terms(account: Account, toolkit_final) -> tuple[float, float, in
             toolkit_final.log, toolkit_final.toolkit, fixture_dir=toolkit_final.fixture_dir,
         )
     ]
-    body_term = (code_writer_body_chars - bare_writer_body_chars) / checks.CHARS_PER_TOKEN_ESTIMATE
-    margin = (checks.CLAUDE_MD_MARGIN_FRACTION * claude_md_chars + sum(rule_chars)) / checks.CHARS_PER_TOKEN_ESTIMATE
+    body_term, margin = checks.inheritance_body_term_and_margin(
+        claude_md_chars=claude_md_chars, code_writer_body_chars=code_writer_body_chars,
+        bare_writer_body_chars=bare_writer_body_chars, dispatcher_rule_chars=rule_chars,
+    )
     return body_term, margin, claude_md_chars, rule_chars
 
 

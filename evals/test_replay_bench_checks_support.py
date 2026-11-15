@@ -166,8 +166,7 @@ def _result(tool_use_id: str, *, denied: bool = False, kind: str = checks.NON_EX
 
 
 def denied_result_entry(tool_use_id: str, path: str) -> dict:
-    """A user entry holding one denied `tool_result`, in the shape a `claude -p --permission-mode acceptEdits`
-    session records on CLI 2.1.323: the denial markers sit on the entry, and the block carries no `tool_result_meta`."""
+    """A user entry holding one denied `tool_result`, in the entry-level shape `read_subagent_transcript` documents."""
     message = f"Claude requested permissions to write to {path}, but you haven't granted it yet."
     return {
         "type": "user",

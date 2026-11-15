@@ -1,5 +1,5 @@
-"""Tests for the `run` campaign: the manifest, smoke gate, spend guards, per-arm stop and resume. A scripted
-launch stands in for `claude`, and `read_environment_record` is stubbed to a fixed reading. No test launches `claude`.
+"""Tests for the `run` campaign: the manifest, smoke gate, spend guards, per-arm stop and resume.
+`read_environment_record` is scripted to a sequence of readings, some of which raise.
 """
 from __future__ import annotations
 

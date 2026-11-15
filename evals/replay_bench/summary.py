@@ -20,7 +20,7 @@ from review_bench.runner import HarnessInvalidatedError, RunStore
 from replay_bench import records
 from replay_bench import tasks as tasks_mod
 from replay_bench.arms import BARE, TOOLKIT
-from replay_bench.campaign import CAMPAIGNS_DIR_NAME, MANIFEST_NAME, SPEND_NAME, STORE_DIR_NAME
+from replay_bench.campaign import CAMPAIGNS_DIR_NAME, MANIFEST_NAME, SPEND_NAME, STORE_DIR_NAME, task_set_hash
 from replay_bench.records import ReplayRunRecord
 from replay_bench.spend import SpendFile, is_usable_cost
 
@@ -70,15 +70,21 @@ def _refuse_mixed_environments(all_records: Sequence[ReplayRunRecord]) -> None:
             )
 
 
-def _read_reference_metrics(local_dir: Path, tasks_name: str | None) -> tuple[dict[str, dict], str | None]:
-    """The reference metrics by task ID, and the reason they are empty when the task set could not be read."""
+def _read_reference_metrics(
+    local_dir: Path, tasks_name: str | None, pinned_hash: object,
+) -> tuple[dict[str, dict], str | None]:
+    """The reference metrics by task ID, and the reason they are empty when the task set cannot be used."""
     if not tasks_name:
         return {}, "the manifest names no task set"
     try:
         task_list = tasks_mod.read_task_set(local_dir / TASKS_DIR_NAME, tasks_name)
-        return {task.id: task.reference_metrics.to_dict() for task in task_list}, None
     except (tasks_mod.TaskFileError, ValueError) as exc:
         return {}, f"task set {tasks_name!r} could not be read: {exc}"
+    if pinned_hash is None:
+        return {}, "the manifest records no task set hash"
+    if task_set_hash(tuple(task_list)) != pinned_hash:
+        return {}, f"task set {tasks_name!r} is not the one this campaign pinned"
+    return {task.id: task.reference_metrics.to_dict() for task in task_list}, None
 
 
 def _read_manifest(manifest_path: Path) -> tuple[dict, str | None]:
@@ -188,7 +194,7 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
         lines.append(f"  excluded, {label}: {paired.excluded_counts[key]}{suffix}")
 
     manifest, manifest_problem = _read_manifest(campaign_dir / MANIFEST_NAME)
-    reference, reference_problem = _read_reference_metrics(local_dir, manifest.get("tasks_name"))
+    reference, reference_problem = _read_reference_metrics(local_dir, manifest.get("tasks_name"), manifest.get("task_set_hash"))
     reference_problem = manifest_problem or reference_problem
     lines.append("secondary outcome: Python docstring lines per 100 added non-test code lines")
     reference_rate = _docstring_rate([reference[task_id] for task_id in complete_ids if task_id in reference])

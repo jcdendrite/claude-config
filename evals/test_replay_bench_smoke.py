@@ -1,6 +1,4 @@
-"""Tests for `smoke`: one block of one run per arm, its calibration, its printout and its smoke-pass record.
-A scripted launch stands in for `claude`. No test launches `claude`.
-"""
+"""Tests for `smoke`: one block of one run per arm, its calibration, its printout and its smoke-pass record."""
 from __future__ import annotations
 
 import pytest

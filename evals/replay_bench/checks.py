@@ -88,7 +88,7 @@ _TOOL_NAME_READ = "Read"
 _TOOL_NAME_NOTEBOOK_EDIT = "NotebookEdit"
 _WRITE_TOOL_NAMES = frozenset({"Edit", "MultiEdit", "Write", _TOOL_NAME_NOTEBOOK_EDIT})
 
-# Shell operators and quote characters. A path glued to one is a path the shell would see on its own.
+# Characters a path word can be glued to.
 _SHELL_SEPARATOR_RE = re.compile(r"""\$\(|[;|&<>()=`'"]""")
 _HOME_VARIABLE_RE = re.compile(r"^(?:\$HOME|\$\{HOME\})(?=/|$)")
 _PWD_VARIABLE_RE = re.compile(r"^(?:\$PWD|\$\{PWD\})(?=/|$)")
@@ -685,7 +685,6 @@ def check_tool_call_paths(
     - A denied Write, Edit, MultiEdit or NotebookEdit adds no `out-of-fixture-write`.
 
     Read, Grep and Glob targets are checked by the runner's validity step, not here.
-    A denied call still counts as evidence for `toolkit_reach_reasons`.
     """
     fixture_real = _real(fixture_dir)
     local_real = _real(local_dir)
@@ -852,6 +851,18 @@ def dispatcher_rule_files(log: InstructionLog, toolkit: ToolkitPaths, *, fixture
     ))
 
 
+def inheritance_body_term_and_margin(
+    *, claude_md_chars: int, code_writer_body_chars: int, bare_writer_body_chars: int,
+    dispatcher_rule_chars: Sequence[int],
+) -> tuple[float, float]:
+    """The body term and the margin, in tokens, that `block_calibration_verdict` applies to the inheritance gap."""
+    body_term = (code_writer_body_chars - bare_writer_body_chars) / CHARS_PER_TOKEN_ESTIMATE
+    margin = (
+        CLAUDE_MD_MARGIN_FRACTION * claude_md_chars + sum(dispatcher_rule_chars)
+    ) / CHARS_PER_TOKEN_ESTIMATE
+    return body_term, margin
+
+
 def block_calibration_verdict(
     toolkit_log: InstructionLog, *, toolkit_first_turn_size: int | None, bare_first_turn_size: int | None,
     toolkit: ToolkitPaths, fixture_dir: Path, claude_md_chars: int, code_writer_body_chars: int,
@@ -868,10 +879,10 @@ def block_calibration_verdict(
     if toolkit_first_turn_size is None or bare_first_turn_size is None:
         reasons.append(REASON_ARM_CONFIG_MISSING)
         return tuple(reasons)
-    body_term = (code_writer_body_chars - bare_writer_body_chars) / CHARS_PER_TOKEN_ESTIMATE
-    margin = (
-        CLAUDE_MD_MARGIN_FRACTION * claude_md_chars + sum(dispatcher_rule_chars)
-    ) / CHARS_PER_TOKEN_ESTIMATE
+    body_term, margin = inheritance_body_term_and_margin(
+        claude_md_chars=claude_md_chars, code_writer_body_chars=code_writer_body_chars,
+        bare_writer_body_chars=bare_writer_body_chars, dispatcher_rule_chars=dispatcher_rule_chars,
+    )
     if toolkit_first_turn_size - bare_first_turn_size - body_term < margin:
         reasons.append(REASON_ARM_CONFIG_MISSING)
     return tuple(reasons)
@@ -893,8 +904,7 @@ def exclude_note_lines(
     toolkit_log: InstructionLog, bare_transcript: SubagentTranscript, *, toolkit: ToolkitPaths,
     toolkit_fixture_dir: Path, bare_fixture_dir: Path,
 ) -> tuple[str, ...]:
-    """The lines `smoke` prints about whether `bare` tested its exclude. Never gates a verdict. The
-    exercised or not-exercised line appears only when the `toolkit` control fired with a trigger path."""
+    """The lines `smoke` prints about whether `bare` tested its exclude. Never gates a verdict."""
     trigger_relpaths = {
         relpath for load in rule_control_loads(toolkit_log, toolkit, fixture_dir=toolkit_fixture_dir)
         if load.trigger_file_path is not None

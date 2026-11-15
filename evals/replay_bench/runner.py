@@ -1,7 +1,7 @@
 """Retry-then-missing for one replay run, and one task's block of runs.
 
-A failed attempt retries once on a fresh fixture, then the run is recorded missing with its reason. An attempt
-that ends under an instrument reason, `fixture-error` or `analysis-error` never retries.
+A failed attempt retries once on a fresh fixture, then the run is recorded missing with its reason.
+`NO_RETRY_REASONS` names the reasons that skip the retry.
 """
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def _build_record(
 
 
 def execute_run(settings: RunSettings, block: BlockContext, arm_name: str, run_index: int) -> RunOutcome:
-    """Each attempt is charged to the spend file as it ends, and its fixture is gone before the next starts."""
+    """Each attempt's fixture is gone before the next starts."""
     arm = ARMS[arm_name]
     results: list[AttemptResult] = []
     for attempt_number in range(1, review_runner.ATTEMPTS_PER_RUN + 1):

@@ -1,4 +1,4 @@
-"""Tests for `summarize`, over synthetic run records under `tmp_path`. Printed values are parsed back as numbers."""
+"""Tests for `summarize`, over synthetic run records under `tmp_path`."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from replay_bench import records, summary, tasks
+from replay_bench.campaign import task_set_hash
 from replay_bench.comment_metrics import CommentMetrics
 from replay_bench.spend import SpendFile, SpendLine
 from review_bench.runner import HarnessInvalidatedError, RunStore
@@ -390,7 +391,9 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
     def test_the_reference_rate_is_the_task_sets_docstring_lines_per_100_code_lines_with_no_unavailable_line(self, campaign):
         task = self.reference_task(code=40, docstring=10)
         tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
-        (campaign.dir / "manifest.json").write_text(json.dumps({"tasks_name": "readable"}))
+        (campaign.dir / "manifest.json").write_text(
+            json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
+        )
         campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare"))
 
         lines = campaign.summarize()
@@ -402,6 +405,29 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
             expected_rate,
         )
         assert not any("reference unavailable" in line for line in lines)
+
+    @pytest.mark.parametrize(
+        ("pinned_hash", "reason"),
+        [("0" * 64, "task set 'rewritten' is not the one this campaign pinned"), (None, "the manifest records no task set hash")],
+        ids=["different-hash", "no-hash"],
+    )
+    def test_a_task_set_that_is_not_the_one_the_campaign_pinned_leaves_the_reference_unavailable(
+        self, campaign, pinned_hash, reason,
+    ):
+        task = self.reference_task(code=40, docstring=10)
+        tasks.write_task_set(campaign.local_dir / "tasks", "rewritten", [task])
+        manifest = {"tasks_name": "rewritten"}
+        if pinned_hash is not None:
+            manifest["task_set_hash"] = pinned_hash
+        (campaign.dir / "manifest.json").write_text(json.dumps(manifest))
+        campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare"))
+
+        lines = campaign.summarize()
+
+        assert f"  reference unavailable: {reason}" in lines
+        assert "  reference (the merged commits) docstring lines per 100 code lines: n/a" in lines
+        assert any(line.startswith("paired difference toolkit - bare:") for line in lines)
+        assert "paired 1 of 1 complete tasks" in lines
 
 
 class TestSpendByAccount:
