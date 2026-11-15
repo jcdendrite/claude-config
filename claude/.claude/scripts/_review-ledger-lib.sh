@@ -19,6 +19,9 @@ _REVIEW_LEDGER_DEFER_CRITERIA=(
   edge-case-below-current-scale
 )
 
+# The three round-cap consult verdicts, named after the verdict words in code-review/SKILL.md's round-cap section.
+_REVIEW_LEDGER_CONSULT_VERDICTS=(re-plan noise one-defect)
+
 # The lanes that name a source of findings with no roster agent. No entry may
 # be an agent name or an --authoring-agent value.
 _REVIEW_LEDGER_NON_AGENT_LANES=(orchestrator skill-tool unrostered-agent)
@@ -53,6 +56,13 @@ _review_ledger_defer_hint() {
   printf 'DEFER needs --source <repo-relative path>[:<start>[-<end>]] and --defer-criterion, one of: %s' "${names//,/, }"
 }
 
+# Appended to a CONSULT rationale rejection, so the message alone tells a caller how to correct its call.
+_review_ledger_consult_hint() {
+  local names
+  names=$(IFS=,; printf '%s' "${_REVIEW_LEDGER_CONSULT_VERDICTS[*]}")
+  printf 'Pass one of: %s' "${names//,/, }"
+}
+
 # Appended to every lane rejection, so the message alone tells a caller how to
 # correct its call.
 _review_ledger_lane_hint() {
@@ -69,7 +79,7 @@ _review_ledger_lane_hint() {
     accepted_lanes+="$lane$gloss, "
   done
   accepted_lanes=${accepted_lanes%, }
-  printf 'Pass --reviewer <lane> once for each lane that raised the finding. Accepted lanes: %s. CLEAN takes neither --reviewer nor --relog. Pass --relog instead only when this row records no raise of its own and only re-logs its --ref decision, whose raise an earlier row records, as a reopen, a gate-denial recovery or a --carry-forward withdrawal does.' "$accepted_lanes"
+  printf 'Pass --reviewer <lane> once for each lane that raised the finding. Accepted lanes: %s. CLEAN and CONSULT take neither --reviewer nor --relog. Pass --relog instead only when this row records no raise of its own and only re-logs its --ref decision, whose raise an earlier row records, as a reopen, a gate-denial recovery or a --carry-forward withdrawal does.' "$accepted_lanes"
 }
 
 _review_ledger_is_criterion() {
@@ -78,6 +88,28 @@ _review_ledger_is_criterion() {
     [ "$candidate" = "$known" ] && return 0
   done
   return 1
+}
+
+_review_ledger_is_consult_verdict() {
+  local candidate="$1" known
+  for known in "${_REVIEW_LEDGER_CONSULT_VERDICTS[@]}"; do
+    [ "$candidate" = "$known" ] && return 0
+  done
+  return 1
+}
+
+# _review_ledger_validate_consult FINDING RATIONALE SOURCE
+# The round-cap verdict rules of a CONSULT row, with no I/O. An absent SOURCE is "n/a".
+# Prints the reason to stderr and returns 1 on the first violation.
+_review_ledger_validate_consult() {
+  local finding="$1" rationale="$2" source="$3"
+  [ -z "$finding" ] || { _review_ledger_reject "--finding must be omitted for --disposition CONSULT"; return 1; }
+  [ "$source" = "n/a" ] || { _review_ledger_reject "--source must be omitted for --disposition CONSULT"; return 1; }
+  if ! _review_ledger_is_consult_verdict "$rationale"; then
+    _review_ledger_reject "--rationale '$rationale' is missing or not a round-cap verdict for --disposition CONSULT. $(_review_ledger_consult_hint)"
+    return 1
+  fi
+  return 0
 }
 
 # _review_ledger_is_row_id VALUE: true iff VALUE is exactly _REVIEW_LEDGER_HEX_LENGTH lowercase hex digits.
@@ -109,7 +141,7 @@ _review_ledger_validate_flags() {
   fi
 
   case "$disposition" in
-    ADDRESS|CLEAN)
+    ADDRESS|CLEAN|CONSULT)
       [ -z "$decided_by" ] || { _review_ledger_reject "--decided-by is only accepted on SETTLED, or as carry on DEFER (got it on $disposition)"; return 1; }
       ;;
     DEFER)
@@ -126,7 +158,7 @@ _review_ledger_validate_flags() {
       esac
       ;;
     *)
-      _review_ledger_reject "--disposition must be ADDRESS, DEFER, SETTLED, or CLEAN, got '$disposition'"
+      _review_ledger_reject "--disposition must be ADDRESS, DEFER, SETTLED, CLEAN, or CONSULT, got '$disposition'"
       return 1
       ;;
   esac
@@ -170,8 +202,8 @@ _review_ledger_validate_flags() {
     return 1
   fi
 
-  if [ "$disposition" = CLEAN ] && [ -n "$ref" ]; then
-    _review_ledger_reject "--ref must be omitted for --disposition CLEAN"
+  if { [ "$disposition" = CLEAN ] || [ "$disposition" = CONSULT ]; } && [ -n "$ref" ]; then
+    _review_ledger_reject "--ref must be omitted for --disposition $disposition"
     return 1
   fi
   if [ -n "$ref" ] && ! _review_ledger_is_row_id "$ref"; then
@@ -187,12 +219,12 @@ _review_ledger_validate_flags() {
   fi
 
   case "$disposition" in
-    DEFER|SETTLED)
+    ADDRESS|DEFER|SETTLED)
       if [ -z "$source" ] || [ "$source" = "n/a" ]; then
         if [ "$disposition" = DEFER ]; then
           _review_ledger_reject "--source is required for --disposition DEFER. $(_review_ledger_defer_hint)"
         else
-          _review_ledger_reject "--source <repo-relative path>[:<start>[-<end>]] is required for --disposition SETTLED"
+          _review_ledger_reject "--source <repo-relative path>[:<start>[-<end>]] is required for --disposition $disposition"
         fi
         return 1
       fi
@@ -216,13 +248,13 @@ _review_ledger_validate_lanes() {
     fi
   done
 
-  if [ "$disposition" = CLEAN ]; then
+  if [ "$disposition" = CLEAN ] || [ "$disposition" = CONSULT ]; then
     if [ "$#" -gt 0 ]; then
-      _review_ledger_reject "--reviewer is not accepted with --disposition CLEAN, which takes no lanes. $(_review_ledger_lane_hint)"
+      _review_ledger_reject "--reviewer is not accepted with --disposition $disposition, which takes no lanes. $(_review_ledger_lane_hint)"
       return 1
     fi
     if [ "$relog" = 1 ]; then
-      _review_ledger_reject "--relog is not accepted with --disposition CLEAN, which takes no lanes. $(_review_ledger_lane_hint)"
+      _review_ledger_reject "--relog is not accepted with --disposition $disposition, which takes no lanes. $(_review_ledger_lane_hint)"
       return 1
     fi
     return 0
@@ -587,7 +619,7 @@ _review_ledger_carry_ref_advice() {
     <<<"$decision_info"
   [ "$decision_is_decision" = 1 ] || return 0
   if [ -z "$decision_retired_by" ]; then
-    printf '; its decision is %s. ADDRESS --ref %s --relog reopens that decision and retires its carries from the PR block too' \
+    printf '; its decision is %s. ADDRESS --ref %s --relog with the decision'"'"'s --source reopens that decision and retires its carries from the PR block too' \
       "$decision_id" "$decision_id"
   elif _review_ledger_is_row_id "$decision_retired_by"; then
     printf '; its decision is %s, which row %s already retired, so it cannot be reopened' "$decision_id" "$decision_retired_by"
@@ -754,7 +786,7 @@ _review_ledger_carry_line() {
   else
     shown_finding="a finding (not shown: jq could not clean it)"
   fi
-  printf 'review-ledger.sh: carry of decision %s (decided %s, round %s; %s): the orchestrator matched %s to it and the engineer did not see this finding; reopen %s by logging ADDRESS --ref %s --relog, which retires that decision and its carries from the PR block.\n' \
+  printf 'review-ledger.sh: carry of decision %s (decided %s, round %s; %s): the orchestrator matched %s to it and the engineer did not see this finding; reopen %s by logging ADDRESS --ref %s --relog with the decision'"'"'s --source, which retires that decision and its carries from the PR block.\n' \
     "$ref" "${ref_event_date:-unknown}" "$ref_round" "$basis" "$shown_finding" "$ref" "$ref"
 }
 
@@ -894,7 +926,7 @@ def round_entry:
   ([.[] | select(raised)] | length) as $count
   | "round \(.[0].round): \(if $count == 0 then "clean" else $count end)";
 
-[inputs | select(type == "object" and (.round | counted_round)) | .round |= floor]
+[inputs | select(type == "object" and (.round | counted_round) and ((.disposition | s) != "CONSULT")) | .round |= floor]
 | if length == 0 then empty
   else group_by(.round) | map(round_entry) | join(", ")
   end

@@ -614,10 +614,9 @@ def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     This proves the *declared* config state — `"EnterPlanMode"` is present
     in `permissions.deny`, and `permissions.defaultMode` is not `"plan"` —
     not that the harness actually honors either at runtime. That live-session
-    verification lives outside pytest (see
-    `.claude/plans/plan-mode-workflow-discipline.md`'s Pre-implementation
-    gate); this test only pins the declaration so a future edit can't drop it
-    silently.
+    verification lives outside pytest, recorded as prose only; no transcript
+    or log of it is committed. This test only pins the declaration so a
+    future edit can't drop it silently.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
     assert "EnterPlanMode" in settings.get("permissions", {}).get("deny", []), (
@@ -753,10 +752,12 @@ def test_schedulewakeup_stays_denied_in_settings() -> None:
     This proves the *declared* config state — `"ScheduleWakeup"` is present
     in `permissions.deny` — not that the harness actually removes the tool
     from context at runtime. That live-session verification lives outside
-    pytest (see `.claude/plans/prevent-non-loop-schedulewakeup-calls.md`'s
-    pre-implementation gate); this test only pins the declaration so a
-    future edit can't drop it silently. A membership check on the exact
-    bare string also catches a later weakening into the parenthesized
+    pytest, recorded as prose in the "Blast radius" section of
+    `docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md`. Its
+    "Accepted residual risk" section notes that no transcript, log or
+    fixture of it is committed. This test only pins the
+    declaration so a future edit can't drop it silently. A membership check
+    on the exact bare string also catches a later weakening into the parenthesized
     `"ScheduleWakeup(*)"` form, which leaves the tool visible in context.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
@@ -771,20 +772,16 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
     """The allow-path sibling to `test_schedulewakeup_stays_denied_in_settings`.
 
     Guards against a future edit silently widening `permissions.deny` to
-    swallow tools `.claude/plans/prevent-non-loop-schedulewakeup-calls.md`'s
-    Context section requires to stay available, each on its own basis:
+    swallow tools that must stay available, each on its own basis:
 
     - `CronCreate` is named in `docs/design-decisions.md` §49's
       Blast-radius section as unaffected by the deny.
     - `ListAgents` and `TaskOutput` are not argued there — they're guarded
-      because the plan's pre-implementation gate (Verification step 1
-      check 5) required them to remain available, and §49's Revisit list
-      separately names them as a substitution-risk channel to watch, not
-      as confirmed-unaffected.
-    - `Agent` is guarded because the plan's Context section names it as
-      the dispatch the misfire follows, and it's also one of the three
-      tools the plan's pre-implementation gate (Verification step 1
-      check 5) required to remain available.
+      because the live-session check of the deny required them to remain
+      available, and §49's Revisit list separately names them as a
+      substitution-risk channel to watch, not as confirmed-unaffected.
+    - `Agent` is guarded because the same live-session check required it to
+      remain available.
 
     `CronCreate`'s presence in this list tracks §49's current
     Accepted-residual-risk stance (the substitution channel is unguarded,
@@ -798,21 +795,20 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
         "design-decisions.md §49's Blast-radius section claims this tool "
         "stays unaffected by the ScheduleWakeup deny"
     )
-    gate_required_available = (
-        "the plan's pre-implementation gate (Verification step 1 check 5) "
-        "requires this tool to remain available, and design-decisions.md "
+    live_check_requires_available = (
+        "the live-session check of the deny requires this tool to remain "
+        "available"
+    )
+    live_check_and_revisit_listed = (
+        f"{live_check_requires_available}, and design-decisions.md "
         "§49's Revisit list separately names it as a substitution-risk "
         "channel to watch, not as confirmed-unaffected"
     )
-    dispatch_trigger = (
-        "the plan's Context section names it as the dispatch the "
-        "ScheduleWakeup misfire follows"
-    )
     rationale = {
         "CronCreate": documented_unaffected,
-        "ListAgents": gate_required_available,
-        "TaskOutput": gate_required_available,
-        "Agent": dispatch_trigger,
+        "ListAgents": live_check_and_revisit_listed,
+        "TaskOutput": live_check_and_revisit_listed,
+        "Agent": live_check_requires_available,
     }
     for tool_name, why in rationale.items():
         assert tool_name not in deny, (
@@ -3314,7 +3310,7 @@ _SHA256SUM_MARKER_GATE_CASES = [
     ids=[fn.__name__ for fn in _SHA256SUM_MARKER_GATE_CASES],
 )
 def test_marker_gate_blocks_without_sha256sum(build_case, tmp_path: Path, _path_without) -> None:
-    """GH-480 ledger row 4a: the marker-check gates that shell out to
+    """The marker-check gates that shell out to
     sha256sum (require-code-review.sh, require-plan-review.sh,
     plugins/skill-management/hooks/require-skill-review.sh) must still deny
     when it is absent from PATH — an unhashable diff/plan must never read as
@@ -3328,20 +3324,15 @@ def test_marker_gate_blocks_without_sha256sum(build_case, tmp_path: Path, _path_
 
 
 def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -> None:
-    """GH-480 ledger row 4b, corrected against measurement.
+    """require-ready-for-review.sh allows a push when `gh` is absent from PATH.
 
-    require-ready-for-review.sh is the one gate that shells out to `gh`
-    (`gh pr view`, guarding the PR-existence check at line ~183). The plan
-    this test was specified from assumed gh's absence "fails closed"
-    (ledger row 4b), by analogy with sha256sum. Measured directly — a valid
-    `git push` payload, `gh` removed from PATH, jq present — it does not:
-    PR_NUMBER comes back empty exactly as it would for "no open PR" or "gh
-    not configured", both of which this hook already documents as fail-open
-    ("gh pr view fails ... fail-open to keep the user unblocked"). This test
-    pins that actual, deliberate behavior rather than force a "blocks"
-    assertion the hook was never designed to satisfy; flagged to the
-    dispatching session rather than resolved by changing the hook's fail
-    posture, which is outside GH-480's jq-encoding scope.
+    It is the one gate that shells out to `gh` (`gh pr view`, guarding the
+    PR-existence check). With `gh` removed from PATH, PR_NUMBER
+    comes back empty exactly as it would for "no open PR" or "gh not
+    configured", both of which this hook documents as fail-open ("gh pr view
+    fails ... fail-open to keep the user unblocked"). So it does not fail
+    closed the way the sha256sum gates do, and this test pins that deliberate
+    behavior.
     """
     repo = tmp_path / "ready-for-review-repo"
     repo.mkdir()

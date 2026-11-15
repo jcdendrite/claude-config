@@ -26,12 +26,16 @@ import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
 from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT
 
 SETTINGS_JSON = CLAUDE_DIR / "settings.json"
 ADAPTER_DIR = REPO_ROOT / "claude" / ".claude" / "scripts" / "cursor-adapter"
 LIB_SH = HOOKS_DIR / "_lib.sh"
 SHIM = ADAPTER_DIR / "hook-shim.py"
+ADAPTER_SOURCE = ADAPTER_DIR / "cursor-adapter.py"
+# Rows that need a write or a read the mode denies are skipped for root, which ignores the mode.
+IS_ROOT = os.geteuid() == 0
 SHIM_INTERPRETER_FLAGS = ("-I", "-S")
 # The one name every loader registers the shim under, because the file name holds a hyphen.
 SHIM_MODULE_NAME = "cursor_hook_shim"
@@ -56,7 +60,7 @@ CLAUDE_PROCESS_ENV_NAMES = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID"
 
 # The highest phase of `.claude/plans/cursor-adapter.md` that this tree delivers.
 # A `pending-phase` parity entry must name a later one.
-DELIVERED_PHASE_NUMBER = 2
+DELIVERED_PHASE_NUMBER = 3
 
 
 def registration_key(event: str, matcher: str, script: str) -> str:
@@ -115,6 +119,23 @@ def compile_shim_module(shim: Path = SHIM) -> types.ModuleType:
     sys.modules[SHIM_MODULE_NAME] = module
     exec(compile(Path(shim).read_bytes(), str(shim), "exec"), module.__dict__)  # loading the file under test
     return module
+
+
+def load_adapter(source: Path = ADAPTER_SOURCE, name: str = "cursor_adapter_under_test") -> types.ModuleType:
+    """cursor-adapter.py compiled into a fresh module on every call, so no module state leaks between tests and no bytecode
+    file is written."""
+    module = types.ModuleType(name)
+    module.__file__ = str(source)
+    exec(compile(Path(source).read_bytes(), str(source), "exec"), module.__dict__)  # loading the file under test
+    return module
+
+
+@pytest.fixture(name="adapter")
+def adapter_under_empty_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """The `adapter` fixture: a fresh adapter module under a temporary HOME that holds nothing. A test module imports this
+    function to use the fixture."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    return load_adapter()
 
 
 @functools.cache
@@ -569,6 +590,13 @@ def recorded_tool_paths() -> dict:
     return paths
 
 
+def wrapper_name() -> str:
+    """The first of `timeout` and `gtimeout` that resolves on this host, which is the order the adapter prefers them in."""
+    name = next((name for name in ("timeout", "gtimeout") if shutil.which(name)), None)
+    assert name, "no timeout or gtimeout resolves on this host"
+    return name
+
+
 def make_shim_env(
     tmp_path: Path, *, tool_map: dict | None = None, record: dict | None = None, tool_paths: dict | None = None
 ) -> ShimEnv:
@@ -702,6 +730,13 @@ def shim_json(result: subprocess.CompletedProcess) -> dict:
 
 def write_hook_script(path: Path, body: str) -> Path:
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def write_sh_script(path: Path, body: str) -> Path:
+    """An executable POSIX `sh` script, for a stand-in tool or interpreter."""
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
 

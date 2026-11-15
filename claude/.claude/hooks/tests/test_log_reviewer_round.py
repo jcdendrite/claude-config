@@ -390,7 +390,7 @@ class TestLogReviewerRoundPilotCap:
         assert state_file.read_bytes() == pre_seeded_content
 
     def test_live_plan_review_active_marker_skips_recording_below_pilot_cap(self, isolated_home, tmp_path):
-        """Row 15's actual load-bearing check: under the pilot sentinel with
+        """The load-bearing check: under the pilot sentinel with
         zero states recorded yet (below cap=1, not at it), a live
         /plan-review fan-out for this session must still short-circuit
         before any write -- the recorder's own at-cap guard only fires once

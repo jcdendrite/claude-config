@@ -186,12 +186,10 @@ class TestParseRearmSpacingsArg:
 
 
 class TestRearmBacktestReport:
-    """End-to-end coverage against .claude/plans/handoff-nudge-rearm-backtest.md's
-    Verification section -- items 2, 4, and 5, encoded as pytests against a
-    shared fixture corpus rather than a one-time manual run."""
+    """End-to-end coverage of the report against a shared fixture corpus."""
 
     def test_baseline_dollars_match_cost_reports_own_total(self, fake_projects, capsys):
-        """Verification item 2: the baseline row (today's real recorded
+        """The baseline row (today's real recorded
         totals, no re-arm simulation) must equal _cost_report's own total for
         the same fixture scope -- an independent, already-verified code path
         computing the same real, non-counterfactual dollars over the same
@@ -210,7 +208,7 @@ class TestRearmBacktestReport:
         assert baseline_total == pytest.approx(cost_total)
 
     def test_prints_fixed_threshold_and_model_routing_disclosure(self, fake_projects, capsys):
-        """Verification item 5: the report explicitly states that model
+        """The report explicitly states that model
         routing and the fixed fire threshold are not backtested."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
@@ -221,7 +219,7 @@ class TestRearmBacktestReport:
         assert "NOT backtested" in out
 
     def test_excluded_operator_lag_count_is_reported(self, fake_projects, tmp_path, capsys):
-        """Verification item 4: a nudged log line that can't be joined to any
+        """A nudged log line that can't be joined to any
         session in scope is counted in the excluded figure, not silently
         dropped."""
         (tmp_path / ".handoff-nudge.log").write_text(
