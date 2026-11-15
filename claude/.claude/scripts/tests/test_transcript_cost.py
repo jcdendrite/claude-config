@@ -2277,6 +2277,17 @@ class TestFablePricing:
         assert rates["cache_write_1h"] == pytest.approx(20.00)
         assert rates["cache_read"] == pytest.approx(0.25)
 
+    def test_fable_5_2_rates_match_vendor_table(self):
+        """Fable 5.2: base $8, output $40, 5m write $10, 1h write $16,
+        cache_read 0.025x = $0.20."""
+        rates = pricing._model_rates("claude-fable-5-2")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(8.00)
+        assert rates["output"] == pytest.approx(40.00)
+        assert rates["cache_write_5m"] == pytest.approx(10.00)
+        assert rates["cache_write_1h"] == pytest.approx(16.00)
+        assert rates["cache_read"] == pytest.approx(0.20)
+
     def test_fable_5_1_priced_turn_hand_computed_dollar_total(self, fake_projects, capsys):
         """End-to-end through _cost_report: a Fable 5.1 turn's cache_read
         dollars reflect the 0.025x path, not the 0.1x every other model

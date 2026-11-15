@@ -8,6 +8,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **Three CI-workflow tests moved from `claude/.claude/hooks/tests/` to `claude/.claude/tests/`.**
   - The files are `test_ci_path_filter.py`, `test_ci_workflow_gates.py` and `test_ci_python_matches_dev_interpreter.py`. None tests a hook.
+- **`transcript-analysis` prices `claude-fable-5-2`.** Fable 5.2 turns carried unpriced tokens and an `EXCLUDED SPEND` banner. They now price at $8/MTok base input with the 0.025× cache-read rate, per the pricing page.
 - **`transcript-analysis.py user-input` no longer counts a compaction summary as a prompt.**
   - **What moves:** the fresh and follow-up prompt counts, the explicit-correction count, and the `--corrections-only` listing. A summary containing a correction phrase was counted as an explicit correction before, so that count and listing can fall. A session whose first fresh record was a summary now reports its first typed prompt as the initial prompt, not a follow-up. Any other figure derived from the prompt list can also fall: a session whose only fresh records were summaries leaves the session count and the session listing, the top struggle phrases line drops phrases that appeared only in a summary, and the date range and a session's header shift when its first fresh record was a summary.
   - **What does not move:** `struggle` and `friction-count` still score compaction summaries against the struggle phrases, so the three reports can disagree on the same transcript.
