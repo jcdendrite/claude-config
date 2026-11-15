@@ -1447,8 +1447,7 @@ A `bare` Read of a listed path fails `arm-leak`, never `read-grant-denied`.
 triggered a rule load in the `toolkit` run. The note never gates a pass.
 
 The residual: a `bare` run that reads no rule-matching file passes without
-testing the exclude, and a broken exclude fails `arm-leak` only on later `bare`
-runs that read one. The block calibration's body term is a character-count
+testing the exclude. The block calibration's body term is a character-count
 estimate, so a gap close to the margin is weak evidence either way.
 
 ### Run
