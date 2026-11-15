@@ -41,7 +41,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from helpers import CI_TEST_SLICE_JOB_ID, ci_test_slice_job, ci_tests_workflow_jobs
+from helpers import CI_TEST_SLICE_JOB_ID, ci_test_slice_job, ci_tests_workflow_jobs, install_shell_exec_guard
+
+
+@pytest.fixture(autouse=True)
+def _guard_shell_exec(monkeypatch):
+    """This tree has no conftest, so each module installs the guard itself."""
+    install_shell_exec_guard(monkeypatch)
+
 
 _AGGREGATE_JOB_ID = "tests"
 _INSTALL_STEP_NAME = "Install stow and direnv"

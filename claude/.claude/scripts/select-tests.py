@@ -284,10 +284,15 @@ HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS: frozenset[str] = frozenset({
     REVIEW_LEDGER_SCRIPT_TEST_PATH,
 })
 
-# HOOKS_TESTS_DIR test files that import SKILL_STRUCTURE_VALIDATOR_MODULE by name.
+# HOOKS_TESTS_DIR test files that import SKILL_STRUCTURE_VALIDATOR_MODULE by
+# name or through test_agent_roster.py.
 HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/test_agent_roster.py",
+    "claude/.claude/hooks/tests/test_announce_branch_review_history.py",
+    DOC_COUNTS_TEST_PATH,
+    "claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py",
     "claude/.claude/hooks/tests/test_global_claude_md_groups.py",
+    "claude/.claude/hooks/tests/test_send_back_skipped_self_review.py",
 })
 
 # SKILLS_TESTS_DIR test files that import run_skill_evals by name, which in
@@ -342,9 +347,6 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     SKILL_REVIEW_SKILL_MD,
     BRIEF_SKILL_MD,
 })
-
-# test_ci_path_filter.py reads this exact file by path.
-GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
 
 # test_config_py.py and test_config_parser_parity.py (SCRIPTS_TESTS_DIR) read
 # this exact file by path to drive _config.py against it; test_config_lib.py
@@ -601,6 +603,8 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
 # HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, and CLAUDE_TESTS_DIR. Both pathspecs
 # let "*" match "/". CLAUDE_TESTS_DIR's own files are covered by its own
 # domain rule already, so this predicate doesn't need to name that root.
+# CLAUDE_TESTS_DIR's test_ci_path_filter.py also depends on this selection,
+# because its lint-collection probe collects hooks/tests/test_shellcheck.py.
 # A strict subset of _is_py_source_under_claude_or_plugins: the scope
 # matches that predicate's three roots, so a repo-root conftest.py or
 # __init__.py still reaches the unmatched-path fallback.
@@ -707,7 +711,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # member imports transcript_analysis.author_outcome, a module inside this
 # package.
 # SKILL_STRUCTURE_VALIDATOR_MODULE: every
-# HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR member imports it by name.
+# HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR member imports it by name or
+# through test_agent_roster.py.
 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: every
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES member imports one of these
 # hooks-test-tree modules by name.
@@ -807,9 +812,6 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
-# GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
-# reads this exact file. Subsumed by the RULES_DIR row above. Kept anyway
-# because its declaration is narrower and independent of that row.
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
@@ -945,7 +947,6 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         ),
     ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
-    (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: p in (TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD, SESSION_CONFIG_KEYS_LOG_DOC_MD),

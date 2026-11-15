@@ -161,6 +161,45 @@ def _test_corpus(repo_root: Path) -> list[str]:
     return sorted(corpus)
 
 
+def _selection_covers(target_paths: tuple[str, ...], path: str) -> bool:
+    return any(
+        _mod._is_under(path, target) or path in _mod._expand_target(target, repo_root=_REPO_ROOT)
+        for target in target_paths
+    )
+
+
+def _imported_module_basenames(source: str) -> set[str]:
+    """The last dotted segment of every module and imported name in `source`'s
+    import statements. A mention in a comment or string does not count."""
+    basenames: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            basenames.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                basenames.add(node.module.rsplit(".", 1)[-1])
+            basenames.update(alias.name for alias in node.names)
+    return basenames
+
+
+def _skill_structure_validator_importers(sources: dict[str, str]) -> set[str]:
+    """The keys of `sources` that import the skill-structure validator, plus
+    those that import the module of a key that does. The scan follows one hop."""
+    # Gaps:
+    # - evals/ is unscanned.
+    # - Non-test helper modules are unscanned.
+    # - importlib loads are unseen.
+    # - Subprocess reach via require-skill-review.sh is unseen.
+    validator_basename = Path(_mod.SKILL_STRUCTURE_VALIDATOR_MODULE).stem
+    basenames_by_source = {name: _imported_module_basenames(source) for name, source in sources.items()}
+    direct_importers = {name for name, basenames in basenames_by_source.items() if validator_basename in basenames}
+    direct_importer_modules = {Path(name).stem for name in direct_importers}
+    transitive_importers = {
+        name for name, basenames in basenames_by_source.items() if basenames & direct_importer_modules
+    }
+    return direct_importers | transitive_importers
+
+
 class TestModuleLevelRepoPathResolver:
     """Pins _resolve_module_level_repo_paths' grammar directly against small
     ast.parse-able fixture strings, one case per accepted shape (a seeded or
@@ -354,12 +393,7 @@ class TestCrossDomainReadCompleteness:
                 result = _mod.select_pytest_targets([candidate])
                 if result.is_full_suite:
                     continue
-                covered = any(
-                    _mod._is_under(test_relpath, target)
-                    or test_relpath in _mod._expand_target(target, repo_root=_REPO_ROOT)
-                    for target in result.target_paths
-                )
-                if not covered:
+                if not _selection_covers(result.target_paths, test_relpath):
                     violations.append((test_relpath, candidate, result.target_paths))
         assert not violations, "\n".join(
             f"{test} reads {path!r} by path, but select_pytest_targets([{path!r}]) "
@@ -421,6 +455,75 @@ class TestCrossDomainReadCompleteness:
         assert not _mod._is_test_source_change(
             "plugins/some-plugin/worktrees/tests/test_x.py"
         )
+
+
+class TestSkillStructureValidatorSelection:
+    """A validator change must select every test that imports the validator,
+    by name or through another test module that does."""
+
+    def test_every_test_importing_the_validator_is_selected_by_a_validator_change(self):
+        sources = {relpath: (_REPO_ROOT / relpath).read_text() for relpath in _test_corpus(_REPO_ROOT)}
+        importers = _skill_structure_validator_importers(sources)
+        assert "claude/.claude/hooks/tests/test_agent_roster.py" in importers, (
+            "the scan found no by-name importer: either it is broken, or test_agent_roster.py no longer imports "
+            "the validator and this liveness member needs re-picking"
+        )
+        assert _mod.DOC_COUNTS_TEST_PATH in importers, (
+            "the scan found no transitive importer: either it is broken, or test_doc_counts.py no longer reaches "
+            "the validator through test_agent_roster.py and this liveness member needs re-picking"
+        )
+        stale_declared_members = sorted(_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR - importers)
+        assert not stale_declared_members, (
+            f"HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR members the scan does not find as importers: "
+            f"{stale_declared_members}; remove the member from the set in select-tests.py, or the scan is broken"
+        )
+        result = _mod.select_pytest_targets([_mod.SKILL_STRUCTURE_VALIDATOR_MODULE])
+        assert result.is_full_suite is False
+        uncovered = sorted(
+            importer for importer in importers if not _selection_covers(result.target_paths, importer)
+        )
+        assert not uncovered, (
+            f"select_pytest_targets([{_mod.SKILL_STRUCTURE_VALIDATOR_MODULE!r}]) selects "
+            f"{result.target_paths!r}, which does not cover these importers: {uncovered}"
+        )
+
+    def test_selection_covers_reports_a_path_outside_the_selected_targets_as_uncovered(self):
+        selected_targets = ("claude/.claude/hooks/tests",)
+        assert _selection_covers(selected_targets, "claude/.claude/hooks/tests/test_agent_roster.py")
+        assert not _selection_covers(selected_targets, "claude/.claude/scripts/tests/test_select_tests.py")
+        assert not _selection_covers((), "claude/.claude/hooks/tests/test_agent_roster.py")
+
+    @pytest.mark.parametrize(
+        ("sources", "expected_importers"),
+        [
+            pytest.param(
+                {"claude/.claude/hooks/tests/test_fixture.py": "from validate_skill_structure import parse_frontmatter\n"},
+                {"claude/.claude/hooks/tests/test_fixture.py"},
+                id="from-import",
+            ),
+            pytest.param(
+                {"claude/.claude/hooks/tests/test_fixture.py": "import validate_skill_structure\n"},
+                {"claude/.claude/hooks/tests/test_fixture.py"},
+                id="plain-import",
+            ),
+            pytest.param(
+                {
+                    "claude/.claude/hooks/tests/test_x.py": "import validate_skill_structure\n",
+                    "claude/.claude/hooks/tests/test_y.py": "from .test_x import some_helper\n",
+                    "claude/.claude/hooks/tests/test_z.py": "import os\n",
+                },
+                {"claude/.claude/hooks/tests/test_x.py", "claude/.claude/hooks/tests/test_y.py"},
+                id="relative-import-of-a-validator-importer",
+            ),
+            pytest.param(
+                {"claude/.claude/hooks/tests/test_fixture.py": "import os\n# validate_skill_structure\n"},
+                set(),
+                id="comment-only-mention",
+            ),
+        ],
+    )
+    def test_the_importer_scan_flags_each_import_form_and_ignores_a_comment(self, sources, expected_importers):
+        assert _skill_structure_validator_importers(sources) == expected_importers
 
 
 # Each pair is (select-tests.py attribute of a hand-audited AGENTS_DIR target,
@@ -676,10 +779,9 @@ class TestSelectPytestTargets:
         tracked .py file under plugins/ too, so this .py change now selects
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH alongside SKILLS_TESTS_DIR.
         This path is also SKILL_STRUCTURE_VALIDATOR_MODULE, so it selects
-        HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR's two test files --
-        test_agent_roster.py and test_global_claude_md_groups.py import it
-        by name, and neither sits under SKILLS_TESTS_DIR, so declaring the
-        row is the only way either gets selected."""
+        HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR's test files, none of
+        which sits under SKILLS_TESTS_DIR, so declaring the row is the only
+        way any of them gets selected."""
         result = _mod.select_pytest_targets(["plugins/skill-management/scripts/validate_skill_structure.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1189,27 +1291,6 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
-    def test_github_actions_workflows_rule_md_change_also_selects_hooks_tests(self):
-        """test_ci_path_filter.py (HOOKS_TESTS_DIR) reads this exact file by path,
-        not by import. Both this exact-match row and the RULES_DIR row above
-        supply HOOKS_TESTS_DIR for this path. See this row's own comment in
-        select-tests.py for why both are kept."""
-        result = _mod.select_pytest_targets([_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD])
-        assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
-
-    def test_github_actions_workflows_rule_md_row_declares_hooks_tests_directly(self):
-        """This row's declaration is narrower than the RULES_DIR row's and
-        outlives changes to it."""
-        sibling_rule_path = "claude/.claude/rules/shell-script-conventions.md"
-        matching_rows = [
-            targets
-            for predicate, targets in _mod.CROSS_DOMAIN_EXCEPTIONS
-            if predicate(_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD) and not predicate(sibling_rule_path)
-        ]
-        assert len(matching_rows) == 1
-        assert matching_rows[0] == (_mod.HOOKS_TESTS_DIR,)
-
     def test_plans_dir_change_selects_no_tests(self):
         """No test reads any file under .claude/plans/ by path or
         subprocess, so a plan change is covered without pulling in the
@@ -1224,6 +1305,14 @@ class TestSelectPytestTargets:
         string prefix but is a distinct sibling directory, so it must not
         match."""
         result = _mod.select_pytest_targets([".claude/plans-archive/x.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_workflow_file_change_reaches_the_unmatched_path_fallback(self):
+        """Tests in several test trees read .github/workflows/tests.yml and no
+        row maps it, so an edit to it must keep running the full suite. A row
+        mapping it narrowly would drop tests it must keep selecting."""
+        result = _mod.select_pytest_targets([".github/workflows/tests.yml"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
@@ -1528,6 +1617,27 @@ class TestSelectPytestTargets:
             _mod.CLAUDE_TESTS_DIR, _mod.SELECT_TESTS_TEST_PATH,
         }
 
+    @pytest.mark.parametrize(
+        "edited_path",
+        [
+            "claude/.claude/hooks/tests/test_shellcheck.py",
+            "claude/.claude/hooks/tests/conftest.py",
+            "claude/.claude/scripts/tests/conftest.py",
+            "plugins/lovable-cloud/tests/conftest.py",
+        ],
+    )
+    def test_lint_collection_probe_inputs_select_the_ci_path_filter_test(self, edited_path):
+        """test_ci_path_filter.py's lint-collection probe collects
+        hooks/tests/test_shellcheck.py across trees, so a change to that file or
+        to any conftest.py it collects through must select the probe's test file."""
+        probe_test_path = "claude/.claude/tests/test_ci_path_filter.py"
+        result = _mod.select_pytest_targets([edited_path])
+        assert result.is_full_suite is False
+        assert (_REPO_ROOT / probe_test_path).is_file()
+        assert _selection_covers(result.target_paths, probe_test_path), (
+            f"{edited_path} selects {result.target_paths!r}, which does not cover {probe_test_path}"
+        )
+
     def test_packaging_predicate_matches_a_suffix_named_conftest_file(self):
         """A conftest.py-suffixed name that isn't the exact literal
         "conftest.py" still matches path.endswith("conftest.py"), mirroring
@@ -1820,19 +1930,11 @@ class TestCursorAdapterSelection:
     @staticmethod
     def _undeclared_payload_builder_importers(sources: dict[str, str], declared: set[str]) -> set[str]:
         """The keys of `sources` whose code imports the payload builder in any form and are not in `declared`."""
-
-        def imports_the_builder(source: str) -> bool:
-            for node in ast.walk(ast.parse(source)):
-                if isinstance(node, ast.Import) and any(alias.name.endswith("_cursor_payloads") for alias in node.names):
-                    return True
-                if isinstance(node, ast.ImportFrom) and (
-                    (node.module or "").endswith("_cursor_payloads")
-                    or any(alias.name == "_cursor_payloads" for alias in node.names)
-                ):
-                    return True
-            return False
-
-        return {name for name, source in sources.items() if imports_the_builder(source) and name not in declared}
+        return {
+            name
+            for name, source in sources.items()
+            if "_cursor_payloads" in _imported_module_basenames(source) and name not in declared
+        }
 
     def test_every_scripts_test_importing_the_payload_builder_is_a_declared_importer(self):
         sources = {
@@ -2256,7 +2358,6 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     *_mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS,
     _mod.RESUME_CONTEXT_SKILL_MD,
     _mod.PLAN_IT_SKILL_MD,
-    _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
     _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
     _mod.PRIVATE_PROJECT_REDACTION_DOC_MD,
@@ -2367,11 +2468,7 @@ class TestKnownCrossDomainReadsAudit:
         for reading_test, read_path in _KNOWN_CROSS_DOMAIN_READS:
             result = _mod.select_pytest_targets([read_path])
             assert result.is_full_suite is False, read_path
-            covered = any(
-                _mod._is_under(reading_test, target)
-                or reading_test in _mod._expand_target(target, repo_root=_REPO_ROOT)
-                for target in result.target_paths
-            )
+            covered = _selection_covers(result.target_paths, reading_test)
             assert covered, f"{read_path!r} selects {result.target_paths!r}, which does not cover {reading_test}"
 
     def test_skill_files_read_by_hook_tests_equals_known_reads_under_hooks_tests_dir(self):
