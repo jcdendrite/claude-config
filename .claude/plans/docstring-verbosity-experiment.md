@@ -46,14 +46,14 @@ The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D
   - the `--max-base-entries` default starts at 100,000 and halves until a tree of that many files builds within 60 s;
   - `FIXTURE_GIT_TIMEOUT_S` is three times the slowest build across the trees the default bounds admit, the step 1c corner included, rounded up to a whole 10 s.
 - The 60 s ceiling, the 100,000 starting point and the multiplier are judgments, not measurements.
-- Step 1a's relay gave no byte total for the halving trees, and nothing measured locates the jump between 12,500 and 25,000 files. So Verification step 1c timed two more trees before the first PR's last dispatch: the corner the bounds admit, 12,500 files totaling 100 MB, and 17,500 files totaling 100 MB.
+- Step 1a's relay gave no byte total for the halving trees, and nothing measured locates the jump between 12,500 and 25,000 files. So Verification step 1c timed two more trees before the first PR's last dispatch: the corner the bounds admit, 12,500 files totaling 100 MB, and 17,500 files.
   - Neither tree exceeded 60 s, so step 1c did not stop.
   - Had either exceeded it, the stop would have gone to the engineer, because the 12,500 default is the engineer's accepted figure (row 129).
 - Row 106 holds the measured series. Under the rule above, `--max-base-mb` defaults to 100, `--max-base-entries` to 12,500, and `FIXTURE_GIT_TIMEOUT_S` to 110 s, three times the 33.5 s corner build at 12,500 files totaling 100 MB, rounded up.
 
 **Arms (`replay_bench/arms.py`).**
 - `bare` dispatches a fixture-local `bare-writer` that copies `code-writer`'s tools, model and effort. Its fixture settings hold only `claudeMdExcludes`, because `omitClaudeMd` still lets path-scoped rules load (rows 16, 115). The account's `CLAUDE.md` stays off the exclude list: the dispatcher's `session_start` load of it is the run's positive control, and `omitClaudeMd` already drops it from the subagent (row 15).
-- `toolkit` dispatches `code-writer` by name, which resolves to the account's stowed user-scope agent. The `SubagentStop` self-review hook, whose matcher is `code-writer`, therefore fires as in production and never fires for `bare-writer` (row 13). It writes no fixture settings file.
+- `toolkit` dispatches `code-writer` by name, which resolves to the account's stowed user-scope agent. The `SubagentStop` self-review hook, whose matcher is `code-writer`, therefore fires as in production and never sends `bare-writer` back (row 13). It writes no fixture settings file.
 - Both arms send the same inner prompt, `tasks.build_inner_prompt`, wrapped by `build_dispatcher_prompt`.
 
 **Account preflight** (`replay_bench/account.py`; `evals/README.md` § "Account preflight and launch environment"). The probe and the readiness check use their own `subprocess.run`, not `_read_environment_field`, whose error text carries the child's stderr (row 58). The readiness check does not show that the account is logged in, so `smoke` is the first check that does (row 70).
@@ -205,8 +205,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 10. [verified: `docs/private-project-redaction.md:136-137`] A subcommand with no scope refusal of its own is not a publication instrument. The runner refuses no wider corpus, so even an own-history figure from it is not publishable.
 11. [verified: this session's probe, as relayed; repo `CLAUDE.md` "Secrets, tokens, credentials"] `CLAUDE_CONFIG_DIR=<empty dir>` printed "Not logged in", and copying credentials into a config dir is barred.
 12. [verified: `claude/.claude/agents/code-writer.md:4`] `code-writer`'s tools are Read, Edit, Write, Bash, Grep and Glob, with no `Skill` tool, so `bare-writer` copies a list without it too.
-13. [verified: `claude/.claude/settings.json`, its `SubagentStop` entry] The `SubagentStop` hook `send-back-skipped-self-review.sh` has the matcher `code-writer`.
-14. [verified: sub-agents.md, as relayed: settings, managed settings and plugin hooks still apply inside subagents] Both arms' subagents run the account's hooks.
+13. [verified: `claude/.claude/settings.json`, its `SubagentStop` entry] The `SubagentStop` hook `send-back-skipped-self-review.sh` has the matcher `code-writer`.14. [verified: sub-agents.md, as relayed: settings, managed settings and plugin hooks still apply inside subagents] Both arms' subagents run the account's hooks.
 15. [verified: sub-agents.md, as relayed] `omitClaudeMd` is a subagent frontmatter field (v2.1.271 and later) that drops user, project and local `CLAUDE.md`. Managed policy still loads.
 16. [verified: Verification step 1a's `bare` run, as relayed; the sub-agents page, as relayed: "For Explore, Plan, and subagents with `omitClaudeMd`, a subdirectory's `CLAUDE.md` and matching path-scoped rules still load when the subagent works with files there."] `omitClaudeMd` does not stop path-scoped rules: the `bare` subagent loaded a user-scope rule by `path_glob_match`. [verified: `claude/.claude/rules/shell-script-conventions.md:49-52`] A leaked rule is not neutral, because one user rule sets a comment-length convention. So every `bare` fixture carries `claudeMdExcludes` (row 115), and the instrument still checks every `bare` run.
 17. [verified: `docs/case-studies/claude-md-glob-zero-segment.md`, its five `-p` trials and the clean trial's two logged lines] An `InstructionsLoaded` command hook fires under `claude -p` and logs `load_reason` and `file_path`.
@@ -351,7 +350,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - item 3 was Verification step 1b, three paid runs before Phase 3;
     - item 4 was the stricter `bare` check, which fails on any dispatcher load other than the account's `CLAUDE.md`.
 126. [unverified] The session's recommendation, not the engineer's words: split at the Phase 2 to Phase 3 boundary, with about 1,830 lines in the first PR. That figure was this plan's estimate. [verified: line counts of Phase 2's output before the first PR's last dispatch, taken by an earlier dispatch of this plan's revision] Phases 1 and 2 hold 2,592 lines in their five new files, so the first PR's `Projected diff:` is larger than the figure the recommendation carried.
-127. [verified: repo `CLAUDE.md` "a plan committed under `.claude/plans/` ships in the same PR as the implementation"; this branch's commit 9239b6f1 "Plan replay_bench docstring-verbosity experiment", from the dispatch's git status] A plan ships with the code it governs, and this file is already committed on the first PR's branch.
+127. [verified: repo `CLAUDE.md` "a plan committed under `.claude/plans/` ships in the same PR as the implementation"] A plan ships with the code it governs.
 128. [verified: `claude/.claude/hooks/require-plan-review.sh:4-16`] The plan-review gate blocks Write and Edit while a plan file under `.claude/plans/` is uncommitted or modified and no review marker covers its exact state. A committed, unmodified plan passes. So each edit to this file, on either branch, needs a fresh `/plan-review` before the next code edit.
 129. [engineer-verified: "Accept the new sizes (Recommended)"] Superseded by row 141 for its first, second and fourth items, the sizes and the refactor's move. Its third item stands. The engineer selected this label when asked whether to accept four items. The label covers acceptance of those sizes and that scope shift, nothing more. The option's description was the session's proposal. The items:
     - the first PR's `Projected diff:` of about 2,750 lines, where row 126 had carried about 1,830;
@@ -404,7 +403,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 149. [engineer-verified: "Keep it (Recommended)"] Asked whether the second PR's `tasks` CLI should exit 2, naming the flag, for zero, negative or inverted selection limits, which the Ask does not call for, the engineer selected this label. Row 150 records where the guard lives and which values it refuses.
     - [unverified] The option description was the session's proposal: a guard at the one place a person types the limits. Row 150's placement replaces it.
 150. [engineer-verified: "In SelectionLimits (Recommended)"] Asked where the guard lives, the engineer selected this label. The guard and what it refuses:
-    - `SelectionLimits.__post_init__` raises `TaskSourceError`, which `main()` already maps to exit 2.
+    - `SelectionLimits.__post_init__` raises `TaskSourceError`, which `_run_main` already maps to exit 2.
     - [engineer-verified: "Reject: all integer limits at least 1 (Recommended)"] Asked whether `--min-code-lines 0` is valid, the engineer selected this label. Every integer limit is at least 1, and `min_code_lines` may not exceed `max_code_lines`, with equal valid.
     - [verified: a reviewer's run of `git rev-list --count -n -1 HEAD` in this repository, relayed by the dispatch, printed the whole history, 1,058 commits] A negative `max_count` removes the 500-commit bound.
     - [unverified] Both option descriptions were the session's proposals.
@@ -415,7 +414,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - item 8: no resume cap charge for a swept attempt that has no spend line (row 155);
     - item 9: a manual listing of the account config dir in Verification step 6, in place of `smoke`'s own;
     - item 10: the arms test reading a `tmp_path` agent file, not this checkout's (row 158).
-152. [unverified] The session's design, not the engineer's words: `tasks`' flags for the nine `SelectionLimits` fields, `--rev` included, default to `None`, and `main()` passes only the flags given to `SelectionLimits`, by field name. `SelectionLimits` then holds the only defaults, and no flag can reach another field. The CLI case that gives all nine flags distinct values pins the wiring.
+152. [unverified] The session's design, not the engineer's words: `tasks`' flags for the nine `SelectionLimits` fields, `--rev` included, default to `None`, and `cmd_tasks` passes only the flags given to `SelectionLimits`, by field name. `SelectionLimits` then holds the only defaults, and no flag can reach another field. The CLI case that gives all nine flags distinct values pins the wiring.
 153. [unverified] The session's design under row 159, not the engineer's words:
     - A task-specific failed block, one where an arm has no valid run and no attempt in the block ended under an instrument reason, is marked complete and never rerun. Its task leaves the pairs, and `summarize` counts it.
     - Two such blocks in a row halt `run` with both complete. The count lives in memory for one invocation and starts at 0 on every start and resume, so a resume goes on past the pair, and those two tasks are lost from the sample. A one-block transient failure also loses its task for good.
@@ -430,7 +429,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - So for four hours after a campaign, the engineer may see replay attempts listed in that report, as accepted residue.
     - [unverified] No other reader under `claude-skills/` or a script outside `claude/.claude/` minds a stale entry, since the search did not cover them.
 155. [unverified] The plan's design, not a measurement:
-    - `main()` routes SIGHUP and SIGTERM into `KeyboardInterrupt`, and an aborted launch is charged at the cap (`attempt._charge`, row 65). A Phase 4 case checks that an interrupted in-flight attempt writes its charge.
+    - `_run_main` routes SIGTERM, and SIGHUP unless it is ignored (`nohup`), into `KeyboardInterrupt`, and an aborted launch is charged at the cap (`attempt._charge`, row 65). A Phase 4 case checks that an interrupted in-flight attempt writes its charge.
     - A hard kill, such as SIGKILL, an out-of-memory kill or a power loss, can end a launched attempt with no spend line. So can a failed append, which halts `run` before its block is marked complete. Either way the attempt's entry stays pending, and the next resume counts it among the uncharged attempts it prints.
     - After each hard kill, up to `run_skill_evals.DEFAULT_WORKERS` (4, row 82) launched attempts, one per worker thread, may go uncharged. The undercount adds up over kills, each adding at most `DEFAULT_WORKERS` times the per-run cap, a nominal figure (row 65).
     - The README states this as accepted residue, beside row 79's files.
@@ -489,7 +488,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 - **M12. `--permission-mode acceptEdits` on the dispatcher, with its Bash denials recorded and stated rather than lifted.** anchors: row25, row26, row122.
 - **M13. Arm C as a gated pair sharing one route.** anchors: row2, row11, row13.
 - **M14. `select-tests.py` wiring that follows the `measure_explore_recall.py` precedent, plus the no-relative-import check with a scanned-set control, and a declared row that selects it after a replay edit.** anchors: row39, row40, row67, row81, row133, row158.
-- **M15. Local-storage and startup guards, with the README's trust warning.** Phase 1's `.gitignore` entry, `run_replay_bench.py`'s `main()` and `evals/README.md` § "Run" state them. anchors: row4, row41, row42, row45, row47, row59, row61, row66, row71, row91.
+- **M15. Local-storage and startup guards, with the README's trust warning.** Phase 1's `.gitignore` entry, `run_replay_bench.py` and `evals/README.md` § "Run" state them. anchors: row4, row41, row42, row45, row47, row59, row61, row66, row71, row91.
 - **M16. A runner-owned copy of the fixture's pre-launch `.git` for every post-run git call.** Lighter primitives checked:
   - (a) `-c` overrides on the fixture's own `.git` form a denylist that misses any key it does not name;
   - (b) a Python diff of the work tree reimplements `git diff` and its symlink handling.
@@ -555,7 +554,7 @@ The two PRs (Approach) split at Phase 2 to Phase 3, with Phase 5a in the first a
 - The new modules under `evals/replay_bench/` are `arms.py`, `launch.py`, `account.py`, `attempt.py`, `campaign.py`, `spend.py`, `smoke.py`, `smoke_pass.py`, `summary.py`, `diffing.py`, `records.py`, `render.py` and `runner.py`. The runner is split across them so each file stays under the 1,000-line cap.
 - `evals/conftest.py` (edit): the shared autouse `fresh_launch_abort_flag` fixture, which resets `msmr`'s launch-abort flag for every test in `evals/`, and the `checks_world` and `world` fixtures.
 - `evals/replay_bench/comment_metrics.py` and `evals/test_replay_bench_comment_metrics.py` (edit): docstring wording and the `ValueError` text, with the test's `match=` following it.
-- `evals/run_replay_bench.py` (new): the CLI. `tasks` takes one flag per `SelectionLimits` field, defaulting to `None`, and `main()` passes only the flags given, by field name, so `SelectionLimits` holds the only defaults (row 152).
+- `evals/run_replay_bench.py` (new): the CLI. `tasks` takes one flag per `SelectionLimits` field, defaulting to `None`, and `cmd_tasks` passes only the flags given, by field name, so `SelectionLimits` holds the only defaults (row 152).
 - `evals/test_replay_bench_arms.py` (new) builds `bare-writer.md` from a `tmp_path` `code-writer.md` and reads no real agents directory (row 158).
 - The runner, campaign, spend, CLI, summarize and smoke tests are in `evals/test_replay_bench*.py` (new). Their setup, as M17 cites:
   - They stub every `claude` call, and every `direnv` call outside the preflight cases. An injected `launch=` writes a synthetic dispatcher transcript and subagent sidecar under a `tmp_path` projects root, and fakes the fixture edits.
@@ -613,7 +612,7 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
    - Step 1a hit two stop conditions, a missing subagent `CLAUDE.md` line and a rule load in `bare`, and so forced this revision.
    - **1c**, local and unpaid, ran on the first PR's branch before that PR's last dispatch. It timed two synthetic source repos under the system temp dir, each on its own, with four concurrent `build_task_fixture` builds through `scripts/venv-run.sh python3`:
      - 12,500 text files totaling 100 MB, the corner the bounds admit;
-     - 17,500 text files totaling 100 MB.
+     - 17,500 text files.
    - The harness passes `timeout_s=600`, ten times the 60 s stop line, so a slow build records its time instead of timing out. The figure is a judgment.
    - Step 1c records each tree's file count, byte total and slowest build in row 106. The Fixture rule sets `FIXTURE_GIT_TIMEOUT_S` from the corner.
    - Afterwards it deletes both source repos and every fixture and `baseline.git` copy it built.
