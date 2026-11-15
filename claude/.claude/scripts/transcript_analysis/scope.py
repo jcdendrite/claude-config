@@ -716,7 +716,7 @@ _EXTRA_CONFIG_DIRS_HELP_PREAMBLE = (
 
 
 def _add_extra_config_dirs_arg(parser: argparse.ArgumentParser, help_text: str) -> None:
-    """Register the repeatable --config-dir; its subcommand must also be in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
+    """A subcommand calling this must also be in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
     parser.add_argument("--config-dir", action="append", dest="extra_config_dirs", metavar="DIR", help=help_text)
 
 
