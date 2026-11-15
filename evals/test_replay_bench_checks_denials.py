@@ -107,7 +107,7 @@ class TestEntryLevelDenialShape:
         assert transcript.permission_denials == 0
         assert [call.answered for call in transcript.tool_calls] == [True, True]
 
-    def test_a_block_level_marker_of_the_new_shape_denies_only_its_own_result(self, tmp_path):
+    def test_a_marker_on_the_tool_result_block_denies_only_its_own_result(self, tmp_path):
         entry = denied_result_entry("toolu_1", "/tmp/x.txt")
         block = entry["message"]["content"][0]
         block["toolDenialKind"] = entry.pop("toolDenialKind")

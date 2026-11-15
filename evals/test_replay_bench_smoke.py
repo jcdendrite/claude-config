@@ -51,7 +51,7 @@ class TestAPassingSmoke:
         assert not smoke_pass.has_smoke_pass(world.local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare", "other"))
         assert sorted(call.agent_name for call in launch_stub.calls) == ["bare-writer", "code-writer"], "one run per arm"
 
-    def test_each_runs_printout_carries_the_build_seconds_sizes_body_term_and_margin(self, world, capsys):
+    def test_each_runs_printout_carries_the_fixture_build_and_body_term_labels_the_sizes_and_the_margin(self, world, capsys):
         run_smoke(world)
 
         output = capsys.readouterr().out
@@ -61,7 +61,7 @@ class TestAPassingSmoke:
         assert f"margin {expected_margin:g} tokens" in output and "body term" in output
         assert "first-turn prompt size: 6000" in output
 
-    def test_the_exclude_note_prints_after_the_runs_and_the_residual_sentence_always_prints(self, world, capsys):
+    def test_the_exclude_note_prints_after_the_runs_and_carries_the_residual_sentence(self, world, capsys):
         run_smoke(world)
 
         output = capsys.readouterr().out
@@ -216,7 +216,8 @@ class TestNoRetryOnInstrumentReasons:
     @pytest.mark.parametrize("reason", sorted(checks.INSTRUMENT_REASONS))
     def test_each_instrument_reason_ends_the_run_missing_after_one_attempt_with_no_record(self, world, capsys, reason):
         agent, failing = self.scenario_for_reason(world, reason)
-        by_call = lambda call: failing if call.agent_name == agent else Scenario()  # noqa: E731
+        def by_call(call):
+            return failing if call.agent_name == agent else Scenario()
 
         exit_code, launch_stub = run_smoke(world, by_call=by_call)
 

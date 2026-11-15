@@ -134,7 +134,7 @@ class TestExcludeNote:
     def test_a_relative_trigger_path_that_leaves_the_fixture_leaves_the_line_out(self, checks_world, tmp_path, trigger):
         assert _note(checks_world, tmp_path, trigger, []) == (checks.EXCLUDE_NOTE_RESIDUAL,)
 
-    def test_a_trigger_path_reported_in_resolved_form_is_compared_through_a_symlinked_fixture_parent(
+    def test_a_trigger_path_reported_in_resolved_form_is_compared_through_a_symlinked_fixture(
         self, checks_world, tmp_path,
     ):
         linked_fixture = _link(tmp_path / "linked-toolkit-fixture", checks_world.fixture_dir)
@@ -698,7 +698,7 @@ class TestToolkitReach:
         entries = _call_and_result("toolu_1", "Bash", {"command": "cat ~/.claude/agents/extra.md"})
         assert self._reasons(checks_world, tmp_path, entries, _bare(checks_world)) == (checks.REASON_ARM_LEAK,)
 
-    def test_bare_reaching_a_toolkit_path_through_an_unsplittable_command_fails_and_keeps_the_unparsed_record(
+    def test_bare_reaching_a_toolkit_path_through_an_unsplittable_command_keeps_the_unparsed_record(
         self, checks_world, tmp_path,
     ):
         command = f"cat {checks_world.config_dir}/agents/reviewer.md  # it's here"

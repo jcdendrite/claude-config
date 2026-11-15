@@ -848,7 +848,7 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB}
 
     def test_every_replay_bench_test_and_helper_file_on_disk_selects_the_replay_tests(self):
-        """The helper-only *_support.py modules and evals/conftest.py hold no test of their own, so a
+        """The helper-only *_support.py modules hold no test of their own, so a
         narrowed predicate could leave an edit to one unselected without any test failing. The selected
         targets are expanded on disk, so a narrowed REPLAY_BENCH_TEST_GLOB fails here too."""
         evals_dir = _REPO_ROOT / "evals"

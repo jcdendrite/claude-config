@@ -118,7 +118,7 @@ def _probe(repo: Path, probe_dir: Path, *, timeout_s: float) -> _Probe:
 
 
 def dropped_variable_names(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Every name in the probe's environment that the launch drops, `CLAUDE_CONFIG_DIR` and direnv's own
+    """Every name in the probe's environment outside the launch allowlist, `CLAUDE_CONFIG_DIR` and direnv's own
     variables aside. The runner's own shell variables are listed too."""
     kept = {*launch.LAUNCH_ENV_ALLOWLIST, launch.CONFIG_DIR_VARIABLE}
     return tuple(name for name in names if name not in kept and not name.startswith(DIRENV_VARIABLE_PREFIX))

@@ -1,7 +1,7 @@
 """`run`: the block-by-block campaign with its pinned manifest, smoke gate, spend guards and halts.
 
 Exit codes follow the review bench CLI: a refusal before the first launch raises `HarnessInvalidatedError`
-(exit 2), a halt returns 1, and a campaign that completes every task returns 0. A block-start read of the
+(exit 2) and a halt returns 1. A block-start read of the
 environment or the live checkouts that fails after block 1 also exits 2 and spends nothing for that block.
 """
 from __future__ import annotations

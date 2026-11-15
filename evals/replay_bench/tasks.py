@@ -484,8 +484,7 @@ def _is_directory_or_link_entry(entry: comment_metrics.ChangedEntry) -> bool:
 
 
 def _path_is_unsafe_in_prompt(path: str) -> bool:
-    """The inner prompt lists paths comma-separated, and a path that does not round-trip through
-    UTF-8 would not survive the task file."""
+    """The inner prompt lists paths comma-separated."""
     try:
         path.encode("utf-8")
     except UnicodeEncodeError:

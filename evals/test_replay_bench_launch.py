@@ -203,7 +203,7 @@ class TestTheInstrumentHook:
         command = json.loads(launch.settings_json(log_path))["hooks"]["InstructionsLoaded"][0]["hooks"][0]["command"]
         subprocess.run(["sh", "-c", command], input=payload.encode(), check=True, timeout=HOOK_TIMEOUT_S)
 
-    def test_the_settings_json_carries_one_command_hook_and_nothing_else(self, tmp_path):
+    def test_the_settings_json_carries_one_event_with_one_group_whose_first_hook_is_a_command(self, tmp_path):
         settings = json.loads(launch.settings_json(tmp_path / "log.jsonl"))
 
         assert list(settings) == ["hooks"] and list(settings["hooks"]) == ["InstructionsLoaded"]

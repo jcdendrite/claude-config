@@ -907,7 +907,7 @@ class TestSpendGuards:
         assert len(env.completed()) == 2
         assert "cumulative stop" in capsys.readouterr().err
 
-    def test_the_account_stop_halts_the_whole_campaign_naming_the_account(self, env, capsys):
+    def test_the_account_stop_halts_the_whole_campaign(self, env, capsys):
         assert env.run(env.world.launch(), cumulative_stop_usd=1000, account_stop_usd=EARLY_STOP_USD, allow_early_stop=True) == 1
 
         assert len(env.completed()) == 2

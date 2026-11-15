@@ -42,7 +42,7 @@ class ReplayRunRecord:
     # `CommentMetrics.to_dict()` of the run's change, or None for a run that ended missing.
     metrics: dict | None = None
     first_turn_prompt_size: int | None = None
-    # Class name -> config- or fixture-relative path -> load count, for the subagent's instruction loads.
+    # Class name -> path -> load count, for the subagent's instruction loads.
     subagent_loads: dict = field(default_factory=dict)
     permission_denials: int = 0
     allow_list_reads: list[dict] = field(default_factory=list)

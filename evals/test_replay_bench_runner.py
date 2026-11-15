@@ -419,7 +419,7 @@ class TestRetryThenMissing:
         assert spend_lines(settings) == []
         assert outcome.record.attempts == 1, "fixture-error never retries"
 
-    def test_an_attempt_dir_that_already_exists_records_fixture_error_and_launches_nothing(self, world):
+    def test_an_attempt_dir_that_already_exists_records_fixture_error(self, world):
         settings = make_settings(world, world.launch())
         existing = settings.attempts_root / f"{world.task.id}-bare-0-1"
         existing.mkdir(parents=True)
@@ -1243,7 +1243,7 @@ class TestTheCommandLine:
         err = capsys.readouterr().err
         assert code == 2 and "exit 3" in err and "sentinel-credential" not in err
 
-    # Gated on the feature, not `sys.version_info`: a version check is flagged by ruff UP036 under target-version py314.
+    # Gated on the feature, not `sys.version_info`.
     @pytest.mark.skipif(
         "color" not in inspect.signature(argparse.ArgumentParser).parameters,
         reason="argparse colours its output only where ArgumentParser accepts `color` (Python 3.14+)",

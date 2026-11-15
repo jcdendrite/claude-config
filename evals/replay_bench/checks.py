@@ -302,7 +302,7 @@ def _check_file_path(file_path: str) -> None:
     if len(file_path) > MAX_PATH_CHARS:
         raise _InvalidLogLine("has a file_path longer than a path can be")
     try:
-        file_path.encode("utf-8")  # a lone surrogate passes the checks above and makes `realpath` raise
+        file_path.encode("utf-8")  # a lone surrogate cannot be encoded as UTF-8, and some make `realpath` raise
     except UnicodeEncodeError as exc:
         raise _InvalidLogLine("has a file_path that cannot be resolved") from exc
 

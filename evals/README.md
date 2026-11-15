@@ -1420,8 +1420,7 @@ control. An account whose history keeps no such task needs a larger
 Each failed condition prints as `failed: <name>: <text>`, and the last line
 names the first one. A run that ended missing prints
 `failed: <missing reason>: <arm> run missing`, for any reason in the Retry
-section below. The conditions below are the checks `smoke` adds, not every
-name that can appear:
+section below. These names can appear:
 
 - `instrument-missing`: the instruction-load log is absent or empty, or it
   lacks a load the check expects. Those are the dispatcher's `session_start`

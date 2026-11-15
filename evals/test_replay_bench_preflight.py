@@ -300,7 +300,7 @@ class TestLaunchExceptionHygiene:
 
 
 class TestAFixtureUnderHome:
-    def test_it_is_refused_and_the_attempt_leaves_no_directory(self, tmp_path, monkeypatch):
+    def test_it_is_refused_and_leaves_no_fixture_directory(self, tmp_path, monkeypatch):
         import tempfile
 
         world = build_replay_world(tmp_path, monkeypatch)

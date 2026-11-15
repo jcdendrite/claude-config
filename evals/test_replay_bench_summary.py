@@ -62,7 +62,7 @@ def number_after(lines: list[str], prefix: str) -> float:
 
 
 class TestThePrimaryOutcome:
-    def test_it_is_a_ratio_of_sums_over_a_tasks_valid_runs_and_not_a_mean_of_ratios(self, campaign):
+    def test_it_is_a_ratio_of_sums_over_a_tasks_runs_and_not_a_mean_of_ratios(self, campaign):
         campaign.add_block(
             "t1",
             record("t1", "toolkit", run_metrics=metrics(words=10, code=10)),

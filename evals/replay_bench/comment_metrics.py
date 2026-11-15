@@ -352,7 +352,7 @@ class CommentMetrics:
     """One run's tallies over the lines a change adds.
 
     `line_counts` and `comment_words` split by `test` and `non_test` scope. `comment_words`
-    counts comment and docstring words together. Symlink and gitlink entries are counted in
+    counts comment and docstring words together. Entries that end as a symlink or gitlink are counted in
     `non_file_entries` and never classified."""
 
     line_counts: dict[str, dict[str, int]] = field(default_factory=_zeroed_line_counts)
