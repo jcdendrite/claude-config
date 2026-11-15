@@ -83,7 +83,9 @@ from transcript_analysis.routing_guard import (
     _add_routing_guard_subparser,
 )
 from transcript_analysis.scope import (
+    _EXTRA_CONFIG_DIRS_HELP_PREAMBLE,
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
+    _add_extra_config_dirs_arg,
     _add_project_scope_args,
     _iso_date,
 )
@@ -155,15 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_project_scope_args(p_cost)
-    p_cost.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root; --no-redact is refused once this puts more than one"
-            " root in scope."
-        ),
+    _add_extra_config_dirs_arg(
+        p_cost,
+        f"{_EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root; --no-redact is refused once this puts more than one"
+        " root in scope.",
     )
     p_cost.add_argument(
         "--since", metavar="Nd",
@@ -222,14 +220,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.",
     )
     _add_project_scope_args(p_cost_trend)
-    p_cost_trend.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root."
-        ),
+    _add_extra_config_dirs_arg(
+        p_cost_trend,
+        f"{_EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root.",
     )
     p_cost_trend.set_defaults(func=cmd_cost_trend)
 
@@ -246,13 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_project_scope_args(p_pr_cost)
-    p_pr_cost.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). pr-cost refuses"
-            " (exit 2) whenever more than one root resolves, unless --all-accounts is given --"
-            " see docs/pr-cost.md."
-        ),
+    _add_extra_config_dirs_arg(
+        p_pr_cost,
+        "Additional Claude Code config directory to scan (repeatable). pr-cost refuses"
+        " (exit 2) whenever more than one root resolves, unless --all-accounts is given --"
+        " see docs/pr-cost.md.",
     )
     p_pr_cost.add_argument(
         "--all-accounts", action="store_true",
