@@ -40,7 +40,7 @@ The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D
     - Git fetches a missing object on demand there, which would put network I/O with no timeout into `tasks` and into a fixture build.
   - A source repo whose own `info/attributes` file, found with `git rev-parse --git-path info/attributes`, holds a line with the text `export-ignore` or `export-subst` exits 2 naming the path, since the attribute would reach every commit's archive (row 131).
   - `--name` must pass `identifiers.validate_campaign_id` (row 60).
-- Author and committer identities come from `git log --no-use-mailmap` with the `%ae` and `%ce` placeholders, for both the trust rule and the printout, and each is compared exactly. A source repo's `.mailmap` therefore cannot map an untrusted email onto a trusted one (row 92).
+- Author and committer identities come from `git log --no-use-mailmap` with the `%ae` and `%ce` placeholders. The author identity feeds the trust rule and both identities feed the printout, and the author is compared exactly. A source repo's `.mailmap` therefore cannot map an untrusted email onto a trusted one (row 92).
 - The runner first drops from a commit's changed paths every path the fixture prune removes. The rules below apply to the remaining paths, so a commit that also edited an instruction file still yields a task.
 - A commit qualifies when all of these hold:
   - it has a parent, and its remaining diff against its first parent touches at most `--max-files` (default 10) paths, none binary;
@@ -89,7 +89,7 @@ The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D
   - The defaults come from this rule, applied to Verification step 1a's timing of four concurrent fixture builds on synthetic text trees (rows 88, 106):
     - the `--max-base-mb` default stays 100 when a 10,000-file tree's slowest build takes 60 s or less;
     - the `--max-base-entries` default starts at 100,000 and halves until a tree of that many files builds within 60 s;
-    - `FIXTURE_GIT_TIMEOUT_S` is three times the slowest build across the fitting trees, the step 1c corner included, rounded up to a whole 10 s.
+    - `FIXTURE_GIT_TIMEOUT_S` is three times the slowest build across the trees the default bounds admit, the step 1c corner included, rounded up to a whole 10 s.
   - The 60 s ceiling, the 100,000 starting point and the multiplier are judgments, not measurements.
   - Step 1a's relay gave no byte total for the halving trees, and nothing measured locates the jump between 12,500 and 25,000 files. So Verification step 1c timed two more trees before the first PR's last dispatch: the corner the bounds admit, 12,500 files totaling 100 MB, and 17,500 files totaling 100 MB.
     - Neither tree exceeded 60 s, so step 1c did not stop.
@@ -143,7 +143,7 @@ END CHANGE DESCRIPTION
 
 **Account preflight.** Before any launch, the runner probes each source repo once. It refuses the repo, with exit 2, on any failure below.
 - The probe is `direnv exec <source-repo> <sys.executable> -I -c <snippet>`, run from a fresh empty temp dir. The snippet prints JSON holding its working directory, the value of `CLAUDE_CONFIG_DIR`, and the names of the variables in its environment, with no other value. It takes those names as the keys of `os.environ`, never by parsing `env` text, so no line of a multi-line value can reach the output.
-- The runner prints, as names only, every variable in the probe's environment that the launch drops: each name outside the launch allowlist, other than `CLAUDE_CONFIG_DIR` and direnv's own `DIRENV_` variables (row 134).
+- The runner prints, as names only, every variable in the probe's environment that the launch drops: each name outside the launch allowlist, other than `CLAUDE_CONFIG_DIR` and direnv's own `DIRENV_` variables.
   - The list covers variables the runner's own shell set too, so a runner started where direnv already loaded the repo still sees every dropped name.
   - A dropped provider-selecting variable can leave a launch authenticating through the config dir's own login instead of the route the engineer meant (row 70).
   - The runner never prints or stores a value.
@@ -202,19 +202,19 @@ The Read allow entries let `code-writer` read the reviewer and skill files its b
 - Each file gives one entry for the path as listed and one for its `os.path.realpath`, deduplicated, since an allow rule applies only when both paths match (row 117). An entry is `Read(/<absolute path>)`, so it starts with the `//` absolute-path prefix.
 - No entry holds a wildcard. Before it emits any entry, the generator raises `UnsafeConfigPathError`, naming the path, when a path it would emit holds whitespace, a control character, or one of `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `,` or `\`. An exact entry holding one could parse as a pattern or split in two (rows 115, 117).
 - That character check is one function, which both generators call and preflight reaches through them.
-- An attempt whose generator raises records the run missing as `fixture-error`, with the path in `missing_detail`, before launch and with no spend (Retry, row 134).
+- An attempt whose generator raises records the run missing as `fixture-error` (Retry).
 - The per-attempt check catches a file added to `agents/` or `skills/` mid-campaign, which the commit-based drift check cannot see.
 - The set is wider than the reviewer files: every agent and skill file under the roots. Parsing the reviewer names from the evaluator or from `code-writer.md`'s table would copy the evaluator's name-to-path rule.
 - A `bare` Read of any listed file still fails `arm-leak`.
 - On a folded stow install every listed realpath lies in the one config checkout. Where stow linked `agents/` or `skills/` file by file into a directory that already existed, the list also grants that directory's own files (row 142).
-- Every refusal or printout that names a path from a config tree, or a variable name from the probe, prints it in Python's `!r` form, as `tasks.py:814-816` prints identities, so a control character or an escape byte in a name cannot reach the terminal raw.
+- Every refusal or printout that names a path from a config tree, or a variable name from the probe, prints it in Python's `!r` form, as `tasks.format_mining_summary` prints identities, so a control character or an escape byte in a name cannot reach the terminal raw.
 
 Before launch the runner logs the fixture again with its session ID (row 43). `msmr._run_claude_to_completion` launches the command with the fixture as its working directory. Defaults:
 - `--model-id`: `review_bench.runner.REVIEWER_MODEL_ID`;
 - `--budget-cap-usd`: `msmr.PER_RUN_BUDGET_CAP_USD`;
 - `--timeout-s`: `review_bench.runner.REVIEWER_TIMEOUT_S` (row 37).
 
-An attempt whose stdout holds no line fails as `launch-no-output` before `evaluate_run_validity` runs. Every other launch failure arrives under one of validity's own reasons, such as `no-result-event`, `result-error` or `session-store-not-found`. `_run_claude_to_completion` discards the child's stderr and returns no exit status, so no failure reason or detail carries either (row 69).
+An attempt with no output and no timeout fails as `launch-no-output` before `evaluate_run_validity` runs. `_run_claude_to_completion` discards the child's stderr and returns no exit status, so no failure reason or detail carries either (row 69).
 
 **Validity.** After `wait_for_session_flush(<config-dir>/projects, session_id, timed_out=...)`, the runner calls `evaluate_run_validity` unchanged (row 30) with:
 - `dispatcher_session_jsonl`, `stream_lines` and `timed_out` from the launch;
@@ -236,7 +236,7 @@ An attempt whose stdout holds no line fails as `launch-no-output` before `evalua
   - a path under the local dir;
   - a path in another `FIXTURE_DIR_PREFIX` directory.
 
-The module docstring of `evals/replay_bench/checks.py` holds the full contract. In summary, the Bash check is a bounded scan of the command text (row 161). The summary leaves out two rules the docstring states: a directory that holds a guarded path while inside its tree is a hit, and a command `shlex` cannot split is also scanned as raw text. `<live>/.git` is among the guarded roots.
+The Bash check is a bounded scan of the command text (row 161).
 - It removes backslash-newline, splits the command per line, then splits each line with `shlex`. Each word and its shell-separator pieces is a candidate.
 - A candidate over `MAX_PATH_CHARS` is skipped and recorded as unparsed.
 - Only `~`, `$HOME`, `${HOME}`, `$PWD` and `${PWD}` expand, and `$PWD` is the fixture dir. Relative tokens resolve against the fixture.
@@ -247,7 +247,7 @@ Both checks, and `check_tool_call_paths` as a whole:
 - The run's record keeps every Bash command, and every absolute token outside the fixture that no rule above fails.
 - A `tool_use` whose command or target path is missing or not a string, and a token holding a NUL byte, are recorded as unparsed and never resolved.
 - A denied Bash command or write tool reached nothing, so it fails neither `out-of-fixture-path` nor `out-of-fixture-write`. It still counts toward a `bare` run's toolkit reach.
-- `check_tool_call_paths` also returns `transcript-unreadable` (`runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE`) when the transcript is unreadable, its last line is torn or lines were skipped. Phase 4 calls it on the subagent sidecar of every attempt.
+- `check_tool_call_paths` also returns `transcript-unreadable` (`runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE`) when the transcript is unreadable, its last line is torn or lines were skipped. Phase 4 calls it on the subagent sidecar.
 - The check reads literal paths only, so it detects and does not contain.
 
 Each run also records how many calls were denied, which a hook denial and a permission-flow denial both produce (rows 48, 165). A denied write can empty one arm's diff without failing validity, so `smoke` prints the count and `summarize` reports it by arm. Each run also records its Reads of Read-allow-list paths, each with whether it ran or was denied, and the paths of its denied Reads of other toolkit files.
@@ -278,7 +278,7 @@ Each run also records how many calls were denied, which a hook denial and a perm
 - Either arm fails as `fixture-instruction-load` on a fixture-file load its arm does not allow.
 - Duplicate loads of one file are counted, never failed.
 - Every run records its subagent loads by class, with each path relative to the config dir or the fixture.
-- Every run also records its subagent's first-turn prompt size, which no check gates (row 120). It is the sum of `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` in the `message.usage` of the subagent transcript's first assistant entry, or null when any of the three is absent.
+- Every run also records its subagent's first-turn prompt size, which no check gates (row 120). It is the sum of `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` in the `message.usage` of the subagent transcript's first assistant entry, or null when the size cannot be computed.
 - The run fails as `account-hooks-missing` when `<config-dir>/sessions/` holds no non-symlink file whose first line is the run's session ID. That file shows that the account's hooks ran beside the `--settings` hook, so `toolkit` still carried its `SubagentStop` hook (rows 19, 54).
 
 **Retry.** A failed attempt retries once on a fresh fixture, per `review_bench.runner.ATTEMPTS_PER_RUN`, and then records the run missing with its reason.
@@ -298,7 +298,7 @@ Each run also records how many calls were denied, which a hook denial and a perm
   [unverified] An auth or API error reported as a result event before the hooks fire would then record those three reasons and halt the campaign instead of retrying. Whether the hooks fire before the first model call is unchecked.
 - A launch call that raises `OSError` records `launch-error`, charged at the cap and retried once. It is not an instrument reason. Its detail carries no argv or environment value.
 - Neither `run` nor `smoke` retries an instrument reason. The attempt's run ends missing under that reason. A clean second attempt would hide it, because such a reason is evidence about the instrument. `run` then halts at the block's end (Campaign).
-- Each attempt's cost reaches the spend file as the attempt ends (Campaign).
+- Each launched attempt's cost reaches the spend file once the launch returns (Campaign).
 
 **Diff and classifier (`replay_bench/comment_metrics.py`).** After the session ends, the runner never runs git with the fixture's own `.git`, which the agent could have rewritten. It never reads a changed file through its work-tree path either (rows 49, 50).
 - It runs `git --git-dir=<attempt dir>/baseline.git --work-tree=<fixture> add -A`.
@@ -353,16 +353,13 @@ A retry starts only after the failed attempt's `finally` has run.
 - `ReplayRunRecord` keeps `status`, `missing_reason` and `missing_detail` in the bench's meanings, so `count_outcomes` and `all_runs_missing` apply to it as they are. No halt prints `systemic_failure_message`. Its fixed text says the block is not marked complete and a resume reruns it (row 95), and a block that ends in a per-arm halt is always complete.
 - `RunStore(.local/campaigns/<campaign-id>/store)` supplies the lock, the write-ahead entries, and the resume sweep (row 43).
 
-**Spend file.** `.local/campaigns/<campaign-id>/spend.jsonl` holds one JSON line per ended attempt: the task ID, arm, run index, attempt number, account key, session ID, cost, and whether that cost is a cap charge.
+**Spend file.** `.local/campaigns/<campaign-id>/spend.jsonl` holds one JSON line per launched attempt: the task ID, arm, run index, attempt number, account key, session ID, cost, and whether that cost is a cap charge.
 - The runner appends each line with one `os.write` on an `O_APPEND` descriptor, under a lock its worker threads share.
 - An append that fails, such as on a full disk or an I/O error, fails closed: `run` halts with exit 1, printing the error, before the block is marked complete.
 - A crash mid-append can leave a torn last line. A resume repairs it with `review_bench.runner._repair_torn_tail` before its first append, so the torn bytes never fuse with the next line (row 86).
 - A line that still does not parse counts at `--budget-cap-usd` against the cumulative stop and every account stop.
 - `run`'s stops sum this file, never the run records.
-- A launched attempt writes no line when a hard kill, such as SIGKILL, an out-of-memory kill or a power loss, ends the runner before the attempt ends (row 155).
-  - Each hard kill can leave up to one launched attempt per worker thread uncharged, `run_skill_evals.DEFAULT_WORKERS` in all.
-  - The undercount adds up over kills: each hard kill can add up to `DEFAULT_WORKERS` times the per-run cap.
-  - The cap is a nominal figure, not a proven bound on one attempt's spend (row 65).
+- A launched attempt writes no line when a hard kill, such as SIGKILL, an out-of-memory kill or a power loss, ends the runner before the charge. Row 155 states how far that undercounts.
 
 A resume does these things, in order, before its first launch:
 - it takes the store's lock with `RunStore.acquire_lock`, which every later step runs under (row 156);
@@ -393,7 +390,7 @@ The attempt-dir creator creates `attempts/` when it is absent. It refuses a same
 - its record holds another model ID than `run`'s;
 - its record lacks one of the manifest's arms;
 - its record does not parse or lacks a key, which reads as absent with no traceback;
-- its record holds an account key whose digest differs from its file name, which also reads as absent.
+- its record holds another account key than the account's, which also reads as absent.
 
 The gate puts `smoke`'s checks, and the engineer's read of what it prints, ahead of every paid block on each account. A CLI update or a `git pull` of the account's config checkout changes the reading, so either calls for a new `smoke`.
 
@@ -408,18 +405,18 @@ The gate puts `smoke`'s checks, and the engineer's read of what it prints, ahead
   - the block's account's spend, against the account stop.
 - Either stop halts the whole campaign, so a resume with a raised stop goes on in task-file order.
 - After each block, the per-arm stop checks each arm by `all_runs_missing` over that arm's records, so an arm fails only when none of its runs is valid. `all_runs_missing` over the whole block would miss one arm failing alone, as `bare` does on a machine with a managed-policy `CLAUDE.md` (row 74). A block where any arm fails is a failed block. Every block that reaches this check, failed or not, is already complete, with its missing runs recorded as missing, so no resume reruns it:
-  - An instrument failure halts at the first block. It triggers on any attempt that ends under an instrument reason (Retry), whatever the arm's other runs did. The block's other runs finish, and `run` halts at the block's end with exit 1, naming the task, the arm and the reason. So each instrument halt costs at most one task, and a resume after the cause is fixed goes on to the next task (row 160).
+  - An instrument failure halts at the first block. It triggers on any attempt that ends under an instrument reason (Retry), whatever the arm's other runs did. Row 160 states how `run` halts and what a resume does next.
   - Every other failed block is task-specific. `summarize` leaves its task out of the pairs and counts it.
   - After two task-specific failed blocks in a row, `run` halts with exit 1. Its message names each failing arm with its missing reasons and `missing_detail` text, names the two tasks now lost from the sample, and says a resume goes on past them.
   - The count of failed blocks in a row lives in memory for one invocation. It starts at 0 on every start and resume, and any block with a valid run in every arm resets it (rows 153, 159).
-- A persistent failure meets the pre-block spend stops and the two-in-a-row halt. Failures on alternating tasks never make two in a row, so only the spend stops bound them: `--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it (row 153).
+- A persistent failure meets the pre-block spend stops and the two-in-a-row halt. Row 153 states what failures on alternating tasks meet.
 
 `run`'s halts and exit codes:
 - Every halt prints its reason: environment drift, the cumulative stop, the account stop naming its account, an instrument failure naming its task, arm and reason, or two task-specific failed blocks naming both tasks and their failing arms.
 - `run` then exits 1, the bench CLI's code for a run that stopped short, and keeps exit 2 for refusals (row 97).
 - A run that completes every task exits 0, even when its last block failed alone. When its last two blocks fail so that the two-in-a-row halt fires, exit 1 wins.
 
-`smoke --tasks <task-set> --task-id <id>` runs one block under a fresh `smoke-` campaign ID, with one run per arm on that task (row 134). `--task-id` must match the task-ID grammar.
+`smoke --tasks <task-set> --task-id <id>` runs one block under a fresh `smoke-` campaign ID, with one run per arm on that task (rows 134, 135). `--task-id` must match the task-ID grammar.
 - Before its first launch, `smoke` prints its nominal ceiling, `campaign_cost_ceiling(1, <arm count>, 1, budget_cap_usd=...).all_retried_usd`.
 - A `smoke` attempt that fails under an instrument reason never retries, as in `run` (Retry). Any other failure retries once, as in `run`.
 
@@ -487,11 +484,11 @@ On an interrupt, `main()` calls `msmr.abort_launches()` and prints the resume co
 - It exits 2 when one account's records span more than one CLI version or ambient config commit.
 - It reads only the records of blocks that `RunStore.completed_block_ids()` lists. A crash between record writes and `mark_block_complete` can leave an incomplete block's records on disk, and `summarize` leaves them out and counts that block as incomplete.
 - It prints counts by arm, status and missing reason, and the counts of complete and incomplete blocks.
-- It prints the spend file's spend by account. A line that does not parse, and so names no readable account, counts at `--budget-cap-usd` against every account, as the stops count it, and `summarize` says so beside the figures.
+- It prints the spend file's spend by account. A line that does not parse, and so names no readable account, counts against every account, as the stops count it, and `summarize` says so beside the figures.
 - The primary outcome, fixed before any run, is comment-plus-docstring words per added non-test code line (row 63).
   - For each task and arm it is a ratio of sums: the words over that arm's valid runs of the task, divided by their non-test code lines.
   - `summarize` reports the paired difference `toolkit − bare` over tasks with a valid run and at least one non-test code line in both arms. It uses `analysis.bootstrap_interval` over tasks as singleton clusters, and prints no interval for fewer than two paired tasks (row 75).
-  - Directly under that difference it prints `paired <n> of <M> complete tasks`, and then the excluded tasks in four counts, each with its missing reasons: `toolkit` with no valid run, `bare` with no valid run, both arms with no valid run, and no non-test code line. It prints no threshold warning.
+  - Directly under that difference it prints `paired <n> of <M> complete tasks`, and then the excluded tasks in four counts: `toolkit` with no valid run, `bare` with no valid run, both arms with no valid run, and no non-test code line. The first three carry their missing reasons. It prints no threshold warning.
 - A null primary difference shows only that the writing agent's instructions leave its first draft's comment density unchanged on these tasks. It cannot show that the verbosity is built-in, because no arm runs the review loop through which the toolkit also shapes comments (row 62).
 - Secondary outcome, per arm beside the task's reference metrics: Python docstring lines per 100 added code lines.
 - Diagnostics, per arm:
@@ -616,13 +613,13 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 32. [unverified] The full-config dispatcher relays the inner prompt verbatim often enough. `smoke`'s `prompt-mismatch` count measures it.
 33. [verified: `evals/README.md:353-355`] A prompt reaches `claude -p` as one argv element and should stay in the low single-digit KB.
 34. [unverified] A commit message is a usable brief. The engineer reads the `tasks` output before any spend, and the brief is identical across arms.
-35. [unverified] A classifier error that both arms share cancels out of the paired difference. One arm's style falling into a blind spot more often, such as trailing comments outside Python, does not cancel, so `summarize` shows the Python trailing-comment count as a check.
+35. [unverified] A classifier error that both arms share cancels out of the paired difference. One arm's style falling into a blind spot more often, such as trailing comments outside Python, does not cancel.
 36. [verified: `evals/review_bench/mine_szz.py:112-141`] `_python_docstring_lines` returns the 1-based line numbers of module, class and function docstrings, leaving out a first or last line shared with code.
 37. [verified: `evals/review_bench/runner.py:68-78`] The per-run budget cap and timeout were set for reviewer dispatches. [unverified] Whether a replay fits within them is unmeasured, so `smoke` prints each run's cost and wall clock.
 38. [verified: `claude/.claude/agents/comment-discipline-reviewer.md:77-83`] That reviewer's Comment verbosity angle counts separate sentences that each carry a distinct fact as not verbosity. A word or line count therefore measures comment volume and shape, not verbosity as that lens judges it.
-39. [verified: `claude/.claude/scripts/select-tests.py:608-617,634,825,829`; `claude/.claude/scripts/tests/test_select_tests.py:690-796,817-856`] The review-bench rows' target tuples carry each sibling eval script's test, with `measure_explore_recall.py` as the precedent. The selection tests assert that set by equality, and the import-closure test's seed list needs each sibling eval script.
-40. [verified: `claude/.claude/scripts/select-tests.py:470-474`] A change to `select-tests.py` itself selects the full suite.
-41. [verified: `.gitignore:43-48`] Only `evals/review_bench/.local/` is ignored today.
+39. [verified: `claude/.claude/scripts/select-tests.py`, its review-bench rows; `claude/.claude/scripts/tests/test_select_tests.py`, its review-bench selection and import-closure tests] The review-bench rows' target tuples carry each sibling eval script's test, with `measure_explore_recall.py` as the precedent. The selection tests assert that set by equality, and the import-closure test's seed list needs each sibling eval script.
+40. [verified: `claude/.claude/scripts/select-tests.py`, `GLOBAL_TRIGGER_PATHS`] A change to `select-tests.py` itself selects the full suite.
+41. [verified: `.gitignore`] `evals/review_bench/.local/` has its own ignore entry, so `evals/replay_bench/.local/` needs one too (Phase 1).
 42. [verified: `evals/run_review_bench.py:2284-2309,2327-2331`] The bench CLI sets an owner-only umask and restricts an existing `.local/` to 0700 with `_restrict_local_dir_to_owner`.
 43. [verified: `evals/review_bench/runner.py:1150-1291`] `RunStore` supplies a flock, a write-ahead log, block completion and a validated sweep. The sweep deletes only `FIXTURE_DIR_PREFIX` directories directly under the system temp dir, and session stores directly under the projects root it is given.
 44. [unverified] `/usr/bin/env -i` replaces itself with `claude` rather than forking it, so `msmr._run_claude_to_completion`'s group kill reaches the child. A Phase 4 test with a fake `claude` behind the prefix checks it.
@@ -652,11 +649,11 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 64. [unverified] An agent tends to match the comment density of the files it edits, so the arm difference can vary with base density.
 65. [verified: `evals/measure_subagent_model_resolution.py:90-91`; `evals/review_bench/runner.py:1739-1750`] The per-run cap derives from reviewer-dispatch figures, and `campaign_cost_ceiling` is a nominal product, not a proven bound. [unverified] An attempt that ends without a result event reports no cost, so the runner charges it at the cap.
 66. [unverified] `git worktree remove` deletes ignored files, so a worktree's `.local/` goes with it.
-67. [verified: `claude/.claude/scripts/tests/test_select_tests.py:1575-1596,2097,2416-2418`] The `CONFIG_DIR_MODULE` test asserts its target set by equality, `REVIEW_BENCH_TEST_GLOB` included. `_EXACT_MATCH_LITERAL_PATH_CONSTANTS` lists the exact-match path constants, and the review bench's directory constants have an existence test.
+67. [verified: `claude/.claude/scripts/tests/test_select_tests.py`, the `CONFIG_DIR_MODULE` test and `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`] The `CONFIG_DIR_MODULE` test asserts its target set by equality, `REVIEW_BENCH_TEST_GLOB` included. `_EXACT_MATCH_LITERAL_PATH_CONSTANTS` lists the exact-match path constants, and the review bench's directory constants have an existence test.
 68. [engineer-verified: "Proceed anyway"] Superseded by row 84. The engineer chose to keep an earlier revision of this plan as one PR at its `Projected diff:` of about 3,800 changed lines, over the 400-line threshold.
 69. [verified: `evals/measure_subagent_model_resolution.py:703-726,763`] `_run_claude_to_completion` sends the child's stderr to the null device and returns only its stdout lines and a timed-out flag, with no exit status.
 70. [unverified] The allowlist holds every variable a launch needs. An account whose `.envrc` sets a provider-selecting variable besides `CLAUDE_CONFIG_DIR` loses it at launch. That launch fails when the config dir holds no login, and otherwise authenticates through the config dir's own login instead of the `.envrc`'s route, which `smoke` cannot tell apart. `preflight` therefore names every variable an `.envrc` set. `claude --version` shows only that the CLI resolves and starts, and whether the installed CLI has a login-status command is unchecked. So `smoke` is the first check that authenticates each account.
-71. [verified: `evals/README.md:499`; `evals/review_bench/local_git.py:23-24`] `isolated_git_environment` turns off the global git config through `GIT_CONFIG_GLOBAL`, which git older than 2.32 ignores.
+71. [verified: `evals/README.md`, its git 2.32 requirement; `evals/review_bench/local_git.py:23-24`] `isolated_git_environment` turns off the global git config through `GIT_CONFIG_GLOBAL`, which git older than 2.32 ignores.
 72. [verified: `evals/review_bench/runner.py:1041-1045`] `_ENVIRONMENT_READ_TIMEOUT_S` is 10 seconds, set for local process and git calls with no network I/O, a hung `claude --version` among them.
 73. [verified: `evals/review_bench/runner.py:1090-1106`] An `EnvironmentReference` built from a frozen mapping of `cli_version` and `ambient_config_commit` checks every reading against it. Built without one, it adopts its first reading.
 74. [verified: `evals/review_bench/runner.py:1592-1594`] `all_runs_missing` is true only when none of the records it is given is ok.
@@ -670,7 +667,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - an entry in `_HAND_AUDITED_AGENTS_DIR_READERS`;
     - a `_FILE_TARGETS` entry;
     - a standalone row that selects `test_select_tests.py` when the reader changes.
-81. [verified: `claude/.claude/scripts/tests/test_select_tests.py:842-845`] The import-closure test maps every relative `ImportFrom` to a `review_bench.` module, so a relative import in the replay package would resolve to the wrong module with no failure.
+81. [verified: `claude/.claude/scripts/tests/test_select_tests.py`, the import-closure test] The import-closure test maps every relative `ImportFrom` to a `review_bench.` module, so a relative import in the replay package would resolve to the wrong module with no failure.
 82. [verified: `evals/run_skill_evals.py:64`] `DEFAULT_WORKERS` is 4.
 83. [unverified: Python docs not read this session] With `strict` false, `os.path.realpath` resolves a symlink loop as far as it can and does not raise. The prune's realpath check meets loops, and Phase 2's loop case checks it.
 84. [engineer-verified: "Proceed anyway"] Superseded by row 99. The engineer chose to keep an earlier revision of this plan as one PR at its `Projected diff:` of about 5,100 changed lines, over the 400-line threshold.
@@ -730,7 +727,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 118. [verified: `claude/.claude/hooks/evaluate-code-writer-self-review.py:8-13,74-88`; Verification step 1a, as relayed] The `SubagentStop` evaluator requires a Read of each reviewer its checks name, and matches a Read by its path suffix under `agents/` or `skills/`. It counted step 1a's denied Reads as failed, so with no allow entry every `toolkit` run is sent back once. [verified: `claude/.claude/agents/code-writer.md:47-48,110-111`] `code-writer.md` names its reviewer and skill files under `~/.claude/agents/` and `~/.claude/skills/<name>/SKILL.md`.
 119. [unverified] Superseded by row 138. It held the margin judgment for the smoke-time calibration pair, which row 136 removed.
 120. [unverified] The subagent transcript's first assistant entry carries `message.usage` with `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens`, and their sum is the subagent's first-turn prompt size. Verification step 1b reads it, and `smoke` fails `arm-config-missing` when either arm's run has a null size.
-121. [verified: the hooks page, as relayed: `InstructionsLoaded` "runs asynchronously for observability purposes", and cannot block] A log line can land after the session's own files stop growing. [unverified] A hook already running when `claude -p` exits still finishes its write. A load fires on a tool call, and a tool result always goes back to the model before a session ends, so a lost line would need a hook slower than one model turn. The runner reads the log only once its size holds across two polls. No probe tests the premise (row 134). The plan and the README state the residual: losing a hook line needs an append slower than the model turn that follows its load.
+121. [verified: the hooks page, as relayed: `InstructionsLoaded` "runs asynchronously for observability purposes", and cannot block] A log line can land after the session's own files stop growing. [unverified] A hook already running when `claude -p` exits still finishes its write. A load fires on a tool call, and a tool result always goes back to the model before a session ends, so a lost line would need a hook slower than one model turn. The runner reads the log only once its size holds across two polls. No probe tests the premise (rows 134, 135).
 122. [verified: the permission-modes page, as relayed; Verification step 1a, as relayed] Both arms meet the same permission rules, so a Bash command outside `acceptEdits`' set and the account's allow rules, such as a test runner, is denied in either arm. How often each arm meets a denial can differ, and the permission-denial count records it. The README states the caveat.
 123. [unverified] Superseded by row 139. It held the premise that a rule matches a file of the calibration pair's synthetic fixture, which row 136 removed.
 124. [engineer-verified: "I accept 2 to 4, and I accept your recommendation on splitting."] The engineer accepted the session's items 2, 3 and 4, and the session's recommendation to split the work into two PRs.
@@ -750,7 +747,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 130. [verified: the code-writer's run of Phase 2's test on Apple Git 2.50.1, as it reported] On Apple Git 2.50.1 a real `--filter=blob:none` clone sets `remote.<name>.promisor=true` and no `extensions.partialclone`. The refusal therefore reads `git config --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$'` and refuses on any output. [unverified: the git partial-clone documentation, which a reviewer cites and this session did not read] A partial clone records `extensions.partialClone` in its config. Git fetches a missing object on demand from `cat-file`, `diff` and `archive`. Phase 2's test (Phase 2) holds the clone recipe.
 131. [verified: `evals/review_bench/local_git.py:4-5,29-30`] `isolated_git_environment` leaves a repository's own `.git/info/attributes` and tracked `.gitattributes` in effect. [unverified: the gitattributes and git-archive documentation, which a reviewer cites and this session did not read] `git archive` drops an `export-ignore` path and rewrites an `export-subst` file's bytes. Phase 2's live-git case archives a tree whose `.gitattributes` says `tests export-ignore` and checks that `tests/` is absent.
 132. [unverified] `claude --version` prints a dotted `<major>.<minor>.<patch>` version first, which the readiness check parses for its floor. Verification step 1b records the printed line, and a version the check cannot parse refuses the account.
-133. [verified: `evals/replay_bench/tasks.py:26`; `evals/review_bench/runner.py:41-42,60`; `claude/.claude/scripts/select-tests.py:80-82,608-617`] The first PR's `tasks.py` imports `review_bench.runner`, which imports `measure_subagent_model_resolution`, `run_skill_evals` and `_config_dir`, so the first PR's closure already reaches every row Phase 5a names. `_is_review_bench_change`'s predicate covers `EVALS_CONFTEST`, whose comment lists the tests it applies to as an exact set.
+133. [verified: `evals/replay_bench/tasks.py`; `evals/review_bench/runner.py:41-42,60`; `claude/.claude/scripts/select-tests.py`, `EVALS_CONFTEST` and `_is_review_bench_change`] The first PR's `tasks.py` imports `review_bench.runner`, which imports `measure_subagent_model_resolution`, `run_skill_evals` and `_config_dir`, so the first PR's closure already reaches every row Phase 5a names. `_is_review_bench_change`'s predicate covers `EVALS_CONFTEST`, whose comment lists the tests it applies to as an exact set.
 134. [engineer-verified: "Apply all six cuts (Recommended)"] The engineer accepted the adversarial architect consult's six-item cut list. The label covers acceptance of that list, nothing more.
 135. [unverified] The consult's cut list, as the session relayed it, not the engineer's words:
     - delete the 30 s delayed second hook and its step 1b stop condition, and state row 121's residual instead;
@@ -778,7 +775,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - An account whose history keeps no task with a rule-matching changed path needs a larger `--max-count`, or a task set from another source repo on the same account.
     - A residual: the engineer's pick could match no rule while the `toolkit` subagent loads a rule from another file, and then `bare`'s clean read of the pick shows nothing.
 140. [unverified] Superseded by row 145, under row 143's choice. With the rule-path read required of both runs, the `bare` smoke run shows the exclude holding for that path. In a campaign, a broken exclude voids only the `bare` runs that touch a rule-matching file, so the leak stop halts the campaign at the first `arm-leak` attempt, a retried one included, rather than letting the per-arm stop wait for a block with no valid `bare` run.
-141. [engineer-verified: "Accept the trimmed sizes (Recommended)"] Superseded by row 163 for the second PR's figure. The engineer selected this label when asked whether to accept the trimmed plan's sizes, about 2,890 lines for the first PR, about 6,300 for the second and about 9,190 together, and the dropped `write_fixture_extras` refactor. The label covers acceptance of those figures and that drop, nothing more. The option's description was the session's proposal.
+141. [engineer-verified: "Accept the trimmed sizes (Recommended)"] The engineer selected this label when asked whether to accept the trimmed plan's sizes, about 2,890 lines for the first PR, about 6,300 for the second and about 9,190 together, and the dropped `write_fixture_extras` refactor. The label covers acceptance of those figures and that drop, nothing more. The option's description was the session's proposal.
 142. [verified: a reviewer's read-only check of this machine, relayed by the dispatch] Here `~/.claude/agents` and `~/.claude/skills`, and each other account's, are directory links into the one config checkout, so every granted realpath is an in-tree file. [unverified] That holds only on a folded stow install. A consumer whose `agents/` or `skills/` already existed as a real directory gets per-file links beside their own files, which the grant then covers too.
 143. [engineer-verified: "Take the lighter fix (Recommended)"] Asked whether to keep the round-2 fix for the vacuous `bare` smoke check or take a lighter one, the engineer chose the lighter fix. The label covers that choice, nothing more.
 144. [unverified] Superseded by row 160 for the campaign leak stop at the first `arm-leak`, which `run`'s instrument halt provides. The session's proposal, not the engineer's words: keep only a printed note at smoke time when the `bare` run read no rule-matching file, state the residual in the ledger and the README, and rely on the per-run `arm-leak` check on later `bare` runs. The round-2 fix it replaced was a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` and a missing-reason field on spend-file lines. The note's detection is this plan's design (Campaign).
@@ -791,7 +788,6 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 147. [engineer-verified: "Add file to Critical files"] Asked whether to keep the code-review round 5 move of the shared-default timeout case and the `build_single_commit_repo` cases into `evals/test_review_bench_fixtures.py`, which Critical files had not listed, the engineer selected this label. Critical files now lists the file.
 148. [engineer-verified: "Fix docs and log pin (Recommended)"] Asked how to treat the code-review round 9 findings, one of which needs `evals/review_bench/local_git.py` (not in Critical files), the engineer selected this label. Critical files now lists the file for the one docstring sentence only. [unverified] The option description was the session's proposal: it also covered the comment fixes and `--no-show-signature` on the two `git log` calls.
 149. [engineer-verified: "Keep it (Recommended)"] Asked whether the second PR's `tasks` CLI should exit 2, naming the flag, for zero, negative or inverted selection limits, which the Ask does not call for, the engineer selected this label. Row 150 records where the guard lives and which values it refuses.
-    - [verified: `evals/replay_bench/tasks.py:108-120`] `SelectionLimits` is a plain frozen dataclass with no validation, so it accepts those values today.
     - [unverified] The option description was the session's proposal: a guard at the one place a person types the limits. Row 150's placement replaces it.
 150. [engineer-verified: "In SelectionLimits (Recommended)"] Asked where the guard lives, the engineer selected this label. The guard and what it refuses:
     - `SelectionLimits.__post_init__` raises `TaskSourceError`, which `main()` already maps to exit 2.
@@ -813,8 +809,8 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - Two residuals stay, which the README and Out of scope also name:
       - [unverified: how `claude -p` behaves at a usage limit] a usage-limit, auth or overload event that fails every run of two blocks marks two tasks that no agent really tried complete, and drops both from the sample;
       - failures on alternating tasks never make two in a row, so only the spend stops bound them: `--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it.
-    - An instrument failure halts at its block's end with the block complete (row 160), so it never blocks a resume.
-154. [verified: `claude/.claude/hooks/capture-session-id.sh:96`; `claude/.claude/hooks/_lib.sh:3695-3706`; a search of `evals/` Python files, which name no `sessions/` path, and of `claude/.claude/` outside its tests, which found no code that deletes a `sessions/` entry] `capture-session-id.sh` rewrites `<config-dir>/sessions/<claude-pid>` at each session start. `_lib_registered_live_sid` reads an entry as absent when its recorded start time does not match the live process. Nothing deletes an interactive session's or a review-bench launch's entry. So each replay attempt leaves one file there too, as accepted residue beside row 79's files.
+    - An instrument failure halts as row 160 states.
+154. [verified: `claude/.claude/hooks/capture-session-id.sh:96`; `claude/.claude/hooks/_lib.sh:3695-3706`; a search of `claude/.claude/` outside its tests, which found no code that deletes a `sessions/` entry] `capture-session-id.sh` rewrites `<config-dir>/sessions/<claude-pid>` at each session start. `_lib_registered_live_sid` reads an entry as absent when its recorded start time does not match the live process. Nothing deletes an interactive session's or a review-bench launch's entry. So each replay attempt leaves one file there too, as accepted residue beside row 79's files.
     - [verified: `claude/.claude/scripts/post-crash-sessions.py:18,127,158,161`] `post-crash-sessions.py` reads these files as its source D, and its crash-evidence window is 14,400 seconds.
     - [unverified: a reviewer's read of `post-crash-sessions.py:1347-1393`] A leftover replay file, whose PID is dead and whose session store the cleanup deleted, lists there as `unknown` while its mtime is inside that window. It lists as `confirmed-clean-exit` instead if the SessionEnd hook fires under `claude -p`, which is unverified.
     - So for four hours after a campaign, the engineer may see replay attempts listed in that report, as accepted residue.
@@ -1194,7 +1190,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 - `evals/replay_bench/launch.py` (new): the environment allowlist as data, the `env -i` prefix, the readiness argv, the `--settings` JSON with the instrument hook, `UnsafeConfigPathError` with the one character check both generators share, and the Read allow-list generator with the `--allowedTools` argv tail.
 - The runner entry below is split across modules so each file stays under the 1,000-line cap, by this map:
   - `account.py`: the account preflight and its readiness check;
-  - `attempt.py`: one attempt, its retry and its reason precedence;
+  - `attempt.py`: one attempt and its reason precedence;
   - `campaign.py`: the block and campaign loop, resume and the sweep;
   - `spend.py`: the spend file;
   - `smoke.py` and `smoke_pass.py`: `smoke` and the smoke-pass record;
@@ -1210,7 +1206,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a one-line comment cites this plan's Fixture section as its basis;
   - the hook-log read that waits for the log's size to hold across two polls, as Instruction-load check states;
   - one attempt: fixture, launch, validity, checks, diff, metrics, and cleanup in a `finally`. The checks step calls `check_tool_call_paths` with `config_dir` on the subagent sidecar. The dispatcher transcript stays `evaluate_run_validity`'s. The step fails the run on `transcript-unreadable` (Validity, the Bash-check contract);
-  - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included with its path in `missing_detail`, and `analysis-error` and every instrument reason without a retry;
+  - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included as Retry states, and `analysis-error` and every instrument reason without a retry;
   - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` losing to a validity reason when the run did not reach its end;
   - every config-tree path and variable name it prints, in `!r` form;
   - the spend file and its torn-tail repair at resume;
@@ -1273,7 +1269,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - one root that is the other's realpath yields no duplicate;
     - a nested `agents/sub/x.md`, a non-`SKILL.md` file under `skills/<name>/` and a dangling link under `agents/` are each left out;
     - no entry holds `*`, and the list is identical for both arms;
-  - the shared character check, one parametrized row per class (row 134):
+  - the shared character check, one parametrized row per class (rows 134, 135):
     - each refused class raises `UnsafeConfigPathError`: a space, a tab, a newline, another control character, `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `,` and `\`;
     - each kept lookalike passes: `-`, `_`, `.`, `+`, `@`, `~`, `#`, `!`, `:`, `=` and a non-ASCII letter;
   - one wiring case per emitted form of each generator, so a check of one form alone fails:
@@ -1281,7 +1277,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - the Read-allow-list generator on a `skills/<name>/SKILL.md` whose link path holds `(`, and on one whose realpath alone holds a space, each naming the offending path;
   - escaped printing: a rule file name and a probe variable name each holding an ESC byte and a newline, refused or listed, print in `!r` form, and neither byte reaches the captured terminal output raw;
   - preflight calls the same generators: a refused path exits 2 naming the path, after the probe and before the readiness check and any launch;
-  - an attempt whose generator raises records `fixture-error` with the path in `missing_detail`, no launch, no retry and no spend line;
+  - an attempt whose generator raises records `fixture-error` as Retry states, with no spend line;
   - the hook-log read, on a real log file in `tmp_path` with `time.sleep` patched as `TestWaitForSessionFlushSettlesOnlyUpToTheTimeout` at `evals/test_review_bench_runner.py:826-900` patches it. Each case sets the constants it needs and asserts the sleep count:
     - a line appended during the first poll interval is read, and the sleep count shows the loop went on past one sample;
     - a log whose size holds across two polls returns after the fewest sleeps;
@@ -1380,7 +1376,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a record holding another environment reading or model ID;
     - a record whose arms lack one of the manifest's;
     - a record that does not parse, with no traceback;
-    - a record whose stored account key does not hash to its file name's digest;
+    - a record holding another account key than the account's;
   - a crash between record writes and `mark_block_complete`, then a rerun, leaves exactly one file set;
   - a two-account resume sweeps each account root and reruns each swept block once;
   - the manifest-mismatch exit, one case per field: task-set hash, arms, k, seed, model ID, budget cap and timeout.
@@ -1420,7 +1416,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - an interrupt calls `abort_launches` and prints the resume command with its wait and its `TMPDIR` line.
 - `summarize` cases, on synthetic records, each asserting printed values parsed back as numbers:
   - the ratio-of-sums primary;
-  - the line under the paired difference, on records holding one paired task, one task with no valid `toolkit` run, two with no valid `bare` run, one with neither and one with no non-test code line in one arm: `paired 1 of 6 complete tasks`, and the four exclusion counts 1, 2, 1 and 1, each parsed back as a number and each with its missing reasons;
+  - the line under the paired difference, on records holding one paired task, one task with no valid `toolkit` run, two with no valid `bare` run, one with neither and one with no non-test code line in one arm: `paired 1 of 6 complete tasks`, and the four exclusion counts 1, 2, 1 and 1, each parsed back as a number and the first three with their missing reasons;
   - a task with no non-test code line in one arm, left out of the pairs and counted in the zero-code-line tally;
   - spend by account, from a synthetic spend file, with an unparseable line counted at the cap against every account;
   - a partial incomplete block's records on disk, left out of every figure and counted as incomplete;
@@ -1455,12 +1451,12 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - add `REPLAY_BENCH_DIR` and `REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"`;
   - add a `DOMAIN_RULES` row that selects `REPLAY_BENCH_TEST_GLOB` for a path under the directory or a glob member;
   - add `REPLAY_BENCH_TEST_GLOB` to the targets of all three rows now: the `_is_review_bench_change` row, whose predicate also covers `EVALS_CONFTEST`, and the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` and `SKILL_EVALS_RUNNER` cross-domain rows (row 133);
-  - add a standalone row that selects `SELECT_TESTS_TEST_PATH` for a change under `REPLAY_BENCH_DIR`, beside `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST`'s at `:832`, with a header-comment entry like the one at `:812-818`. `test_select_tests.py` reads the replay package's files from a function body, which `TestCrossDomainReadCompleteness` cannot see, so without the row a scoped run after a replay edit skips the guards below;
-  - update the comments that name these rows' target sets, `:80-81`'s "exactly" list for `EVALS_CONFTEST` among them, and those at `:603-607` and `:787-808`.
+  - add a standalone row that selects `SELECT_TESTS_TEST_PATH` for a change under `REPLAY_BENCH_DIR`, beside `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST`'s, with a header-comment entry like its. `test_select_tests.py` reads the replay package's files from a function body, which `TestCrossDomainReadCompleteness` cannot see, so without the row a scoped run after a replay edit skips the guards below;
+  - update the comments that name these rows' target sets, the "exactly" list comment for `EVALS_CONFTEST` among them.
 - `claude/.claude/scripts/tests/test_select_tests.py`:
-  - add `REPLAY_BENCH_TEST_GLOB` to every set-equality assertion over the review-bench target set, `test_config_dir_module_change_selects_all_four_declared_importer_sets` at `:1575-1596` and the `SKILL_EVALS_RUNNER` equality case near `:690` included (row 67);
+  - add `REPLAY_BENCH_TEST_GLOB` to every set-equality assertion over the review-bench target set, `test_config_dir_module_change_selects_all_four_declared_importer_sets` and the `SKILL_EVALS_RUNNER` equality case included (row 67);
   - add cases for a replay package file and a replay test file, and one where a change under `evals/replay_bench/` selects `SELECT_TESTS_TEST_PATH`;
-  - add a replay counterpart of the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` membership loop at `:798-806`;
+  - add a replay counterpart of the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` membership loop;
   - add `REPLAY_BENCH_DIR` to `test_review_bench_directory_constants_exist_on_disk`;
   - add `replay_bench/*.py` to the import-closure test's seed list, as that test's docstring asks of a sibling eval script, and keep `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` equal to the closure. The seeds guard the second PR's later imports. The row targets above rest on row 133, not on this test;
   - add a test that parses every file in `evals/replay_bench/` and finds no `ImportFrom` with `level > 0`, with a seeded relative import as its failing control. It also asserts that its scanned set holds `tasks.py` and `comment_metrics.py`, so a glob that resolves to nothing fails. The closure test maps every relative import to `review_bench`, so the replay package must import by absolute path (row 81).
@@ -1477,11 +1473,11 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 - `evals/README.md`: a "Replay bench" section after "Review bench". It covers:
   - what the runner measures, and usage for the five subcommands;
   - `run`'s exit codes, its per-block progress line, and the per-arm stop:
-    - the first attempt that ends under an instrument reason halts `run` at its block's end, with no retry and the block complete, so at most that task is lost and the way forward is to fix the cause and resume;
+    - the first attempt that ends under an instrument reason halts `run`, and the way forward is to fix the cause and resume (row 160);
     - a task-specific failed block is marked complete and its task is left out of the pairs;
     - two task-specific failed blocks in a row halt `run`, and a resume is the way forward: it goes on past both, and those two tasks are lost from the sample. Exit 1 then wins over the exit 0 a lone failed last block gets;
     - a persistent failure meets the pre-block spend stops and the two-in-a-row halt;
-    - two residuals: a usage-limit, auth or overload event that fails every run of two blocks drops two tasks no agent really tried, and failures on alternating tasks never make two in a row, so only the spend stops bound them (`--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it);
+    - the two residuals row 153 names;
   - the account preflight with its readiness check, `--direnv-timeout-s` and the `direnv exec <repo> true` hint, the allowlisted launch environment, and the refusal of a `PATH` with an empty or relative entry;
   - that `preflight` names every variable the launch drops, ambient ones included, so the engineer reads that list per account before the first `run`;
   - that `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws` and `~/.ssh` are not routed by account;
@@ -1501,14 +1497,13 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - what `instrument-missing`, `arm-leak`, `arm-config-missing`, `read-grant-denied` and `read-grant-unexercised` each mean in `smoke`, and its printed exclude note;
   - the residual, in one sentence: a `bare` run that reads no rule-matching file passes without testing the exclude, and a broken exclude fails `arm-leak` only on later `bare` runs that read one (row 145);
   - that the block calibration's body term is a character-count estimate, so a gap close to the margin is weak evidence either way;
-  - the residual that a hook line can be lost only when its append takes longer than the model turn that follows its load (row 121);
   - that Bash commands outside `acceptEdits`' auto-approved set and the account's allow rules are denied in both arms, so a replay agent cannot run, for example, a test suite the account does not allow, and the permission-denial count shows how often (row 122);
   - the reason `launch-error`: a launch call that raises `OSError` is charged at the cap, retried once, and not an instrument reason;
   - the Retry section's two-tier precedence rule, with the reached-the-end exception for `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing`;
   - accepted residuals, which the README states:
     - the run-check residuals of row 161: heredoc and quoted-pattern false hits, which fail a `bare` run `arm-leak` and halt `run` at the block's end (row 160); `grep -r x ~` and `bash -c` text; denied Read, Grep and Glob calls; a Read of `<live>/.git` and of a linked worktree's common git dir; and the single CLI build the denial marker was verified on;
     - the eight environment names step 1b left unverified (row 164);
-    - that the charged cost is the dispatcher's `total_cost_usd`, and whether it covers the subagent's spend is unverified, so the spend stops may undercount (row 65);
+    - that the campaign cost ceiling is a nominal product, not a proven bound (row 65);
     - a descendant an agent leaves running after a normal end of stream, or a grandchild of a hung `direnv` probe, can outlive its attempt;
     - an interrupt can take as long as one fixture build;
     - that the instrument log's absolute path appears in the child's `--settings` argv (row 47);
@@ -1521,14 +1516,14 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - the delimiter skip stops no injected instruction that does not need to close its block;
   - that a machine with a managed-policy `CLAUDE.md`, or an account whose `CLAUDE.md` includes another file, fails every `bare` run;
   - the account files a replay adds to and the cleanup leaves: `.code-writer-self-review.log`, `.code-writer-self-review.d` and `.session-config-keys-log.jsonl` (row 79), and one `sessions/<pid>` file per launch, as every Claude Code session leaves (row 154). For four hours after a campaign, `post-crash-sessions.py` may list those replay attempts;
-  - that after each hard kill, such as SIGKILL, an out-of-memory kill or a power loss, up to one launched attempt per worker thread (`run_skill_evals.DEFAULT_WORKERS`) may go uncharged. The undercount adds up over kills, each adding at most that many times the per-run cap, a nominal figure, and a resume prints how many swept attempts it did not charge (row 155);
+  - that a hard kill, such as SIGKILL, an out-of-memory kill or a power loss, can leave launched attempts uncharged, and a resume prints how many swept attempts it did not charge (row 155 states the bound);
   - where `.local/` lives, that removing a worktree deletes it, and `--local-dir`;
   - that a resume needs the same `TMPDIR` as the run it resumes;
   - that results are not a publication instrument, because the runner refuses no wider corpus (row 10);
   - that it needs Python 3.12 or newer, git 2.32 or newer and Claude Code 2.1.271 or newer, run through `scripts/venv-run.sh python3`;
   - a pointer to this plan for the design.
 
-The second PR's files are those of Phases 3, 4 and 5b. Phase 3 measures 2,658 lines (895 in `checks.py`, 1,763 in three test files). The architect's inference from that is a final size of about 7,500 to 8,000 lines, which is above the 6,300 row 141 accepted. Phases 4 and 5b are still estimates, not counts, and the second PR restates the figure again when it edits this file. The engineer's "Proceed anyway" on the diff-size gate is on record in row 163, which says what that label does and does not cover.
+The second PR's files are those of Phases 3, 4 and 5b. Phase 3 measured 2,658 lines at its commit. The architect's inference from that is a final size of about 7,500 to 8,000 lines, which is above the 6,300 row 141 accepted. Phases 4 and 5b are still estimates, not counts, and the second PR restates the figure again when it edits this file. The engineer's "Proceed anyway" on the diff-size gate is on record in row 163, which says what that label does and does not cover.
 
 Projected diff: about 3,790 lines for the first PR as merged (3,755 added, 36 removed). `git show --numstat 330a03a2` measures it over every file but this plan, after the code-review fixes. The parts:
 - the new `replay_bench` files and their tests hold most of it;
@@ -1635,9 +1630,9 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
 - Containing a replay agent, by a sandbox, a credential deny list or a tool-deny set. Steered agents are out of scope for this runner (row 47), and the README states the residual risk (row 45).
 - Writing each run's record as it finishes, so that a crash loses no paid run's record. A resumed block reruns whole, so per-run records would need a drift rule of their own. The spend file already keeps the cost of a lost block's ended attempts.
 - Deleting the rows that replay sessions add to the account's shared logs (row 79), or the `sessions/` file each launch leaves (row 154). `post-crash-sessions.py` lists those files for four hours after a campaign. The README lists both as accepted residue.
-- Charging, at resume, a launched attempt that a hard kill left with no spend line. After each hard kill, up to one such attempt per worker thread (`run_skill_evals.DEFAULT_WORKERS`) stays uncharged. The undercount adds up over kills, each adding at most that many times the nominal per-run cap (row 65). The resume prints the count, and the README lists this as accepted residue (row 155).
+- Charging, at resume, a launched attempt that a hard kill left with no spend line. The resume prints the count, and the README lists this as accepted residue (row 155 states the bound).
 - Telling a usage-limit, auth or overload event apart from a task-specific failure. Such an event that fails every run of two blocks marks two tasks no agent really tried complete and drops them, and how `claude -p` behaves at a usage limit is unverified (row 153).
-- A stop for failures on alternating tasks, which never make two failed blocks in a row. Only the spend stops bound them: `--cumulative-stop-usd`, and `--account-stop-usd` when it is set below it (row 153).
+- A stop for failures on alternating tasks, which never make two failed blocks in a row (row 153).
 - `summarize` figures beyond the primary outcome, the docstring outcome and the diagnostics: comment-plus-docstring lines per added code line, blocks per 100 added code lines, mean lines and words per block, the block-length histogram, the Python trailing-comment count, the base-density split (row 64), the mean first-turn prompt size, the per-repo breakdown, and each account's cap-charged share of spend. The records keep what each needs, so a later change adds any of them with no rerun (row 157).
 - A `smoke` listing of the account config dir. Verification step 6 has the engineer take it by hand.
 - A login check in preflight. Whether the installed CLI has a login-status command is unchecked, so `smoke` is the first check that authenticates (row 70).
