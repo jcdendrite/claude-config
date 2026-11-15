@@ -40,11 +40,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+import yaml
 
 # pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
 # path, where the production config-keys.psv parser lives.
@@ -80,6 +82,7 @@ from helpers import (
 from run_skill_evals import extract_governing_rule
 from validate_skill_structure import (
     SKILL_LISTING_BUDGET_CHARS,
+    FrontmatterError,
     corpus_budget_violations,
     parse_frontmatter,
     validate,
@@ -117,20 +120,38 @@ def _skill_file(skill_name: str) -> Path:
     return candidate  # let read_text() surface the FileNotFoundError
 
 
-def _skill_description(skill_name: str) -> str:
-    """Return the raw frontmatter text of a skill's SKILL.md.
+def _discovery_frontmatter(skill_file: Path) -> dict:
+    """Frontmatter for collection-time discovery: {} when it cannot be read as a mapping.
 
-    Returns only the text between the opening and closing --- delimiters.
-    If frontmatter delimiters are absent the skill is structurally broken;
-    returning empty string causes downstream assertions to fail cleanly.
+    Discovery runs at import, so a raise would abort collection of the whole module.
+    A skill read as {} stays in the model-invokable lists, whose parametrized tests fail under its name.
     """
-    skill_file = _skill_file(skill_name)
-    content = skill_file.read_text()
-    if not content.startswith("---"):
-        return ""
-    # Frontmatter lives between the opening --- and the closing ---.
-    closing = content.index("---", 3)
-    return content[3:closing]
+    try:
+        frontmatter = parse_frontmatter(skill_file)
+    except (yaml.YAMLError, ValueError):
+        return {}
+    return frontmatter
+
+
+def _disables_model_invocation(frontmatter: dict) -> bool:
+    """Only a YAML boolean true counts, so a quoted or misspelled flag keeps the skill under the TRIGGER sweeps."""
+    return frontmatter.get("disable-model-invocation") is True
+
+
+def _listing_text(frontmatter: dict) -> str:
+    """The `description` followed by `when_to_use`, the two keys the harness lists."""
+    description = frontmatter.get("description", "") or ""
+    when_to_use = frontmatter.get("when_to_use", "") or ""
+    return f"{description}\n{when_to_use}" if when_to_use else description
+
+
+def _skill_description(skill_name: str) -> str:
+    """Return the listing text of a skill: its parsed `description` followed by `when_to_use`.
+
+    A skill with no frontmatter block returns an empty string, which fails
+    downstream assertions cleanly.
+    """
+    return _listing_text(parse_frontmatter(_skill_file(skill_name)))
 
 
 def _specialist_skills() -> list[str]:
@@ -149,8 +170,8 @@ def _specialist_skills() -> list[str]:
             continue
         if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
             continue
-        frontmatter = _skill_description(skill_dir.name)
-        if frontmatter and "user-invocable: false" in frontmatter:
+        frontmatter = _discovery_frontmatter(_skill_file(skill_dir.name))
+        if frontmatter.get("user-invocable") is False:
             skills.append(skill_dir.name)
     if _PLUGINS_DIR.exists():
         for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
@@ -164,8 +185,8 @@ def _specialist_skills() -> list[str]:
                     continue
                 if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
                     continue
-                frontmatter = _skill_description(skill_dir.name)
-                if frontmatter and "user-invocable: false" in frontmatter and skill_dir.name not in skills:
+                frontmatter = _discovery_frontmatter(_skill_file(skill_dir.name))
+                if frontmatter.get("user-invocable") is False and skill_dir.name not in skills:
                     skills.append(skill_dir.name)
     return skills
 
@@ -215,8 +236,8 @@ def _model_invokable_skills() -> list[str]:
             continue
         if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
             continue
-        frontmatter = _skill_description(skill_dir.name)
-        if frontmatter and "disable-model-invocation: true" not in frontmatter:
+        frontmatter = _discovery_frontmatter(_skill_file(skill_dir.name))
+        if not _disables_model_invocation(frontmatter):
             skills.append(skill_dir.name)
     if _PLUGINS_DIR.exists():
         for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
@@ -237,12 +258,8 @@ def _model_invokable_skills() -> list[str]:
                 # If two plugins ever ship a skill with the same bare name, the first-alphabetically
                 # found plugin's frontmatter would be used. Revisit to pass qualified_name when
                 # a second same-named plugin skill is added.
-                frontmatter = _skill_description(skill_dir.name)
-                if (
-                    frontmatter
-                    and "disable-model-invocation: true" not in frontmatter
-                    and skill_dir.name not in skills
-                ):
+                frontmatter = _discovery_frontmatter(_skill_file(skill_dir.name))
+                if not _disables_model_invocation(frontmatter) and skill_dir.name not in skills:
                     skills.append(skill_dir.name)
     return skills
 
@@ -354,8 +371,8 @@ class TestSpecialistSkillTriggerContracts:
     @pytest.mark.parametrize("skill_name", COMMAND_SKILLS)
     def test_command_skill_has_disable_model_invocation(self, skill_name):
         """User-only command skills must carry disable-model-invocation: true."""
-        desc = _skill_description(skill_name)
-        assert "disable-model-invocation: true" in desc, (
+        frontmatter = parse_frontmatter(_skill_file(skill_name))
+        assert _disables_model_invocation(frontmatter), (
             f"{skill_name}/SKILL.md is registered as a command skill but is missing "
             f"disable-model-invocation: true; add it or remove from COMMAND_SKILLS"
         )
@@ -576,8 +593,8 @@ class TestNameOnlySkillContracts:
         """name-only skills must not carry disable-model-invocation: true."""
         if skill_name in BUILTIN_NAME_ONLY_SKILLS:
             pytest.skip(f"{skill_name!r} is a bundled Claude Code skill — no frontmatter to check")
-        desc = _skill_description(skill_name)
-        assert "disable-model-invocation: true" not in desc, (
+        frontmatter = parse_frontmatter(_skill_file(skill_name))
+        assert not _disables_model_invocation(frontmatter), (
             f"{skill_name}/SKILL.md carries disable-model-invocation: true but is also "
             f"set to name-only in skillOverrides. Remove the frontmatter flag — "
             f"skillOverrides: name-only is the single source of truth for invocation control."
@@ -620,10 +637,143 @@ class TestNameDispatchedNoTriggerContracts:
         desc = _skill_description(skill_name)
         assert "TRIGGER when:" not in desc, (
             f"{skill_name}/SKILL.md is in _NAME_DISPATCHED_NO_TRIGGER (exempted from "
-            f"TRIGGER discipline) but its frontmatter contains 'TRIGGER when:'. "
+            f"TRIGGER discipline) but its description or when_to_use contains 'TRIGGER when:'. "
             f"Remove the TRIGGER blocks — this skill is always dispatched by name, "
             f"never by description auto-trigger — or remove it from _NAME_DISPATCHED_NO_TRIGGER."
         )
+
+
+_MALFORMED_YAML_SKILL = "---\ndescription: bad: colon: here\n---\nbody\n"
+_UNCLOSED_BLOCK_SKILL = "---\nname: unclosed\ndescription: never closed\n\nBody text.\n"
+_SCALAR_ONLY_SKILL = "---\njust a scalar\n---\nbody\n"
+_EMPTY_SEQUENCE_SKILL = "---\n[]\n---\nbody\n"
+_IMPOSSIBLE_DATE_SKILL = "---\nname: impossible-date\nversion: 2024-02-30\n---\nbody\n"
+
+
+def _write_skill_file(skills_dir: Path, skill_name: str, text: str) -> Path:
+    skill_file = skills_dir / skill_name / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(text)
+    return skill_file
+
+
+def _write_flagged_skills(skills_dir: Path, name_infix: str) -> None:
+    """Write one skill per discovery flag value: disable-model-invocation true, false and quoted "false", user-invocable true."""
+    for name_stem, flag_line in (
+        ("disabled", "disable-model-invocation: true"),
+        ("enabled-explicit", "disable-model-invocation: false"),
+        ("quoted-false", 'disable-model-invocation: "false"'),
+        ("user-invocable", "user-invocable: true"),
+    ):
+        skill_name = f"{name_stem}-{name_infix}skill"
+        _write_skill_file(
+            skills_dir,
+            skill_name,
+            f"---\nname: {skill_name}\ndescription: Carries a flag.\n{flag_line}\n---\nbody\n",
+        )
+
+
+class TestFrontmatterReaders:
+    """The frontmatter readers behind skill discovery and _skill_description."""
+
+    @pytest.fixture
+    def skills_tree(self, tmp_path, monkeypatch) -> Path:
+        """A temporary skills tree that discovery reads in place of the repo's.
+
+        Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched.
+        """
+        skills_dir = tmp_path / "skills"
+        _write_skill_file(
+            skills_dir,
+            "valid-skill",
+            "---\nname: valid-skill\ndescription: Does a thing.\n"
+            "when_to_use: 'TRIGGER when: only the when_to_use key says so.'\n"
+            "user-invocable: false\n---\nbody\n",
+        )
+        _write_skill_file(skills_dir, "malformed-skill", _MALFORMED_YAML_SKILL)
+        _write_skill_file(skills_dir, "frontmatterless-skill", "no frontmatter here\n")
+        _write_flagged_skills(skills_dir, "")
+        plugin_skills_dir = tmp_path / "plugins" / "sample-plugin" / "skills"
+        _write_skill_file(
+            plugin_skills_dir,
+            "valid-plugin-skill",
+            "---\nname: valid-plugin-skill\ndescription: Does a plugin thing.\n"
+            "user-invocable: false\n---\nbody\n",
+        )
+        _write_skill_file(plugin_skills_dir, "malformed-plugin-skill", _MALFORMED_YAML_SKILL)
+        _write_skill_file(plugin_skills_dir, "frontmatterless-plugin-skill", "no frontmatter here\n")
+        _write_flagged_skills(plugin_skills_dir, "plugin-")
+        module = sys.modules[__name__]
+        monkeypatch.setattr(module, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(module, "_PLUGINS_DIR", tmp_path / "plugins")
+        return skills_dir
+
+    @pytest.mark.parametrize(
+        "skill_text",
+        [_MALFORMED_YAML_SKILL, _UNCLOSED_BLOCK_SKILL, _SCALAR_ONLY_SKILL, _IMPOSSIBLE_DATE_SKILL],
+        ids=["malformed-yaml", "unclosed-block", "scalar-only-block", "impossible-date"],
+    )
+    def test_discovery_frontmatter_returns_empty_mapping_for_unreadable_frontmatter(
+        self, tmp_path, skill_text
+    ):
+        skill_file = _write_skill_file(tmp_path, "broken-skill", skill_text)
+
+        assert _discovery_frontmatter(skill_file) == {}
+
+    def test_listing_text_includes_when_to_use(self):
+        listing = _listing_text({"description": "Does a thing.", "when_to_use": "TRIGGER when: asked."})
+
+        assert "Does a thing." in listing
+        assert "TRIGGER when: asked." in listing
+
+    def test_discovery_survives_malformed_and_frontmatterless_skills(self, skills_tree):
+        specialist_skills = _specialist_skills()
+        model_invokable_skills = _model_invokable_skills()
+
+        # user-invocable: true is not a specialist skill; disable-model-invocation: true
+        # leaves the model-invokable list while an explicit false stays in it.
+        # A quoted "false" stays in that list too.
+        assert specialist_skills == ["valid-skill", "valid-plugin-skill"]
+        assert model_invokable_skills == [
+            "enabled-explicit-skill",
+            "frontmatterless-skill",
+            "malformed-skill",
+            "quoted-false-skill",
+            "user-invocable-skill",
+            "valid-skill",
+            "enabled-explicit-plugin-skill",
+            "frontmatterless-plugin-skill",
+            "malformed-plugin-skill",
+            "quoted-false-plugin-skill",
+            "user-invocable-plugin-skill",
+            "valid-plugin-skill",
+        ]
+
+    def test_skill_description_sees_a_trigger_block_that_is_only_in_when_to_use(self, skills_tree):
+        # The name-dispatched negative check reads this same string, so a TRIGGER
+        # block moved into when_to_use must not slip past it.
+        assert "TRIGGER when:" in _skill_description("valid-skill")
+
+    @pytest.mark.parametrize(
+        ("skill_text", "expected_exception"),
+        [
+            (_MALFORMED_YAML_SKILL, yaml.YAMLError),
+            (_UNCLOSED_BLOCK_SKILL, FrontmatterError),
+            (_SCALAR_ONLY_SKILL, FrontmatterError),
+        ],
+        ids=["malformed-yaml", "unclosed-block", "scalar-only-block"],
+    )
+    def test_skill_description_raises_for_a_malformed_skill(
+        self, skills_tree, skill_text, expected_exception
+    ):
+        """A malformed listed skill raises instead of reading as an empty description."""
+        _write_skill_file(skills_tree, "broken-skill", skill_text)
+
+        with pytest.raises(expected_exception):
+            _skill_description("broken-skill")
+
+    def test_skill_description_is_empty_for_a_skill_without_frontmatter(self, skills_tree):
+        assert _skill_description("frontmatterless-skill") == ""
 
 
 class TestConventionSkillWiring:
@@ -2433,6 +2583,7 @@ class TestModelInvokableSkillFrontmatterIsStrictYaml:
     change in the harness would silently truncate the description at the
     first `: `, dropping the TRIGGER / DO NOT TRIGGER blocks. Block-fold
     (`description: >`) or double-quote any value containing `: `.
+    Unclosed or non-mapping frontmatter is not reported here: validate() words it differently, and TRIGGER sweeps fail on it.
     """
 
     MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
@@ -2454,6 +2605,7 @@ class TestModelInvokableDescriptionLength:
     that block is what gets cut. User-only command skills
     (disable-model-invocation: true) are excluded because their descriptions
     are suppressed from the listing entirely.
+    Unclosed or non-mapping frontmatter is not reported here: validate() words it differently, and TRIGGER sweeps fail on it.
     """
 
     MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
@@ -2607,6 +2759,80 @@ class TestValidateContextForkRequiresExplicitBackground:
         tolerance."""
         f = self._make_skill(tmp_path, "a", ["context: Fork"])
         assert not self._background_violations(validate(f))
+
+
+class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
+    """parse_frontmatter and validate() on an unclosed or non-mapping block, and the closer rule that decides which a block is."""
+
+    @pytest.mark.parametrize(
+        "skill_text",
+        [_UNCLOSED_BLOCK_SKILL, _SCALAR_ONLY_SKILL, _EMPTY_SEQUENCE_SKILL],
+        ids=["unclosed-block", "scalar-only-block", "empty-sequence-block"],
+    )
+    def test_parse_frontmatter_raises_frontmatter_error(self, tmp_path, skill_text):
+        skill_file = _write_skill_file(tmp_path, "broken-skill", skill_text)
+
+        with pytest.raises(FrontmatterError):
+            parse_frontmatter(skill_file)
+
+    def test_an_empty_block_reads_as_an_empty_mapping(self, tmp_path):
+        skill_file = _write_skill_file(tmp_path, "empty-block-skill", "---\n---\nbody\n")
+
+        assert parse_frontmatter(skill_file) == {}
+
+    def test_a_dash_run_inside_a_value_closes_the_block(self, tmp_path):
+        """A ``---`` inside a value ends the block, as it does in Claude Code's skill loader."""
+        skill_file = _write_skill_file(
+            tmp_path,
+            "dash-run-skill",
+            "---\nname: dash-run-skill\ndescription: a --- b\nuser-invocable: false\n---\nbody\n",
+        )
+
+        assert parse_frontmatter(skill_file) == {"name": "dash-run-skill", "description": "a"}
+
+    @pytest.mark.parametrize(
+        ("skill_text", "message_token"),
+        [
+            (_UNCLOSED_BLOCK_SKILL, "no closing"),
+            (_SCALAR_ONLY_SKILL, "not a YAML mapping"),
+            (_EMPTY_SEQUENCE_SKILL, "not a YAML mapping"),
+        ],
+        ids=["unclosed-block", "scalar-only-block", "empty-sequence-block"],
+    )
+    def test_validate_reports_one_violation_naming_the_file(self, tmp_path, skill_text, message_token):
+        skill_file = _write_skill_file(tmp_path, "broken-skill", skill_text)
+
+        violations = validate(skill_file)
+
+        assert len(violations) == 1
+        assert violations[0].count(str(skill_file)) == 1
+        assert message_token in violations[0]
+
+    def test_corpus_budget_skips_a_non_mapping_block(self, tmp_path):
+        non_mapping_file = _write_skill_file(tmp_path, "scalar-only-skill", _SCALAR_ONLY_SKILL)
+        counted_file = _write_skill_file(
+            tmp_path,
+            "counted-skill",
+            "---\nname: counted-skill\ndescription: Counted.\n---\nbody\n",
+        )
+
+        violations = corpus_budget_violations([non_mapping_file, counted_file], 0)
+
+        assert len(violations) == 1
+        assert "across 1 model-invokable skills" in violations[0]
+
+    def test_validate_reports_a_quoted_dash_run_as_not_strict_yaml(self, tmp_path):
+        """A quoted ``---`` ends the block inside the quote, which check 1 reports as not strict YAML."""
+        skill_file = _write_skill_file(
+            tmp_path,
+            "quoted-dash-run-skill",
+            '---\nname: quoted-dash-run-skill\ndescription: "a --- b"\ndisable-model-invocation: true\n---\nbody\n',
+        )
+
+        violations = validate(skill_file)
+
+        assert len(violations) == 1
+        assert "not strict YAML" in violations[0]
 
 
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")

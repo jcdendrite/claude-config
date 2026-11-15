@@ -51,21 +51,35 @@ SKILL_LISTING_BUDGET_CHARS = int(
 )
 
 
+class FrontmatterError(ValueError):
+    """A frontmatter block with no closing ``---`` line, or one that is not a YAML mapping."""
+
+
 def parse_frontmatter(skill_file: Path) -> dict:
     """Return the parsed YAML frontmatter of a SKILL.md file.
 
     Reads ``skill_file``, slices between the opening and closing ``---``
-    delimiters, and returns the result of ``yaml.safe_load``.  Returns ``{}``
-    when the file does not begin with ``---`` (no frontmatter present).
-
-    Raises ``yaml.YAMLError`` on invalid frontmatter — callers that want a
-    human-readable violation message should catch it; see ``validate()``.
+    delimiters, and returns the result of ``yaml.safe_load``.
+    Returns ``{}`` when the file does not begin with ``---`` or its block is empty.
+    Raises ``FrontmatterError`` when no ``---`` follows the opening one or the block is not a mapping.
+    The ``FrontmatterError`` message names no file; callers that turn it into a message name the file.
+    Raises ``yaml.YAMLError`` on invalid YAML.
+    PyYAML raises a bare ``ValueError`` for an impossible date such as ``2024-02-30``.
+    ``validate()`` reports ``FrontmatterError`` and ``yaml.YAMLError`` as violations.
     """
     content = skill_file.read_text()
     if not content.startswith("---"):
         return {}
-    closing = content.index("---", 3)
-    return yaml.safe_load(content[3:closing]) or {}
+    # Claude Code's skill loader ends the block at the first --- after the opener, even mid-line, so this does too.
+    closing = content.find("---", 3)
+    if closing == -1:
+        raise FrontmatterError("frontmatter has no closing --- line")
+    frontmatter = yaml.safe_load(content[3:closing])
+    if frontmatter is None:
+        return {}
+    if not isinstance(frontmatter, dict):
+        raise FrontmatterError("frontmatter is not a YAML mapping")
+    return frontmatter
 
 
 def validate(skill_file: Path) -> list[str]:
@@ -75,7 +89,7 @@ def validate(skill_file: Path) -> list[str]:
     are applied in order:
 
     1. Strict-YAML frontmatter — the frontmatter between the ``---`` delimiters
-       must parse with ``yaml.safe_load`` without raising.
+       must parse with ``yaml.safe_load`` without raising and be a mapping.
     2. Description length cap — ``len(description) + len(when_to_use)`` must
        not exceed ``MAX_SKILL_DESCRIPTION_CHARS``.
     3. ``context: fork`` requires an explicit literal-boolean ``background``
@@ -89,7 +103,7 @@ def validate(skill_file: Path) -> list[str]:
     """
     violations: list[str] = []
 
-    # Check 1: strict-YAML frontmatter.
+    # Check 1: the block has a closing ---, parses as strict YAML, and is a mapping.
     try:
         frontmatter = parse_frontmatter(skill_file)
     except yaml.YAMLError as exc:
@@ -99,6 +113,9 @@ def validate(skill_file: Path) -> list[str]:
             f"double-quote it."
         )
         # Cannot compute length without a parsed frontmatter — stop here.
+        return violations
+    except FrontmatterError as exc:
+        violations.append(f"{skill_file}: {exc}")
         return violations
 
     # Check 2: description + when_to_use length cap.
@@ -152,7 +169,8 @@ def corpus_budget_violations(skill_files: Iterable[Path], budget: int) -> list[s
     for skill_file in skill_files:
         try:
             frontmatter = parse_frontmatter(skill_file)
-        except (yaml.YAMLError, ValueError, OSError):  # ValueError covers UnicodeDecodeError
+        except (yaml.YAMLError, ValueError, OSError):
+            # ValueError covers UnicodeDecodeError, FrontmatterError and an impossible date such as 2024-02-30.
             continue
         if frontmatter.get("disable-model-invocation"):
             continue

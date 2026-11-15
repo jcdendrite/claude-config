@@ -199,13 +199,9 @@ class TestReviewerAgentRoster:
         updating the dispatcher to pass findings_path.
         """
         for name in CANARY_AGENTS:
-            path = AGENTS_DIR / name
-            content = path.read_text()
-            tools_match = re.search(r"^tools:\s*(.+)$", content, re.MULTILINE)
-            assert tools_match, f"{name}: no 'tools:' line found in frontmatter"
-            tools_value = tools_match.group(1)
-            assert "Write" in tools_value, (
-                f"{name}: 'Write' not found in tools: {tools_value!r}. "
+            declared_tools = _declared_tool_names(AGENTS_DIR / name)
+            assert "Write" in declared_tools, (
+                f"{name}: 'Write' not found in tools: {sorted(declared_tools)!r}. "
                 "All reviewer agents must declare Write for the file-based output canary."
             )
 

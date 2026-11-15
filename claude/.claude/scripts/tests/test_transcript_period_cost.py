@@ -21,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import yaml
 from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
 from transcript_analysis import corpus, cost, gh_cli, period_cost, pr_cost_ledger, pricing, scope
 
@@ -5991,9 +5992,10 @@ class TestReviewPrSkillDrift:
         return _REVIEW_PR_SKILL_MD.read_text(encoding="utf-8").splitlines()
 
     def test_the_frontmatter_name_is_the_skill_name_the_detection_matches(self):
-        name_lines = [line for line in self._skill_lines()[:6] if line.startswith("name:")]
+        # Assumes no `---` inside a frontmatter value, so the piece between the first two `---` is the whole block.
+        frontmatter_block = _REVIEW_PR_SKILL_MD.read_text(encoding="utf-8").split("---", 2)[1]
 
-        assert name_lines == [f"name: {period_cost._REVIEW_PR_SKILL_NAME}"]
+        assert yaml.safe_load(frontmatter_block)["name"] == period_cost._REVIEW_PR_SKILL_NAME
 
     def test_the_acquire_line_substituted_with_a_real_identity_is_read_back_as_that_identity(self):
         (acquire_line,) = (

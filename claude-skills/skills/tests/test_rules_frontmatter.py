@@ -164,9 +164,7 @@ def rule_frontmatter_violations(
     try:
         frontmatter = parse_frontmatter(rule_file)
     except (yaml.YAMLError, ValueError) as exc:
-        # ValueError covers an unterminated frontmatter block (missing closing
-        # '---'). parse_frontmatter's content.index() raises ValueError
-        # directly for this case. yaml.YAMLError alone doesn't catch it.
+        # ValueError covers FrontmatterError and an impossible date such as 2024-02-30.
         return [f"{rule_file} has invalid or unterminated YAML frontmatter: {exc}"]
 
     if "paths" not in frontmatter:

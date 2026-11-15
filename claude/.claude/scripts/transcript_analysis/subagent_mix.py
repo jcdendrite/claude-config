@@ -371,6 +371,7 @@ def _spawn_counts_by_agent_type(
     return dict(counts)
 
 
+# Regex, not PyYAML (install.sh adds no packages to python3); a trailing comment hides the model, a quoted value keeps its quotes
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
 
 

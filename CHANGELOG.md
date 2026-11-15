@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The `skill-management` structural validator now reports a frontmatter block with no closing `---` line, or one that is not a YAML mapping, as one violation line instead of exiting with a traceback.** Plugin bumped: `skill-management` 5.0.2 → 5.1.0.
+  - A falsy non-mapping block such as `[]` used to pass and is now denied, hence the minor bump.
+  - The corpus-budget warning skips a non-mapping file, which used to raise or count as a skill with no description.
+  - **Migration:** run `claude plugin install skill-management@claude-config --scope project` in each consuming repo to refresh the plugin, then `/reload-plugins` (or restart Claude Code). Rolling the change back takes a forward bump past 5.1.0, never a revert of the version, because a machine already on 5.1.0 would keep the new validator.
 - **Three CI-workflow tests moved from `claude/.claude/hooks/tests/` to `claude/.claude/tests/`.**
   - The files are `test_ci_path_filter.py`, `test_ci_workflow_gates.py` and `test_ci_python_matches_dev_interpreter.py`. None tests a hook.
 - **`transcript-analysis` prices `claude-fable-5-2`.** Fable 5.2 turns carried unpriced tokens and an `EXCLUDED SPEND` banner. They now price at $8/MTok base input with the 0.025× cache-read rate, per the pricing page.

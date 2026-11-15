@@ -5,6 +5,8 @@
 # Prints the Python minor ("X.Y") that CI pins in the workflow file $1, from its quoted `python-version: 'X.Y'` lines.
 # Returns 1 with an actionable "ERROR:" line on stderr when the file is unreadable, has no quoted pin, has more than one distinct pin, or the pin is not X.Y.
 # An unquoted `python-version:` line is not a pin here, because YAML loads an unquoted 3.10 as the float 3.1.
+# Read with sed, not a YAML library, because install-dev.sh calls this before it checks or builds .venv, so no PyYAML can be assumed.
+# test_ci_python_pin_lib.py checks this reader against yaml.safe_load on the real workflow.
 read_ci_python_pin() {
   local workflow_file="$1" pin_values pin_form='^[0-9]+\.[0-9]+$'
   if [[ ! -r "$workflow_file" ]]; then
