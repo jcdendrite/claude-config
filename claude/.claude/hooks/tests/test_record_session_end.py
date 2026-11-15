@@ -277,12 +277,7 @@ class TestRecordSessionEnd:
     def test_hung_jq_exits_within_timeout_and_writes_no_record(self, isolated_home, tmp_path):
         """A wedged jq binary (sleeping past _lib_jq's 5s backstop) must not
         hang this hook indefinitely -- every jq call site here goes through
-        _lib_jq, not bare jq, so the timeout cap applies to all three.
-        Invoked via `bash <path>` rather than direct exec, mirroring
-        test_lib.py's test_hung_jq_denied_within_timeout.
-        The jq stub is written through write_prewarmed_stub, so its slow
-        first exec happens at write time and cannot outlast the scaled cap
-        inside the `with` block."""
+        _lib_jq, not bare jq, so the timeout cap applies to all three."""
         import shutil
 
         timeout_path = shutil.which("timeout") or shutil.which("gtimeout")

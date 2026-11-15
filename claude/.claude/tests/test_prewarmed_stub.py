@@ -7,8 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-# A namespace import beside the name imports: the tests read `_PREWARM_EXEC_PATH` and monkeypatch it, and the helper
-# reads that module global at call time, so only a patched attribute on the module object reaches it.
+# The helper reads `_PREWARM_EXEC_PATH` at call time, so a test must patch the module attribute.
 import helpers
 import pytest
 from helpers import (
@@ -278,8 +277,6 @@ def test_warm_exec_that_cannot_start_raises_with_the_exec_diagnostics_chained_fr
 
 
 class TestSharedWritersWarmEveryStubTheyLeave:
-    """Each shared writer that leaves a stub must exec it once with the guard variable set to its path."""
-
     def test_install_resume_context_stub(self, tmp_path: Path, recorded_runs: list[tuple[tuple, dict]]) -> None:
         stub_bin = install_resume_context_stub(tmp_path)
 

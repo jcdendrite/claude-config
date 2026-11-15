@@ -3071,7 +3071,6 @@ def _forced_fallback_path_env(tmp_path: Path) -> str:
 # pipe was actually killed, rather than only that some stage at that
 # duration was.
 
-# The scaled cap bounds every capped call a hook makes under this shim, not only the call a test stalls.
 TIMEOUT_SCALE_DIVISOR = 3
 
 _SCALED_TIMEOUT_MARKER_DIRNAME = "scaled-timeout-markers"

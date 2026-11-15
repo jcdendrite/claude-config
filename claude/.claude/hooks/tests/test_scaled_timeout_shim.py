@@ -1,15 +1,6 @@
 """Tests for the scaled `timeout` shim (helpers.py's write_scaled_timeout_shim
 and friends) that every cap-boundary test now installs in place of a real
 wall-clock wait.
-
-Three concerns:
-  - Bidirectional coverage of the shim itself: an integer duration scales
-    correctly, a rejected $1 passes through unscaled and records nothing,
-    and the started/completed logs discriminate a kill from a completion.
-  - A source-scanning tripwire for the five tests in test_lib.py and test_lib_capped_for.py
-    that must never receive this shim (TestProtectedProbeOrderTestsAreUnscaled).
-  - A committed negative control for the discriminator itself
-    (TestCapMarkersDetectNonFiringCap).
 """
 from __future__ import annotations
 
