@@ -110,7 +110,7 @@ The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D
 
 **Arms (`replay_bench/arms.py`).** An arm is data:
 - a name, and the agent the dispatcher names;
-- the `CLAUDE.md` its dispatcher must load at `session_start`, and the dispatcher loads that fail it;
+- whether it excludes the toolkit. The `CLAUDE.md` its dispatcher must load at `session_start` is not arm data. It is the argument of `Arm.load_expectation`;
 - the fixture settings file it writes, if any;
 - the fixture-file loads its subagent may show.
 
@@ -240,11 +240,11 @@ The Bash check is a bounded scan of the command text (row 161).
 - It removes backslash-newline, splits the command per line, then splits each line with `shlex`. Each word and its shell-separator pieces is a candidate.
 - A candidate over `MAX_PATH_CHARS` is skipped and recorded as unparsed.
 - Only `~`, `$HOME`, `${HOME}`, `$PWD` and `${PWD}` expand, and `$PWD` is the fixture dir. Relative tokens resolve against the fixture.
-- Containment is bounded to the config dir, the live checkout roots and `.git`, the local dir, and the `FIXTURE_DIR_PREFIX` directories. A word at or below a target is a hit.
+- Containment is bounded to the config dir, the live checkout roots and `.git`, the local dir, and the `FIXTURE_DIR_PREFIX` directories. A word that names a guarded location, or a directory inside its tree that holds it, is a hit. So is a word below a guarded location, as listed above.
 - A command `shlex` cannot split is recorded as unparsed.
 
 Both checks, and `check_tool_call_paths` as a whole:
-- The run's record keeps every Bash command, and every absolute token outside the fixture that no rule above fails.
+- The run's record keeps every Bash command, and every token outside the fixture that no rule above fails.
 - A `tool_use` whose command or target path is missing or not a string, and a token holding a NUL byte, are recorded as unparsed and never resolved.
 - A denied Bash command or write tool reached nothing, so it fails neither `out-of-fixture-path` nor `out-of-fixture-write`. It still counts toward a `bare` run's toolkit reach.
 - `check_tool_call_paths` also returns `transcript-unreadable` (`runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE`) when the transcript is unreadable, its last line is torn or lines were skipped. Phase 4 calls it on the subagent sidecar.
@@ -267,13 +267,13 @@ Each run also records how many calls were denied, which a hook denial and a perm
   - a `session_id` other than the run's;
   - lines carrying more than one distinct `agent_id`.
 - A `file_path` reaches `os.path.realpath` only once its line passes every check above.
-- A `path_glob_match` line's trigger-path field, under the key step 1b finds (row 146), is kept only when it is a string holding no NUL byte, and is never resolved. Any other value leaves it absent and fails nothing, since only `smoke`'s printed note reads it.
+- A `path_glob_match` line's trigger-path field, under `TRIGGER_PATH_KEY`, is kept only when it is a string holding no NUL byte, and is never resolved. Any other value leaves it absent and fails nothing, since only `smoke`'s printed note reads it.
 - The run fails as `instrument-missing` when the log is absent or empty, or holds no dispatcher `session_start` load of the arm's expected `CLAUDE.md`. That load is the positive control that the hook fired.
 - The check resolves every loaded path and every toolkit path with `os.path.realpath` before comparing them, so a stowed file reported by its link target still classifies.
 - Each loaded path falls in one class: toolkit (the account's `CLAUDE.md`, a file under its `rules/`, `agents/` or `skills/`, or a file on the Read allow list), fixture (under the fixture), or other.
 - `bare` fails as `arm-leak` on any subagent load outside the fixture (row 16).
-- `bare` also fails as `arm-leak` on a dispatcher load its arm names as failing, which is any load other than the account's `CLAUDE.md`. The hook logs no line for what a subagent inherits from its dispatcher (row 18), so a file the dispatcher loaded could reach the subagent unseen.
-- `bare` also fails as `arm-leak` when a Read, Grep, Glob or Bash path resolves to a toolkit file, a read `toolkit` makes by design (row 55).
+- `bare` also fails as `arm-leak` on any dispatcher load other than its expected `CLAUDE.md`, since `bare` excludes the toolkit. The hook logs no line for what a subagent inherits from its dispatcher (row 18), so a file the dispatcher loaded could reach the subagent unseen.
+- `bare` also fails as `arm-leak` when a Read, Grep, Glob or Bash path resolves to a toolkit file or a directory holding one up to the config dir, a read `toolkit` makes by design (row 55).
 - `toolkit` has no per-run load assertion, because the hook logs no subagent line for an inherited `CLAUDE.md` (row 18). `smoke`'s block checks that inheritance once per account instead (Campaign).
 - Either arm fails as `fixture-instruction-load` on a fixture-file load its arm does not allow.
 - Duplicate loads of one file are counted, never failed.
@@ -439,9 +439,9 @@ For each run, `smoke` prints:
 - Exclude: the `bare` run's own per-run checks fail it as `arm-leak` on any subagent load outside the fixture and on any dispatcher load besides the account's `CLAUDE.md`. That shows the exclude holding only when `bare`'s subagent read a rule-matching file (row 145).
 - Exclude note, printed and never gated (row 143):
   - When the `toolkit` control fired and its `path_glob_match` lines name the file that triggered each load (row 146), `smoke` prints whether the `bare` transcript shows a Read that ran of any such file, compared by path relative to each run's fixture. A payload with no trigger field leaves this line out.
-  - `smoke` always prints one residual sentence: "A `bare` run that read no rule-matching file passes without testing the exclude, and a later `bare` run that reads one fails `arm-leak`."
+  - `smoke` always prints one residual sentence: "A `bare` run that read no rule-matching file passes without testing the exclude."
 - Inheritance: the `toolkit` run's first-turn prompt size, minus the `bare` run's, minus the body term, is at least the margin. The comparison is `>=`. Otherwise, or when either size is null, `arm-config-missing`.
-- The verdict is a pure function of both runs' parsed logs and first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It computes the calibration conditions whenever both runs reached their end and the `toolkit` log parsed, whether or not either run is valid, and a missing run's own reason is listed first.
+- The verdict is a pure function of the `toolkit` run's parsed log, both runs' first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It computes the calibration conditions whenever both runs left a session file with no timeout and the `toolkit` run has a log object. Whether either run is valid does not gate that computation. A missing run's own reason is listed first.
 - The verdict returns every failed condition, in the order above, and `smoke` prints them all. The inheritance check is token arithmetic, so it stays computable when the control fails, and one paid block shows every problem it can.
 
 The terms, each a character count over 4:
@@ -454,7 +454,7 @@ The terms, each a character count over 4:
 `smoke`'s last line reads `instrument: ok` only when all of these hold, checked in this order:
 - each arm has a valid run. Otherwise the line names the arm and its run's missing reason;
 - no run failed under an instrument reason;
-- no `toolkit` Read of a path on the Read allow list carries a permission-rule `non_execution_kind`. Otherwise `read-grant-denied` (row 117);
+- no `toolkit` Read of a path on the Read allow list was denied. Otherwise `read-grant-denied` (rows 117, 165);
 - the `toolkit` run made at least one Read of an allow-list path that ran. Otherwise `read-grant-unexercised`, since a grant no Read used shows nothing (row 117);
 - the block calibration passed.
 
@@ -471,7 +471,7 @@ Otherwise the line names the first failed condition, `smoke` prints every failed
 
 The 3.12 floor is documentation only: `def _without_child_output[ResultT]` in `evals/replay_bench/runner.py` uses PEP 695 syntax, and `evals/run_replay_bench.py` imports that module at the top, so an older interpreter fails at import before `main()` runs.
 
-On an interrupt, `main()` calls `msmr.abort_launches()` and prints the resume command. The message says two things:
+On an interrupt, `main()` calls `msmr.abort_launches()` and prints a hint. For `run`, the hint is the resume command, and it says two things:
 - wait at least `--timeout-s` after a hard kill before resuming, since a surviving `claude` child can still be writing (row 56);
 - resume with the same `TMPDIR`, since the sweep matches logged fixtures only directly under the current system temp dir (row 43).
 
@@ -519,7 +519,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 - **D1 (resolved).** For arm A's shape, the engineer selected "Subagent for both arms (Recommended)" (row 3).
 - **D2 (arm C only).** The route that delivers an edited `CLAUDE.md`:
   - (a) `claudeMdExcludes` in the fixture's `.claude/settings.json` naming the account's `CLAUDE.md`, plus the edited copy as the fixture's root `CLAUDE.md`. Recommended, because it keeps the `CLAUDE.md` channel.
-    - The pair's arm data names that fixture copy as the dispatcher's expected `session_start` load, so `instrument-missing` fires when the dispatcher shows none. It names the account's `CLAUDE.md` as a dispatcher load that fails the run.
+    - The pair's expected `session_start` load is that fixture copy, so `instrument-missing` fires when the dispatcher shows none. The pair excludes the toolkit, so any other dispatcher load, the account's `CLAUDE.md` included, fails the run.
     - The memory page does not say whether `claudeMdExcludes` reaches the user-scope `CLAUDE.md` (row 115). The pair's own `smoke` settles that from the dispatcher's log.
     - The pair's subagents inherit `CLAUDE.md` with no log line (row 18), so the pair's `smoke` needs a prompt-size check of its own, designed with the pair.
   - (b) `omitClaudeMd: true` with the edited text inlined into the agent body, which is a system-prompt channel.
@@ -623,7 +623,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 42. [verified: `evals/run_review_bench.py:2284-2309,2327-2331`] The bench CLI sets an owner-only umask and restricts an existing `.local/` to 0700 with `_restrict_local_dir_to_owner`.
 43. [verified: `evals/review_bench/runner.py:1150-1291`] `RunStore` supplies a flock, a write-ahead log, block completion and a validated sweep. The sweep deletes only `FIXTURE_DIR_PREFIX` directories directly under the system temp dir, and session stores directly under the projects root it is given.
 44. [unverified] `/usr/bin/env -i` replaces itself with `claude` rather than forking it, so `msmr._run_claude_to_completion`'s group kill reaches the child. A Phase 4 test with a fake `claude` behind the prefix checks it.
-45. [verified: `evals/README.md:1163-1164`] The bench runs only on repositories whose branches the engineer or someone the engineer trusts wrote. The same bar holds here, because each subagent holds Bash under the account's allowlist in a tree from the source repo. [verified: `evals/README.md:1146-1151`] Run validity fails a steered run only after its commands ran. So the residual risk is plain: a steered replay agent can read or write anything the account's permission rules allow. This plan accepts that risk under row 47.
+45. [verified: `evals/README.md:1161-1162`] The bench runs only on repositories whose branches the engineer or someone the engineer trusts wrote. The same bar holds here, because each subagent holds Bash under the account's allowlist in a tree from the source repo. [verified: `evals/README.md:1146-1151`] Run validity fails a steered run only after its commands ran. So the residual risk is plain: a steered replay agent can read or write anything the account's permission rules allow. This plan accepts that risk under row 47.
 46. [verified: `evals/review_bench/mine_szz.py:29`] This repository's `main` is squash-merged, so its first-parent commits are its merged pull requests.
 47. [engineer-verified: "drop the ones under \"drop if you agree\". No worries about steered agents here."] Sandbox containment is not adopted, and steered agents are out of scope for this runner.
 48. [verified: `docs/case-studies/claude-code-sandbox-write-boundary.md:284-292`] A `tool_result` carrying `tool_result_meta[].non_execution_kind` of `"permission-rule"` marks a call that never ran, whether a hook or the permission flow denied it.
@@ -1102,11 +1102,11 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - kept: a `.gitattributes` holding only `*.py text eol=lf`;
   - live git, pinning row 131: `git archive` of a tree whose `.gitattributes` says `tests export-ignore` lists no `tests/` path.
 
-**Phase 3 — run checks (second PR; committed as `681edfb5`).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py evals/test_replay_bench_checks_transcript.py`. The tests split across `evals/test_replay_bench_checks.py`, `evals/test_replay_bench_checks_transcript.py` and the helper-only `evals/test_replay_bench_checks_support.py`, each under the 1,000-line cap.
+**Phase 3 — run checks (second PR; committed as `681edfb5`).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks*.py`. The tests split across `evals/test_replay_bench_checks*.py`, each under the 1,000-line cap.
 - `evals/replay_bench/checks.py` (new):
-  - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected and failing dispatcher loads;
+  - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected `CLAUDE.md` and whether it excludes the toolkit;
   - the subagent's first-turn prompt size from its transcript;
-  - the exclude note from Campaign. Only when Verification step 1b finds a trigger field (row 146) does this file read the optional trigger-path field on a `path_glob_match` line and check whether a transcript shows a Read that ran of a trigger path, compared relative to each run's fixture. Without one, the note is the residual sentence alone, and neither that code nor its exclude-note cases below exist;
+  - the exclude note from Campaign. This file reads the optional trigger-path field on a `path_glob_match` line and checks whether a transcript shows a Read that ran of a trigger path, compared relative to each run's fixture. Without the field, the note is the residual sentence alone;
   - the block-calibration verdict from Campaign, a pure function of the `toolkit` run's parsed log (row 162), both runs' first-turn sizes, the account `CLAUDE.md`'s character count, the two agent bodies' character counts, and the character counts of the rule files the `toolkit` dispatcher loaded at `session_start`. It returns every failed condition in order;
   - the instrument reasons as one constant, which the runner's retry rule reads (Retry);
   - the account-hook check under `<config-dir>/sessions/`;
@@ -1153,10 +1153,9 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
       - a control failure with a null size returns `instrument-missing` then `arm-config-missing`;
       - a control failure with a short gap returns the same two;
   - the exclude note. Phase 4's `smoke` cases show that it never changes the verdict:
-    - without the trigger-path code, one case: the note is the residual sentence alone;
-    - with it, a trigger path the `bare` transcript shows a Read of that ran prints the exercised line, compared relative to each fixture;
-    - with it, a `bare` transcript with no such Read, and one whose only such Read was denied, print the not-exercised line;
-    - with it, a trigger field that is absent, not a string, or holds a NUL byte leaves the line out without raising, and each of these cases also prints the residual sentence;
+    - a trigger path the `bare` transcript shows a Read of that ran prints the exercised line, compared relative to each fixture;
+    - a `bare` transcript with no such Read, and one whose only such Read was denied, print the not-exercised line;
+    - a trigger field that is absent, not a string, or holds a NUL byte leaves the line out without raising, and each of these cases also prints the residual sentence;
   - Read-allow-list records: a listed Read that ran, a listed Read denied by a hook and one denied by the permission flow, and a denied Read of an unlisted toolkit file recorded by path;
   - the forged-log case moves to Phase 4's runner tests (row 162);
   - `bare` reading a toolkit agent file through Read and through Bash fails `arm-leak`, and the same reads pass `toolkit`;
@@ -1171,7 +1170,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - permission-rule denials from the permission flow and from a hook, each counted;
   - the account-hook check: a found file passes, an absent file fails `account-hooks-missing`, and a symlink and a file for another session each count as absent.
 
-**Phase 4 — arms, launch, runner, CLI (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_arms.py evals/test_replay_bench_runner.py evals/test_replay_bench_tasks.py`.
+**Phase 4 — arms, launch, runner, CLI (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench*.py`.
 - `evals/replay_bench/tasks.py` (edit):
   - make no `write_fixture_extras` split. `build_task_fixture` has been the extras' only caller since the calibration fixture was removed (row 136), so row 129's move of the split to this PR is moot, and row 141 records the drop;
   - `build_task_fixture(task, dest_dir, baseline_git_dir, *, bare_writer_markdown, timeout_s, settings_text=None) -> str` writes `.claude/settings.json` from `settings_text` when one is given, beside its other extras;
@@ -1186,7 +1185,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - `SelectionLimits` cases:
     - each of the eight integer fields at 0 and at -1 is refused, naming its flag, with `max_count=-1` among them;
     - `min_code_lines == max_code_lines` is accepted, and a minimum one above the maximum is refused with both flag names in the message.
-- `evals/replay_bench/arms.py` (new): the `Arm` record with its expected and failing dispatcher loads, its fixture settings and its allowed fixture loads; the `bare` and `toolkit` registry; `bare`'s `claudeMdExcludes` generator with its call of the shared character check and its settings text; the `bare-writer` file text built from the account's `code-writer.md` frontmatter; and both agents' body character counts for the block calibration, `code-writer`'s read from the account's `<config-dir>/agents/code-writer.md`.
+- `evals/replay_bench/arms.py` (new): the `Arm` record with whether it excludes the toolkit, its fixture settings and its allowed fixture loads, and `Arm.load_expectation`, which takes the expected `CLAUDE.md`; the `bare` and `toolkit` registry; `bare`'s `claudeMdExcludes` generator with its call of the shared character check and its settings text; the `bare-writer` file text built from the account's `code-writer.md` frontmatter; and both agents' body character counts for the block calibration, `code-writer`'s read from the account's `<config-dir>/agents/code-writer.md`.
 - `evals/replay_bench/launch.py` (new): the environment allowlist as data, the `env -i` prefix, the readiness argv, the `--settings` JSON with the instrument hook, `UnsafeConfigPathError` with the one character check both generators share, and the Read allow-list generator with the `--allowedTools` argv tail.
 - The runner entry below is split across modules so each file stays under the 1,000-line cap, by this map:
   - `account.py`: the account preflight and its readiness check;
@@ -1239,12 +1238,12 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - a `rules` tree holding a directory-link loop yields a finite list;
   - `bare`'s settings text parses as JSON equal to `{"claudeMdExcludes": [...]}`, with no other key;
   - `toolkit` writes no settings file.
-- `evals/test_replay_bench_runner.py` (new).
-  - It stubs every `claude` call, and every `direnv` call outside the preflight cases below. An injected `launch=` writes a synthetic dispatcher transcript and subagent sidecar under a `tmp_path` projects root, and fakes the fixture edits.
-  - It builds transcripts with `test_review_bench_runner.py`'s scenario helpers by import, not by copy.
-  - It monkeypatches `review_bench.runner.read_environment_record` to a fixed reading, or to a sequence for the drift cases.
-  - A local autouse fixture points `run_replay_bench.DEFAULT_LOCAL_DIR` under `tmp_path`. It also stubs `review_bench.runner.default_live_checkout_roots` to return no roots, since the shared stub runs only once `run_review_bench` is imported (row 90). This is the only test file that calls `main()`.
-  - The same fixture sets `SESSION_FLUSH_POLL_INTERVAL_S` and `SESSION_FLUSH_TIMEOUT_S` on `review_bench.runner` to near zero by module attribute, so the stubbed attempts skip the real flush wait (row 107).
+- The runner, campaign, spend, CLI, summarize and smoke tests, in `evals/test_replay_bench*.py` (new).
+  - They stub every `claude` call, and every `direnv` call outside the preflight cases below. An injected `launch=` writes a synthetic dispatcher transcript and subagent sidecar under a `tmp_path` projects root, and fakes the fixture edits.
+  - They build transcripts with `test_review_bench_runner.py`'s scenario helpers by import, not by copy.
+  - They monkeypatch `review_bench.runner.read_environment_record` to a fixed reading, or to a sequence for the drift cases.
+  - A local autouse fixture points `run_replay_bench.DEFAULT_LOCAL_DIR` under `tmp_path`. It also stubs `review_bench.runner.default_live_checkout_roots` to return no roots, since the shared stub runs only once `run_review_bench` is imported (row 90). `evals/test_replay_bench_runner.py` is the only test file that calls `main()`.
+  - `build_replay_world` in `evals/test_replay_bench_runner_support.py` sets `SESSION_FLUSH_POLL_INTERVAL_S` and `SESSION_FLUSH_TIMEOUT_S` on `review_bench.runner` to near zero by module attribute, so the stubbed attempts skip the real flush wait (row 107).
 - Hang-prone and wall-clock tests (row 89):
   - `@pytest.mark.timing` marks the twenty-hook parallel test, the group-kill test, the direnv-timeout test, the readiness-timeout test, the FIFO case, and one flush test that restores the real flush constants and asserts the wait ends once the transcript and sidecar stop growing.
   - Every fake that sleeps runs `exec sleep <n>`, so a timeout's kill reaches the sleeper itself and leaves no orphan.
@@ -1252,7 +1251,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - Direnv and readiness timeouts: a limit of 1 s, passed to the readiness check as its `timeout_s` parameter, a fake that sleeps 10 s, and the refusal asserted within 5 s.
   - Twenty parallel hooks: every invocation joined within 30 s.
   - The FIFO case runs the post-run analysis in a daemon thread joined with a 30 s deadline, and fails with a message naming the FIFO when the deadline passes.
-- `evals/test_replay_bench_runner.py` attempt-validity cases, each with a stub `launch=`, run for both arms:
+- Attempt-validity cases, each with a stub `launch=`, run for both arms:
   - forged log (row 162). The stub writes a real log into the attempt dir and a differing log under the same file name at the fixture root. Both directions are asserted on the run's verdict:
     - a real log with no dispatcher `CLAUDE.md` load plus a forged log with one gives `instrument-missing`;
     - a clean real log plus a poisoned forged log passes;
@@ -1262,7 +1261,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - `config_dir` and the other reasons reach the record: a Bash command `ls <config_dir>` fails `out-of-fixture-path`, and a Write outside the fixture fails `out-of-fixture-write`. Each asserts the reason, the failing token or command in the run record and in `smoke`'s printout;
   - these three reasons are not in `INSTRUMENT_REASONS`, so each retries once, and a Retry case pins that;
   - a no-false-hit control: the scan over command shapes taken from the Verification step 1a and 1b transcripts, such as heredocs with paths in prose, leaves a `bare` run clean. Values stay synthetic.
-- `evals/test_replay_bench_runner.py` launch and environment cases:
+- Launch and environment cases:
   - launch argv: the `env -i` prefix, `--permission-mode acceptEdits`, a `--settings` JSON holding only the instrument hook, compared as parsed JSON, and `--allowedTools` with its entries last;
   - Read allow list, for a `tmp_path` home whose `.claude` and a separate `tmp_path` config dir each hold stowed-style links into a third directory:
     - each agent and skill file appears once by link path and once by realpath, as `Read(//...)`;
@@ -1356,7 +1355,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - an attempt whose dir already exists records `fixture-error` with the path in `missing_detail`, and launches nothing.
 - Campaign cases:
   - environment drift at block start and at block end halts the campaign, writes no record, never calls `mark_block_complete`, and prints the block's spend;
-  - a resume after an account's environment changed exits 2 before any launch, naming the account and the field;
+  - a resume after an account's environment changed exits 2 before any launch, naming the field;
   - the per-arm stop, each through a stub launch whose task-specific failures carry no instrument reason:
     - four tasks that fail, pass, fail and pass complete all four, and `run` exits 0, since a passing block resets the count;
     - two failing tasks followed by a third halt `run` with exit 1 and both failing blocks complete, and the stub asserts the third task never launches. The printout names each failing arm with its missing reasons and `missing_detail`;
@@ -1369,7 +1368,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a failing block followed by one that drift or a spend stop halts leaves the failing block complete;
   - each halt prints its reason and exits 1, with one case each for drift, the cumulative stop, the account stop, an instrument failure and two task-specific failed blocks in a row. A campaign that completes exits 0;
   - each block prints its progress line with the task ID, per-arm counts, each arm with no valid run and its missing reasons, the running per-arm count of dropped tasks, the block's spend and the totals against their stops;
-  - a resume whose probe resolves a source repo to another account key than the manifest's exits 2 before any launch, naming the repo;
+  - a resume whose probe resolves a source repo to another account key than the manifest's exits 2 before any launch;
   - a resume with a changed `--fixture-git-timeout-s` passes the manifest comparison;
   - smoke gate: `run` exits 2 before any launch for an account in each of these cases:
     - no smoke-pass record;
@@ -1413,7 +1412,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a file the runner writes under it is 0600;
   - this checkout's `git check-ignore` reports the default local dir ignored;
   - git below 2.32, through a fake `git` on `PATH`, exits 2 before preflight;
-  - an interrupt calls `abort_launches` and prints the resume command with its wait and its `TMPDIR` line.
+  - an interrupt calls `abort_launches` and, for `run`, prints the resume command with its wait and its `TMPDIR` line.
 - `summarize` cases, on synthetic records, each asserting printed values parsed back as numbers:
   - the ratio-of-sums primary;
   - the line under the paired difference, on records holding one paired task, one task with no valid `toolkit` run, two with no valid `bare` run, one with neither and one with no non-test code line in one arm: `paired 1 of 6 complete tasks`, and the four exclusion counts 1, 2, 1 and 1, each parsed back as a number and the first three with their missing reasons;
@@ -1444,7 +1443,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a `toolkit` run whose listed Read was denied fails `read-grant-denied`, with a hook denial and a permission-flow denial each counted (row 48);
     - a denied Read of an unlisted toolkit file prints by path and fails nothing;
     - a `bare` run's denied Read of a listed path fails `arm-leak`, never `read-grant-denied`;
-  - the printed ceiling equals `campaign_cost_ceiling(1, 2, 1, ...)`'s `all_retried_usd`, printed before any launch.
+  - the printed ceiling equals `campaign_cost_ceiling(1, 2, 1, ...)`'s `all_retried_usd`.
 
 **Phase 5a — test selection for the first PR's files (first PR).** Verify: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` and `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
 - `claude/.claude/scripts/select-tests.py`:
@@ -1495,7 +1494,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - that `smoke` runs one block of one run per arm and prints its ceiling before launch;
   - that the `smoke` task must modify a file the base tree holds that one of the account's rules matches, and that an account with no such task needs a larger `--max-count` or another source repo;
   - what `instrument-missing`, `arm-leak`, `arm-config-missing`, `read-grant-denied` and `read-grant-unexercised` each mean in `smoke`, and its printed exclude note;
-  - the residual, in one sentence: a `bare` run that reads no rule-matching file passes without testing the exclude, and a broken exclude fails `arm-leak` only on later `bare` runs that read one (row 145);
+  - the residual, in one sentence: a `bare` run that reads no rule-matching file passes without testing the exclude (row 145);
   - that the block calibration's body term is a character-count estimate, so a gap close to the margin is weak evidence either way;
   - that Bash commands outside `acceptEdits`' auto-approved set and the account's allow rules are denied in both arms, so a replay agent cannot run, for example, a test suite the account does not allow, and the permission-denial count shows how often (row 122);
   - the reason `launch-error`: a launch call that raises `OSError` is charged at the cap, retried once, and not an instrument reason;
