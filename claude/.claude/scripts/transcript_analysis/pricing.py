@@ -74,9 +74,9 @@ _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     "claude-sonnet-4-5": 3.00,
     # claude-fable-5 / -5-1 / -5-2: the vendor's published claude-api model ID
     # for each generation (platform.claude.com/docs/en/models/fable-5/overview,
-    # .../fable-5-1/overview, and the models overview for 5.2).
+    # .../fable-5-1/overview, and about-claude/models/overview for 5.2).
     # claude-fable-5-2 is confirmed as the string Claude Code writes to
-    # message.model; the 5 and 5-1 strings remain [unverified] against it. See
+    # message.model; the 5 and 5-1 strings remain [unverified]. See
     # _reportable_unpriced_model_ids for the loud-on-miss backstop. Pricing
     # this family means its usage appears by name in every published --summary
     # Cost block, not folded into an anonymous unpriced-ID count.
