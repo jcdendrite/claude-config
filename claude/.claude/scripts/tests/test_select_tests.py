@@ -163,8 +163,6 @@ def _test_corpus(repo_root: Path) -> list[str]:
 
 
 def _selection_covers(target_paths: tuple[str, ...], path: str) -> bool:
-    """True when any selected pytest target is a directory containing `path`,
-    expands to include `path`, or names it."""
     return any(
         _mod._is_under(path, target) or path in _mod._expand_target(target, repo_root=_REPO_ROOT)
         for target in target_paths
@@ -191,7 +189,6 @@ def _skill_structure_validator_importers(sources: dict[str, str]) -> set[str]:
     # Gaps:
     # - evals/ is unscanned.
     # - Non-test helper modules are unscanned.
-    # - Hops past one are unseen.
     # - importlib loads are unseen.
     # - Subprocess reach via require-skill-review.sh is unseen.
     validator_basename = Path(_mod.SKILL_STRUCTURE_VALIDATOR_MODULE).stem
