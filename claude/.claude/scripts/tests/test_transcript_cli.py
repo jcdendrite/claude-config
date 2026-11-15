@@ -200,7 +200,10 @@ class TestConfigDirRouting:
 
     @pytest.mark.parametrize("subcommand", sorted(_SUBCOMMANDS_WITH_THEIR_OWN_CONFIG_DIR_FLAG))
     def test_own_config_dir_is_one_appending_flag(self, subcommand):
-        """Contract: one flag with this dest, metavar and option string. The other attributes characterize today's parser."""
+        """Contract: one appending flag with this dest, metavar and option string.
+
+        The remaining attributes pin the current argparse defaults and may change deliberately.
+        """
         subparser = _subparsers_by_name(cli.build_parser())[subcommand]
         (action,) = _extra_config_dirs_actions(subparser)
         assert type(action) is argparse._AppendAction

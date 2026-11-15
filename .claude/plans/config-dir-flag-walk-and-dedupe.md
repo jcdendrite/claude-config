@@ -211,7 +211,12 @@ for name, each_parser in [("<top level>", parser), *sorted(subparsers.choices.it
    - `git diff --quiet <base> -- claude/.claude/scripts/transcript_analysis` exits 0, so production code is untouched.
    - `scripts/venv-run.sh pytest claude/.claude/scripts/tests/test_transcript_cli.py -q` exits 0.
    - `scripts/venv-run.sh pytest -n0 --collect-only -q "claude/.claude/scripts/tests/test_transcript_cli.py::TestConfigDirRouting::test_own_config_dir_is_one_appending_flag" "claude/.claude/scripts/tests/test_transcript_cli.py::TestConfigDirRouting::test_repeated_own_config_dir_values_accumulate_in_order"` lists 30 node IDs, 15 per test.
-   - Negative control, run once after the green run. Temporarily delete the whole `p_cost_trend.add_argument("--config-dir", ...)` call in `transcript_analysis/cli.py`. Rerun the file. The failing node IDs must be exactly test 1 and the `cost-trend` cases of tests 2 and 3, and no other case. Revert the edit, then `git diff --quiet <base> -- claude/.claude/scripts/transcript_analysis` exits 0 again. The failing IDs are the control's pass condition, so a walk that stays green here is vacuous.
+   - Negative control, run once after the green run:
+     - Temporarily delete the whole `p_cost_trend.add_argument("--config-dir", ...)` call in `transcript_analysis/cli.py`, then rerun the file.
+     - Exactly four cases fail: test 1, the `cost-trend` case of test 2, the `cost-trend` case of test 3, and the pre-existing complement test `test_refusing_subcommands_without_their_own_config_dir_flag_are_exactly_the_expected_set`.
+     - No other case fails.
+     - Revert the edit, then `git diff --quiet <base> -- claude/.claude/scripts/transcript_analysis` exits 0 again.
+     - A walk that stays green here is vacuous.
 2. `scripts/venv-run.sh ruff check claude/.claude/scripts/tests/test_transcript_cli.py` exits 0.
 3. Baseline dump (the session, after commit 1 and before Dispatch B):
    - `git diff --quiet <base> -- claude/.claude/scripts/transcript_analysis` exits 0.
