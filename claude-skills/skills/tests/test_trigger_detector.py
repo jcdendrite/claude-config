@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import run_skill_evals
+import yaml
 
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where this shared test helper lives.
@@ -30,21 +31,30 @@ from run_skill_evals import (
     _build_dispatch_command,
     build_disposition_prompt,
     compute_session_store_dir,
+    declared_tool_names,
     detect_dispatch_in_lines,
     detect_trigger_in_lines,
     extract_governing_rule,
     load_case_file,
     parse_classification_answer,
     parse_disposition_answer,
+    parse_frontmatter_block,
     parse_skill_frontmatter,
     partition_case_files,
     run_disposition_case,
     score_classification,
     score_disposition_results,
     seed_temp_project_git,
+    split_agent_frontmatter,
+    split_frontmatter,
 )
+from validate_skill_structure import parse_frontmatter as validator_parse_frontmatter
 
 FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
+
+
+def _read_frontmatter(text: str) -> dict:
+    return parse_frontmatter_block(split_frontmatter(text)[0])
 
 
 def _lines(fixture_name: str) -> list[str]:
@@ -188,8 +198,89 @@ class TestCaseFileMethod:
             assert result["disposition-fidelity"] == [disposition]
 
 
+class TestFrontmatterReader:
+    """The reader every evals frontmatter site shares; the sites' own tests cover their fallbacks."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("---\nname: x\n---\nbody\n", {"name": "x"}, id="valid block"),
+            # The validator reads with the default encoding, so this row assumes a UTF-8 default.
+            pytest.param("\ufeff---\nname: x\n---\nbody\n", {"name": "x"}, id="one leading byte-order mark"),
+            pytest.param("---\nname: a---b\n---\n", {"name": "a"}, id="a mid-line --- closes the block"),
+            pytest.param("---\n---\n", {}, id="empty block"),
+            pytest.param("---\nnull\n---\n", {}, id="null block"),
+            pytest.param("---\n# c\n---\n", {}, id="comment-only block"),
+            pytest.param("---\nname: x\n", ValueError, id="unclosed block"),
+            pytest.param("---\n- a\n---\n", ValueError, id="list block"),
+            pytest.param("---\njust text\n---\n", ValueError, id="scalar block"),
+            pytest.param("---\ndescription: a: b\n---\n", ValueError, id="invalid YAML"),
+            pytest.param("---\ncreated: 2024-02-30\n---\n", ValueError, id="impossible date"),
+        ],
+    )
+    def test_reader_and_validator_read_the_same_frontmatter(
+        self, tmp_path: Path, text: str, expected: dict | type[ValueError],
+    ) -> None:
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(text, encoding="utf-8")
+
+        try:
+            reader_outcome = _read_frontmatter(text)
+        except ValueError:
+            reader_outcome = ValueError
+        try:
+            validator_outcome = validator_parse_frontmatter(skill_file)
+        except (ValueError, yaml.YAMLError):
+            validator_outcome = ValueError
+
+        assert reader_outcome == expected
+        assert validator_outcome == expected
+
+    @pytest.mark.parametrize(
+        ("text", "match"),
+        [
+            pytest.param("body\n", "does not start with ---", id="no opener"),
+            pytest.param("---\nname: x\n", "no closing ---", id="no closer"),
+            pytest.param("---\n- a\n---\n", "not a YAML mapping", id="non-mapping block"),
+            pytest.param("---\ndescription: a: b\n---\n", "not valid YAML", id="invalid YAML"),
+            pytest.param(
+                "\ufeff\ufeff---\nname: x\n---\n", "does not start with ---", id="two leading byte-order marks",
+            ),
+            pytest.param(
+                "---\nname: !!python/object/apply:os.getcwd []\n---\n", "not valid YAML", id="python object tag",
+            ),
+        ],
+    )
+    def test_unreadable_frontmatter_names_the_failed_check(self, text: str, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            _read_frontmatter(text)
+
+    def test_an_agent_file_closer_must_start_a_line(self) -> None:
+        with pytest.raises(ValueError, match="does not start a line"):
+            split_agent_frontmatter("---\nname: a---b\n---\n")
+
+        assert split_agent_frontmatter("---\nname: a\n---\nbody\n") == ("\nname: a\n", "\nbody\n")
+
+    @pytest.mark.parametrize(
+        ("tools_value", "expected"),
+        [
+            pytest.param("Read, Grep", frozenset({"Read", "Grep"}), id="comma-separated string"),
+            pytest.param(["Read", "Grep"], frozenset({"Read", "Grep"}), id="list of strings"),
+            pytest.param("Read, , Grep,", frozenset({"Read", "Grep"}), id="empty names dropped"),
+            pytest.param("", None, id="blank string"),
+            pytest.param(",", None, id="only a comma"),
+            pytest.param([], None, id="empty list"),
+            pytest.param(None, None, id="absent field"),
+            pytest.param(3, None, id="non-string scalar"),
+            pytest.param(["Read", 3], None, id="list holding a non-string item"),
+        ],
+    )
+    def test_declared_tool_names(self, tools_value: object, expected: frozenset[str] | None) -> None:
+        assert declared_tool_names(tools_value) == expected
+
+
 class TestParseSkillFrontmatter:
-    """assemble_skill_listing() relies on this minimal stdlib frontmatter parser."""
+    """assemble_skill_listing() relies on this frontmatter parser."""
 
     @staticmethod
     def _write_skill(directory: Path, name: str, body: str) -> Path:
@@ -227,6 +318,65 @@ class TestParseSkillFrontmatter:
             name, desc = parse_skill_frontmatter(path)
             assert name == "bare-skill"
             assert desc == ""
+
+    def test_unreadable_frontmatter_falls_back_to_dir_name(self, tmp_path: Path) -> None:
+        path = self._write_skill(
+            tmp_path, "my-skill", "---\nname: declared-name\ndescription: a: b\n---\nbody\n",
+        )
+
+        assert parse_skill_frontmatter(path) == ("my-skill", "")
+
+    def test_quoted_values_and_trailing_comments_are_read_as_yaml(self, tmp_path: Path) -> None:
+        path = self._write_skill(
+            tmp_path, "my-skill",
+            "---\nname: \"quoted-skill\"  # note\ndescription: 'Has: a colon.'\n---\nbody\n",
+        )
+
+        assert parse_skill_frontmatter(path) == ("quoted-skill", "Has: a colon.")
+
+    @pytest.mark.parametrize(
+        ("block", "expected"),
+        [
+            pytest.param("description: x", ("my-skill", "x"), id="name absent"),
+            pytest.param("name:\ndescription: x", ("my-skill", "x"), id="name null"),
+            pytest.param('name: ""\ndescription: x', ("my-skill", "x"), id="name blank"),
+            pytest.param('name: "  "', ("my-skill", ""), id="name whitespace only"),
+            pytest.param('name: " x "', ("x", ""), id="name padded with whitespace"),
+            pytest.param("name: 42\ndescription: x", ("my-skill", "x"), id="name not a string"),
+            pytest.param("name: x", ("x", ""), id="description absent"),
+            pytest.param("name: x\ndescription: 42", ("x", ""), id="description not a string"),
+        ],
+    )
+    def test_absent_null_blank_or_non_string_fields_fall_back(
+        self, tmp_path: Path, block: str, expected: tuple[str, str],
+    ) -> None:
+        path = self._write_skill(tmp_path, "my-skill", f"---\n{block}\n---\nbody\n")
+
+        assert parse_skill_frontmatter(path) == expected
+
+    def test_a_file_with_a_leading_byte_order_mark_is_read(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        path = skill_dir / "SKILL.md"
+        path.write_bytes(b"\xef\xbb\xbf---\nname: declared-name\ndescription: d\n---\nbody\n")
+
+        assert parse_skill_frontmatter(path) == ("declared-name", "d")
+
+    def test_literal_block_description_reads_as_one_line(self, tmp_path: Path) -> None:
+        path = self._write_skill(
+            tmp_path, "my-skill", "---\nname: my-skill\ndescription: |\n  Line one.\n  Line two.\n---\nbody\n",
+        )
+
+        assert parse_skill_frontmatter(path) == ("my-skill", "Line one. Line two.")
+
+    def test_invalid_utf8_raises_unicode_decode_error(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        path = skill_dir / "SKILL.md"
+        path.write_bytes(b"---\nname: \xff\n---\n")
+
+        with pytest.raises(UnicodeDecodeError):
+            parse_skill_frontmatter(path)
 
 
 class TestExtractGoverningRule:

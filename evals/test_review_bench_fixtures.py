@@ -1303,6 +1303,13 @@ class TestRenderArmAgent:
         assert "description: A test lens." in frontmatter
         # Body is untouched for the current-rule arm -- no clause substitution.
         assert body == original_body
+        # Literal replacement, so the rendered bytes are checked without the splitter both sides share.
+        assert rendered == (
+            original_text
+            .replace(f"name: {_LENS}\n", f"name: bench-{_LENS}\n", 1)
+            .replace("model: sonnet\n", "model: inherit\n", 1)
+            .replace("tools: Read, Grep, Glob, Bash, Write\n", "tools: Read, Grep, Glob\n", 1)
+        )
 
     def test_function_context_arm_differs_from_production_only_in_name_model_tools_and_clause(self, tmp_path: Path) -> None:
         agents_dir = tmp_path / "agents"
@@ -1367,6 +1374,134 @@ class TestRenderArmAgent:
         _write_production_agent(agents_dir, lens=_LENS, tools="Read, Glob, Bash, Write")
 
         with pytest.raises(arms.ArmSnapshotError):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    @pytest.mark.parametrize(
+        "tools_lines",
+        [
+            pytest.param("", id="no tools line"),
+            pytest.param("tools:\n", id="null tools"),
+            pytest.param('tools: ""\n', id="empty tools"),
+        ],
+    )
+    def test_fails_loudly_when_production_tools_is_absent_or_blank(self, tmp_path: Path, tools_lines: str) -> None:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        production_text = (
+            f"---\nname: {_LENS}\nmodel: sonnet\n{tools_lines}---\n"
+            f"You are `{_LENS}`.\n\n{_READ_CLAUSE} and check style.\n"
+        )
+        (agents_dir / f"{_LENS}.md").write_text(production_text, encoding="utf-8")
+
+        with pytest.raises(arms.ArmSnapshotError, match="is missing"):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    def test_invalid_yaml_production_frontmatter_raises_an_arm_snapshot_error_naming_the_lens(
+        self, tmp_path: Path,
+    ) -> None:
+        agents_dir = tmp_path / "agents"
+        _write_production_agent(
+            agents_dir, lens=_LENS, tools="Read, Grep, Glob, Bash, Write", extra_frontmatter="description: a: b\n",
+        )
+
+        with pytest.raises(arms.ArmSnapshotError, match=f"^{_LENS}: .*not valid YAML"):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    def test_a_quoted_production_tools_value_is_read(self, tmp_path: Path) -> None:
+        agents_dir = tmp_path / "agents"
+        _write_production_agent(agents_dir, lens=_LENS, tools='"Read, Grep, Glob, Bash, Write"')
+
+        rendered = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+        frontmatter, _ = arms._split_frontmatter(rendered)
+        assert yaml.safe_load(frontmatter)["tools"] == "Read, Grep, Glob"
+
+    def test_a_mid_line_triple_dash_in_production_frontmatter_raises_an_arm_snapshot_error_naming_the_lens(
+        self, tmp_path: Path,
+    ) -> None:
+        """The --- follows name:, model: and tools:, so only the closer-must-start-a-line check catches it."""
+        agents_dir = tmp_path / "agents"
+        _write_production_agent(
+            agents_dir, lens=_LENS, tools="Read, Grep, Glob, Bash, Write", extra_frontmatter="description: a---b\n",
+        )
+
+        with pytest.raises(arms.ArmSnapshotError, match=f"^{_LENS}: .*does not start a line"):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    def test_a_production_file_with_a_leading_byte_order_mark_renders_the_same_arm_without_it(
+        self, tmp_path: Path,
+    ) -> None:
+        agents_dir_without_mark = tmp_path / "without-mark"
+        agents_dir_with_mark = tmp_path / "with-mark"
+        _write_production_agent(agents_dir_without_mark, lens=_LENS, tools="Read, Grep, Glob, Bash, Write")
+        production_text = (agents_dir_without_mark / f"{_LENS}.md").read_text(encoding="utf-8")
+        agents_dir_with_mark.mkdir()
+        (agents_dir_with_mark / f"{_LENS}.md").write_text("\ufeff" + production_text, encoding="utf-8")
+
+        rendered_with_mark = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir_with_mark)
+
+        rendered_without_mark = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir_without_mark)
+        assert rendered_with_mark == rendered_without_mark
+        assert rendered_with_mark.startswith("---")
+
+    def test_a_production_file_that_is_not_valid_utf8_raises_an_arm_snapshot_error_naming_the_lens(
+        self, tmp_path: Path,
+    ) -> None:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / f"{_LENS}.md").write_bytes(b"\xff\xfe---\nname: x\n---\nbody\n")
+
+        with pytest.raises(arms.ArmSnapshotError, match=f"^{_LENS}: .*not valid UTF-8: .*0xff") as raised:
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+        assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+
+    @pytest.mark.parametrize(
+        ("production_frontmatter", "match"),
+        [
+            # Renders `tools: Read, Grep, Glob` with the `  - X` items left behind, which fold into the tools scalar.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools:\n  - Read\n  - Grep\n  - Glob\n  - Bash\n  - Write\n",
+                "read back as the arm's name, model and tools: tools read back as",
+                id="list-form tools",
+            ),
+            # Renders `model: inherit` then the second `model: opus`, which wins as the last duplicate key.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob, Bash, Write\nmodel: opus\n",
+                "read back as the arm's name, model and tools: model read back as 'opus', expected 'inherit'$",
+                id="repeated model key",
+            ),
+            # Renders `name: bench-<lens>` then the second `name: other`, which wins as the last duplicate key.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob, Bash, Write\nname: other\n",
+                f"read back as the arm's name, model and tools: name read back as 'other', expected 'bench-{_LENS}'$",
+                id="repeated name key",
+            ),
+            # Renders `tools: Read, Grep, Glob` with `  Bash, Write` left as its continuation line.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob,\n  Bash, Write\n",
+                "read back as the arm's name, model and tools: tools read back as",
+                id="multi-line plain-scalar tools",
+            ),
+            # Renders `model: inherit` with the `  a: b` line left under it, which is not valid YAML.
+            pytest.param(
+                f"name: {_LENS}\nmodel:\n  a: b\ntools: Read, Grep, Glob, Bash, Write\n",
+                "does not read back: frontmatter is not valid YAML",
+                id="nested-mapping model",
+            ),
+        ],
+    )
+    def test_fails_loudly_when_the_rendered_frontmatter_does_not_read_back(
+        self, tmp_path: Path, production_frontmatter: str, match: str,
+    ) -> None:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        production_text = (
+            f"---\n{production_frontmatter}---\nYou are `{_LENS}`.\n\n{_READ_CLAUSE} and check style.\n"
+        )
+        (agents_dir / f"{_LENS}.md").write_text(production_text, encoding="utf-8")
+
+        with pytest.raises(arms.ArmSnapshotError, match=match):
             arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
 
 

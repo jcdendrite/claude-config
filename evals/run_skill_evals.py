@@ -46,6 +46,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVALS_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
@@ -194,50 +196,86 @@ def build_temp_project(skills_dir: Path, plugins_dir: Path) -> Path:
 # fallback for advisory skills the `runtime` substrate cannot measure.
 
 
-def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
-    """Extract (name, description) from a SKILL.md YAML frontmatter block.
+def split_frontmatter(text: str) -> tuple[str, str]:
+    """Return (block, rest) around a leading --- block, as validate_skill_structure.parse_frontmatter splits a SKILL.md.
 
-    Minimal stdlib parser — handles inline scalars and `>`/`|` block scalars.
-    Avoids a PyYAML dependency so this module imports cleanly under CI, which
-    installs only pytest and ruff. Falls back to the directory name when the
-    `name` key is absent or there is no frontmatter.
+    One leading U+FEFF is removed first.
+    The block closes at the first --- after the opener, even mid-line.
+    Raises ValueError when the text does not start with --- or no --- follows the opener.
     """
-    text = skill_md_path.read_text()
-    fallback_name = skill_md_path.parent.name
+    text = text.removeprefix("\ufeff")
     if not text.startswith("---"):
-        return fallback_name, ""
+        raise ValueError("frontmatter does not start with ---")
+    closing = text.find("---", 3)
+    if closing == -1:
+        raise ValueError("frontmatter has no closing ---")
+    return text[3:closing], text[closing + 3:]
+
+
+def split_agent_frontmatter(text: str) -> tuple[str, str]:
+    """Return split_frontmatter's (block, rest) for an agent file.
+
+    Raises ValueError when the closer does not start a line, since nothing documents whether Claude Code's
+    agent loader closes the block mid-line.
+    The leading byte-order-mark rule rests on the skill loader's behavior, and review_bench.arms.render_arm_agent
+    drops that mark from the arm it renders.
+    """
+    block, rest = split_frontmatter(text)
+    if not block.endswith("\n"):
+        raise ValueError("frontmatter closes at a --- that does not start a line")
+    return block, rest
+
+
+def parse_frontmatter_block(block: str) -> dict:
+    """Return the block's YAML mapping, or {} when YAML reads the block as null.
+
+    Raises ValueError for any other non-mapping and for invalid YAML.
+    """
     try:
-        closing = text.index("\n---", 3)
+        frontmatter = yaml.safe_load(block)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"frontmatter is not valid YAML: {exc}") from exc
+    if frontmatter is None:
+        return {}
+    if not isinstance(frontmatter, dict):
+        raise ValueError("frontmatter is not a YAML mapping")
+    return frontmatter
+
+
+def declared_tool_names(tools_value: object) -> frozenset[str] | None:
+    """Return the names in an agent's tools: value, given as a comma-separated string or a list of strings.
+
+    Returns None for any other value, and when no name remains, so a blank value reads like an absent one.
+    """
+    if isinstance(tools_value, str):
+        raw_names = tools_value.split(",")
+    elif isinstance(tools_value, list) and all(isinstance(item, str) for item in tools_value):
+        raw_names = tools_value
+    else:
+        return None
+    names = frozenset(name.strip() for name in raw_names if name.strip())
+    return names or None
+
+
+def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
+    """Return (name, description) for the description-fidelity skill listing.
+
+    Falls back to (directory name, "") when the frontmatter cannot be read as a mapping.
+    An absent, blank or non-string name reads as the directory name, and an absent or non-string description
+    as an empty string.
+    The description is collapsed to one line, since the listing gives each skill one line.
+    """
+    text = skill_md_path.read_text(encoding="utf-8")
+    fallback_name = skill_md_path.parent.name
+    try:
+        frontmatter = parse_frontmatter_block(split_frontmatter(text)[0])
     except ValueError:
         return fallback_name, ""
-    lines = text[3:closing].splitlines()
 
-    name = fallback_name
-    description = ""
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith("name:"):
-            value = line.split(":", 1)[1].strip()
-            if value:
-                name = value
-            i += 1
-        elif line.startswith("description:"):
-            value = line.split(":", 1)[1].strip()
-            if value and value not in (">", "|", ">-", "|-", ">+", "|+"):
-                description = value
-                i += 1
-            else:
-                # Block scalar: gather blank or indented continuation lines,
-                # stopping at the next top-level key.
-                block: list[str] = []
-                i += 1
-                while i < len(lines) and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
-                    block.append(lines[i].strip())
-                    i += 1
-                description = " ".join(part for part in block if part)
-        else:
-            i += 1
+    declared_name = frontmatter.get("name")
+    name = declared_name.strip() if isinstance(declared_name, str) and declared_name.strip() else fallback_name
+    declared_description = frontmatter.get("description")
+    description = " ".join(declared_description.split()) if isinstance(declared_description, str) else ""
     return name, description
 
 
