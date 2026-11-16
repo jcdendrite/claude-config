@@ -18,7 +18,7 @@ A "could not verify" finding has no edit to ADDRESS and fits no DEFER criterion,
 
 A rewritten claim is modified prose, which the reviewer judges again in the next round. So the fix is the narrowest true statement with whatever the restating angle would delete removed, and a claim with nothing left is deleted, not corrected.
 
-The Restating angle already owns the test for what to cut, so the False angle's fix defers to it. A separate rule for appended exceptions or for what the reader needs would restate that test.
+The Restating angle already owns the test for what to cut, so the False angle's fix defers to it. A second False-angle clause saying what to keep or what the reader needs would restate the Restating angle's test.
 
 The replay comparison that chose this wording is in `.claude/plans/comment-rule-false-angle-fix.md` § "Context".
 
@@ -64,7 +64,7 @@ Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K
 
 ### 2026-11-15 re-run for the false-claim fix rule
 
-Measured on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell, on the shipped reviewer body. The subagents had no `Grep` or `Glob`, so each run searched with read-only `Bash` and wrote a `LISTING:` header line naming it.
+Measured on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell, on the reviewer with the 2026-11-15 wording. The subagents had no `Grep` or `Glob`, so each run searched with read-only `Bash` and wrote a `LISTING:` header line naming it.
 
 **Cells.**
 - Must-flag, each 5 of 5: a false default, a false count, a quantified claim found by search, an unsourced number and an unsourced causal claim.
@@ -72,19 +72,25 @@ Measured on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell
 - Must-pass, each 0 of 5: the seven items of the 2026-11-05 run.
 - Pointer cell, a false docstring on a function whose behavior lives in another function: the claim was deleted in 7 of 7 runs and no run rewrote it. The docstring is also contradicted by the function's own body, so the cell does not isolate the pointer's routing.
 - Negative cell, a rationale naming an external system: a Prose restating the code finding 0 of 5, and any finding 1 of 5, an Unsourced one.
-- Limit-note cell, a docstring on a gate function saying what the gate does not catch, scored by each run's first stated fix on the base body (the reviewer at `13ccd953`) and on the shipped body:
-  - A true note, which names a previous commit that the function's signature rules out, was deleted in 4 of 5 runs on the shipped body and 2 of 5 on the base body.
-  - A partly false note was deleted in 2 or 3 of 5 runs on the shipped body and 1 to 3 of 5 on the base body, depending on how a run that names both a rewrite and a deletion is scored.
-  - There is no bar. The two bodies differ in both the False bullet and the restating pointer, so the cause is not known.
+- Limit-note cell, a docstring on a gate function saying what the gate does not catch, scored by each run's first stated fix on the reviewer at `13ccd953` and on the reviewer with the 2026-11-15 wording:
+  - A true note, which names a previous commit that the function's signature rules out, was deleted in 4 of 5 runs on the reviewer with the 2026-11-15 wording and 2 of 5 on the reviewer at `13ccd953`.
+  - A partly false note was deleted in 2 or 3 of 5 runs on the reviewer with the 2026-11-15 wording and 1 to 3 of 5 on the reviewer at `13ccd953`, depending on how a run that names both a rewrite and a deletion is scored.
+  - There is no bar. The two reviewers differ in both the False bullet and the restating pointer, so the cause is not known.
 
 **Unmet bar.** On the acceptance cell, a true docstring on a function that only calls another function, the docstring was deleted in 5 of 10 runs against a bar of at least 8 of 10 after the K=10 re-run. Runs that left it alone reasoned that the function's name, signature and body do not show the criterion. That is the bar `claude/.claude/CLAUDE.md` § "Durable text" sets for what is obvious, which the Restating angle cites.
 
-**Replay.** Three runs over 61 past review findings and claims kept the claim on 8, 8 and 9 of 28 real findings, where a kept claim is a no-finding or keep-correct verdict and 24 of those 25 verdicts let the claim stay with a possible reword. They deleted none of the 30 claims in the study's verify table, which holds 24 verified true, 5 partly false and 1 unverifiable. They deleted outright 4, 5 and 4 units whose recorded counterfactual keeps a shorter local version. A second classifier counts 2, 2 and 1 deleted units whose recorded counterfactual keeps the claim. The units and claims come from this repository's own tracked files and review findings, and the study's inputs are local and unpublished. Three runs make these figures directional.
+**Replay.** The runs replayed 61 units through the reviewer with the 2026-11-15 wording. A unit is a past review finding or a claim from this repository. The study recorded for each unit what the right fix would have been, and two classifiers read that record. Each figure below lists one count per run, over three runs.
+- Real findings where the reviewer kept the claim: 8, 8 and 9 of 28. Kept the claim means a no-finding or keep-correct verdict, and a keep-correct verdict lets the claim stay with a possible reword. Across the three runs, 24 of those 25 verdicts were keep-correct.
+- Claims in the study's verify table deleted: 0 of 30 in every run. The table holds 24 claims verified true, 5 partly false and 1 unverifiable.
+- Units deleted outright that classifier A labels as needing a shorter local version: 4, 5 and 4.
+- Units deleted outright that classifier B labels as having a recorded fix that keeps the claim: 2, 2 and 1.
+
+The units and claims come from this repository's own tracked files and review findings, and the study's inputs are local and unpublished. Three runs make these figures directional.
 
 **Caveats:**
 - The bars at K=5 were scored as the 2026-11-05 run scored them, except for two changes made after the first runs. The precedence cell is scored by fix kind with one finding counted per site, and the negative cell by Prose restating the code findings only. Both cells also meet the original bars: restating with deletion at least 4 of 5, a `False or unsourced claim` finding at most 1 of 5, and any finding at most 1 of 5.
 - The first acceptance docstring was not a true claim, and a line that restated the contradicting fact was removed from the must-flag tree. Every rate above is on the repaired fixtures.
-- The cells cannot show a change in fix kind. The "only one caller" claim's fix named every caller in each run, which no rule separates from a narrowing. The replay is the only evidence of a shift. The limit-note cell also scores fix kind and shows none for a partly false note.
+- The cells cannot show a change in fix kind. The quantified-claim cell's fix (a claim that only one script calls another) named every caller in each run, which no rule separates from a narrowing. The replay is the only evidence of a shift. The limit-note cell also scores fix kind and shows none for a partly false note.
 - Nothing here measures the goal of fewer review rounds. A replay that re-reviews the fixed text and counts findings would.
 - The record makes no claim about whether the reviewer leaves a limit note alone. The limit-note cell has one true note, whose limit the function's signature can express, and runs split on whether that makes it restating. A true note of a limit that no parameter or branch shows was not measured.
 

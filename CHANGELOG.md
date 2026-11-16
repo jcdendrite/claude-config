@@ -31,7 +31,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `claude/.claude/hooks/tests/test_ci_workflow_gates.py` replaces `test_ci_watch_workflow_parity.py`.
 - **`comment-discipline-reviewer`'s fix for a false claim is now the narrowest statement the subject supports, less what the restating-the-code check would delete, and a claim with nothing left is deleted.**
   - `/code-review` output item 5 now names the text to delete, not the lines, for prose that restates the code.
-  - The restating pointer now reads "what reading the code shows", and in the measured cells the reviewer more often recommended deleting true prose, including a note about what the code does not do.
+  - The restating pointer now reads "what reading the code shows".
+  - In the 2026-11-15 cells the reviewer recommended deleting a true docstring in 5 of 10 runs and a true limit note in 4 of 5 runs. The cause is not isolated, because the False bullet and the pointer changed together. See `docs/design-decisions/false-or-unsourced-claim-checks.md`.
   - The change is live on `git pull`.
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
