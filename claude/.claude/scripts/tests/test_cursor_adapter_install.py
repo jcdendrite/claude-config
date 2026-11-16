@@ -370,9 +370,7 @@ class TestInstallRoundTrip:
         assert result.status == 0, result.err
         assert world.hooks_path.read_bytes() == original
 
-    def test_an_original_hooks_file_with_no_hooks_member_is_restored_byte_identical_by_uninstall(
-        self, fast_world: World
-    ) -> None:
+    def test_an_original_hooks_file_with_no_hooks_member_is_restored_byte_identical_by_uninstall(self, fast_world: World) -> None:
         world = fast_world
         original = b'{"version": 1}\n'
         world.hooks_path.write_bytes(original)
@@ -1596,8 +1594,6 @@ class TestLogRotationAndSweep:
         assert (world.state_dir / "shim.log").read_bytes() == b"x" * 10
 
     def test_a_rotation_under_concurrent_appends_loses_no_line(self, world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-        import threading
-
         shim = world.adapter.load_shim()
         monkeypatch.setattr(world.adapter, "LOG_ROTATE_BYTES", 2000)
         world.state_dir.mkdir()
@@ -2372,6 +2368,7 @@ SHAPE_CASE_PAIRS = [
     if not (closed_only and shape in ("informational", "check-entry"))
 ]
 
+
 class TestStatusAndCanary:
     def _emitted(self, world: World):
         return world.adapter.generate_entries(python_path=sys.executable)
@@ -3141,9 +3138,7 @@ class TestFirstCallMark:
         assert self._log_regs(world) == ["check-hook-env"]
         assert load_shim().claim_first_call(str(world.state_dir), CONVERSATION_ID) is False
 
-    def test_the_shim_first_keeps_its_mark_and_the_entry_neither_replaces_it_nor_makes_a_second(
-        self, fast_world: World
-    ) -> None:
+    def test_the_shim_first_keeps_its_mark_and_the_entry_neither_replaces_it_nor_makes_a_second(self, fast_world: World) -> None:
         world = fast_world
         world.install()
         assert load_shim().claim_first_call(str(world.state_dir), CONVERSATION_ID) is True
@@ -4744,9 +4739,7 @@ class TestComparisonBesideAFailedGeneration:
 
 
 class TestStatusExitStatus:
-    def test_status_exits_1_without_a_record_or_with_an_unloadable_shim_and_0_with_findings(
-        self, fast_world: World
-    ) -> None:
+    def test_status_exits_1_without_a_record_or_with_an_unloadable_shim_and_0_with_findings(self, fast_world: World) -> None:
         world = fast_world
         assert world.run("status").status == 1
         world.install()
