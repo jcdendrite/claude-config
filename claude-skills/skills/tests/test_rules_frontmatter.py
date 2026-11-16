@@ -158,6 +158,7 @@ def rule_frontmatter_violations(
     """
     repo_root = _REPO_ROOT if repo_root is None else repo_root
     content = rule_file.read_text()
+    # A BOM-prefixed rule file fails this check although `parse_frontmatter` strips the BOM; no tracked file has one.
     if not content.startswith("---"):
         return [f"{rule_file} has no YAML frontmatter (must start with '---')"]
 

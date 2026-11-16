@@ -2781,6 +2781,44 @@ class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
 
         assert parse_frontmatter(skill_file) == {"name": "dash-run-skill", "description": "a"}
 
+    def test_a_bom_prefixed_block_parses_to_its_mapping(self, tmp_path):
+        """Claude Code's skill loader strips a leading U+FEFF before matching the delimiters."""
+        skill_file = _write_skill_md_fixture(
+            tmp_path,
+            "bom-skill",
+            "\ufeff---\nname: bom-skill\ndescription: Has a BOM.\n---\nbody\n",
+        )
+
+        assert parse_frontmatter(skill_file) == {"name": "bom-skill", "description": "Has a BOM."}
+
+    def test_validate_reports_one_violation_for_a_bom_prefixed_unclosed_block(self, tmp_path):
+        """``validate()`` runs its checks on a BOM-prefixed file, as the loader reads it."""
+        skill_file = _write_skill_md_fixture(tmp_path, "bom-unclosed-skill", "\ufeff" + _UNCLOSED_BLOCK_SKILL)
+
+        violations = validate(skill_file)
+
+        assert len(violations) == 1
+        assert violations[0].count(str(skill_file)) == 1
+        assert "no closing" in violations[0]
+
+    def test_only_one_leading_bom_is_stripped(self, tmp_path):
+        skill_file = _write_skill_md_fixture(
+            tmp_path,
+            "double-bom-skill",
+            "\ufeff\ufeff---\nname: double-bom-skill\ndescription: Has two BOMs.\n---\nbody\n",
+        )
+
+        assert parse_frontmatter(skill_file) == {}
+
+    def test_a_bom_inside_a_value_survives(self, tmp_path):
+        skill_file = _write_skill_md_fixture(
+            tmp_path,
+            "inner-bom-skill",
+            "---\nname: inner-bom-skill\ndescription: a\ufeffb\n---\nbody\n",
+        )
+
+        assert parse_frontmatter(skill_file) == {"name": "inner-bom-skill", "description": "a\ufeffb"}
+
     @pytest.mark.parametrize(
         ("skill_text", "message_token"),
         [

@@ -60,7 +60,7 @@ def parse_frontmatter(skill_file: Path) -> dict:
 
     Reads ``skill_file``, slices between the opening and closing ``---``
     delimiters, and returns the result of ``yaml.safe_load``.
-    Returns ``{}`` when the file does not begin with ``---``.
+    Returns ``{}`` when the file, once one leading U+FEFF (if any) is removed, does not begin with ``---``.
     Returns ``{}`` when YAML reads the block as null (empty, ``null`` or comment-only).
     Raises ``FrontmatterError`` when no ``---`` follows the opening one.
     Raises ``FrontmatterError`` when the block is any other non-mapping.
@@ -69,11 +69,15 @@ def parse_frontmatter(skill_file: Path) -> dict:
     PyYAML raises a bare ``ValueError`` for an impossible date such as ``2024-02-30``.
     ``validate()`` reports ``FrontmatterError`` and ``yaml.YAMLError`` as violations.
     """
+    # Claude Code's skill loader strips one leading U+FEFF before matching the delimiters.
+    # read_text() decodes a BOM as that one character only under a UTF-8 default encoding.
     content = skill_file.read_text()
+    if content.startswith("\ufeff"):
+        content = content[1:]
     if not content.startswith("---"):
         return {}
-    # Only the closer matches Claude Code's skill loader (first --- after the opener, even mid-line);
-    # the opener check above is looser than the loader's.
+    # The closer is the first --- after the opener, even mid-line, as in Claude Code's skill loader.
+    # The opener check above is looser than the loader's.
     closing = content.find("---", 3)
     if closing == -1:
         raise FrontmatterError("frontmatter has no closing --- line")
