@@ -29,6 +29,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A cancelled run, whether superseded or cancelled by hand, now reports `tests` as failed, not cancelled.
   - A newer push to `main` no longer cancels a `main` run that has started.
   - `claude/.claude/hooks/tests/test_ci_workflow_gates.py` replaces `test_ci_watch_workflow_parity.py`.
+- **`comment-discipline-reviewer`'s fix for a false claim is now the narrowest statement the subject supports, less what the restating-the-code check would delete, and a claim with nothing left is deleted.**
+  - `/code-review` output item 5 now names the text to delete, not the lines, for prose that restates the code.
+  - The restating pointer now reads "what reading the code shows", and in the measured cells the reviewer more often recommended deleting true prose, including a note about what the code does not do.
+  - The change is live on `git pull`.
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
   - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
