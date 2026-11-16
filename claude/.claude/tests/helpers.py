@@ -3156,6 +3156,97 @@ def write_prewarmed_stub(path: Path, script: str) -> Path:
     return path
 
 
+class UnwarmedStubError(AssertionError):
+    """A launch under the scaled timeout shim could exec an sh-family stub that write_prewarmed_stub did not write."""
+
+
+def _launch_path_entries(env, cwd) -> list[str]:
+    """The launch's PATH entries, with each relative or empty one joined to where the child resolves it.
+
+    Returns [] when the launch's environment has no PATH key.
+    """
+    if env is None:
+        path_value = os.environ.get("PATH")
+    else:
+        path_value = next((os.fsdecode(value) for key, value in env.items() if os.fsdecode(key) == "PATH"), None)
+    if path_value is None:
+        return []
+    relative_base = os.fsdecode(os.fspath(cwd)) if cwd is not None else os.curdir
+    return [entry if os.path.isabs(entry) else os.path.join(relative_base, entry) for entry in path_value.split(os.pathsep)]
+
+
+def _unwarmed_stub_paths(scanned_entry: str) -> list[str]:
+    """The sh-family executables directly in `scanned_entry` whose second line is not the prewarm guard line."""
+    try:
+        children = list(os.scandir(scanned_entry))
+    except OSError:
+        return []
+    guard_line = _PREWARM_GUARD_LINE.encode()
+    shebang_lines = {shebang.encode() for shebang in _PREWARM_SHEBANGS}
+    unwarmed: list[str] = []
+    for child in children:
+        try:
+            if child.is_symlink() or not child.is_file(follow_symlinks=False):
+                continue
+            if not child.stat(follow_symlinks=False).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+                continue
+            with open(child.path, "rb") as handle:
+                head = handle.read(_SHEBANG_READ_BYTE_LIMIT)
+        except OSError:
+            continue
+        first_line, _, remainder = head.partition(b"\n")
+        second_line = remainder.partition(b"\n")[0] if remainder else None
+        if first_line in shebang_lines and second_line != guard_line:
+            unwarmed.append(child.path)
+    return unwarmed
+
+
+def check_scaled_path_stubs_warm(env, cwd, basetemp: Path) -> None:
+    """Raise UnwarmedStubError when the launch's PATH reaches the scaled timeout shim
+    and an sh-family executable in a scanned entry lacks the prewarm guard line.
+
+    Symlinks, other shebangs and entries outside `basetemp` that hold no marker are not read,
+    because `write_prewarmed_stub` cannot write them or the run does not own them.
+    """
+    entries = _launch_path_entries(env, cwd)
+    marker_entries = dict.fromkeys(
+        entry for entry in entries if os.path.isdir(os.path.join(entry, _SCALED_TIMEOUT_MARKER_DIRNAME))
+    )
+    if not marker_entries:
+        return
+    owned_root = os.path.realpath(basetemp)
+    scanned_entries = [
+        entry for entry in entries if entry in marker_entries or Path(os.path.realpath(entry)).is_relative_to(owned_root)
+    ]
+    unwarmed_paths = [
+        stub_path for scanned_entry in dict.fromkeys(scanned_entries) for stub_path in _unwarmed_stub_paths(scanned_entry)
+    ]
+    if unwarmed_paths:
+        raise UnwarmedStubError(
+            f"This launch's PATH reaches the scaled timeout shim (marker directory in {', '.join(marker_entries)}), "
+            f"and these sh-family files lack the prewarm guard line: {', '.join(unwarmed_paths)}. "
+            "Write each with helpers.write_prewarmed_stub. "
+            "A file that cannot carry the guard line, because it copies a tracked file or a test reads its text back, "
+            "belongs in a directory that is not on this launch's PATH."
+        )
+
+
+def install_unwarmed_stub_guard(monkeypatch: pytest.MonkeyPatch, basetemp: Path) -> None:
+    """Wrap `subprocess.Popen.__init__` for the test so each launch runs `check_scaled_path_stubs_warm` before its child starts.
+
+    Every launch through `subprocess` or asyncio is checked, `shell=True` included.
+    `os.system`, `os.posix_spawn`, `os.exec*` and `pty` launches, and an `env` or `cwd` passed positionally, are not checked.
+    """
+    real_init = subprocess.Popen.__init__
+
+    @functools.wraps(real_init)
+    def guarded_init(self, *args, **kwargs):
+        check_scaled_path_stubs_warm(kwargs.get("env"), kwargs.get("cwd"), basetemp)
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
+
+
 def record_subprocess_runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
     """Wrap `subprocess.run` for the test and return the list it fills with each call's `(args, kwargs)`.
 
