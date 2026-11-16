@@ -203,7 +203,7 @@ Both counts take the pessimistic end of a variance range. Let `p` and `q` be a t
 
 The cap of 75 is a cost choice that leaves `psi` = 0.30 underpowered. There, the Harm outcome's power at 75 tasks is 0.694 at the pessimistic end if stripping costs 15 points.
 
-The reachability figures are approximate and give the chance, at zero effect, of the interval condition of Harm excluded. A true effect below zero, where the stripped arm is better, can raise that chance. The outcome's other conditions can only lower the chance of reaching it. Every Harm excluded sizing and reachability figure assumes every PR task the study runs is in the passable subset, defined under Analysis, and the lock cannot know how many run tasks no session passes.
+The Harm excluded bound (below) is approximate and gives the chance, at zero effect, of the interval condition of Harm excluded. A true effect below zero, where the stripped arm is better, can raise that chance. The outcome's other conditions can only lower the chance of reaching it. Every Harm excluded sizing and reachability figure assumes every PR task the study runs is in the passable subset, defined under Analysis, and the lock cannot know how many run tasks no session passes.
 
 **Feasibility pass.** The pass runs before any authoring session and reads no authoring outcome. Before the lock, no session under any model is given a trap's or a PR task's prompt. The trap checks use reference implementations and need no pilot. The study goes ahead only when its confinement verification passes and at least 10 trap tasks passed all their checks. Its stages are:
 
