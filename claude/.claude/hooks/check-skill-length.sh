@@ -136,6 +136,9 @@ limit_for() {
       echo 500 ;;
     claude-skills/skills/pr-description/SKILL.md)
       echo 250 ;;
+    # Hosts the review-orchestrator dispatch protocol, whose one home is this skill.
+    claude-skills/skills/subagent-delegation/SKILL.md)
+      echo 218 ;;
     *)
       echo 200 ;;
   esac

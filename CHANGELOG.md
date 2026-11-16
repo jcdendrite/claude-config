@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`check-skill-length.sh` gives `subagent-delegation/SKILL.md` a line cap of 218, above the 200-line default.** Splitting the skill's run-on `review-orchestrator` protocol lines into lists needed more lines than the default cap left, and the protocol could not move out of the skill. Other skills' caps are unchanged. The change is live on `git pull`.
 - **The `skill-management` structural validator now reports a frontmatter block with no closing `---` line, or one that is not a YAML mapping, as one violation line instead of exiting with a traceback.** Plugin bumped: `skill-management` 5.0.2 → 5.1.0.
   - A falsy non-mapping block such as `[]` used to pass and is now denied, hence the minor bump.
   - The corpus-budget warning skips a non-mapping file, which used to raise or count as a skill with no description.
