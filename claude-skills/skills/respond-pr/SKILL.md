@@ -61,7 +61,7 @@ Fetch all review comments on the current branch's open pull request and address 
    - The `file:line` of each site it changed.
    - Each site it examined and left unchanged, with the reason.
 
-   The parent keeps the commit (step 8) and every reply (step 7).
+   The parent keeps the commit (step 8) and every reply (step 7). Before step 8, it acts on the return's **Still uncertain** entries per `subagent-delegation/SKILL.md` § "Implementation work → `code-writer`".
 
    Then, for each unresolved comment:
    - Read the referenced file and line to understand the context

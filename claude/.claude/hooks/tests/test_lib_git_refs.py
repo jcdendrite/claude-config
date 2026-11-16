@@ -14,6 +14,7 @@ from helpers import (
     init_git_repo_with_commit,
     scaled_shim_sleep,
     set_origin_head,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -669,14 +670,14 @@ def test_head_tree_hash_capped_timeout_returns_absent_not_a_hang(tmp_path: Path)
     stub_dir.mkdir()
     write_scaled_timeout_shim(stub_dir)
     stub_git = stub_dir / "git"
-    stub_git.write_text(
+    write_prewarmed_stub(
+        stub_git,
         '#!/bin/bash\n'
         'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
         f'  sleep {scaled_shim_sleep(10)}\n'
         'fi\n'
-        f'exec {real_git} "$@"\n'
+        f'exec {real_git} "$@"\n',
     )
-    stub_git.chmod(0o755)
 
     with assert_cap_engaged(stub_dir, production_cap=5):
         result = subprocess.run(

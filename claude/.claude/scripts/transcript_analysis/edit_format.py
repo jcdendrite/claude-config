@@ -433,15 +433,11 @@ def _add_edit_format_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     scope._add_project_scope_args(p_edit_format)
-    p_edit_format.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root; --no-redact is refused once this puts more than one"
-            " root in scope."
-        ),
+    scope._add_extra_config_dirs_arg(
+        p_edit_format,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root; --no-redact is refused once this puts more than one"
+        " root in scope.",
     )
     p_edit_format.add_argument(
         "--no-redact", action="store_true",

@@ -22,6 +22,7 @@ from helpers import (
     run_hook_reason,
     scaled_shim_sleep,
     write_architect_consult_latch,
+    write_prewarmed_stub,
     write_reviewer_round_state,
     write_scaled_timeout_shim,
 )
@@ -298,14 +299,14 @@ class TestRequireArchitectConsult:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             "#!/bin/bash\n"
             'case "$*" in\n'
             f'  *subagent_type*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
-            "esac\n"
+            "esac\n",
         )
-        stub.chmod(0o755)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
             result = run_hook(

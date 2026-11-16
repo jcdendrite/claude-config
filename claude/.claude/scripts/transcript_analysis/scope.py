@@ -707,6 +707,18 @@ _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "pr-cost-export", "period-cost", "review-cost-by-size", "read-cost",
 )
 
+# Describes the --config-dir checks that _resolve_cost_roots enforces.
+_EXTRA_CONFIG_DIRS_HELP_PREAMBLE = (
+    "Additional Claude Code config directory to scan (repeatable). The default resolved"
+    " config dir is always scanned first. Each supplied directory must contain a projects/"
+    " subdirectory, or it is rejected."
+)
+
+
+def _add_extra_config_dirs_arg(parser: argparse.ArgumentParser, help_text: str) -> None:
+    """A subcommand calling this must also be in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
+    parser.add_argument("--config-dir", action="append", dest="extra_config_dirs", metavar="DIR", help=help_text)
+
 
 def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> list[Path]:
     """Assemble a subcommand's scan roots from the default config dir, every

@@ -378,8 +378,8 @@ def _add_pr_cost_export_subparser(subparsers: argparse._SubParsersAction) -> Non
             " captured into that session's own transcript."
         ),
     )
-    p_pr_cost_export.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help="Additional Claude Code config directory to scan (repeatable).",
+    scope._add_extra_config_dirs_arg(
+        p_pr_cost_export,
+        "Additional Claude Code config directory to scan (repeatable).",
     )
     p_pr_cost_export.set_defaults(func=cmd_pr_cost_export)

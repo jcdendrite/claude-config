@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import assert_cap_engaged, scaled_shim_sleep, write_scaled_timeout_shim
+from helpers import assert_cap_engaged, scaled_shim_sleep, write_prewarmed_stub, write_scaled_timeout_shim
 
 from ._branch_records_helpers import (
     REVIEW_FILES,
@@ -2785,17 +2785,16 @@ class TestFetchLoopCapInterruptsHungRemote:
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
-        stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub_dir / "git",
             '#!/bin/bash\n'
             'for arg in "$@"; do\n'
             '  case "$arg" in\n'
             f'    refs/pull/*/head) sleep {scaled_shim_sleep(30)}; break ;;\n'
             '  esac\n'
             'done\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         env = fake_gh({
             "feat/hung-fetch": {"number": 909, "mergedAt": "2026-06-01", "headRefOid": merged_head},

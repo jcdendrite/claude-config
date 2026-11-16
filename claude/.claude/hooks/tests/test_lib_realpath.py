@@ -13,6 +13,7 @@ from helpers import (
     _sourced_value,
     assert_cap_engaged,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -500,7 +501,8 @@ class TestLibRealpathM:
         # Scoped to the bare `-e PATH` shape and the exact ambiguous
         # component under test, so it doesn't also intercept every other
         # `test -e` call the walk makes at other path depths.
-        stub_test.write_text(
+        write_prewarmed_stub(
+            stub_test,
             "#!/bin/bash\n"
             f'if [ "$1" = "-e" ] && [ "$2" = "{ambiguous_dir}" ]; then\n'
             # Ignoring SIGTERM forces timeout(1) to escalate to `-k 2`'s SIGKILL.
@@ -509,9 +511,8 @@ class TestLibRealpathM:
             "  trap '' TERM\n"
             f"  sleep {scaled_shim_sleep(10)}\n"
             "fi\n"
-            f'exec {real_test} "$@"\n'
+            f'exec {real_test} "$@"\n',
         )
-        stub_test.chmod(0o755)
 
         target = ambiguous_dir / "does-not-exist-xyz123.txt"
         with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
@@ -553,7 +554,8 @@ class TestLibRealpathM:
         # Scoped to the bare `-L PATH` shape and the exact ambiguous
         # component, so the walk's earlier, legitimate `test -e`/`test -L`
         # calls on other path depths still run against the real binary.
-        stub_test.write_text(
+        write_prewarmed_stub(
+            stub_test,
             "#!/bin/bash\n"
             f'if [ "$1" = "-L" ] && [ "$2" = "{ambiguous_symlink}" ]; then\n'
             # Ignoring SIGTERM forces timeout(1) to escalate to `-k 2`'s SIGKILL.
@@ -562,9 +564,8 @@ class TestLibRealpathM:
             "  trap '' TERM\n"
             f"  sleep {scaled_shim_sleep(10)}\n"
             "fi\n"
-            f'exec {real_test} "$@"\n'
+            f'exec {real_test} "$@"\n',
         )
-        stub_test.chmod(0o755)
 
         target = ambiguous_symlink / "leaf.txt"
         with assert_cap_engaged(shim_dir, production_cap=5, command="test"):

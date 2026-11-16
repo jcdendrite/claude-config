@@ -692,15 +692,11 @@ def _add_subagent_mix_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_mix.add_argument("--branches", metavar="B1,B2,...")
     scope._add_project_scope_args(p_mix)
-    p_mix.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --per-session."
-            " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
-            " one root is in scope."
-        ),
+    scope._add_extra_config_dirs_arg(
+        p_mix,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Refused together with --per-session."
+        " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
+        " one root is in scope.",
     )
     p_mix.add_argument(
         "--since", metavar="Nd",
