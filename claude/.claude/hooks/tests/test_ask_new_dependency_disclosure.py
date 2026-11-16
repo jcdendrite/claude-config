@@ -13,16 +13,13 @@ Three tiers, mirroring test_parse_git_command.py:
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
 import io
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -504,10 +501,6 @@ class TestComputeNewDependencyNamesGemfile:
         assert compute_new_dependency_names(pre, tool_input).records == ["pg@"]
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="tomllib is 3.11+ stdlib; skips cleanly on a sub-floor .venv instead of a bare ModuleNotFoundError",
-)
 class TestComputeNewDependencyNamesCargoToml:
     def test_dependencies_table_addition_reported(self):
         pre = '[dependencies]\nserde = "1.0"\n'
@@ -568,10 +561,6 @@ class TestComputeNewDependencyNamesCargoToml:
         assert compute_new_dependency_names(pre, tool_input).records == ["serde@1.0"]
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="tomllib is 3.11+ stdlib; skips cleanly on a sub-floor .venv instead of a bare ModuleNotFoundError",
-)
 class TestComputeNewDependencyNamesPyprojectToml:
     def test_project_dependencies_addition_reported(self):
         pre = '[project]\ndependencies = ["requests>=2.30.0"]\n'
@@ -679,42 +668,6 @@ class TestBashPythonRecognizedManifestSetParity:
         assert bash_basenames, "extraction found no bash-side basenames -- regex likely broken"
         assert python_basenames, "extraction found no python-side basenames -- regex likely broken"
         assert bash_basenames == python_basenames
-
-
-class TestParseManifestDependenciesPythonFloor:
-    def test_source_parses_under_python_3_11_syntax(self):
-        """ruff's target-version=py312 governs lint style repo-wide, not
-        this file's actual runtime floor (Python >= 3.11, per its module
-        docstring). A 3.12-only construct would lint clean and only fail on
-        a stow user's 3.11 interpreter, silently, since the hook fails open
-        on any helper error — this closes that gap mechanically."""
-        source = PARSER_PATH.read_text()
-        ast.parse(source, feature_version=(3, 11))  # raises SyntaxError on a 3.12-only construct
-
-    def test_tomllib_import_stays_deferred_not_top_level(self):
-        """`import tomllib` must sit inside _parse_toml_manifest, not at
-        module top, or a sub-floor interpreter can't load this module at
-        all -- silently killing package.json/go.mod coverage too, not just
-        TOML. Blocks tomllib via sys.modules so `import tomllib` raises
-        regardless of the interpreter actually running this test, then
-        reloads the module: a hoisted import would fail here before
-        compute_new_dependency_names is even reachable."""
-        blocked = sys.modules.pop("tomllib", None)
-        sys.modules["tomllib"] = None  # forces ImportError on any `import tomllib`
-        try:
-            spec = importlib.util.spec_from_file_location("parse_manifest_dependencies_tomllib_blocked", PARSER_PATH)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)  # must succeed -- tomllib isn't imported at module top
-
-            pre = '{"dependencies": {"lodash": "^4.0.0"}}'
-            post = '{"dependencies": {"lodash": "^4.0.0", "express": "^4.18.0"}}'
-            tool_input = _write_tool_input(post, file_path="/repo/package.json")
-            delta = module.compute_new_dependency_names(pre, tool_input)
-            assert delta.records == ["express@^4.18.0"]
-        finally:
-            del sys.modules["tomllib"]
-            if blocked is not None:
-                sys.modules["tomllib"] = blocked
 
 
 # ==========================================================================
@@ -936,41 +889,6 @@ def _manifest_file(tmp_path: Path, content: str, name: str = "package.json") -> 
     return manifest
 
 
-def _python3_version_floor_shim(shim_dir: Path, *, meets_floor: bool) -> str:
-    """Build a PATH string whose `python3` intercepts only step 6's floor
-    probe (a `-c` call whose code mentions `version_info`), exiting
-    according to `meets_floor`, and delegates every other invocation --
-    including `-c ''` and the actual helper spawn in step 7 -- to the real
-    interpreter via `exec`. This is what makes the meets_floor=True case a
-    genuine ordinary-ask pairing rather than a no-op stub: the real helper
-    still runs and still needs to see real dependency data."""
-    real_python3 = shutil.which("python3")
-    assert real_python3, "python3 must be on PATH to build a usable shim"
-    shim = shim_dir / "python3"
-    version_exit = "0" if meets_floor else "1"
-    shim.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "-c" ]; then\n'
-        '  case "$2" in\n'
-        f'    *version_info*) exit {version_exit} ;;\n'
-        "  esac\n"
-        "fi\n"
-        f'exec "{real_python3}" "$@"\n'
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    return f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-
-
-def _extract_version_check_argument() -> str:
-    """Pull the literal `-c` argument of the version-floor probe out of the
-    hook's actual source (not a hand-retyped copy), so a test that runs it
-    proves the real comparison, not a stand-in string."""
-    source = DISCLOSURE_HOOK.read_text()
-    match = re.search(r"python3 -c '(import sys; sys\.exit\([^']*)'", source)
-    assert match, f"version-check -c argument not found in {DISCLOSURE_HOOK}"
-    return match.group(1)
-
-
 class TestHookFilterSteps:
     # ---- Step 1: tool_name ------------------------------------------------
 
@@ -1174,6 +1092,19 @@ class TestHookRecognizesNewManifestFormats:
         assert reason is not None
         assert "flask@==2.0.0" in reason
 
+    def test_requirements_txt_edit_carrying_content_and_no_old_or_new_string_asks_as_the_write_does(
+        self, isolated_home, tmp_path
+    ):
+        """The Cursor adapter's shim translates an overwrite Write to an Edit whose tool_input holds file_path and
+        content alone, because Cursor sends no old or new text. The helper reads a `content` key as a Write."""
+        manifest = _manifest_file(tmp_path, "requests==2.30.0\n", name="requirements.txt")
+        tool_input = {"file_path": str(manifest), "content": "requests==2.30.0\nflask==2.0.0\n"}
+        write_reason = run_hook_reason(DISCLOSURE_HOOK, {"tool_name": "Write", "tool_input": tool_input}, home=isolated_home)
+        edit_reason = run_hook_reason(DISCLOSURE_HOOK, {"tool_name": "Edit", "tool_input": tool_input}, home=isolated_home)
+        assert edit_reason is not None
+        assert "flask@==2.0.0" in edit_reason
+        assert edit_reason == write_reason
+
     def test_requirements_dev_txt_glob_match_asks(self, isolated_home, tmp_path):
         manifest = _manifest_file(tmp_path, "", name="requirements-dev.txt")
         payload = write_input(str(manifest), content="pytest==8.0.0\n")
@@ -1373,52 +1304,25 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
         assert "dependency delta could not be determined" in reason
         assert "@" not in reason
 
-    def test_below_floor_interpreter_degraded_ask_not_silent_allow(self, isolated_home, tmp_path):
-        """A present, usable python3 below the repo's Python >= 3.11 floor
-        is a broken install, not the absent/unusable-interpreter cases in
-        TestHookFilterSteps that silently allow — it must degrade to ask."""
+    def test_python3_that_passes_the_probe_but_cannot_run_the_helper_degrades_to_ask(self, isolated_home, tmp_path):
+        """Step 6 accepts any python3 whose `-c ''` exits 0, so a python3 that then fails the helper
+        spawn must degrade at step 7 rather than allow silently."""
         shim_dir = tmp_path / "shim"
         shim_dir.mkdir()
-        below_floor_path = _python3_version_floor_shim(shim_dir, meets_floor=False)
+        shim = shim_dir / "python3"
+        shim.write_text("#!/bin/sh\n" 'if [ "$1" = "-c" ] && [ -z "$2" ]; then exit 0; fi\n' "exit 1\n")
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
-        payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
-        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": below_floor_path})
+        payload = edit_input(
+            str(manifest),
+            old_string='{"dependencies":{}}',
+            new_string='{"dependencies":{"lodash":"^4.0.0"}}',
+        )
+        shimmed_path = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": shimmed_path})
         assert reason is not None
         assert "dependency delta could not be determined" in reason
-
-    def test_at_floor_interpreter_gets_the_ordinary_ask(self, isolated_home, tmp_path):
-        """Same shim shape as above but reporting a floor-meeting version,
-        proving the ordinary ask path still reaches the real helper through
-        a stubbed interpreter."""
-        shim_dir = tmp_path / "shim"
-        shim_dir.mkdir()
-        at_floor_path = _python3_version_floor_shim(shim_dir, meets_floor=True)
-        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
-        payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
-        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": at_floor_path})
-        assert reason is not None
-        assert "lodash@^4.0.0" in reason
-        assert "dependency delta could not be determined" not in reason
-
-
-class TestVersionCheckArgumentRealBoundary:
-    """The shim-based tests above key on `version_info` appearing in the
-    command text rather than evaluating it -- these tests run the literal
-    extracted `-c` argument with `sys.version_info` patched, so a weakened
-    floor tuple fails here even when it passes every shim-based test
-    above."""
-
-    def test_below_floor_boundary_fails(self):
-        argument = _extract_version_check_argument()
-        patched = f"import sys; sys.version_info = (3, 10, 9, 'final', 0)\n{argument}"
-        result = subprocess.run([sys.executable, "-c", patched], capture_output=True, check=False)
-        assert result.returncode != 0
-
-    def test_at_floor_boundary_passes(self):
-        argument = _extract_version_check_argument()
-        patched = f"import sys; sys.version_info = (3, 11, 0, 'final', 0)\n{argument}"
-        result = subprocess.run([sys.executable, "-c", patched], capture_output=True, check=False)
-        assert result.returncode == 0
+        assert "@" not in reason
 
 
 class TestHookEnvelopeIntegrity:
@@ -1501,9 +1405,8 @@ class TestHookEnvelopeIntegrity:
 
 class TestHookSubagentBehavior:
     def test_code_writer_subagent_gets_an_identical_ask(self, isolated_home, tmp_path):
-        """Resolves the assumption ledger's [unverified] subagent row for
-        the hook's own behavior — whether the hook fires identically for a
-        code-writer subagent's tool calls as for the top-level session.
+        """Pins the hook's own behavior: whether the hook fires identically
+        for a code-writer subagent's tool calls as for the top-level session.
         Whether the ask actually RENDERS to the human for a subagent stays
         Anthropic's contract, not something this hook controls."""
         manifest = _manifest_file(tmp_path, '{"dependencies":{}}')

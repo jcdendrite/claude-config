@@ -360,10 +360,10 @@ class TestRootsThreadingSpy:
 
     def test_skill_invocation_glob_scope_receives_the_multi_root_list_as_is(self, tmp_path, monkeypatch):
         """cmd_skill_invocation never calls _resolve_project_scope — its two
-        call sites (:2146, :2148 in the plan's line numbering) route through
-        _iter_glob_scoped_sessions/_iter_scoped_sessions directly. Above one
-        root, the --projects branch takes the _iter_glob_scoped_sessions path
-        with the full roots list (not iter_sessions' single-Path shape)."""
+        call sites route through _iter_glob_scoped_sessions/_iter_scoped_sessions
+        directly. Above one root, the --projects branch takes the
+        _iter_glob_scoped_sessions path with the full roots list (not
+        iter_sessions' single-Path shape)."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list] = []
         real_glob_scoped = scope._iter_glob_scoped_sessions
@@ -407,10 +407,10 @@ class TestRootsThreadingSpy:
         assert calls[-1] == expected_roots
 
     def test_single_root_skill_invocation_glob_call_passes_a_bare_path_not_a_list(self, fake_projects, monkeypatch):
-        """At one root, cmd_skill_invocation's --projects branch keeps calling
-        iter_sessions(roots[0], ...) directly (a single Path, not a list) —
-        iter_sessions' documented flat-sort-over-full-paths ordering guarantee
-        is unaffected by this plan at single root."""
+        """At one root, cmd_skill_invocation's --projects branch calls
+        iter_sessions(roots[0], ...) directly (a single Path, not a list), so
+        iter_sessions' documented flat-sort-over-full-paths ordering governs a
+        single-root run."""
         calls: list[Path] = []
         real_iter_sessions = corpus.iter_sessions
 

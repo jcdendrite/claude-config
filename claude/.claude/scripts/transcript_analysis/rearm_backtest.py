@@ -556,3 +556,50 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             "Re-arms tolerated at voluntary compliance: no voluntary session(s) with ignored="
             f" present ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
         )
+
+
+def _add_rearm_backtest_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_rearm_backtest = subparsers.add_parser(
+        "rearm-backtest",
+        help=(
+            "Backtest candidate re-arm band spacings for the handoff nudge's one-shot fire"
+            " against the recorded corpus: predicted total $ and C_bar per spacing, under both"
+            " perfect-compliance and compliance-realistic operator-response models."
+            " Redacted by default."
+        ),
+    )
+    scope._add_project_scope_args(p_rearm_backtest)
+    p_rearm_backtest.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
+        ),
+    )
+    p_rearm_backtest.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to sessions with a first timestamp in the last N days (e.g. 35d); whole-session scope.",
+    )
+    p_rearm_backtest.add_argument(
+        "--branches", metavar="B1,B2,...",
+        help="Whole-session branch filter: a session with no matching main-thread turn is excluded (default: all).",
+    )
+    p_rearm_backtest.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names or session IDs), so"
+            " --no-redact has no effect on most of its content, but at single-root scope it"
+            " prints the literal .handoff-nudge.log path (instead of an account-N label) in the"
+            " per-root log-size line. It still prints the DO NOT PUBLISH banner and enforces the"
+            " same multi-root refusal as cost, for CLI parity. Refused when --config-dir puts"
+            " more than one root in scope."
+        ),
+    )
+    p_rearm_backtest.add_argument(
+        "--spacings", metavar="N1,N2,...", default="40000,80000,120000",
+        help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: 40000,80000,120000).",
+    )
+    p_rearm_backtest.set_defaults(func=cmd_rearm_backtest)

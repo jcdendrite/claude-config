@@ -1,0 +1,15 @@
+{
+  "tools": {
+    "Shell": {"claude": "Bash", "translation": "shell"},
+    "Read": {"claude": "Read", "translation": "read"},
+    "Grep": {"claude": "Grep", "translation": "grep"},
+    "Write": {"claude": "Write", "translation": "write"},
+    "Delete": {"claude": "Bash", "translation": "delete"},
+    "Task": {"claude": "Agent", "claude_aliases": ["Task"], "translation": "task"},
+    "WebFetch": {"claude": "WebFetch", "translation": "passthrough"},
+    "WebSearch": {"claude": "WebSearch", "translation": "passthrough"}
+  },
+  "prefix_classes": [
+    {"prefix": "MCP:", "translation": "passthrough"}
+  ]
+}

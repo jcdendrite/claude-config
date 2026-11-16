@@ -1213,6 +1213,72 @@ class TestIsolatedGitEnvironmentDisablesSystemFiles:
         assert local_git.isolated_git_environment()[variable] == "1"
 
 
+class TestSharedGitTimeoutDefault:
+    """The `timeout_s` parameters default to the bound every review-bench caller already runs under."""
+
+    @staticmethod
+    def _timeouts_of(monkeypatch: pytest.MonkeyPatch, call) -> set[float | None]:
+        timeouts: list[float | None] = []
+        real_run = subprocess.run
+
+        def spy(*args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return real_run(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(subprocess, "run", spy)
+            call()
+        assert timeouts
+        return set(timeouts)
+
+    def test_run_git_extract_commit_tree_and_commit_snapshot_keep_the_review_bench_bound_without_a_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "src/app.py", "x = 0\n")
+        commit = _commit(source_repo, "base")
+        extracted = tmp_path / "extracted"
+        extracted.mkdir()
+        _git(extracted, "init", "-q")
+
+        run_git_timeouts = self._timeouts_of(
+            monkeypatch, lambda: fixture_repo._run_git(["--version"], cwd=tmp_path),
+        )
+        extract_timeouts = self._timeouts_of(
+            monkeypatch, lambda: fixture_repo._extract_commit_tree(source_repo, commit, extracted),
+        )
+        snapshot_timeouts = self._timeouts_of(
+            monkeypatch, lambda: fixture_repo._commit_snapshot(extracted, "snapshot"),
+        )
+
+        assert run_git_timeouts == extract_timeouts == snapshot_timeouts == {fixture_repo._LOCAL_GIT_TIMEOUT_S}
+
+
+class TestBuildSingleCommitRepo:
+    def test_a_commit_that_is_not_a_full_sha_is_refused_before_any_git_call(self, tmp_path: Path) -> None:
+        dest_dir = tmp_path / "dest"
+        dest_dir.mkdir()
+
+        with pytest.raises(ValueError, match="40-hex"):
+            fixture_repo.build_single_commit_repo(tmp_path, "HEAD", dest_dir, prune=lambda _dir: None, timeout_s=1.0)
+
+        assert list(dest_dir.iterdir()) == []
+
+    def test_the_prune_runs_after_extraction_and_before_the_commit(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "src/app.py", "x = 0\n")
+        commit = _commit(source_repo, "base")
+        dest_dir = tmp_path / "dest"
+        dest_dir.mkdir()
+
+        fixture_repo.build_single_commit_repo(
+            source_repo, commit, dest_dir, prune=lambda directory: (directory / "src" / "app.py").unlink(), timeout_s=30.0,
+        )
+
+        assert _git(dest_dir, "ls-tree", "-r", "--name-only", "HEAD") == ""
+        assert _git(dest_dir, "log", "--format=%s").split() == [fixture_repo._FIXTURE_BASE_COMMIT_MESSAGE]
+
+
 class TestRenderArmAgent:
     def test_current_rule_arm_differs_from_production_only_in_name_model_and_tools(self, tmp_path: Path) -> None:
         agents_dir = tmp_path / "agents"

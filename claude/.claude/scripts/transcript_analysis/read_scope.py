@@ -590,3 +590,38 @@ def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_
                 f"targeted={render._pct_of(a_targeted, a_read_total):>6}  "
                 f"whole_file={render._pct_of(a_whole_file, a_read_total):>6}"
             )
+
+
+def _add_read_scope_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_read_scope = subparsers.add_parser(
+        "read-scope",
+        help=(
+            "Read-call scope census: offset/limit/pages classification against the full call"
+            " count, result-token distribution by targeted/whole-file cohort and main/subagent"
+            " scope, repeat-whole-file-read aggregates, and prompt-token growth."
+            " Aggregate-only output; redacted by default."
+        ),
+    )
+    scope._add_project_scope_args(p_read_scope)
+    p_read_scope.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
+        ),
+    )
+    p_read_scope.add_argument(
+        "--since", metavar="Nd",
+        help="Limit the prompt-token growth figure to deltas whose owning turn falls in the last N days (e.g. 35d).",
+    )
+    p_read_scope.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names, session IDs, or file"
+            " paths), so --no-redact has no effect on its content, but it still prints the"
+            " DO NOT PUBLISH banner and enforces the same multi-root refusal as cost, for CLI"
+            " parity. Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_read_scope.set_defaults(func=cmd_read_scope)

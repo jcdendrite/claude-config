@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import types
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -2466,6 +2466,272 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
         # when cost-counts loads subagent transcripts.
         assert sum(spawn_counts.get("staff-sdet", 0) for spawn_counts in spawn_counts_seen_by_command) == 1
         self._assert_prefix_absent(captured.out, captured.err)
+
+
+def _class_tokens(
+    *, input: int = 0, output: int = 0, cache_read: int = 0, cache_write_1h: int = 0, cache_write_5m: int = 0,
+) -> dict[str, int]:
+    return {
+        "input": input, "output": output, "cache_read": cache_read,
+        "cache_write_1h": cache_write_1h, "cache_write_5m": cache_write_5m,
+    }
+
+
+_UNPRICED_MODEL = "claude-unpriced-test-model"
+
+
+class TestPriceDispatchTokenSink:
+    def _write_dispatch_tree(self, fake_projects: Path) -> Path:
+        session_jsonl = fake_projects / "sess-1.jsonl"
+        _write_jsonl(session_jsonl, [])
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [
+            _priced(
+                "claude-sonnet-5", input=1000, output=10, cache_read=5, ephemeral_1h=7, ephemeral_5m=3,
+                # The repeated n1 spawn guards that `visited` makes the second spawn a no-op.
+                content=[_agent_use("n1", "staff-sdet"), _agent_use("n1", "staff-sdet"), _agent_use("ghost", "staff-sdet")],
+            ),
+            _priced(_UNPRICED_MODEL, input=40, output=2),
+            _priced(pricing._SYNTHETIC_MODEL_ID, input=9),
+        ])
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-n", "n1", [
+            _priced("claude-sonnet-5", input=100, output=1, speed="fast", inference_geo="us"),
+            _priced("claude-sonnet-5", input=200, output=4),
+        ], spawn_depth=2)
+        return session_jsonl
+
+    def test_records_each_turns_class_tokens_under_model_and_variant_recursion_included(self, fake_projects):
+        session_jsonl = self._write_dispatch_tree(fake_projects)
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(session_jsonl)
+        token_sink: dict = {}
+
+        review_rounds._price_dispatch(
+            "a1", dispatch_index, set(), review_rounds._DispatchTally(tokens={}), token_sink=token_sink,
+        )
+
+        assert token_sink == {
+            "claude-sonnet-5": {
+                "standard": _class_tokens(input=1200, output=14, cache_read=5, cache_write_1h=7, cache_write_5m=3),
+                "fast_us_geo": _class_tokens(input=100, output=1),
+            },
+            _UNPRICED_MODEL: {"standard": _class_tokens(input=40, output=2)},
+        }
+
+    def test_tally_equals_the_call_without_a_sink(self, fake_projects):
+        session_jsonl = self._write_dispatch_tree(fake_projects)
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(session_jsonl)
+        without_sink = review_rounds._DispatchTally(tokens={})
+        with_sink = review_rounds._DispatchTally(tokens={})
+
+        review_rounds._price_dispatch("a1", dispatch_index, set(), without_sink)
+        review_rounds._price_dispatch("a1", dispatch_index, set(), with_sink, token_sink={})
+
+        assert with_sink == without_sink
+        # unpriced_turns: the unpriced-model turn and the `<synthetic>` turn, which the token sink drops.
+        # dangling: the `ghost` spawn.
+        # resolved: `a1` and `n1`.
+        assert (with_sink.unpriced_turns, with_sink.dangling, with_sink.resolved) == (2, 1, 2)
+
+    @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])
+    def test_a_malformed_usage_turn_adds_no_tokens_is_counted_invalid_and_leaves_the_tally_unchanged(
+        self, fake_projects, malformed_input_tokens,
+    ):
+        session_jsonl = fake_projects / "sess-1.jsonl"
+        _write_jsonl(session_jsonl, [])
+        malformed_turn = _malformed_usage_turn(
+            {"input_tokens": malformed_input_tokens}, ts="2026-08-01T10:01:00.000Z", branch="main",
+        )
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [
+            _priced("claude-sonnet-5", input=1000, output=10),
+            malformed_turn,
+        ])
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(session_jsonl)
+        without_sink = review_rounds._DispatchTally(tokens={})
+        with_sink = review_rounds._DispatchTally(tokens={})
+        token_sink: dict = {}
+
+        review_rounds._price_dispatch("a1", dispatch_index, set(), without_sink)
+        review_rounds._price_dispatch("a1", dispatch_index, set(), with_sink, token_sink=token_sink)
+
+        assert token_sink == {"claude-sonnet-5": {"standard": _class_tokens(input=1000, output=10)}}
+        assert with_sink.invalid_usage_records == 1
+        assert with_sink == without_sink
+
+    def test_dangling_dispatch_adds_nothing(self, fake_projects):
+        session_jsonl = self._write_dispatch_tree(fake_projects)
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(session_jsonl)
+        token_sink: dict = {}
+
+        review_rounds._price_dispatch(
+            "ghost", dispatch_index, set(), review_rounds._DispatchTally(tokens={}), token_sink=token_sink,
+        )
+
+        assert token_sink == {}
+
+
+class TestRecordTurnTokens:
+    def test_a_non_string_model_and_an_empty_model_sum_under_the_empty_model(self):
+        token_sink: dict = {}
+        model_field_values = [{"unhashable": "model"}, ""]
+        for model_field_value in model_field_values:
+            turn = _priced("claude-sonnet-5", input=5, output=1)
+            turn["message"]["model"] = model_field_value
+            review_rounds._record_turn_tokens(token_sink, review_rounds._turn_model(turn), turn["message"]["usage"])
+
+        assert token_sink == {"": {"standard": _class_tokens(input=10, output=2)}}
+
+
+class TestPriceSessionRoundsTokens:
+    def _priced_session(self, fake_projects: Path):
+        session_jsonl = fake_projects / "sess-1.jsonl"
+        records = [
+            _priced(
+                "claude-sonnet-5", input=1000, ephemeral_1h=2000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _priced(
+                "claude-sonnet-5", input=50, speed="fast", inference_geo="us", branch="feat",
+                ts="2026-08-01T10:00:30.000Z",
+            ),
+            _priced(_UNPRICED_MODEL, input=7, branch="feat", ts="2026-08-01T10:00:40.000Z"),
+            _priced(pricing._SYNTHETIC_MODEL_ID, input=9, branch="feat", ts="2026-08-01T10:00:50.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        _write_jsonl(session_jsonl, records)
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [
+            _priced("claude-sonnet-5", input=300, content=[_agent_use("n1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-n", "n1", [
+            _priced("claude-sonnet-5", output=11),
+        ], spawn_depth=2)
+        windows = review_rounds.detect_round_windows(records)
+        record_branches = review_rounds._session_record_branches(records, windows)
+        return session_jsonl, records, windows, record_branches
+
+    def test_collect_tokens_gives_each_round_its_hand_computed_token_map(self, fake_projects):
+        session_jsonl, records, windows, record_branches = self._priced_session(fake_projects)
+
+        entries = review_rounds._price_session_rounds(
+            session_jsonl, records, windows, record_branches, None, defaultdict(float), collect_tokens=True,
+        )
+
+        assert len(entries) == 1
+        assert entries[0]["tokens"] == {
+            "claude-sonnet-5": {
+                "standard": _class_tokens(input=1300, output=11, cache_write_1h=2000),
+                "fast_us_geo": _class_tokens(input=50),
+            },
+            _UNPRICED_MODEL: {"standard": _class_tokens(input=7)},
+        }
+
+    def test_entries_carry_window_bounds_and_no_tokens_key_by_default(self, fake_projects):
+        session_jsonl, records, windows, record_branches = self._priced_session(fake_projects)
+
+        entries = review_rounds._price_session_rounds(session_jsonl, records, windows, record_branches, None, defaultdict(float))
+
+        assert [(entry["open_idx"], entry["window_end"]) for entry in entries] == [(0, 4)]
+        assert "tokens" not in entries[0]
+
+    def _collect_one_round_tokens(self, fake_projects: Path, *, main_turn: dict, dispatch_turn: dict) -> dict:
+        session_jsonl = fake_projects / "sess-1.jsonl"
+        records = [
+            _priced(
+                "claude-sonnet-5", input=1000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            main_turn,
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        _write_jsonl(session_jsonl, records)
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [dispatch_turn])
+        windows = review_rounds.detect_round_windows(records)
+        record_branches = review_rounds._session_record_branches(records, windows)
+
+        entries = review_rounds._price_session_rounds(
+            session_jsonl, records, windows, record_branches, None, defaultdict(float), collect_tokens=True,
+        )
+
+        assert len(entries) == 1
+        return entries[0]
+
+    @pytest.mark.parametrize("non_string_model", [["claude-sonnet-5"], None], ids=["list", "none"])
+    def test_a_non_string_model_on_a_main_thread_turn_sums_under_the_empty_model(self, fake_projects, non_string_model):
+        main_turn = _priced("claude-sonnet-5", input=40, output=2, branch="feat", ts="2026-08-01T10:00:30.000Z")
+        main_turn["message"]["model"] = non_string_model
+
+        entry = self._collect_one_round_tokens(
+            fake_projects, main_turn=main_turn, dispatch_turn=_priced("claude-sonnet-5", input=300),
+        )
+
+        assert entry["tokens"] == {
+            "claude-sonnet-5": {"standard": _class_tokens(input=1300)},
+            "": {"standard": _class_tokens(input=40, output=2)},
+        }
+
+    @pytest.mark.parametrize("non_string_model", [["claude-sonnet-5"], None], ids=["list", "none"])
+    def test_a_non_string_model_on_a_dispatch_turn_sums_under_the_empty_model(self, fake_projects, non_string_model):
+        dispatch_turn = _priced("claude-sonnet-5", input=300, output=3)
+        dispatch_turn["message"]["model"] = non_string_model
+
+        entry = self._collect_one_round_tokens(
+            fake_projects,
+            main_turn=_priced("claude-sonnet-5", input=40, branch="feat", ts="2026-08-01T10:00:30.000Z"),
+            dispatch_turn=dispatch_turn,
+        )
+
+        assert entry["tokens"] == {
+            "claude-sonnet-5": {"standard": _class_tokens(input=1040)},
+            "": {"standard": _class_tokens(input=300, output=3)},
+        }
+
+    @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])
+    def test_a_malformed_usage_main_thread_turn_adds_no_tokens_and_is_counted_invalid(
+        self, fake_projects, malformed_input_tokens,
+    ):
+        malformed_turn = _malformed_usage_turn(
+            {"input_tokens": malformed_input_tokens}, ts="2026-08-01T10:00:30.000Z",
+        )
+
+        entry = self._collect_one_round_tokens(
+            fake_projects, main_turn=malformed_turn, dispatch_turn=_priced("claude-sonnet-5", input=300),
+        )
+
+        assert entry["tokens"] == {"claude-sonnet-5": {"standard": _class_tokens(input=1300)}}
+        assert entry["invalid_usage_records"] == 1
+
+
+class TestComputeReviewRoundCostsRoundKeys:
+    def test_round_dicts_keep_their_current_keys(self, fake_projects):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+        ])
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert [set(round_dict) for round_dict in data["rounds"]] == [{
+            "branch_key", "skill", "ts", "main_dollars", "agent_dollars", "agents", "unpriced_turns", "dangling",
+            "main_tokens", "agent_tokens", "unpriced_tokens", "invalid_usage_records", "sort_key",
+        }]
+
+
+class TestResamplePercentileLevel:
+    def test_default_level_resolves_ci_level_when_the_call_runs(self, monkeypatch):
+        sample = [float(i) for i in range(101)]
+        monkeypatch.setattr(review_rounds, "_CI_LEVEL", 0.90)
+
+        assert review_rounds._resample_percentile(sample) == review_rounds._resample_percentile(sample, level=0.90)
+
+    def test_explicit_level_reads_the_tail_indices_of_that_level(self):
+        """B=101 puts 0.05 * 100 and 0.95 * 100 on whole numbers, clear of a .5 tie, since
+        (1 - 0.90) / 2 is not exactly 0.05 in floating point."""
+        sample = [float(i) for i in range(101)]
+
+        assert review_rounds._resample_percentile(sample, level=0.90) == (
+            sample[round(0.05 * 100)], sample[round(0.95 * 100)],
+        )
+        assert review_rounds._resample_percentile(sample, level=0.90) == (5.0, 95.0)
 
 
 class TestCmdReviewRoundCost:

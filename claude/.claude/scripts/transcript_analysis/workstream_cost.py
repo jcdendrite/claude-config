@@ -104,3 +104,23 @@ def cmd_workstream_cost(args: argparse.Namespace) -> None:
         print("  (none)")
     for age_days in no_match_ages_days:
         print(f"  {age_days:.1f}")
+
+
+def _add_workstream_cost_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_workstream_cost = subparsers.add_parser(
+        "workstream-cost",
+        help=(
+            "Per-branch session count and continuation startup-burn dollars -- a handoff-overhead"
+            " approximation from session/branch shape alone, no gh calls by default. --check-pr-status"
+            " additionally lists every zero-PR-match branch's last-activity age. Corpus-wide."
+        ),
+    )
+    scope._add_project_scope_args(p_workstream_cost)
+    p_workstream_cost.add_argument(
+        "--check-pr-status", action="store_true",
+        help=(
+            "Also classify every branch by merged/closed-unmerged/no-PR-match via gh, pinned to this"
+            " invocation's own repo identity like pr-cost. Requires gh."
+        ),
+    )
+    p_workstream_cost.set_defaults(func=cmd_workstream_cost)

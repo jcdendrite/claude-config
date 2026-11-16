@@ -474,8 +474,8 @@ def _install_audit_script_that_runs(home: Path, script_body: str) -> None:
     target.write_text(script_body)
 
 
-def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
-    """Write $HOME/.claude/sessions/<pid> in the two-line format
+def _seed_session(home: Path, session_id: str, pid: int | None = None, *, config_dir: Path | None = None) -> None:
+    """Write $HOME/.claude/sessions/<pid> (or <config_dir>/sessions/<pid>) in the two-line format
     capture-session-id.sh writes -- every review-pr script under test here
     resolves its own session id (and, for the provenance-writing scripts,
     its own Claude PID) by walking process ancestors via
@@ -488,7 +488,7 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     reaches the pytest process itself.
     """
     target_pid = os.getpid() if pid is None else pid
-    sessions_dir = home / ".claude" / "sessions"
+    sessions_dir = (home / ".claude" if config_dir is None else config_dir) / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     start_time = subprocess.run(
         ["ps", "-o", "lstart=", "-p", str(target_pid)],
@@ -1435,6 +1435,22 @@ def _hook_deny_current(
     if tool_denial_kind:
         rec["toolDenialKind"] = tool_denial_kind
     return rec
+
+
+_DENY_GATE_LABEL_DECLARATION_RE = re.compile(r'^DENY_GATE_LABEL="([^"]*)"', re.MULTILINE)
+
+
+def _deny_gate_label_declarations(hook_name: str) -> list[str]:
+    text = (HOOKS_DIR / hook_name).read_text()
+    return _DENY_GATE_LABEL_DECLARATION_RE.findall(text)
+
+
+def _declared_deny_gate_label(hook_name: str) -> str:
+    declarations = _deny_gate_label_declarations(hook_name)
+    assert len(declarations) == 1, (
+        f"{hook_name}: expected exactly one DENY_GATE_LABEL declaration, found {len(declarations)}"
+    )
+    return declarations[0]
 
 
 def _review_trace_args(

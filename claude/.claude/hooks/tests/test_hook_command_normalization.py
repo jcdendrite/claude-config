@@ -45,7 +45,7 @@ _SPLIT_FRAGMENTS_CALL_RE = re.compile(r'_lib_split_fragments\s+"\$\{?([A-Za-z_][
 _UNQUOTED_SUFFIX_RE = re.compile(r"_unquoted$", re.IGNORECASE)
 
 # filename -> (reason, exact variable name the exception covers). Exactly
-# two entries. A call site whose file is here but whose variable does NOT
+# three entries. A call site whose file is here but whose variable does NOT
 # match the recorded name is still a violation — the exception is scoped
 # to one specific, already-audited call site per file, not a blanket pass
 # for every _lib_split_fragments call the file happens to contain.
@@ -62,6 +62,13 @@ RAW_SPLIT_BY_DESIGN = {
         "inside a quoted argument must not synthesize a fake commit "
         "fragment.",
         "MASKED_COMMAND",
+    ),
+    "deny-default-branch-push.sh": (
+        "split_with_cut_marker's parameter cannot be named _unquoted "
+        "because it receives the stripped buffer from one caller and the "
+        "masked buffer from the other. "
+        "The masked pass is the one that judges a push.",
+        "text",
     ),
 }
 
@@ -99,7 +106,7 @@ def _split_fragments_violations(exception_map: dict) -> list[str]:
 
 class TestSplitFragmentsCallSitesQuoteStripped:
     """Scan 1: every _lib_split_fragments call site splits from a
-    *_UNQUOTED variable, with exactly two named exceptions.
+    *_UNQUOTED variable, with exactly three named exceptions.
 
     Checks the call-site variable's name only, not that it was actually
     assigned via _lib_strip_shell_quotes — unlike Scan 2 below, which does
@@ -107,16 +114,15 @@ class TestSplitFragmentsCallSitesQuoteStripped:
 
     def test_scan_finds_call_sites(self):
         """Sanity check the regex itself still matches real call sites, at
-        the exact count (12) rather than a slack floor — a future call site
+        the exact count (13) rather than a slack floor — a future call site
         regressing to an entirely-unquoted-variable form (invisible to
         _SPLIT_FRAGMENTS_CALL_RE, which only recognizes the
         "$VAR"/"${VAR}" double-quoted-expansion call shape) must drop this
         count and fail loudly rather than pass silently under a >= floor.
-        The count is 12: _lib_command_invokes_git_subcmd,
-        _lib_command_invokes_tool_subcmd, and
-        _lib_command_concludes_commit_shape each add one compliant call site
-        inside _lib.sh itself."""
-        assert len(_split_fragments_call_sites()) == 12
+        The count is every textual match of `_lib_split_fragments "$VAR"`
+        across the hook scripts, comments included, and it includes the
+        named RAW_SPLIT_BY_DESIGN exceptions."""
+        assert len(_split_fragments_call_sites()) == 13
 
     def test_every_call_site_reads_an_unquoted_variable_or_named_exception(self):
         violations = _split_fragments_violations(RAW_SPLIT_BY_DESIGN)

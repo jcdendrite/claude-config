@@ -4151,6 +4151,72 @@ def test_review_round_cost_citation_resolves_to_real_heading() -> None:
     )
 
 
+def test_routing_gate_design_record_cites_routing_guard_section() -> None:
+    """The routing-gate design record points to
+    `docs/transcript-analysis.md` § "routing-guard" for how to run the
+    subcommand.
+
+    The record defers to that section instead of restating how to run it,
+    and docs/*.md sits outside the generic skill-citation sweep, so
+    a heading rename would otherwise orphan the pointer with no
+    reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "design-decisions" / "review-orchestrator-routing-gate.md",
+        "docs/transcript-analysis.md",
+        "routing-guard",
+        repo_root=REPO_ROOT,
+    )
+
+
+@pytest.mark.parametrize(
+    "pr_cost_heading",
+    ["Data", "Residual replication paths the git-tree check doesn't close"],
+)
+def test_transcript_analysis_doc_cites_real_pr_cost_headings(pr_cost_heading: str) -> None:
+    """docs/transcript-analysis.md cites `docs/pr-cost.md` § "Data" and
+    § "Residual replication paths the git-tree check doesn't close" somewhere
+    — each resolves to a real heading there.
+
+    The doc defers to pr-cost's ledger rules instead of restating them, and
+    docs/*.md sits outside the generic skill-citation sweep, so a heading
+    rename in docs/pr-cost.md would otherwise orphan the pointer with no
+    reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        "docs/pr-cost.md",
+        pr_cost_heading,
+        repo_root=REPO_ROOT,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "heading"),
+    [
+        ("docs/session-config-keys-log.md", "State at a transcript record"),
+        ("docs/session-config-keys-log.md", "Coverage"),
+        ("README.md", "Updating after git pull"),
+    ],
+)
+def test_routing_guard_section_cites_real_key_state_headings(target: str, heading: str) -> None:
+    """docs/transcript-analysis.md's `routing-guard` section cites the session
+    config-keys log's reader rules and `README.md` § "Updating after git pull"
+    for its key-state rules and next steps — each resolves to a real heading.
+
+    The section defers to the reader doc instead of restating its rules, and
+    docs/*.md sits outside the generic skill-citation sweep, so a heading
+    rename there would otherwise orphan the pointer with no reader-visible
+    symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        target,
+        heading,
+        repo_root=REPO_ROOT,
+    )
+
+
 _SHOW_WITHHELD_BARRED_LIST_FILES = (
     ".claude/skills/code-review-claude-config/SKILL.md",
     "docs/private-project-redaction.md",
@@ -7041,7 +7107,22 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "finding against a site an earlier verdict already settled, or "
     "that two earlier rounds' fixes already rewrote, goes straight to "
     "the human as a blocking stop-and-ask, with no consult, unless it "
-    "carries as below. That stop names its trigger — a script "
+    "carries as below. Count those rewrites from the ledger, never from "
+    "recall: write the branch's rows with "
+    "`~/.claude/scripts/review-ledger.sh show --out "
+    "agent-reviews/review-history-<suffix>.md`, Grep that file for the "
+    "finding's path, and count the earlier rounds holding an ADDRESS row "
+    "on that path whose `finding` and `rationale` concern this block. The "
+    "path is the key, because a row's range gives its own round's lines "
+    "and later fixes shift them, so the range is a hint, never a test. A "
+    "row the recorded text cannot place in or out of this block makes the "
+    "match uncertain, so that error is over-firing, which stops "
+    "for the engineer. The count sees only where findings pointed, so a "
+    "fix that landed at another path is not counted, an accepted miss. "
+    "`unchanged` writes no file. "
+    "It counts zero only when no earlier round of this session logged a "
+    "row, and is uncertain otherwise. A non-zero exit makes the match "
+    "uncertain. That stop names its trigger — a script "
     "rejection (relay its reason), a different failure mode, an "
     "uncertain match, or an invariant-class finding — and quotes the "
     "earlier decision's words, date and round. The consult's judgment "
@@ -7091,8 +7172,8 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "ADDRESS or fresh DEFER of a repeat carries `--ref <id>` so the old "
     "row retires; another finding at the site leaves it live. The "
     "round report relays each `carry of decision` line, and a reopen "
-    "is logged `ADDRESS --ref <id> --relog`, which retires the decision and its "
-    "carries from the PR block."
+    "is logged `ADDRESS --ref <id> --relog` with the decision's `--source`, "
+    "which retires the decision and its carries from the PR block."
 )
 
 
@@ -7737,6 +7818,107 @@ def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings
     )
 
 
+class TestRoundCapSecondNoiseVerdictStop:
+    """Wiring-presence tripwires on the round-cap region's second-noise-verdict stop and its verdict record.
+    The region has no whole-text pin, so each load-bearing clause is named here."""
+
+    def _region_text(self) -> str:
+        return _normalized_anchor_text(
+            _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+        )
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            pytest.param(
+                "When this round has a finding and the ledger holds two or more `noise` `CONSULT` rows in any rounds, "
+                "this verdict's own included, the verdict is also a blocking stop-and-ask",
+                id="fires-with-a-finding-and-two-noise-rows-in-any-round-its-own-included",
+            ),
+            pytest.param(
+                '`"disposition":"CONSULT","rationale":"noise"`', id="greps-the-shown-disposition-and-rationale-run",
+            ),
+            pytest.param("Treat an uncertain count as two", id="treats-an-uncertain-count-as-two"),
+            pytest.param(
+                "Ask once this round's findings are tagged, before any is logged or fixed",
+                id="asks-once-before-any-finding-is-logged-or-fixed",
+            ),
+            pytest.param(
+                "before retrying the denied spawn, log it with "
+                "`~/.claude/scripts/review-ledger.sh append code-review --disposition CONSULT "
+                "--rationale '<verdict>' --round <N>`",
+                id="logs-the-verdict-before-retrying-the-denied-spawn",
+            ),
+            pytest.param(
+                "An append that still fails after one retry is a blocking stop", id="a-failed-verdict-append-stops",
+            ),
+            pytest.param(
+                "deliberately for every verdict alike", id="the-failed-append-stop-is-uniform-across-verdicts",
+            ),
+            pytest.param("A re-plan does not reset the count", id="a-re-plan-does-not-reset-the-noise-count"),
+            pytest.param(
+                "An `unchanged` after the append is uncertain, not zero", id="unchanged-after-the-append-is-uncertain",
+            ),
+            pytest.param(
+                "naming the trigger (the two rows' rounds, or \"ledger read failed, count unknown\")",
+                id="the-stop-names-its-trigger",
+            ),
+            pytest.param(
+                "dedups to no new row, so count a repeated noise verdict as one more yourself",
+                id="a-deduped-repeat-noise-verdict-is-counted-by-the-session",
+            ),
+            pytest.param(
+                "At a `/ready-for-review` step-4 denial, relay the verdict to the engineer and log no CONSULT row, "
+                "so a step-4 verdict is not counted",
+                id="a-step-4-denial-verdict-is-relayed-and-not-counted",
+            ),
+            pytest.param(
+                "where `<verdict>` is `re-plan`, `noise` or `one-defect`", id="names-the-three-verdict-words",
+            ),
+        ],
+    )
+    def test_region_carries_clause(self, clause: str) -> None:
+        assert clause in self._region_text(), f"the round-cap region no longer carries {clause!r}"
+
+    def test_the_three_options_appear_in_order(self) -> None:
+        region_text = self._region_text()
+        positions = [
+            region_text.find(label)
+            for label in ("*Ship with the live DEFER and SETTLED rows.*", "*Re-plan*", "*Continue review*")
+        ]
+        assert -1 not in positions and positions == sorted(positions), (
+            "the second-noise-verdict stop must offer ship, re-plan, then continue, in that order"
+        )
+
+    def test_ship_leaves_an_invariant_finding_to_the_invariant_rules_own_stop(self) -> None:
+        region_text = self._region_text()
+        ship_label = "*Ship with the live DEFER and SETTLED rows.*"
+        carve_out_sentence = (
+            "A finding the enforcement-invariant rule covers is outside this answer "
+            "and takes that rule's own stop, which names it."
+        )
+        notice_then_log_sentence = (
+            "Give the contradiction route's notice, then log each other finding as that route logs a human keep"
+        )
+        ship_label_position = region_text.find(ship_label)
+        assert ship_label_position != -1, f"the round-cap region no longer carries the Ship label {ship_label!r}"
+        ship_label_end = ship_label_position + len(ship_label)
+        replan_label_start = region_text.find("*Re-plan*", ship_label_end)
+        assert replan_label_start != -1, "the round-cap region carries no *Re-plan* label after the Ship label"
+        ship_segment = region_text[ship_label_end:replan_label_start]
+        carve_out_position = ship_segment.find(carve_out_sentence)
+        assert carve_out_position != -1, (
+            f"the Ship segment no longer carries the carve-out sentence {carve_out_sentence!r}"
+        )
+        notice_then_log_position = ship_segment.find(notice_then_log_sentence)
+        assert notice_then_log_position != -1, (
+            f"the Ship segment no longer carries the notice-then-log sentence {notice_then_log_sentence!r}"
+        )
+        assert carve_out_position < notice_then_log_position, (
+            "the Ship segment must state the carve-out sentence before the notice-then-log sentence"
+        )
+
+
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
     """Every `config-get.sh <key>` a shipped SKILL.md invokes names a schema key."""
     schema_keys = config_schema()
@@ -7954,7 +8136,8 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "A DEFER or SETTLED append that still fails, a non-zero PR-body `render`, or a `gh pr edit` that fails "
+        "An ADDRESS, DEFER or SETTLED append that still fails after the correction and retry above, a non-zero "
+        "PR-body `render`, or a `gh pr edit` that fails "
         "for any reason, including a denial by the redaction or escaped-backtick gate, is a blocking stop",
         id="any-pr-edit-failure-is-a-blocking-stop",
     ),
@@ -7991,8 +8174,8 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "[--source '<file:line>']",
-        id="append-template-quotes-the-source-path",
+        "--round <N> --source '<file:line>' [--decided-by",
+        id="append-template-requires-and-quotes-the-source-path",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
@@ -8013,8 +8196,8 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "CLEAN takes no lanes",
-        id="clean-append-takes-no-lanes",
+        "CLEAN and CONSULT take no lanes",
+        id="clean-and-consult-appends-take-no-lanes",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
@@ -8716,7 +8899,7 @@ def _all_doc_paths() -> list[Path]:
     every co-located skill REFERENCES.md, evals/README.md, and the
     repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
     docs/case-studies/** hold preserved historical records (CLAUDE.md
-    Axis 3) and are excluded, matching the plan's Out of scope list."""
+    Axis 3) and are excluded."""
     repo_root = REPO_ROOT
     docs_root = repo_root / "docs"
     paths = [
@@ -8791,9 +8974,7 @@ def test_all_citation_extraction_doc_paths_raises_when_global_rules_dir_empty(tm
 class TestPerAccountStatePathContract:
     """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
     may hold a literal ~/.claude (or $HOME/.claude, ${HOME}/.claude)
-    per-account-state path — see
-    .claude/plans/normalize-config-dir-paths.md. Guards the state-path class
-    from drifting back in, including the $HOME-form bypass a bare
+    per-account-state path. Covers the $HOME-form bypass a bare
     '~/.claude/' substring check would miss entirely."""
 
     def test_flags_issue_triage_state_path(self):
@@ -8866,8 +9047,7 @@ class TestPerAccountStatePathContract:
 # placeholder, landing immediately in front of a scripts/ or hooks/ path --
 # every script and hook under claude/.claude/ is stow-shared and
 # machine-invariant (resolves into the same checkout under every account), so
-# its own call-site path never needs runtime templating; see
-# .claude/plans/deterministic-config-dir-resolution.md. Anchored on the
+# its own call-site path never needs runtime templating. Anchored on the
 # literal /scripts/ or /hooks/ segment so the ~25 legitimate per-account
 # *state* templating sites (handoffs/, briefs/, sentinels, logs --
 # _PER_ACCOUNT_STATE_PATH_RE's own domain) are left untouched.
@@ -8905,8 +9085,7 @@ def _stowed_path_templating_matches(markdown_text: str) -> list[str]:
 class TestStowedScriptPathContract:
     """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
     may template $CLAUDE_CONFIG_DIR (or a <config-dir> prose placeholder) in
-    front of a scripts/ or hooks/ path -- see
-    .claude/plans/deterministic-config-dir-resolution.md. The other half of
+    front of a scripts/ or hooks/ path. The other half of
     the invariant TestPerAccountStatePathContract guards from the state-path
     direction: stowed paths must be literal, state paths must stay
     config-dir-relative."""
@@ -8991,13 +9170,10 @@ class TestStowedScriptPathContract:
 
 
 # --- findings_path wiring in plan-review/ROUTING.md ---
-# See .claude/plans/consult-dispatch-findings-file.md for the design; ledger
-# rows cited in the docstrings below are that plan's assumption ledger. The
-# mechanical recipe (info/exclude append, <epoch>-<slug> derivation) moved
-# into claude/.claude/scripts/findings-path-suffix.sh — see
-# .claude/plans/findings-path-script.md — leaving each dispatcher body with
-# only the contract statement (path template, spawn-synchronously rule,
-# read-back protocol).
+# The mechanical recipe (info/exclude append, <epoch>-<slug> derivation) lives
+# in claude/.claude/scripts/findings-path-suffix.sh, so each dispatcher body
+# carries only the contract statement (path template, spawn-synchronously
+# rule, read-back protocol).
 #
 # Four tests:
 # 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
@@ -9462,7 +9638,7 @@ def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body()
 
 
 _SUBAGENT_DELEGATION_GATE_LOOP_HEADING = "### Exception: gate/review loops stay orchestrator-driven"
-_REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "HALT:")
+_REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "Not addressed:", "HALT:")
 _REVIEW_ORCHESTRATOR_DESIGN_RECORD = (
     "docs/design-decisions/review-orchestrator-gate-release-decoupling.md"
 )
@@ -9472,7 +9648,8 @@ _CODE_REVIEW_OUTPUT_FORMAT_HEADING = "## Output format"
 
 # The `review-orchestrator` agent body and the dispatching session's protocol
 # (subagent-delegation's gate/review-loop exception) share one return contract,
-# and the agent body in turn depends on the `code-review` skill's headings.
+# and the agent body in turn cites the `code-review` skill's headings and
+# that same gate/review-loop heading.
 # Renaming either end of a boundary fails below. Every other rule in the
 # protocol is deliberately unpinned.
 
@@ -9655,16 +9832,26 @@ def test_review_orchestrator_return_item_named_at_both_ends(item: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "cited_heading", ["Output format", "Review-findings persistence"]
+    "cited_target, cited_heading",
+    [
+        ("code-review/SKILL.md", normalize_heading(_CODE_REVIEW_OUTPUT_FORMAT_HEADING)),
+        ("code-review/SKILL.md", "Review-findings persistence"),
+        (
+            "subagent-delegation/SKILL.md",
+            normalize_heading(_SUBAGENT_DELEGATION_GATE_LOOP_HEADING),
+        ),
+    ],
 )
-def test_review_orchestrator_agent_body_cites_code_review_heading_that_exists(
+def test_review_orchestrator_agent_body_cites_skill_heading_that_exists(
+    cited_target: str,
     cited_heading: str,
 ) -> None:
     # The agent body sits outside test_skill_citations_resolve_to_real_headings'
-    # corpus, so its citations into the code-review skill resolve only here.
+    # corpus, so its citations into the code-review and subagent-delegation
+    # skills resolve only here.
     _assert_citation_resolves_to_heading(
         _AGENTS_DIR / "review-orchestrator.md",
-        "code-review/SKILL.md",
+        cited_target,
         cited_heading,
         repo_root=REPO_ROOT,
     )

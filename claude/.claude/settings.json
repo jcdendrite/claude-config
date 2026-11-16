@@ -207,6 +207,16 @@
             "command": "~/.claude/hooks/record-session-config-keys.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check-python-floor.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStart": [
@@ -373,6 +383,12 @@
             "command": "~/.claude/hooks/require-ready-for-review.sh",
             "onFailure": "block",
             "statusMessage": "Checking ready-for-review gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-default-branch-push.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking push destination..."
           },
           {
             "type": "command",

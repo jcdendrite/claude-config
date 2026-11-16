@@ -678,8 +678,9 @@ class TestRequireCodeReview:
 
 class TestRequireCodeReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the code-review marker directory the same
-    way for marker.sh (write) and this hook (read) -- see marker.sh and the
-    cross-account bypass this closes (ledger row 7)."""
+    way for marker.sh (write) and this hook (read) -- a marker another
+    account writes under its own config directory, in the same $HOME, never
+    releases this account's gate."""
 
     def test_marker_under_matching_config_dir_allows(self, isolated_home, git_repo, tmp_path):
         """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
@@ -890,8 +891,8 @@ class TestRequireCodeReviewComplianceLog:
         subprocess.run(
             [
                 "bash", str(SCRIPTS_DIR / "review-ledger.sh"), "append", "code-review",
-                "--finding", "f", "--disposition", "ADDRESS", "--rationale", "r", "--round", "1",
-                "--reviewer", "staff-sdet",
+                "--finding", "f", "--disposition", "ADDRESS", "--rationale", "r", "--source", "file.txt:1",
+                "--round", "1", "--reviewer", "staff-sdet",
             ],
             cwd=git_repo,
             env=env,

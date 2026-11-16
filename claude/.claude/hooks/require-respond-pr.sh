@@ -135,8 +135,8 @@ fi
 # would be reading a command the shell never runs. A bare newline separates
 # commands, and joins with a space.
 #
-# GH-801: awk with RS = "\0" (matching _lib_mask_shell_quotes's identical
-# technique in _lib.sh), not a per-line sed —
+# GH-801: awk with RS = "\001" (matching _lib_mask_shell_quotes's identical
+# technique in _lib.sh; "\0" is paragraph mode on BSD/macOS awk), not a per-line sed —
 # a per-line tool never sees an embedded newline character to substitute in
 # the first place, since the newline itself is what separates its input
 # into lines; slurping the whole command as one record is what lets a
@@ -144,7 +144,7 @@ fi
 # killed, or erroring denies explicitly below rather than falling through
 # to this gate's normal "no arm matched, allow" path — matching
 # deny-invisible-commit-content.sh's own COMMAND_UNQUOTED precedent.
-COMMAND_FLAT=$(printf '%s' "$COMMAND" | awk 'BEGIN { RS = "\0" } { gsub(/\\\n/, ""); gsub(/\n/, " "); printf "%s", $0 }')
+COMMAND_FLAT=$(printf '%s' "$COMMAND" | awk 'BEGIN { RS = "\001" } { gsub(/\\\n/, ""); gsub(/\n/, " "); printf "%s", $0 }')
 COMMAND_FLAT_EXIT=$?
 if [ "$COMMAND_FLAT_EXIT" -ne 0 ]; then
   emit_deny "could not flatten the command text (exit ${COMMAND_FLAT_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than evaluating an unflattened command that could hide a gated pattern across a line break."

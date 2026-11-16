@@ -437,8 +437,8 @@ def test_converted_citations_resolve_and_match_provenance() -> None:
     """Assertion 4: every converted `[§N](slug.md)` citation resolves to an
     existing file, and that file's own on-disk provenance line records the
     same legacy number N. Checked against each file's own provenance line at
-    test-run time, not a static slug table, since a section numbered beyond
-    the plan's fixed Slug map has no row there. A resolution-only check would
+    test-run time, not a static slug table, since a static table has no row for
+    a section numbered after the table was written. A resolution-only check would
     pass a citation pointed at the wrong file as readily as the right one;
     the provenance-number match is what makes the bulk conversion of these
     citations checkable rather than merely resolvable."""

@@ -9,9 +9,11 @@ import time
 
 import pytest
 from helpers import (
+    AWK_MATRIX_NAMES,
     HOOKS_DIR,
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
+    awk_first_on_path_env,
     bash_input,
     build_path_without,
     edit_input,
@@ -347,6 +349,21 @@ class TestRequireRespondPr:
         self, isolated_home, current_repo_foo_bar, command
     ):
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
+
+    @pytest.mark.parametrize("awk_name", AWK_MATRIX_NAMES)
+    def test_blank_line_between_gh_api_and_its_url_denied(
+        self, isolated_home, current_repo_foo_bar, tmp_path, awk_name
+    ):
+        """BSD/macOS awk reads a NUL `RS` as paragraph mode, which deletes the blank line and fuses `gh api` onto
+        the URL, so the REST arm would miss it.
+
+        Runs under every awk installed, because only BSD awk tells `"\\0"` from SOH.
+        """
+        extra_env = awk_first_on_path_env(tmp_path / "awk-shim-dir", awk_name)
+        command = "gh api\n\nrepos/foo/bar/pulls/1/comments"
+        assert (
+            run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar, extra_env=extra_env) == "deny"
+        )
 
     def test_unrelated_commands_on_separate_lines_both_allowed(
         self, isolated_home, current_repo_foo_bar

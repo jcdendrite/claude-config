@@ -2,8 +2,9 @@
 `isolated_git_environment` removes the engineer's system and global git config, system
 and global attributes, and `GIT_*` variables from those calls. The repository a call
 runs in still applies its own `.git/config`, `.git/info/attributes`, and tracked
-`.gitattributes`. The miners' git calls do not use it, and a fetch there may need the
-engineer's credential configuration.
+`.gitattributes`. The review bench's `mine_szz`, `mine_pr_comments` and `mine_review_rounds`
+do not use it, and a fetch from `mine_pr_comments` or `mine_review_rounds` may need the
+engineer's credential configuration. The replay miner's git calls do.
 """
 from __future__ import annotations
 

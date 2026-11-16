@@ -148,30 +148,10 @@ def _join_rounds_to_prs(rounds: Sequence[dict], merged_prs: Sequence[dict]) -> t
     )
 
 
-def _average_ranks(values: Sequence[float]) -> list[float]:
-    """1-based ranks of `values`, each run of tied values taking the mean of the positions it spans."""
-    order = sorted(range(len(values)), key=values.__getitem__)
-    ranks = [0.0] * len(values)
-    run_start = 0
-    while run_start < len(order):
-        run_end = run_start
-        while run_end + 1 < len(order) and values[order[run_end + 1]] == values[order[run_start]]:
-            run_end += 1
-        mean_position = (run_start + run_end) / 2 + 1
-        for position in range(run_start, run_end + 1):
-            ranks[order[position]] = mean_position
-        run_start = run_end + 1
-    return ranks
-
-
 def _spearman_rho(xs: Sequence[float], ys: Sequence[float]) -> float | None:
-    """Spearman's rank correlation, or None when it is undefined (fewer than two points or a constant series).
-
-    statistics.correlation(method="ranked") would do this directly but needs Python 3.12, and the repo's
-    floor is 3.11.
-    """
+    """Spearman's rank correlation, or None when it is undefined (fewer than two points or a constant series)."""
     try:
-        return statistics.correlation(_average_ranks(xs), _average_ranks(ys))
+        return statistics.correlation(xs, ys, method="ranked")
     except statistics.StatisticsError:
         return None
 

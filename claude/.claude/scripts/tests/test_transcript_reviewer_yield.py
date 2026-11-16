@@ -1491,8 +1491,8 @@ class TestReviewerYield:
         """A distinctive sentinel path, cited and later edited, must not
         reach stdout or stderr — cited-path candidates are held only as
         sha256 digests, so no path can print by construction. Scoped to the
-        table bodies: the pre-existing --projects scope-header leak (ledger
-        row O) is a separate, unfixed channel this plan does not fix."""
+        table bodies: the resolved-scope header prints the --projects value, a
+        channel outside this test."""
         sentinel_path = "SENTINEL-ROOT/SENTINEL-PROJ/x.py"
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),

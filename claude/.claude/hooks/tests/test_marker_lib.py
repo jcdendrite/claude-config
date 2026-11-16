@@ -10,10 +10,13 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    AWK_MATRIX_NAMES,
     GITLINK_AFTER,
     GITLINK_BEFORE,
     HOOKS_DIR,
+    SYSTEM_AWK_NAME,
     assert_cap_engaged,
+    awk_first_on_path_env,
     build_path_without,
     cumulative_review_value,
     head_sha,
@@ -837,21 +840,6 @@ RELOCATION_EQUAL_ROWS = {
 }
 
 
-def _awk_implementations_on_this_machine() -> dict[str, str]:
-    """Real path of each awk the matrix knows how to find, keyed by the real file's name."""
-    implementations: dict[str, str] = {}
-    for candidate in ("/usr/bin/awk", "mawk", "gawk", "original-awk", "nawk"):
-        resolved = shutil.which(candidate)
-        if resolved is None:
-            continue
-        real_path = os.path.realpath(resolved)
-        implementations.setdefault(os.path.basename(real_path), real_path)
-    return implementations
-
-
-AWK_IMPLEMENTATIONS = _awk_implementations_on_this_machine()
-
-
 @pytest.fixture
 def empty_file_repo(tmp_path: Path) -> Path:
     """Empty files created in HEAD~1 and deleted in HEAD, each before and after a modified text file in path order.
@@ -1118,15 +1106,10 @@ class TestLibCumulativeReviewValue:
         raw, _expected = _entry_pair()
         assert cumulative_review_value(raw, tmp_path, shell_prelude=failing_awk_shim) == (1, "")
 
-    @pytest.mark.parametrize("awk_name", list(AWK_IMPLEMENTATIONS) or [None])
+    @pytest.mark.parametrize("awk_name", AWK_MATRIX_NAMES)
     def test_awk_implementation_reproduces_the_oracle_and_the_edge_cases(self, tmp_path, awk_name):
         """Every awk found reproduces the oracle text, the long-line value and the structure-lookalike rows."""
-        if awk_name is None:
-            pytest.skip("no known awk implementation found on PATH")
-        shim_dir = tmp_path / "awk-shim-dir"
-        shim_dir.mkdir()
-        (shim_dir / "awk").symlink_to(AWK_IMPLEMENTATIONS[awk_name])
-        env_overrides = {"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+        env_overrides = awk_first_on_path_env(tmp_path / "awk-shim-dir", awk_name)
 
         assert require_normalized_cumulative_review_text(ORACLE_RAW_TEXT.rstrip(b"\n"), tmp_path, env_overrides) == (
             ORACLE_EXPECTED_NORMALIZED.rstrip(b"\n")
@@ -1147,7 +1130,7 @@ class TestLibCumulativeReviewValue:
         """The matrix must not skip every case on CI."""
         if not os.environ.get("GITHUB_ACTIONS"):
             pytest.skip("only enforced on GitHub Actions")
-        assert os.path.realpath("/usr/bin/awk") in AWK_IMPLEMENTATIONS.values()
+        assert SYSTEM_AWK_NAME is not None
 
     @pytest.mark.parametrize(
         "config",

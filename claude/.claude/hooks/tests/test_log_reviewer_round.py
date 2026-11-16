@@ -164,11 +164,10 @@ def _launch_hook_with_path_prefix(
     # TemporaryFile, not PIPE: on CPython 3.12, closed-PIPE
     # stdin makes Popen.communicate() raise ValueError, and file-backed stdin
     # avoids it by leaving Popen.stdin None.
-    payload_stdin = tempfile.TemporaryFile("w+")
-    payload_stdin.write(json.dumps(payload))
-    payload_stdin.flush()
-    payload_stdin.seek(0)
-    try:
+    with tempfile.TemporaryFile("w+") as payload_stdin:
+        payload_stdin.write(json.dumps(payload))
+        payload_stdin.flush()
+        payload_stdin.seek(0)
         proc = subprocess.Popen(
             [str(LOG_REVIEWER_ROUND_HOOK)],
             stdin=payload_stdin,
@@ -178,8 +177,6 @@ def _launch_hook_with_path_prefix(
             cwd=cwd,
             env=env,
         )
-    finally:
-        payload_stdin.close()
     return proc
 
 
@@ -194,11 +191,10 @@ class TestLaunchHookWithPathPrefixStdinContract:
 
     def test_communicate_does_not_raise_and_child_reads_full_payload(self):
         payload = "hello from a file-backed stdin\n"
-        stdin_file = tempfile.TemporaryFile("w+")
-        stdin_file.write(payload)
-        stdin_file.flush()
-        stdin_file.seek(0)
-        try:
+        with tempfile.TemporaryFile("w+") as stdin_file:
+            stdin_file.write(payload)
+            stdin_file.flush()
+            stdin_file.seek(0)
             proc = subprocess.Popen(
                 ["cat"],
                 stdin=stdin_file,
@@ -206,8 +202,6 @@ class TestLaunchHookWithPathPrefixStdinContract:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-        finally:
-            stdin_file.close()
 
         stdout, stderr = proc.communicate()
 
@@ -396,7 +390,7 @@ class TestLogReviewerRoundPilotCap:
         assert state_file.read_bytes() == pre_seeded_content
 
     def test_live_plan_review_active_marker_skips_recording_below_pilot_cap(self, isolated_home, tmp_path):
-        """Row 15's actual load-bearing check: under the pilot sentinel with
+        """The load-bearing check: under the pilot sentinel with
         zero states recorded yet (below cap=1, not at it), a live
         /plan-review fan-out for this session must still short-circuit
         before any write -- the recorder's own at-cap guard only fires once

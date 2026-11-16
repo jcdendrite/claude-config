@@ -874,3 +874,56 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 " Code's own miss signal. Every W5m/X/W1h/Z figure above still reflects the gap-derived"
                 " classification, never this signal.)"
             )
+
+
+def _add_cache_rebuild_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_cache_rebuild = subparsers.add_parser(
+        "cache-rebuild",
+        help=(
+            "Idle-gap prompt-cache TTL-expiry rebuild measurement: per-call write distribution,"
+            " cause classification (session start / idle 5m-1h / idle >1h / model switch /"
+            " unexplained), concurrency split, and priced excess by account. Redacted by default."
+        ),
+    )
+    scope._add_project_scope_args(p_cache_rebuild)
+    p_cache_rebuild.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
+        ),
+    )
+    p_cache_rebuild.add_argument(
+        "--since", metavar="Nd", default=_CACHE_REBUILD_DEFAULT_SINCE,
+        help=f"Limit to calls with timestamp in the last N days (e.g. 35d). Default: {_CACHE_REBUILD_DEFAULT_SINCE}.",
+    )
+    p_cache_rebuild.add_argument(
+        "--threshold", type=int, default=_CACHE_REBUILD_DEFAULT_THRESHOLD, metavar="TOKENS",
+        help=(
+            "Minimum cache-write tokens (ephemeral_1h + ephemeral_5m) for a call to count as a"
+            f" large rebuild. Default: {_CACHE_REBUILD_DEFAULT_THRESHOLD:,}."
+        ),
+    )
+    p_cache_rebuild.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names or session IDs), so"
+            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
+            " banner and enforces the same multi-root refusal as cost, for CLI parity."
+            " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_cache_rebuild.add_argument(
+        "--ttl-verdict", action="store_true",
+        help=(
+            "Also report a per-root, per-bucket (main / everything-else) adopt/decline verdict on"
+            " each bucket's live prompt-cache TTL, covering both the 5m-to-1h and the mirrored,"
+            " inferred 1h-to-5m direction. Ships a shared default only when every consistent root"
+            " agrees -- see .claude/plans/cache-ttl-tuning-analysis.md's Approach section. Adds"
+            " no new output when omitted; every figure without this flag is unchanged."
+        ),
+    )
+    p_cache_rebuild.set_defaults(func=cmd_cache_rebuild)

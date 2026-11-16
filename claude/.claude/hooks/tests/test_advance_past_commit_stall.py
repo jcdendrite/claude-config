@@ -4,8 +4,9 @@ The hook fires only when ALL hold: no per-session/repo kill switch, main
 session (not a subagent), valid session_id, not plan mode, a fresh prompt_id,
 the final sentence of the last assistant message asks permission to
 commit/push/open a PR without also carrying an exclusion phrase,
-_lib_autonomous_shipping_active holds for the resolved repo, and work is
-pending (dirty tree or HEAD ahead of its upstream). Every other path must
+_lib_autonomous_shipping_active holds for the resolved repo, work is
+pending (dirty tree or HEAD ahead of its upstream), and HEAD is on a
+non-default branch. Every other path must
 exit 0 with empty stdout — this is a fail-silent Stop hook, never a gate.
 """
 from __future__ import annotations
@@ -29,24 +30,22 @@ from helpers import (
     init_git_repo_with_commit,
     plant_traversal_canary,
     run_hook_stop,
+    set_origin_head,
     stop_input,
 )
 
 ADVANCE_HOOK = HOOKS_DIR / "advance-past-commit-stall.sh"
 
-# Verbatim from .claude/plans/commit-stall-block.md's Context section — the
-# issue's own quotes. The first is exactly 64 characters, which pins the
-# tail-slice-floor defect the plan's Assumption ledger Row 13 documents:
-# a byte-count tail slice (${msg: -600}) returns EMPTY for any message
-# shorter than 600 chars, so this exact quote is the regression pin for the
-# final-sentence-extraction replacement.
+# Verbatim from issue #526 — the issue's own quotes. The first is exactly 64
+# characters. A byte-count tail slice (${msg: -600}) returns EMPTY for any
+# message shorter than 600 chars, so this exact quote pins final-sentence
+# extraction.
 ISSUE_QUOTE_QUESTION = (
     "Want me to commit this, or do you want to review the diff first?"
 )
 ISSUE_QUOTE_NONQUESTION = "Per your standing instruction, I haven't committed."
-assert len(ISSUE_QUOTE_QUESTION) == 64, "pin drifted from the plan's own 64-char quote"
+assert len(ISSUE_QUOTE_QUESTION) == 64, "pin drifted from the issue's own 64-char quote"
 
-# The plan's own design-history examples (Part 2), also verbatim.
 MODAL_CASE = (
     "Fixed the failing test in the parser. "
     "Want me to commit this, or do you want to review the diff first?"
@@ -57,8 +56,13 @@ DOCUMENTED_MISS = (
 )
 
 
-def _init_repo(repo: Path) -> None:
-    init_git_repo_with_commit(repo, branch="main", file_name="f", content="a\n")
+# Not a default-branch name, and not "feature", which clean_pushed_no_pending_repo checks out.
+# The hook stays silent on the default branch, so the fixtures build on a branch where it can fire.
+NON_DEFAULT_BRANCH = "shipping-work"
+
+
+def _init_repo(repo: Path, branch: str = NON_DEFAULT_BRANCH) -> None:
+    init_git_repo_with_commit(repo, branch=branch, file_name="f", content="a\n")
 
 
 @pytest.fixture
@@ -148,8 +152,8 @@ def _fire(payload: dict, cwd, home, extra_env: dict | None = None) -> dict | Non
 
 CORPUS: list[tuple[str, bool]] = [
     (ISSUE_QUOTE_QUESTION, True),
-    (ISSUE_QUOTE_NONQUESTION, False),  # Row 19: non-question stops are uncaught
-    (MODAL_CASE, True),  # "must FIRE — the modal case" per the plan
+    (ISSUE_QUOTE_NONQUESTION, False),  # non-question stops are uncaught
+    (MODAL_CASE, True),
     (DOCUMENTED_MISS, True),  # accepted miss: exclusion window is final-sentence only
     ("I committed and pushed the change. Want me to profile it?", False),
     (
@@ -647,6 +651,56 @@ def test_no_upstream_configured_clean_tree_is_pending(armed_home, clean_no_upstr
         home=armed_home,
     )
     assert result is not None
+
+
+# ------------------------------------------------------------------ #
+# Branch predicate: the default branch and a detached HEAD stay silent #
+# ------------------------------------------------------------------ #
+
+
+def _fire_on_dirty_repo(armed_home, repo: Path, **extra) -> dict | None:
+    """The repo is dirty, so work is pending and only the branch decides."""
+    (repo / "f").write_text("a\nb\n")
+    return _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(repo)),
+        cwd=repo,
+        home=armed_home,
+        **extra,
+    )
+
+
+def test_default_branch_main_with_no_origin_is_silent(armed_home, tmp_path):
+    """No origin/HEAD resolves, so the fallback names apply and `main` is the default."""
+    repo = tmp_path / "main-no-origin"
+    _init_repo(repo, branch="main")
+
+    assert _fire_on_dirty_repo(armed_home, repo) is None
+
+
+def test_branch_named_by_origin_head_is_silent(armed_home, tmp_path):
+    repo = tmp_path / "trunk-default"
+    _init_repo(repo, branch="trunk")
+    set_origin_head(repo, "trunk")
+
+    assert _fire_on_dirty_repo(armed_home, repo) is None
+
+
+def test_detached_head_is_silent(armed_home, tmp_path):
+    repo = tmp_path / "detached"
+    _init_repo(repo)
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
+
+    assert _fire_on_dirty_repo(armed_home, repo) is None
+
+
+def test_head_read_failure_on_a_non_default_branch_stays_silent(armed_home, tmp_path, git_timeout_shim):
+    """Only the `symbolic-ref -q` read fails (status 128), so a git failure must not read as a
+    non-default branch and force a continuation."""
+    repo = tmp_path / "head-read-fails"
+    _init_repo(repo)
+    env = git_timeout_shim('[ "$3" = "symbolic-ref" ] && [ "$4" = "-q" ]', exit_status=128)
+
+    assert _fire_on_dirty_repo(armed_home, repo, extra_env=env) is None
 
 
 # ------------------------------------------------------------------ #

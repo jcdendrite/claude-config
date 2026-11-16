@@ -781,3 +781,75 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
         ))
     else:
         print(json.dumps(candidates, indent=2))
+
+
+def _add_audit_routing_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_audit = subparsers.add_parser(
+        "audit-routing",
+        help=(
+            "Per-turn Opus token breakdown by routing class (orchestration, judgment, code-write,"
+            " code-read, pure-thinking, other). Aggregates output_tokens and cache_read_input_tokens"
+            " per class across all sessions."
+        ),
+    )
+    scope._add_project_scope_args(p_audit)
+    p_audit.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_audit.add_argument(
+        "--top", type=int, default=20, metavar="N",
+        help="Maximum number of per-session rows to emit (default: 20).",
+    )
+    p_audit.add_argument(
+        "--redact", action="store_true",
+        help=(
+            "Replace project dir names with anonymized labels (private-project-1, private-project-2, …)"
+            " for public reporting. 'claude-config' is preserved as-is."
+        ),
+    )
+    p_audit.set_defaults(func=cmd_audit_routing)
+
+
+def _add_audit_routing_shape_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_audit_shape = subparsers.add_parser(
+        "audit-routing-shape",
+        help=(
+            "Turn-shape distributions for Opus code-read turns: files-Read per turn (D1),"
+            " code-read streak lengths (D2), and read-then-edit ratio (D3)."
+        ),
+    )
+    scope._add_project_scope_args(p_audit_shape)
+    p_audit_shape.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_audit_shape.set_defaults(func=cmd_audit_routing_shape)
+
+
+def _add_audit_routing_samples_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_audit_samples = subparsers.add_parser(
+        "audit-routing-samples",
+        help=(
+            "Emit a random sample of Opus code-read turns with prior-user context and"
+            " next-turn lookahead classification. JSON array output for manual curation."
+        ),
+    )
+    scope._add_project_scope_args(p_audit_samples)
+    p_audit_samples.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_audit_samples.add_argument(
+        "--sample", type=int, default=30, metavar="N",
+        help="Maximum number of sample turns to emit (default: 30).",
+    )
+    p_audit_samples.add_argument(
+        "--seed", type=int, default=None, metavar="N",
+        help="Random seed for reproducible sampling.",
+    )
+    p_audit_samples.add_argument(
+        "--format", choices=["json", "md"], default="json", dest="output_format",
+        help="Output format: json (default) or md (human-readable markdown for curation).",
+    )
+    p_audit_samples.set_defaults(func=cmd_audit_routing_samples)

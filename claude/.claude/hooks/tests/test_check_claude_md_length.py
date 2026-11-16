@@ -864,8 +864,7 @@ class TestCheckClaudeMdLength:
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
         env = git_timeout_shim('[ "$3" = "cat-file" ]')
         # One shim predicate matches both the new- and old-revision `cat-file`
-        # calls, so both are capped and killed here, not just one (ledger
-        # row 8's chained-call shape).
+        # calls, so both are capped and killed here, not just one.
         with assert_cap_engaged(tmp_path, production_cap=5, killed_calls=2):
             decision = run_hook(
                 CHECK_CLAUDE_MD_LENGTH_HOOK,
@@ -886,7 +885,7 @@ class TestCheckClaudeMdLength:
         indirectly, via a deny-vs-allow mismatch a maintainer has to trace
         back to the constant. This test adds a direct, single-assertion
         diagnostic for the same drift instead. Mirrors
-        test_transcript_analysis.py's
+        scripts/tests/test_transcript_denials.py's
         test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label,
         which extracts a bash constant out of hook source the same way."""
         match = _GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE.search(CHECK_CLAUDE_MD_LENGTH_HOOK.read_text())
@@ -1081,11 +1080,8 @@ class TestCheckClaudeMdLengthMergeAwareBase:
         correct merge-tree base, 220 > 250 is false, so the gate allows;
         this discriminates the correct base from a regressed
         literal-HEAD fallback, where 220 > 0 is true and the gate would
-        instead deny -- the fixture shape
-        .claude/plans/merge-aware-review-gates.md's Verification section
-        names as untested against this gate's own git show pair. Local
-        copy of test_check_skill_length.py's fixture of the same shape
-        (DAMP test code)."""
+        instead deny. Local copy of test_check_skill_length.py's fixture of
+        the same shape (DAMP test code)."""
         repo = _build_delete_modify_conflict_growing_claude_md(tmp_path)
         assert (
             run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)

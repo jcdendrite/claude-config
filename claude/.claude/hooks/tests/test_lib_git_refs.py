@@ -1,5 +1,5 @@
 """Unit tests for _lib.sh's _lib_default_branch_from_origin_head, _lib_default_branch_or_guess,
-_lib_verification_cache_sentinel_present and _lib_head_tree_hash.
+_lib_head_detached_or_default, _lib_verification_cache_sentinel_present and _lib_head_tree_hash.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from helpers import (
     assert_cap_engaged,
     init_git_repo_with_commit,
     scaled_shim_sleep,
+    set_origin_head,
     write_scaled_timeout_shim,
 )
 
@@ -283,6 +284,121 @@ def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_d
 
     assert result.returncode == 0
     assert result.stdout == "develop"
+
+
+# --- _lib_head_detached_or_default -------------------------------------------
+#
+# advance-past-commit-stall.sh and _lib_review_ledger_path share this
+# predicate. Statuses: 0 detached or default branch, 1 any other branch, 2 git
+# could not read HEAD. The printed branch is empty on a detached HEAD.
+
+
+def _head_detached_or_default(repo_root: Path | str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_head_detached_or_default "$1"', "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_head_detached_or_default_exits_1_on_a_feature_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch="feature")
+
+    result = _head_detached_or_default(repo)
+
+    assert result.returncode == 1
+    assert result.stdout == "feature"
+
+
+def test_head_detached_or_default_exits_0_on_the_branch_origin_head_names(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch="trunk")
+    set_origin_head(repo, "trunk")
+
+    result = _head_detached_or_default(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "trunk"
+
+
+def test_head_detached_or_default_exits_0_on_a_fallback_name_when_no_default_resolves(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch="main")
+
+    result = _head_detached_or_default(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "main"
+
+
+@pytest.mark.parametrize("resolve_via_origin_head", [True, False], ids=["origin-head", "fallback-name"])
+def test_head_detached_or_default_prints_the_plain_name_when_a_tag_shares_the_default_branch_name(
+    tmp_path: Path, resolve_via_origin_head: bool
+) -> None:
+    """`symbolic-ref --short` prints `heads/<name>` when a tag shares the branch name."""
+    branch = "trunk" if resolve_via_origin_head else "main"
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch=branch)
+    subprocess.run(["git", "tag", branch], cwd=repo, check=True)
+    if resolve_via_origin_head:
+        set_origin_head(repo, branch)
+
+    result = _head_detached_or_default(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == branch
+
+
+def test_head_detached_or_default_exits_0_with_empty_stdout_on_a_detached_head(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch="feature")
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
+
+    result = _head_detached_or_default(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_head_detached_or_default_exits_1_on_main_when_origin_head_names_trunk(
+    tmp_path: Path,
+) -> None:
+    """The fallback names apply only when no default resolves, so `main` is an
+    ordinary branch once origin/HEAD names `trunk`."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch="main")
+    set_origin_head(repo, "trunk")
+
+    result = _head_detached_or_default(repo)
+
+    assert result.returncode == 1
+    assert result.stdout == "main"
+
+
+def test_head_detached_or_default_exits_2_in_a_directory_that_is_not_a_repository(
+    tmp_path: Path,
+) -> None:
+    """git failing to read HEAD must not read as a detached HEAD (status 0)."""
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+
+    result = _head_detached_or_default(not_a_repo)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+def test_head_detached_or_default_exits_2_for_an_empty_repo_root() -> None:
+    result = _head_detached_or_default("")
+
+    assert result.returncode == 2
+    assert result.stdout == ""
 
 
 # --- _lib_verification_cache_sentinel_present -------------------------------

@@ -1836,19 +1836,3 @@ print(json.dumps({"loaded": loaded, "priced": result.total_micro_dollars > 0}))
             "transcript_analysis.session_pricing",
         ]
         assert report["priced"] is True
-
-    def test_changed_modules_parse_at_the_python_3_11_grammar(self):
-        """A partial guard against syntax newer than the 3.11 floor.
-
-        Rejects:
-        - 3.12+ syntax such as `type X = int`, PEP 695 generics, and unparenthesized `except A, B:`.
-
-        Misses:
-        - PEP 701 nested-quote f-strings, which `feature_version=(3, 11)` accepts.
-        - Every module except the three checked here.
-        - Newer library calls.
-        """
-        package_dir = Path(session_pricing.__file__).parent
-        for module_name in ("session_pricing.py", "pricing.py", "corpus.py"):
-            source = (package_dir / module_name).read_text()
-            ast.parse(source, feature_version=(3, 11))

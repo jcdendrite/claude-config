@@ -4,22 +4,16 @@ Unit tests import the script and call its named entry points. Behavior tests
 run it as a subprocess against a scratch repo, with a `gh` shim and a `git`
 wrapper first on PATH. The shim records every `gh` argv. The wrapper records
 every `git` argv and refuses `push`, so a regression never reaches a network.
-
-Python-floor tests hold the script to 3.11 grammar. They do not cover stdlib
-APIs added after 3.11.
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
-import io
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
-import tokenize
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -770,42 +764,6 @@ class TestReadOnlyGitArgvGuard:
     ) -> None:
         with pytest.raises(AssertionError):
             _assert_read_only_git_argv(argv)
-
-
-# ---------------------------------------------------------------------------
-# Python floor
-# ---------------------------------------------------------------------------
-
-
-def _fstring_offenders(source: str) -> list[int]:
-    """Line numbers of f-strings that span lines or hold a string literal, which only 3.12 grammar accepts."""
-    offenders: list[int] = []
-    open_start_lines: list[int] = []
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.FSTRING_START:
-            if open_start_lines:
-                offenders.append(token.start[0])
-            open_start_lines.append(token.start[0])
-        elif token.type == tokenize.STRING and open_start_lines:
-            offenders.append(token.start[0])
-        elif token.type == tokenize.FSTRING_END:
-            start_line = open_start_lines.pop()
-            if token.end[0] != start_line:
-                offenders.append(start_line)
-    return offenders
-
-
-class TestPythonFloor:
-    def test_script_parses_under_python_311_grammar(self) -> None:
-        """Covers 3.11 grammar except PEP 701 f-strings, which parse accepts."""
-        ast.parse(_SCRIPT_PATH.read_text(), feature_version=(3, 11))
-
-    @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 701 f-strings only parse on 3.12+")
-    def test_script_has_no_fstring_that_only_python_312_accepts(self) -> None:
-        """Covers the PEP 701 f-string forms that feature_version=(3, 11) accepts."""
-        assert _fstring_offenders('f"{d["k"]}"') != [], "the check must flag a nested string literal"
-
-        assert _fstring_offenders(_SCRIPT_PATH.read_text()) == []
 
 
 # ---------------------------------------------------------------------------

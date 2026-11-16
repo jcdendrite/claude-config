@@ -34,6 +34,21 @@ HOOKS_DIR = "claude/.claude/hooks"
 HOOKS_TESTS_DIR = "claude/.claude/hooks/tests"
 SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
+# The Cursor adapter's shim and data files. The two hooks tests below run the shim through a subprocess or a path import
+# and read its JSON files, which TestCrossDomainReadCompleteness cannot see, so a change under the directory selects them
+# by path. The blanket SCRIPTS_DIR rule still selects the scripts tests.
+CURSOR_ADAPTER_DIR = "claude/.claude/scripts/cursor-adapter"
+CURSOR_ADAPTER_READING_TESTS = (
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_lib_parity.py",
+)
+# test_cursor_adapter_translate.py (SCRIPTS_TESTS_DIR) runs parse-manifest-dependencies.py through
+# ask-new-dependency-disclosure.sh, which calls it, a subprocess read TestCrossDomainReadCompleteness cannot see.
+# The row selects the whole SCRIPTS_TESTS_DIR, as the hooks-dir shell-script row does,
+# so a later scripts test that runs the helper is covered too.
+HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS = (
+    "claude/.claude/hooks/parse-manifest-dependencies.py",
+)
 SKILLS_DIR = "claude-skills/skills"
 SKILLS_TESTS_DIR = "claude-skills/skills/tests"
 REVIEW_PR_SKILL_DIR = "claude-skills/skills/review-pr"
@@ -59,6 +74,10 @@ CLAUDE_TESTS_DIR = "claude/.claude/tests"
 REVIEW_BENCH_DIR = "evals/review_bench"
 REVIEW_BENCH_RUNNER = "evals/run_review_bench.py"
 REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
+# evals/replay_bench's own domain, shaped like review_bench's: its source tree
+# and its flat test files.
+REPLAY_BENCH_DIR = "evals/replay_bench"
+REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"
 # A sibling tree, not a REVIEW_BENCH_DIR subdirectory: evals/fixtures/, not
 # evals/review_bench/, and hyphenated review-bench, not review_bench.
 # test_review_bench_runner.py loads its scenarios from here.
@@ -77,8 +96,27 @@ MEASURE_EXPLORE_RECALL_TEST = "evals/test_measure_explore_recall.py"
 # test is its only automated-test consumer. The recall scorer also reads it,
 # but at runtime via --fixtures, not through a test.
 MEASURE_EXPLORE_RECALL_FIXTURE = "evals/fixtures/explore-recall-cases.json"
-# Applies to every test under evals/, which are exactly the review_bench
-# tests, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and MEASURE_EXPLORE_RECALL_TEST.
+# The one-time Main session adherence gate: its module imports measure_subagent_model_resolution,
+# measure_explore_recall, run_skill_evals and review_bench.runner, so an edit to any of them also needs its tests.
+MEASURE_MAIN_SESSION_RULE_ADHERENCE = "evals/measure_main_session_rule_adherence.py"
+MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST = "evals/test_measure_main_session_rule_adherence.py"
+MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST = "evals/test_main_session_rule_adherence_fixtures.py"
+MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR = "evals/fixtures/main-session-rule-adherence"
+# The seeded projects the gate copies into every sample and hashes into its run header; its tests assert on their content.
+DISPATCH_PROJECT_FIXTURE_DIR = "evals/fixtures/dispatch-project"
+TEMP_PROJECT_FIXTURE_DIR = "evals/fixtures/temp-project"
+TEMP_PROJECT_STAGED_PATCH = "evals/fixtures/temp-project.staged.patch"
+# Not a test file: a plain module the gate's test and the model-resolution test import, so an edit to it selects
+# every evals test through the review_bench predicate.
+EVALS_PROCESS_TEST_HELPERS = "evals/process_test_helpers.py"
+# Every evals test a review_bench, measure_subagent_model_resolution, measure_explore_recall, run_skill_evals or
+# _config_dir edit selects.
+EVALS_TEST_TARGETS = (
+    REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    MEASURE_EXPLORE_RECALL_TEST, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+    MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
+)
+# Applies to every test under evals/, which are exactly EVALS_TEST_TARGETS.
 EVALS_CONFTEST = "evals/conftest.py"
 
 # Every claude/.claude/scripts module the review_bench sources import,
@@ -129,10 +167,10 @@ TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcri
 # production constant TestCrossDomainReadCompleteness's scan cannot see.
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 TRANSCRIPT_REDACTION_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_redaction.py"
-# test_transcript_review_trace.py reads SKILL.md files by path. It is a
+# test_transcript_review_trace_spawn_rounds.py reads SKILL.md files by path. It is a
 # SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
 # selecting that whole domain from a SKILL.md edit.
-TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
+TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace_spawn_rounds.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -240,6 +278,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/__init__.py",
     "claude/.claude/hooks/tests/conftest.py",
     "claude/.claude/hooks/tests/_lib_sh_helpers.py",
+    "claude/.claude/hooks/tests/_cursor_payloads.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
     "claude/.claude/hooks/tests/test_review_ledger_script.py",
 })
@@ -263,10 +302,15 @@ HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS: frozenset[str] = frozenset({
     REVIEW_LEDGER_SCRIPT_TEST_PATH,
 })
 
-# HOOKS_TESTS_DIR test files that import SKILL_STRUCTURE_VALIDATOR_MODULE by name.
+# HOOKS_TESTS_DIR test files that import SKILL_STRUCTURE_VALIDATOR_MODULE by
+# name or through test_agent_roster.py.
 HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/test_agent_roster.py",
+    "claude/.claude/hooks/tests/test_announce_branch_review_history.py",
+    DOC_COUNTS_TEST_PATH,
+    "claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py",
     "claude/.claude/hooks/tests/test_global_claude_md_groups.py",
+    "claude/.claude/hooks/tests/test_send_back_skipped_self_review.py",
 })
 
 # SKILLS_TESTS_DIR test files that import run_skill_evals by name, which in
@@ -281,6 +325,10 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_generate.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_translate.py",
     "claude/.claude/scripts/tests/test_diff_size_ack.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
     "claude/.claude/scripts/tests/test_review_pr_lib.py",
@@ -320,9 +368,6 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     BRIEF_SKILL_MD,
 })
 
-# test_ci_path_filter.py reads this exact file by path.
-GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
-
 # test_config_py.py and test_config_parser_parity.py (SCRIPTS_TESTS_DIR) read
 # this exact file by path to drive _config.py against it; test_config_lib.py
 # (HOOKS_TESTS_DIR) reads it via _config.sh's own schema reader. Already
@@ -352,10 +397,12 @@ CHANGELOG_MD = "CHANGELOG.md"
 # this exact file by path.
 TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
 
-# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path,
-# and test_transcript_period_cost.py reads the first for its golden sample.
+# Tests under SCRIPTS_TESTS_DIR read these docs through module-level constants,
+# which TestCrossDomainReadCompleteness (test_select_tests.py) resolves and checks.
 TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
 PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
+SESSION_CONFIG_KEYS_LOG_DOC_MD = "docs/session-config-keys-log.md"
+AGENT_BRANCH_RECORDS_DOC_MD = "docs/agent-branch-records.md"
 
 # Blanket for every file under docs/, rather than one exact-match constant
 # per file: test_hook_alignment.py reads docs/hooks.md, test_doc_counts.py
@@ -372,7 +419,11 @@ DOCS_DIR = "docs"
 # also reads it for the per-account state-path contract.
 # test_output_preferences_layering.py (HOOKS_TESTS_DIR) reads its Output
 # preferences section's template block and its pointer to GLOBAL_CLAUDE_MD.
+# test_transcript_routing_guard_capture.py reads it for a heading a printed
+# message cites, through a path built inside a test body that
+# TestCrossDomainReadCompleteness cannot resolve.
 README_MD = "README.md"
+ROUTING_GUARD_CAPTURE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_routing_guard_capture.py"
 
 # The test_install_sh_*.py family and test_shellcheck.py, both in
 # HOOKS_TESTS_DIR, read this file by path.
@@ -573,6 +624,8 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
 # HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, and CLAUDE_TESTS_DIR. Both pathspecs
 # let "*" match "/". CLAUDE_TESTS_DIR's own files are covered by its own
 # domain rule already, so this predicate doesn't need to name that root.
+# CLAUDE_TESTS_DIR's test_ci_path_filter.py also depends on this selection,
+# because its lint-collection probe collects hooks/tests/test_shellcheck.py.
 # A strict subset of _is_py_source_under_claude_or_plugins: the scope
 # matches that predicate's three roots, so a repo-root conftest.py or
 # __init__.py still reaches the unmatched-path fallback.
@@ -604,17 +657,34 @@ def _is_test_source_change(path: str) -> bool:
 # flat test files (matched by glob, since evals/ keeps test_*.py beside its
 # source rather than under tests/). Also covers MEASURE_SUBAGENT_MODEL_RESOLUTION,
 # MEASURE_EXPLORE_RECALL, and their test files -- see each constant's own
-# comment above.
+# comment above. Its target set also holds REPLAY_BENCH_TEST_GLOB, since
+# evals/replay_bench imports review_bench and the shared EVALS_CONFTEST applies
+# to both test sets.
 def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
+        or _is_under(path, MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR)
+        or _is_under(path, DISPATCH_PROJECT_FIXTURE_DIR)
+        or _is_under(path, TEMP_PROJECT_FIXTURE_DIR)
         or path in (
             REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             MEASURE_EXPLORE_RECALL, MEASURE_EXPLORE_RECALL_TEST, MEASURE_EXPLORE_RECALL_FIXTURE, EVALS_CONFTEST,
+            MEASURE_MAIN_SESSION_RULE_ADHERENCE, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+            MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST, EVALS_PROCESS_TEST_HELPERS, TEMP_PROJECT_STAGED_PATCH,
         )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
+
+
+# test_trigger_detector.py reaches these fixtures only through run_skill_evals.seed_temp_project_git, which copies
+# them by path at run time, so the import-based rows cannot see the dependency.
+def _is_temp_project_fixture_change(path: str) -> bool:
+    return _is_under(path, TEMP_PROJECT_FIXTURE_DIR) or path == TEMP_PROJECT_STAGED_PATCH
+
+
+def _is_replay_bench_change(path: str) -> bool:
+    return _is_under(path, REPLAY_BENCH_DIR) or (path.startswith("evals/test_replay_bench") and path.endswith(".py"))
 
 
 # (predicate, target paths added when it matches) — a plain domain rule.
@@ -629,10 +699,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
-    (
-        _is_review_bench_change,
-        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
-    ),
+    (_is_review_bench_change, EVALS_TEST_TARGETS),
+    (_is_replay_bench_change, (REPLAY_BENCH_TEST_GLOB,)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -669,10 +737,13 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # member imports transcript_analysis.author_outcome, a module inside this
 # package.
 # SKILL_STRUCTURE_VALIDATOR_MODULE: every
-# HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR member imports it by name.
+# HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR member imports it by name or
+# through test_agent_roster.py.
 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: every
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES member imports one of these
 # hooks-test-tree modules by name.
+# CURSOR_ADAPTER_DIR: see that constant's own comment above.
+# HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS: see its own comment above for citation.
 # _is_plugin_manifest_change: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # See its own comment above for why it's narrower than _is_plugin_subpath.
@@ -689,6 +760,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # _is_scripts_dir_shell_script_change: same test_shellcheck.py dependency as
 # above, for a shell script under claude/.claude/scripts/ rather than
 # plugins/lovable-cloud/scripts/ or /lib/.
+# test_python_floor.py (HOOKS_TESTS_DIR) reads _ci-python-pin-lib.sh by path.
 # test_skills.py's test_scripts_are_executable (SKILLS_TESTS_DIR) globs
 # SCRIPTS_DIR for a .sh executable-bit check, non-recursively; the
 # corresponding exception below over-selects for a nested SCRIPTS_DIR script
@@ -707,12 +779,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. test_pr_create_preflight.py
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
-# 1 and 8 name to the script's. test_transcript_review_trace.py
+# 1 and 8 name to the script's. test_transcript_review_trace_spawn_rounds.py
 # (SCRIPTS_TESTS_DIR) reads it for the round= token the [SILENT-SKIP] recovery
 # step names. test_pr_diff_against_base.py (SCRIPTS_TESTS_DIR) reads it for the
 # DIFF_EMPTY: token step 3 keys its halt on. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
-# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
+# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH
 # (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate
 # and completion recipes. Standalone row for the same reason as
 # CODE_REVIEW_SKILL_MD's second row; it names the one reading file rather
@@ -741,6 +813,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # The hook's read closure is .sh files plus config-keys.psv. This rule and
 # the CONFIG_KEYS_PSV row both map to SCRIPTS_TESTS_DIR, so the test needs no
 # exact-path constant. A read of any other file type would need one.
+# test_cursor_adapter_translate.py (SCRIPTS_TESTS_DIR) scans every hook's
+# source for the payload fields it reads and runs _lib.sh's fragment splitter
+# (_lib_split_fragments, a sed pipeline, not the tokenizer), both from function
+# bodies TestCrossDomainReadCompleteness can't see either.
 # _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
 # and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the
@@ -762,13 +838,11 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
-# GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
-# reads this exact file. Subsumed by the RULES_DIR row above. Kept anyway
-# because its declaration is narrower and independent of that row.
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
-# TRANSCRIPT_ANALYSIS_DOC_MD and PRIVATE_PROJECT_REDACTION_DOC_MD: see their own comment above for citation.
+# TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD, SESSION_CONFIG_KEYS_LOG_DOC_MD and
+# AGENT_BRANCH_RECORDS_DOC_MD: see their own comment above for citation.
 # DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, ROOT_SCRIPTS_DIR, and CLAUDE_SETTINGS_JSON:
 # see each constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
@@ -797,6 +871,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # shared SKILLS_TESTS_DIR target below, because that predicate also matches
 # every plugins/skill-management/scripts/*.py change, which has no
 # review_bench dependency.
+# REPLAY_BENCH_TEST_GLOB (the same two rows): evals/replay_bench/tasks.py
+# imports review_bench.runner, which imports run_skill_evals.py and
+# _config_dir.py. A change to one also needs the replay tests re-run, and the
+# dependencies row over-selects it for the transcript_analysis modules.
 # MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES
 # and SKILL_EVALS_RUNNER rows):
 # measure_subagent_model_resolution.py imports run_skill_evals.py, which
@@ -818,18 +896,26 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # review_bench edit.
 # The other files in _HAND_AUDITED_AGENTS_DIR_READERS are covered by the
 # SELECT_TESTS_TEST_PATH comment.
+# REPLAY_BENCH_DIR (standalone row): SELECT_TESTS_TEST_PATH's own tests read the
+# replay package's files by path from a function body, which
+# TestCrossDomainReadCompleteness cannot see.
+# The row is standalone because folding this target into the replay domain row
+# would run test_select_tests.py on every replay test edit.
+# MEASURE_MAIN_SESSION_RULE_ADHERENCE (standalone row): SELECT_TESTS_TEST_PATH's
+# import-closure test reads this module by path from a function body, which
+# TestCrossDomainReadCompleteness cannot see.
+# The row is standalone because the review_bench predicate already includes this
+# file, and folding this target in would run test_select_tests.py on every
+# review_bench edit.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
-    (
-        lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES,
-        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
-    ),
-    (
-        lambda p: p == SKILL_EVALS_RUNNER,
-        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
-    ),
+    (lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES, EVALS_TEST_TARGETS),
+    (lambda p: p == SKILL_EVALS_RUNNER, EVALS_TEST_TARGETS),
+    (_is_temp_project_fixture_change, tuple(sorted(SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER))),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: _is_under(p, REPLAY_BENCH_DIR), (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: p == MEASURE_MAIN_SESSION_RULE_ADHERENCE, (SELECT_TESTS_TEST_PATH,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (
@@ -853,6 +939,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     ),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
+    (lambda p: _is_under(p, CURSOR_ADAPTER_DIR), CURSOR_ADAPTER_READING_TESTS),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),
@@ -862,7 +949,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_TEST_PATH,)),
+    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH,)),
     (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PLAN_IT_SKILL_MD, (PLAN_SHAPE_TEST_PATH,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
@@ -872,6 +959,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PERIOD_COST_REPORT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p in HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: _is_under(p, AGENTS_DIR),
         (
@@ -881,11 +969,19 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         ),
     ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
-    (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: p in (TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD), (SCRIPTS_TESTS_DIR,)),
+    (
+        lambda p: p
+        in (
+            TRANSCRIPT_ANALYSIS_DOC_MD,
+            PRIVATE_PROJECT_REDACTION_DOC_MD,
+            SESSION_CONFIG_KEYS_LOG_DOC_MD,
+            AGENT_BRANCH_RECORDS_DOC_MD,
+        ),
+        (SCRIPTS_TESTS_DIR,),
+    ),
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, ROUTING_GUARD_CAPTURE_TEST_PATH)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
     (lambda p: p == INSTALL_DEV_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SCRIPTS_DIR), (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),

@@ -38,7 +38,7 @@ The fields extracted from a main-thread record or an orchestrator transcript are
 - each record's `type`, `requestId` and `timestamp`, and `isSidechain` on main-thread records;
 - whether `message.content` is a list, and each block's `type`;
 - tool_use `name`, `id` and `input.subagent_type`, the Bash `input.command`
-  (read only by the marker matcher), and `tool_result` `tool_use_id`;
+  (read only by the marker matcher), and `tool_result` `tool_use_id` and `is_error`;
 - on main-thread records only, the round-open fields: a Skill tool_use's
   `input.skill`, an Agent tool_use's `input.subagent_type`, and a user
   record's text (matched for a slash-command tag), plus the `isMeta` and
@@ -64,7 +64,7 @@ import re
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -81,6 +81,7 @@ _CODE_REVIEW_SKILL = "code-review"
 # targets, not a second validator.
 _DISPOSITION_ADDRESS = "ADDRESS"
 _DISPOSITION_SETTLED = "SETTLED"
+_DISPOSITION_CONSULT = "CONSULT"
 _AUTHORING_AGENT_CODE_WRITER = "code-writer"
 _AUTHORING_AGENT_INLINE = "inline"
 _AUTHORING_AGENT_MIXED = "mixed"
@@ -140,8 +141,7 @@ def _is_clean_marker_write(command: str) -> bool:
     Stricter than a substring search, and deliberately weaker than
     reimplementing enforce-marker-script-shape.sh's own MARKER_SHAPE regex.
     That hook's header lists shell indirection (a variable or function wrapper)
-    as an open gap, so a call spelled that way is missed here. The signal is
-    only a fallback for a round with no ledger row (see _classify_round).
+    as an open gap, so a call spelled that way is missed here.
     """
     for segment in corpus.split_command_segments(command):
         if len(segment) < 3:
@@ -161,6 +161,8 @@ class _OrchestratorSpawn(NamedTuple):
 
     spawn_idx: the main-thread record index of the spawn.
     has_clean_marker_write: whether the transcript holds a clean-marker write.
+    has_confirmed_marker_write: whether such a write has a paired tool_result
+        that is not an error.
     nested_dispatches: (start_ts, completion_idx) for each nested dispatch of
         the `--agent` type. start_ts is the nested dispatch's own tool_use
         timestamp. completion_idx is spawn_idx when the transcript holds a
@@ -169,13 +171,15 @@ class _OrchestratorSpawn(NamedTuple):
 
     spawn_idx: int
     has_clean_marker_write: bool
+    has_confirmed_marker_write: bool
     nested_dispatches: list[tuple[float | None, int | None]]
 
 
-def _records_have_clean_marker_write(records: list[dict]) -> bool:
-    """True iff any Bash tool_use command in `records` is the hook-allowlisted
-    `marker.sh write code-review` shape. Applies no sidechain filter, so it
-    reads a subagent transcript as well as main-thread records."""
+def _records_have_clean_marker_write(
+    records: list[dict], succeeded_tool_use_ids: Collection[str] | None = None,
+) -> bool:
+    """Applies no sidechain filter, so it reads a subagent transcript as well
+    as main-thread records."""
     for rec in records:
         if rec.get("type") != "assistant":
             continue
@@ -183,6 +187,11 @@ def _records_have_clean_marker_write(records: list[dict]) -> bool:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             if block.get("name") != "Bash":
+                continue
+            tool_use_id = block.get("id")
+            if succeeded_tool_use_ids is not None and (
+                not isinstance(tool_use_id, str) or tool_use_id not in succeeded_tool_use_ids
+            ):
                 continue
             command = (block.get("input") or {}).get("command") or ""
             if _is_clean_marker_write(command):
@@ -193,22 +202,26 @@ def _records_have_clean_marker_write(records: list[dict]) -> bool:
 def _round_has_marker_write(
     records: list[dict], open_idx: int, span_end: int,
     orchestrator_spawns: Sequence[_OrchestratorSpawn] = (),
+    *, succeeded_tool_use_ids: Collection[str] | None = None,
 ) -> bool:
     """True iff this round's own outcome span [open_idx, span_end) holds a
-    hook-allowlisted `marker.sh write code-review` -- the fallback signal used
-    only when the round has no ledger row at all (see _classify_round).
+    hook-allowlisted `marker.sh write code-review`.
 
-    The span's main-thread records are read, and so is the transcript of every
-    orchestrator spawn whose spawn_idx falls inside the span. The signal is
-    "attempted, not confirmed"; docs/transcript-analysis.md's author-outcome
-    "Orchestrator rounds" section lists what it counts besides a successful
-    write.
+    With `succeeded_tool_use_ids` None the signal is "attempted": a write
+    counts whether or not it succeeded, and docs/transcript-analysis.md's
+    author-outcome "Orchestrator rounds" section lists what it counts besides
+    a successful write. With a collection the signal is "confirmed": a
+    main-thread write counts only when its tool_use id is in the collection
+    (it has a paired non-error result). An orchestrator spawn's write is
+    judged against the spawn's own transcript, independent of the collection.
+    Neither proves the marker was stored.
     """
     main_thread_span = [rec for rec in records[open_idx:span_end] if not rec.get("isSidechain")]
-    if _records_have_clean_marker_write(main_thread_span):
+    if _records_have_clean_marker_write(main_thread_span, succeeded_tool_use_ids):
         return True
+    confirmed_only = succeeded_tool_use_ids is not None
     return any(
-        spawn.has_clean_marker_write
+        spawn.has_confirmed_marker_write if confirmed_only else spawn.has_clean_marker_write
         for spawn in orchestrator_spawns
         if open_idx <= spawn.spawn_idx < span_end
     )
@@ -430,7 +443,8 @@ def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
     """Group a session's round-keyed rows into blocks: each maximal run of
     one (file, round) pair is one block, in entry order. A row without an
     integer, non-bool `round` (a pre-round legacy row, or a JSON boolean)
-    belongs to no block.
+    belongs to no block. A CONSULT row records a round-cap consult's verdict,
+    not a review outcome, so it belongs to no block either.
 
     A round value whose rows are split across two non-adjacent runs keeps a
     second, separate block, which dict-style first-occurrence dedup would
@@ -439,6 +453,7 @@ def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
     keyed_entries = [
         (file_index, row) for file_index, row in row_entries
         if isinstance(row.get("round"), int) and not isinstance(row.get("round"), bool)
+        and row.get("disposition") != _DISPOSITION_CONSULT
     ]
     return [
         [row for _file_index, row in run]
@@ -568,9 +583,9 @@ def _classify_round(
     if has_marker_write:
         # No round-keyed ledger rows for this round: every append may have
         # errored, or the rows were swept or predate round keys. The round's
-        # own clean-marker write still ran, so the review did conclude clean.
-        # Distinct from a genuine ledger-backed PASS: this bucket is inferred,
-        # not asserted.
+        # own clean-marker write was attempted, and a failed write counts as an
+        # attempt, so the PASS is inferred from the attempt. Distinct from a
+        # genuine ledger-backed PASS: this bucket is inferred, not asserted.
         data_quality[_DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] += 1
         return _OUTCOME_PASS, round_rows
     return _OUTCOME_UNATTRIBUTED, round_rows
@@ -638,6 +653,25 @@ def _build_tool_result_index_map(records: list[dict], *, skip_sidechain: bool = 
     return index_map
 
 
+def _succeeded_tool_use_ids(records: list[dict], *, skip_sidechain: bool = True) -> set[str]:
+    succeeded: set[str] = set()
+    for rec in records:
+        if skip_sidechain and rec.get("isSidechain"):
+            continue
+        if rec.get("type") != "user":
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            tool_use_id = block.get("tool_use_id")
+            if isinstance(tool_use_id, str) and tool_use_id and not block.get("is_error"):
+                succeeded.add(tool_use_id)
+    return succeeded
+
+
 def _nested_dispatches_of_transcript(
     transcript_records: list[dict], spawn_idx: int, agent_type: str, data_quality: Counter,
 ) -> list[tuple[float | None, int | None]]:
@@ -703,6 +737,9 @@ def _orchestrator_spawns(
             spawns.append(_OrchestratorSpawn(
                 spawn_idx,
                 _records_have_clean_marker_write(transcript_records),
+                _records_have_clean_marker_write(
+                    transcript_records, _succeeded_tool_use_ids(transcript_records, skip_sidechain=False),
+                ),
                 _nested_dispatches_of_transcript(transcript_records, spawn_idx, agent_type, data_quality),
             ))
     return spawns
@@ -932,3 +969,25 @@ def _print_author_outcome_report(result: dict, *, agent_type: str, since_raw: st
     dq_label_width = max(len(label) for label in _DATA_QUALITY_KEYS)
     for key in _DATA_QUALITY_KEYS:
         print(f"  {key:<{dq_label_width}} {data_quality[key]:>3}")
+
+
+def _add_author_outcome_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_author_outcome = subparsers.add_parser(
+        "author-outcome",
+        help=(
+            "For each --agent-typed dispatch (default code-writer), what share of its own diffs"
+            " drew a must-fix (ADDRESS) finding on downstream code-review. Reads the transcript for"
+            " round/dispatch structure and the review-narrative-ledger rows each session wrote for"
+            " disposition. Corpus-wide, no gh calls."
+        ),
+    )
+    scope._add_project_scope_args(p_author_outcome)
+    p_author_outcome.add_argument(
+        "--agent", metavar="NAME", default=_AUTHORING_AGENT_CODE_WRITER,
+        help="subagent_type to join dispatches against (default: code-writer).",
+    )
+    p_author_outcome.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
+    )
+    p_author_outcome.set_defaults(func=cmd_author_outcome)

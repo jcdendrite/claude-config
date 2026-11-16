@@ -1982,6 +1982,42 @@ _lib_fragment_invokes_git() {
   $found
 }
 
+# The git 2.43 global flags that take a separate-word value. A later git
+# version adding another needs this list updated by hand.
+_LIB_GIT_GLOBAL_VALUE_FLAGS=(-C -c --git-dir --work-tree --namespace --super-prefix --config-env --attr-source)
+
+_lib_git_global_flag_takes_value() {
+  local flag
+  for flag in "${_LIB_GIT_GLOBAL_VALUE_FLAGS[@]}"; do
+    [ "$1" = "$flag" ] && return 0
+  done
+  return 1
+}
+
+# Builtins that `git --list-cmds=builtins` prints on git 2.43, CI's git.
+# Internal helpers and platform-conditional daemons are left off.
+# Git ignores an alias that hides one of these names.
+_LIB_GIT_BUILTIN_SUBCOMMANDS=(
+  add am annotate apply archive bisect blame branch bugreport bundle cat-file
+  check-attr check-ignore check-mailmap check-ref-format checkout checkout-index
+  cherry cherry-pick clean clone column commit commit-graph commit-tree config
+  count-objects credential credential-store describe diagnose diff diff-files
+  diff-index diff-tree difftool fast-export fast-import fetch fetch-pack
+  fmt-merge-msg for-each-ref for-each-repo format-patch fsck fsck-objects gc
+  get-tar-commit-id grep hash-object help hook index-pack init init-db
+  interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit
+  maintenance merge merge-base merge-file merge-index merge-ours merge-recursive
+  merge-recursive-ours merge-recursive-theirs merge-subtree merge-tree mktag
+  mktree multi-pack-index mv name-rev notes pack-objects pack-redundant
+  pack-refs patch-id prune prune-packed pull push range-diff read-tree rebase
+  receive-pack reflog remote repack replace rerere reset restore rev-list
+  rev-parse revert rm send-pack shortlog show show-branch show-index show-ref
+  sparse-checkout stage stash status stripspace switch symbolic-ref tag
+  unpack-file unpack-objects update-index update-ref update-server-info
+  upload-archive upload-pack var verify-commit verify-pack verify-tag version
+  whatchanged worktree write-tree
+)
+
 # Print a git fragment's argv from the subcommand onward, one word per line.
 # Walks words to the `git` command word (same scan as _lib_fragment_invokes_git).
 # Then consumes git's global flags and the values the value-taking ones absorb.
@@ -1989,7 +2025,7 @@ _lib_fragment_invokes_git() {
 # subcommand's own arguments.
 # Prints nothing when no subcommand word follows the flags (`git --version`).
 # The `--git-dir=<path>` form carries its value in the same word, so the
-# catch-all `-*` arm skips it rather than the value-consuming arm.
+# `-*` arm skips it like any other flag.
 # Globbing is disabled so a wildcard in the command text is not expanded.
 #
 # Caller contract: word comparisons here are quote-blind by design, same as
@@ -1999,7 +2035,7 @@ _lib_git_argv_from_subcmd() {
   local fragment="$1"
   local saved_opts=$-
   set -f
-  local past_git=false skip_next=false past_subcmd=false word
+  local past_git=false skip_next=false past_subcmd=false word flag takes_value
   for word in $fragment; do
     if $past_subcmd; then
       printf '%s\n' "$word"
@@ -2012,11 +2048,15 @@ _lib_git_argv_from_subcmd() {
       continue
     fi
     if $skip_next; then skip_next=false; continue; fi
+    takes_value=false
+    for flag in "${_LIB_GIT_GLOBAL_VALUE_FLAGS[@]}"; do
+      if [[ "$word" == "$flag" ]]; then takes_value=true; break; fi
+    done
+    if $takes_value; then
+      skip_next=true
+      continue
+    fi
     case "$word" in
-      # The git 2.43 global flags that take a separate-word value. A later git
-      # version adding another needs this list updated by hand.
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
-        skip_next=true ;;
       -*) ;;
       *) printf '%s\n' "$word"; past_subcmd=true ;;
     esac
@@ -2043,6 +2083,375 @@ _lib_extract_git_subcmd_args() {
   argv=$(_lib_git_argv_from_subcmd "$1")
   [[ "$argv" == *$'\n'* ]] || return 0
   printf '%s\n' "${argv#*$'\n'}"
+}
+
+# Exit 0 when WORD holds a quote character, `$`, a backtick, `<`, `>`, `\`,
+# `{`, `}`, `?`, `[` or `]`.
+# Called on text that went through _lib_mask_shell_quotes or _lib_strip_shell_quotes.
+# The shell may rewrite such a word (escape or brace expansion, or a `?` or `[`
+# glob) before git sees it, so the parser cannot read it as literal text.
+# A single-item brace such as `HEAD^{commit}` is left alone by the shell and
+# still counts. A git refname cannot hold `\`, `?` or `[`. An asterisk is not in
+# the set.
+_lib_git_push_word_is_computed() {
+  case "$1" in
+    *\"*|*\'*|*\$*|*\`*|*\<*|*\>*|*\\*|*\{*|*\}*|*\?*|*\[*|*\]*) return 0 ;;
+  esac
+  return 1
+}
+
+# Exit 0 when a -C, --git-dir or GIT_DIR value is computed, or starts with a
+# `~` that is not `~/`.
+_lib_git_push_path_is_unresolvable() {
+  _lib_git_push_word_is_computed "$1" && return 0
+  [[ "$1" == \~* && "$1" != \~/* ]]
+}
+
+# _lib_git_push_compose_path OUT_VAR BASE NEXT
+# Sets OUT_VAR to NEXT applied onto BASE the way git applies successive -C
+# values: an absolute NEXT restarts the path, a relative one extends BASE, and
+# a leading `~/` reads as $HOME/.
+# Sets the variable with printf -v because _lib_git_push_targets forks nothing.
+_lib_git_push_compose_path() {
+  local out_var="$1" base="$2" next="$3"
+  if [[ "$next" == \~/* ]]; then
+    next="${HOME:-}/${next:2}"
+  fi
+  if [ -z "$base" ] || [[ "$next" == /* ]]; then
+    printf -v "$out_var" '%s' "$next"
+  else
+    printf -v "$out_var" '%s' "$base/$next"
+  fi
+}
+
+# _lib_git_push_add_config OUT_VAR RAW
+# Appends a `config <key>` record to OUT_VAR for RAW (`key=value`), with the
+# key as git canonicalizes it: section and variable name lowercased, any
+# subsection kept. Appends nothing for an empty key.
+_lib_git_push_add_config() {
+  local key="${2%%=*}" section rest variable
+  [ -n "$key" ] || return 0
+  if [[ "$key" == *.*.* ]]; then
+    section="${key%%.*}"
+    rest="${key#*.}"
+    variable="${rest##*.}"
+    key="${section,,}.${rest%.*}.${variable,,}"
+  else
+    key="${key,,}"
+  fi
+  printf -v "$1" '%s%s\n' "${!1}" "config"$'\t'"$key"
+}
+
+_lib_git_push_note_reason() {
+  local current="${!1}"
+  case $'\n'"$current" in
+    *$'\n'"$2"$'\n'*) return 0 ;;
+  esac
+  printf -v "$1" '%s%s\n' "$current" "$2"
+}
+
+# _lib_git_push_targets FRAGMENT
+# Parse one fragment of quote-masked or quote-stripped text as a push-family
+# command: `git push`, `git subtree push`, `git send-pack`, or the dashed
+# `git-push`, `git-send-pack` and `git-subtree push`. Forks nothing.
+# Exits 1 with no output when FRAGMENT is none of those. Otherwise exits 0 and
+# prints tab-separated records, `ref` records in refspec order:
+#   repo <form> <path>      form is cwd (empty path), C (the -C values composed
+#                           in order) or git-dir (--git-dir or GIT_DIR=
+#                           composed onto any -C path)
+#   config <key>            once per -c or --config-env key, canonical case;
+#                           `*` for a GIT_CONFIG_PARAMETERS= or
+#                           GIT_CONFIG_COUNT= prefix
+#   remote <word>           the first positional word, else the --repo value
+#   ref <source> <dest>     one per refspec; a leading `+` is stripped, one
+#                           leading `refs/heads/` or else `heads/` is dropped
+#                           from dest, and the source is empty for a deletion
+#   no-refspec              no refspec word was given
+#   tags / dry-run          --tags; --dry-run or -n
+#   unresolvable <reason>   all, mirror, glob, matching, prune, stdin, no-refs,
+#                           remote, refspec, repo-path or appended-args
+# Records are split by parameter expansion on the first and last tab, never with
+# `IFS=$'\t' read`, because a deletion's `ref` record has an empty source field
+# that `read` collapses.
+# A word that is unresolvable adds its reason and no remote or ref record.
+# A send-pack command has no default refspec, so it prints no-refs rather than
+# no-refspec.
+_lib_git_push_targets() {
+  local -a words=()
+  read -r -a words <<< "$1"
+  local word_count=${#words[@]} index=0 word value
+  local kind="" appended_args=false env_config_star=false git_dir_value=""
+  while [ "$index" -lt "$word_count" ]; do
+    word="${words[index]}"
+    index=$((index + 1))
+    # A NAME=value word is never the command word, so the assignment arms come first.
+    case "$word" in
+      GIT_DIR=*) git_dir_value="${word#GIT_DIR=}" ;;
+      GIT_CONFIG_PARAMETERS=*|GIT_CONFIG_COUNT=*) env_config_star=true ;;
+      [A-Za-z_]*=*) ;;
+      git|*/git) kind=git ;;
+      git-push|*/git-push) kind=push ;;
+      git-send-pack|*/git-send-pack) kind=send-pack ;;
+      git-subtree|*/git-subtree) kind=subtree ;;
+      xargs|*/xargs|parallel|*/parallel|-exec|-execdir|-ok|-okdir) appended_args=true ;;
+    esac
+    [ -z "$kind" ] || break
+  done
+  [ -n "$kind" ] || return 1
+
+  local mode="$kind" c_path="" config_records="" reasons=""
+  if [ "$kind" = git ]; then
+    mode=""
+    while [ "$index" -lt "$word_count" ]; do
+      word="${words[index]}"
+      index=$((index + 1))
+      if _lib_git_global_flag_takes_value "$word"; then
+        value=""
+        if [ "$index" -lt "$word_count" ]; then
+          value="${words[index]}"
+          index=$((index + 1))
+        fi
+        case "$word" in
+          -C)
+            if [ -z "$value" ]; then
+              :
+            elif _lib_git_push_path_is_unresolvable "$value"; then
+              _lib_git_push_note_reason reasons repo-path
+            else
+              _lib_git_push_compose_path c_path "$c_path" "$value"
+            fi
+            ;;
+          -c|--config-env) _lib_git_push_add_config config_records "$value" ;;
+          --git-dir) git_dir_value="$value" ;;
+        esac
+        continue
+      fi
+      case "$word" in
+        --git-dir=*) git_dir_value="${word#--git-dir=}" ;;
+        --config-env=*) _lib_git_push_add_config config_records "${word#--config-env=}" ;;
+        -*) ;;
+        *) mode="$word"; break ;;
+      esac
+    done
+  fi
+  if [ "$mode" = subtree ]; then
+    [ "$index" -lt "$word_count" ] && [ "${words[index]}" = push ] || return 1
+    index=$((index + 1))
+  elif [ "$mode" != push ] && [ "$mode" != send-pack ]; then
+    return 1
+  fi
+  if $env_config_star; then
+    printf -v config_records '%sconfig\t*\n' "$config_records"
+  fi
+  if $appended_args; then
+    _lib_git_push_note_reason reasons appended-args
+  fi
+
+  local delete_mode=false dry_run=false tags=false past_dashdash=false repo_flag_value=""
+  local -a positionals=()
+  local bundle letter letter_index
+  # Held in a variable because an unquoted `<` or `>` inside [[ ]] is not literal.
+  local redirect_pattern='^[0-9]*(&>>?|>>?&?|<&?|>[|])'
+  while [ "$index" -lt "$word_count" ]; do
+    word="${words[index]}"
+    index=$((index + 1))
+    # The shell applies redirections before git starts, even after `--`.
+    if [[ "$word" =~ $redirect_pattern ]]; then
+      [ "${BASH_REMATCH[0]}" != "$word" ] || index=$((index + 1))
+      continue
+    fi
+    if $past_dashdash; then
+      positionals+=("$word")
+      continue
+    fi
+    if [ "$mode" = subtree ]; then
+      case "$word" in
+        --) past_dashdash=true ;;
+        -P|--prefix|-m|--message|-b|--branch|--onto|--annotate) index=$((index + 1)) ;;
+        -?*) ;;
+        *) positionals+=("$word") ;;
+      esac
+      continue
+    fi
+    case "$word" in
+      --) past_dashdash=true ;;
+      -o|--push-option|--receive-pack|--exec|--recurse-submodules) index=$((index + 1)) ;;
+      --repo)
+        if [ "$index" -lt "$word_count" ]; then
+          repo_flag_value="${words[index]}"
+        fi
+        index=$((index + 1))
+        ;;
+      --repo=*) repo_flag_value="${word#--repo=}" ;;
+      --delete) delete_mode=true ;;
+      --tags) tags=true ;;
+      --dry-run) dry_run=true ;;
+      --all|--branches) _lib_git_push_note_reason reasons all ;;
+      --mirror) _lib_git_push_note_reason reasons mirror ;;
+      --prune) _lib_git_push_note_reason reasons prune ;;
+      --stdin) _lib_git_push_note_reason reasons stdin ;;
+      --*) ;;
+      -?*)
+        bundle="${word#-}"
+        letter_index=0
+        while [ "$letter_index" -lt "${#bundle}" ]; do
+          letter="${bundle:letter_index:1}"
+          case "$letter" in
+            d) delete_mode=true ;;
+            n) dry_run=true ;;
+            o)
+              [ "$((letter_index + 1))" -lt "${#bundle}" ] || index=$((index + 1))
+              break
+              ;;
+          esac
+          letter_index=$((letter_index + 1))
+        done
+        ;;
+      *) positionals+=("$word") ;;
+    esac
+  done
+
+  local repo_form=cwd repo_path="$c_path"
+  if [ -n "$git_dir_value" ]; then
+    repo_form=git-dir
+    if _lib_git_push_path_is_unresolvable "$git_dir_value"; then
+      _lib_git_push_note_reason reasons repo-path
+    else
+      _lib_git_push_compose_path repo_path "$c_path" "$git_dir_value"
+    fi
+  elif [ -n "$c_path" ]; then
+    repo_form=C
+  else
+    repo_path=""
+  fi
+
+  local remote_word="$repo_flag_value" remote_record="" ref_records=""
+  local -a refspecs=()
+  if [ "${#positionals[@]}" -gt 0 ]; then
+    remote_word="${positionals[0]}"
+    refspecs=("${positionals[@]:1}")
+  fi
+  if [ -z "$remote_word" ]; then
+    :
+  elif _lib_git_push_word_is_computed "$remote_word"; then
+    _lib_git_push_note_reason reasons remote
+  else
+    remote_record=$'remote\t'"$remote_word"$'\n'
+  fi
+
+  local refspec_count=${#refspecs[@]} refspec_index=0 spec ref_source ref_destination
+  while [ "$refspec_index" -lt "$refspec_count" ]; do
+    spec="${refspecs[refspec_index]}"
+    refspec_index=$((refspec_index + 1))
+    if [ "$spec" = tag ] && [ "$refspec_index" -lt "$refspec_count" ]; then
+      spec="refs/tags/${refspecs[refspec_index]}"
+      refspec_index=$((refspec_index + 1))
+    fi
+    spec="${spec#+}"
+    if _lib_git_push_word_is_computed "$spec"; then
+      _lib_git_push_note_reason reasons refspec
+    elif [ "$spec" = ":" ]; then
+      _lib_git_push_note_reason reasons matching
+    elif [[ "$spec" == *"*"* ]]; then
+      _lib_git_push_note_reason reasons glob
+    else
+      ref_source="$spec"
+      ref_destination="$spec"
+      if [[ "$spec" == *:* ]]; then
+        ref_source="${spec%%:*}"
+        ref_destination="${spec#*:}"
+      fi
+      if $delete_mode; then
+        ref_source=""
+      fi
+      if [[ "$ref_destination" == refs/heads/* ]]; then
+        ref_destination="${ref_destination#refs/heads/}"
+      elif [[ "$ref_destination" == heads/* ]]; then
+        ref_destination="${ref_destination#heads/}"
+      fi
+      ref_records+="ref"$'\t'"$ref_source"$'\t'"$ref_destination"$'\n'
+    fi
+  done
+
+  local no_refspec=false
+  if [ "$refspec_count" -eq 0 ]; then
+    if [ "$mode" != send-pack ]; then
+      no_refspec=true
+    else
+      case $'\n'"$reasons" in
+        *$'\n'all$'\n'*|*$'\n'mirror$'\n'*|*$'\n'stdin$'\n'*) ;;
+        *) _lib_git_push_note_reason reasons no-refs ;;
+      esac
+    fi
+  fi
+
+  printf 'repo\t%s\t%s\n' "$repo_form" "$repo_path"
+  printf '%s%s%s' "$config_records" "$remote_record" "$ref_records"
+  if $no_refspec; then printf 'no-refspec\n'; fi
+  if $tags; then printf 'tags\n'; fi
+  if $dry_run; then printf 'dry-run\n'; fi
+  local reason
+  while IFS= read -r reason; do
+    [ -n "$reason" ] || continue
+    printf 'unresolvable\t%s\n' "$reason"
+  done <<< "$reasons"
+  return 0
+}
+
+# _lib_push_protected_branches FORM PATH REMOTE
+# Print, one name per line, the branches an agent push must not move on REMOTE:
+# the branch refs/remotes/<REMOTE>/HEAD names when that symbolic ref resolves,
+# `main` and `master` always, and `develop` when the remote's HEAD does not
+# resolve. FORM and PATH are the parser's `repo` record; PATH is absolute.
+# A REMOTE that is not a plain remote name (a URL, a path, empty) gets no
+# lookup, so a push to one protects only the names above.
+# Local refs only, never the network. Exits 0, or 2 with no output when the
+# symbolic-ref read exits above 1 or FORM is unknown. Status 1 is an unset HEAD.
+_lib_push_protected_branches() {
+  local form="$1" repo_path="$2" remote="$3"
+  local -a target_args
+  case "$form" in
+    cwd) target_args=(-C .) ;;
+    C) target_args=(-C "$repo_path") ;;
+    git-dir) target_args=("--git-dir=$repo_path") ;;
+    *) return 2 ;;
+  esac
+  local head_ref="" head_branch="" read_status=0
+  if [[ "$remote" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+    head_ref=$(_lib_capped git "${target_args[@]}" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || read_status=$?
+    [ "$read_status" -le 1 ] || return 2
+    head_branch="${head_ref#"refs/remotes/$remote/"}"
+    [ "$head_branch" != "$head_ref" ] || head_branch=""
+  fi
+  if [ -n "$head_branch" ] && [ "$head_branch" != main ] && [ "$head_branch" != master ]; then
+    printf '%s\n' "$head_branch"
+  fi
+  printf '%s\n' main master
+  if [ -z "$head_branch" ]; then
+    printf '%s\n' develop
+  fi
+  return 0
+}
+
+# _lib_gh_api_call_is_mutating TEXT
+# Exit 0 when TEXT holds a `gh api` request-body spelling: an explicit
+# -X/--method POST|PATCH|PUT|DELETE, or any -f/-F/--field/--raw-field/--input
+# flag, which gh promotes to POST.
+# Keys on flags, not the endpoint.
+# Scans the whole TEXT rather than one fragment, leaning toward a match: a false
+# negative lets a mutating call through.
+# Also exits 0 when grep exits 2 or more (an engine error), which both callers read as the safe side.
+# A here-string redirect that fails before grep runs is not caught: it exits 1, which reads as no match.
+# `[^A-Za-z]` is the trailing method boundary, the grep-portable substitute for `\b`.
+_lib_gh_api_call_is_mutating() {
+  local grep_status=0
+  grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)' <<< "$1"
+  grep_status=$?
+  [ "$grep_status" -eq 1 ] || return 0
+  grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)' <<< "$1"
+  grep_status=$?
+  [ "$grep_status" -eq 1 ] || return 0
+  return 1
 }
 
 # Decide whether a `git commit` fragment carries `-a`/`--all`, a `--`
@@ -4050,6 +4459,8 @@ _lib_strip_shell_quotes() {
 # A quote left open at end of string is left unmasked, erring toward denying.
 # See docs/hooks.md's deny-invisible-commit-content.sh entry for the design.
 # Runs under a 5s `_lib_capped_for` cap because the scan is O(n^2).
+# Reads the command as one awk record by setting `RS` to SOH (`\001`), which command text does not normally contain.
+# An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits at each blank line, so it is not used.
 # Call-site contract (load-bearing): awk can be missing, killed, or time out,
 # and no caller runs under `set -e`, so every call site must capture and check
 # the exit status immediately and fail closed on non-zero.
@@ -4061,13 +4472,7 @@ _lib_strip_shell_quotes() {
 #   - An empty quote pair glued to a word.
 #   - A multi-word mid-word split.
 #   - An ANSI-C escape.
-# - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
-#   command into records at each blank line, with two effects:
-#   - An unquoted blank line is deleted and its neighbouring tokens fuse.
-#   - A blank line inside a quoted span resets quote state at the record
-#     boundary, so the span's closing quote acts as an opener and quote parity
-#     stays inverted for the rest of the command, blanking a later real commit
-#     any distance away.
+#   - A literal SOH byte, which ends the record, deletes the byte and resets quote state.
 # - A gap in this class can drop a command word from a caller's fragment
 #   count, and the effect then fails open.
 _lib_mask_shell_quotes() {
@@ -4077,7 +4482,7 @@ _lib_mask_shell_quotes() {
   # program, not a shell string, and is not meant to expand.
   # shellcheck disable=SC2016
   printf '%s' "$1" | _lib_capped_for 5 awk -v dq='"' -v sq="'" '
-    BEGIN { RS = "\0" }
+    BEGIN { RS = "\001" }
     {
       n = length($0)
       quote = ""
@@ -5179,11 +5584,45 @@ _ledger_sweep_window_days() {
   fi
 }
 
-# Branch names _lib_review_ledger_path treats as the default when no default
-# branch resolves. Mirrors _lib_default_branch_or_guess's candidate list; a
-# copy of that function lives in the skill-management plugin's own _lib.sh
-# and must stay text-identical, so the list cannot be shared by reference.
-_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES=(main master develop)
+# Branch names _lib_head_detached_or_default treats as the default when no
+# default branch resolves. Mirrors _lib_default_branch_or_guess's candidate
+# list; a copy of that function lives in the skill-management plugin's own
+# _lib.sh and must stay text-identical, so the list cannot be shared by
+# reference.
+_LIB_DEFAULT_BRANCH_FALLBACK_NAMES=(main master develop)
+
+# _lib_head_detached_or_default REPO_ROOT
+# Prints the branch HEAD names, empty when HEAD is detached (mid-rebase
+# included), and exits with one of three statuses:
+# - 0: HEAD is detached or on the default branch. Default-branch detection is
+#   _lib_default_branch_or_guess. When no default resolves, a branch named like
+#   one of _LIB_DEFAULT_BRANCH_FALLBACK_NAMES counts as the default.
+# - 1: HEAD is on any other branch. A branch named like a fallback name is
+#   still "other" when origin/HEAD names a different branch.
+# - 2: REPO_ROOT is empty or git could not read HEAD.
+# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
+# status above 1 when git itself failed or timed out, so a git failure is not
+# read as a detached HEAD.
+_lib_head_detached_or_default() {
+  local repo_root="$1"
+  local branch default_branch candidate
+  local head_status=0
+  [ -n "$repo_root" ] || return 2
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
+  [ "$head_status" -le 1 ] || return 2
+  # `symbolic-ref --short` prints `heads/<name>` when another ref, such as a tag, shares the branch's name.
+  branch=${branch#heads/}
+  printf '%s' "$branch"
+  [ -n "$branch" ] || return 0
+  if default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
+    [ "$branch" = "$default_branch" ]
+    return
+  fi
+  for candidate in "${_LIB_DEFAULT_BRANCH_FALLBACK_NAMES[@]}"; do
+    [ "$branch" = "$candidate" ] && return 0
+  done
+  return 1
+}
 
 # _lib_review_ledger_session_path CONFIG_DIR REPO_ROOT SESSION_ID
 # Prints <config-dir>/review-narrative-ledger/<repo-hash>.<session-id>.jsonl,
@@ -5205,19 +5644,15 @@ _lib_review_ledger_session_path() {
 # Prints "<scope> <path>" for the review-ledger file this worktree appends to.
 # The path comes last so a CONFIG_DIR containing a space still parses:
 # scope is ${out%% *}, path is ${out#* }.
-# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the same per-branch key
+# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the per-branch key
 #   _lib_reviewer_round_state_key gives the round-3 gate.
+#   The two differ for a branch name a tag shares, because this key drops the `heads/` prefix.
 # - scope "session": _lib_review_ledger_session_path's file. It is used on a
 #   detached HEAD (mid-rebase included) and on the default branch, so a
 #   local-only main does not grow one unbounded file.
-# Default-branch detection is _lib_default_branch_or_guess. When no default
-# resolves, a branch named like one of _LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES
-# counts as the default.
-# A branch named like one of those names is still branch-keyed when origin/HEAD
-# names a different branch.
-# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
-# status above 1 when git itself failed or timed out, so a git failure does not
-# silently downgrade a branch's rows into the session file.
+# Session scope is _lib_head_detached_or_default's status 0, which owns the
+# default-branch rules. Its status 2 (a git failure) does not silently
+# downgrade a branch's rows into the session file.
 # Exit 1, empty stdout: REPO_ROOT is empty, a hash did not compute, git could
 # not read HEAD, or (session scope only) SESSION_ID is not a valid path
 # component.
@@ -5226,24 +5661,15 @@ _lib_review_ledger_session_path() {
 # exit 1 as "no ledger".
 _lib_review_ledger_path() {
   local config_dir="$1" repo_root="$2" session_id="$3"
-  local branch branch_key default_branch candidate session_path
+  local branch branch_key session_path
   local head_status=0 session_scoped=0
   [ -n "$repo_root" ] || return 1
-  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
-  [ "$head_status" -le 1 ] || return 1
-  if [ -z "$branch" ]; then
-    session_scoped=1
-  elif default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
-    if [ "$branch" = "$default_branch" ]; then
-      session_scoped=1
-    fi
-  else
-    for candidate in "${_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}"; do
-      if [ "$branch" = "$candidate" ]; then
-        session_scoped=1
-      fi
-    done
-  fi
+  branch=$(_lib_head_detached_or_default "$repo_root") || head_status=$?
+  case "$head_status" in
+    0) session_scoped=1 ;;
+    1) ;;
+    *) return 1 ;;
+  esac
   if [ "$session_scoped" -eq 1 ]; then
     session_path=$(_lib_review_ledger_session_path "$config_dir" "$repo_root" "$session_id") || return 1
     printf 'session %s' "$session_path"

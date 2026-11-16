@@ -17,6 +17,7 @@ from ._pr_cost_helpers import (
     _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL,
     _DROPPED_LINE_PREFIX,
     _PRE_MODEL_HEADER_LINE,
+    _assert_one_temp_file_in_directory_with_command_prefix_and_removed,
     _cell_with,
     _dropped_keys_line,
     _enable_pr_cost,
@@ -26,6 +27,7 @@ from ._pr_cost_helpers import (
     _parse_pr_cost_export_row,
     _pr_cost_export_args,
     _pre_model_row_line,
+    _record_temp_file_paths,
     _review_rounds_cell_dropping,
     _sample_model_breakdown,
     _sample_pr_cost_row,
@@ -35,6 +37,7 @@ from ._pr_cost_helpers import (
 )
 from .conftest import _two_declared_roots
 
+_OUT_REFUSAL_PREFIX = "pr-cost-export: --out"
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
 # alone doesn't register it), so it can't shadow the real transcript_analysis package --
@@ -43,6 +46,8 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
+
+
 class TestPrCostExportRedaction:
     def test_host_repo_and_branch_are_tokenized_not_present_raw(
         self, tmp_path, fake_projects, monkeypatch, capsys,
@@ -571,6 +576,7 @@ class TestPrCostExportRefusals:
         err = capsys.readouterr().err
         assert str(out_path) in err
         assert "is not opted in" not in err
+        assert err.startswith(_OUT_REFUSAL_PREFIX)
         assert "pass a new path" in err
 
     def test_out_inside_a_git_working_tree_refuses(self, tmp_path, fake_projects, monkeypatch, capsys):
@@ -583,6 +589,7 @@ class TestPrCostExportRefusals:
         assert exc_info.value.code == 2
         assert not out_path.exists()
         err = capsys.readouterr().err
+        assert err.startswith(_OUT_REFUSAL_PREFIX)
         assert "git working tree" in err
         assert str(out_path) in err  # the operator's own literal --out is echoed by design
 
@@ -831,7 +838,7 @@ class TestPrCostExportSymlinks:
 
 class TestPrCostExportPublishBackstop:
     def test_publish_link_refuses_even_when_the_early_lexists_check_is_bypassed(
-        self, tmp_path, fake_projects, monkeypatch,
+        self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
         """Without this, a later refactor that drops the atomic os.link
         publish in favour of the early check alone would pass every other
@@ -841,13 +848,15 @@ class TestPrCostExportPublishBackstop:
         out_path.write_text("preexisting\n")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         monkeypatch.setattr(os.path, "lexists", lambda p: False)
+        created_paths = _record_temp_file_paths(monkeypatch)
 
         with pytest.raises(SystemExit) as exc_info:
             pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert out_path.read_text() == "preexisting\n"
-        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
+        _assert_one_temp_file_in_directory_with_command_prefix_and_removed(created_paths, tmp_path)
+        assert capsys.readouterr().err.splitlines()[-1].startswith(_OUT_REFUSAL_PREFIX)
 
     def test_publish_generic_oserror_exits_2_and_never_creates_out_or_leaves_a_temp_file(
         self, tmp_path, fake_projects, monkeypatch, capsys,
@@ -866,14 +875,16 @@ class TestPrCostExportPublishBackstop:
             raise PermissionError("denied")
 
         monkeypatch.setattr(os, "link", fake_link)
+        created_paths = _record_temp_file_paths(monkeypatch)
 
         with pytest.raises(SystemExit) as exc_info:
             pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
-        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
+        _assert_one_temp_file_in_directory_with_command_prefix_and_removed(created_paths, tmp_path)
         err = capsys.readouterr().err
+        assert err.splitlines()[-1].startswith(_OUT_REFUSAL_PREFIX)
         assert f"--out {str(out_path)!r} could not be published" in err
 
 
@@ -907,14 +918,16 @@ class TestPrCostExportWriteOSError:
             return _WriteFailsFile()
 
         monkeypatch.setattr(os, "fdopen", fake_fdopen)
+        created_paths = _record_temp_file_paths(monkeypatch)
 
         with pytest.raises(SystemExit) as exc_info:
             pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
-        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
+        _assert_one_temp_file_in_directory_with_command_prefix_and_removed(created_paths, tmp_path)
         err = capsys.readouterr().err
+        assert err.splitlines()[-1].startswith(_OUT_REFUSAL_PREFIX)
         assert f"--out {str(out_path)!r} could not be written" in err
 
 

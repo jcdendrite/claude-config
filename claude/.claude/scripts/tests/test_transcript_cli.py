@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 import pytest
-from transcript_analysis import cli, review_cost_by_size, scope
+from transcript_analysis import cli, scope
 
 from .conftest import _asst, _write_jsonl
 
@@ -275,6 +275,15 @@ def test_read_cost_this_repo_runs_to_a_report_through_main(
     assert "sessions=1 " in out
 
 
+_SUBCOMMANDS_LACKING_A_SCOPE_FLAG = {
+    "user-input": {"--this-repo"},
+    "pr-cost-export": {"--projects", "--this-repo"},
+    "period-cost": {"--projects", "--this-repo"},
+    "friction-count": {"--projects", "--this-repo"},
+    "routing-guard": {"--projects", "--this-repo"},
+}
+
+
 class TestBuildParser:
     """build_parser() as a testable seam — the argparse layer without executing
     a subcommand against the real ~/.claude/projects."""
@@ -290,21 +299,20 @@ class TestBuildParser:
         subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         return {name: set(sub._option_string_actions) for name, sub in subparsers.choices.items()}
 
-    def test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions(self):
-        """A subcommand silently losing --this-repo would drop out of the exclusivity walk
-        below, so the set that has --projects without it is pinned explicitly."""
+    def test_subcommands_lacking_a_scope_flag_are_exactly_the_expected_set(self):
+        """The exclusivity walk below skips these subcommands, so each one's missing scope flags are pinned exactly."""
+        scope_flags = {"--projects", "--this-repo"}
         flags = self._subcommand_flags(cli.build_parser())
-        assert {name for name, opts in flags.items() if "--projects" in opts and "--this-repo" not in opts} == {"user-input"}
+        lacking = {name: missing for name, opts in flags.items() if (missing := scope_flags - opts)}
+        assert lacking == _SUBCOMMANDS_LACKING_A_SCOPE_FLAG
 
     def test_every_subcommand_with_both_scope_flags_refuses_them_together(self, capsys):
         """Walks the real registrar, so a subcommand registered later is covered automatically.
         Asserts argparse's own refusal text: a SystemExit from a missing required flag would
         otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
         parser = cli.build_parser()
-        both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
-        # One subcommand per registration path: `cli.py`'s `_add_project_scope_args` call, the
-        # hand-rolled group in skill_invocation.py, and a module-registered subparser.
-        assert {"subagents", "skill-invocation", "skill-pair"} <= set(both_flags)
+        both_flags = sorted(self._subcommand_flags(parser).keys() - _SUBCOMMANDS_LACKING_A_SCOPE_FLAG.keys())
+        assert both_flags
         not_refused = []
         for name in both_flags:
             try:
@@ -322,21 +330,6 @@ class TestBuildParser:
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
-
-    def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
-        parser = cli.build_parser()
-        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
-        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
-        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert with_flag.all_accounts is True
-        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert without_flag.all_accounts is False
-
-    def test_review_trace_parses_omit_plan_review_spawns(self):
-        """The flag is registered, and the default timeline keeps every row without it."""
-        parser = cli.build_parser()
-        assert parser.parse_args(["review-trace", "--omit-plan-review-spawns"]).omit_plan_review_spawns is True
-        assert parser.parse_args(["review-trace"]).omit_plan_review_spawns is False
 
 
 class TestProjectsFlagHasNoArgparseType:

@@ -1,18 +1,22 @@
-"""Pins cost.py's public function surface to exactly its sanctioned set, and pins
-that no `_`-non-prefixed, non-`cmd_`-prefixed name crosses back from cost.py into
-cli.py by a by-name import (`from transcript_analysis.cost import X`, or its
-level-1 relative form). Module-attribute reads such as `from transcript_analysis
-import cost` followed by `cost.X` are not detected.
-Part (a) below guards cost.py's public *function* surface only, not top-level
-constants/classes -- safe, since part (b) independently checks cli.py's actual
-imported names regardless of what kind of object each one denotes, so the
-by-name import boundary itself stays covered either way.
+"""Pins two properties of cost.py's boundary with cli.py: (a) cost.py's public
+function surface equals its sanctioned set, and (b) no `_`-non-prefixed,
+non-`cmd_`-prefixed name crosses into cli.py by a by-name import from cost.py,
+in either the absolute form (`from transcript_analysis.cost import X`) or the
+level-1 relative form.
+
 The package reads cost.py's public names as `cost.<name>` (attribute access), so
 a later patch of `cost.<name>` reaches every reader. A bare by-name import of
-one in cli.py would bind it at import time and bypass that. cli.py's by-name
-imports from other modules are not pinned. Test files' own `from
-transcript_analysis import cost` imports reach cost.py's private helpers for
-patching and are left unguarded on purpose.
+one in cli.py would bind it at import time and bypass that.
+
+Not covered:
+- Module-attribute reads such as `from transcript_analysis import cost` followed
+  by `cost.X`.
+- cost.py's top-level constants and classes. Part (a) skips them, which is safe
+  because part (b) still checks every name cli.py imports, whatever kind of
+  object it denotes.
+- cli.py's by-name imports from other modules.
+- Test files' own `from transcript_analysis import cost` imports. They reach
+  cost.py's private helpers for patching and are left unguarded on purpose.
 """
 from __future__ import annotations
 

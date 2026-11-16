@@ -343,7 +343,7 @@ A failure of any of these means the rule did not run as written: set the key `fa
 
 - Delete the region, its anchor and pin constants, its test class, its anchor-set entry, and the `CONSULT_CLASSIFICATION_TABLE` import only that class uses. Drop that class from the table's comment, and return the generic config-get test's comment to one pilot region.
 - Remove `MODE=challenge`: its section, its description clause, its mention in § "Mode selection", both classifiers' entry, its seven parity-table rows and the tripwire test's `## MODE=challenge` parameter. The exact-first-line wording stays. A mode with no caller still costs description bytes in every session.
-- Keep the schema row inert at `false`, and keep the per-key tests: the `_OPT_IN_PILOT_KEYS` entry, the hand-typed default and the gate subclass.
+- Keep the schema row inert at `false`, and keep the per-key tests: the `_PER_ACCOUNT_OPT_IN_KEYS` entry, the hand-typed default and the gate subclass.
 - Set the audit section's call site to none.
 - Add a status line under this record's provenance line and under each partial-supersession line this record added, and a new CHANGELOG entry.
 - Reverting the merge commit is not the rollback, because it deletes the schema row while accounts keep their scaffolded rows.

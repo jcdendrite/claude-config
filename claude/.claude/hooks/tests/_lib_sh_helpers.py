@@ -17,6 +17,7 @@ from helpers import (
     bare_remote_with_default_branch,
     isolated_git_config_env,
     reviewer_round_state_key,
+    set_origin_head,
 )
 
 # Path to _lib.sh: this module lives in hooks/tests/, _lib.sh is in hooks/.
@@ -211,8 +212,7 @@ def _latch_path(repo: Path, tmp_path: Path) -> Path:
 def _default_branch_arm_base(clone: Path, base_name: str) -> None:
     """Make the diff-size count's no-stack-key base resolve to `base_name`: a new `refs/remotes/origin/<base_name>`
     at HEAD, with `refs/remotes/origin/HEAD` as a symref to it. Only that arm can deliver an unchecked name."""
-    _run_git(clone, "update-ref", f"refs/remotes/origin/{base_name}", "HEAD")
-    _run_git(clone, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{base_name}")
+    set_origin_head(clone, base_name)
 
 
 # Each hostile code point is built with chr(), so this source carries no literal bidi or tag character.

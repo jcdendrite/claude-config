@@ -1,9 +1,8 @@
 """Regression tests for the statusline script.
 
-Covers two invariants: the escape-injection invariant on the PR segment
-(code-review item 13, security controls), and the context-size field beside
-the percentage bar (context-cost-root-cause plan, mechanism 2) — not the
-script's full formatting/truncation/color behavior.
+Covers two invariants: the escape-injection invariant on the PR segment, and the context-size field beside
+the percentage bar — not the script's full formatting/truncation/color
+behavior.
 """
 from __future__ import annotations
 
@@ -159,9 +158,9 @@ class TestPullRequestEscapeInjection:
 
 
 class TestContextSizeField:
-    """context-cost-root-cause plan, mechanism 2: render the absolute
-    context token count beside the percentage bar, since percentage alone is
-    ambiguous across models with different window sizes.
+    """The statusline renders the absolute context token count beside the
+    percentage bar, since percentage alone is ambiguous across models with
+    different window sizes.
     """
 
     def test_renders_size_beside_percentage_for_documented_schema_payload(self, tmp_path):

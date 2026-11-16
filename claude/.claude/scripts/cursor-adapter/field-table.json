@@ -1,0 +1,158 @@
+{
+  "dropped_keys": ["workspace_roots", "cursor_version", "conversation_id", "generation_id"],
+  "common_fields": [
+    {"claude": "hook_event_name", "rule": "claude_event_name", "status": "observed"},
+    {"claude": "session_id", "rule": "call_session_id", "status": "observed"},
+    {"claude": "cwd", "rule": "resolved_directory", "status": "observed"},
+    {"claude": "transcript_path", "from": ["transcript_path"], "type": "string", "optional": true, "status": "observed"},
+    {"claude": "permission_mode", "rule": "absent", "reason": "Cursor sends no permission mode and the adapter never synthesizes one", "status": "observed"}
+  ],
+  "common_required": [
+    {"path": ["conversation_id"], "type": "string", "status": "observed"}
+  ],
+  "tool_input_required": {
+    "Shell": [{"path": ["command"], "type": "string", "status": "observed"}],
+    "Read": [{"path": ["file_path"], "type": "string", "status": "observed"}],
+    "Write": [
+      {"path": ["file_path"], "type": "string", "status": "observed"},
+      {"path": ["content"], "type": "string", "status": "observed"}
+    ],
+    "Delete": [{"path": ["file_path"], "type": "string", "status": "observed"}],
+    "Grep": [{"path": ["pattern"], "type": "string", "status": "observed"}],
+    "Task": [
+      {"path": ["prompt"], "type": "string", "status": "observed"},
+      {"path": ["subagent_type"], "type": "string", "status": "observed"}
+    ],
+    "WebFetch": [],
+    "WebSearch": []
+  },
+  "events": {
+    "preToolUse": {
+      "claude_event": "PreToolUse",
+      "tool": {"from": ["tool_name"]},
+      "required": [
+        {"path": ["tool_name"], "type": "string", "status": "observed"},
+        {"path": ["tool_input"], "type": "object", "status": "observed"}
+      ],
+      "fields": [
+        {"claude": "tool_name", "rule": "claude_tool_name", "status": "observed"},
+        {"claude": "tool_input", "rule": "translated_tool_input", "status": "observed"},
+        {"claude": "tool_use_id", "from": ["tool_use_id"], "type": "string", "optional": true, "status": "observed"}
+      ]
+    },
+    "beforeShellExecution": {
+      "claude_event": "PreToolUse",
+      "tool": {"synthetic": "Shell"},
+      "required": [{"path": ["command"], "type": "string", "status": "observed"}],
+      "fields": [
+        {"claude": "tool_name", "rule": "claude_tool_name", "status": "observed"},
+        {"claude": "tool_input", "rule": "translated_tool_input", "status": "observed"}
+      ]
+    },
+    "beforeReadFile": {
+      "claude_event": "PreToolUse",
+      "tool": {"synthetic": "Read"},
+      "required": [{"path": ["file_path"], "type": "string", "status": "observed"}],
+      "fields": [
+        {"claude": "tool_name", "rule": "claude_tool_name", "status": "observed"},
+        {"claude": "tool_input", "rule": "translated_tool_input", "status": "observed"}
+      ]
+    },
+    "postToolUse": {
+      "claude_event": "PostToolUse",
+      "tool": {"from": ["tool_name"]},
+      "required": [
+        {"path": ["tool_name"], "type": "string", "status": "observed"},
+        {"path": ["tool_input"], "type": "object", "status": "observed"},
+        {"path": ["tool_output"], "type": "string", "status": "observed"}
+      ],
+      "fields": [
+        {"claude": "tool_name", "rule": "claude_tool_name", "status": "observed"},
+        {"claude": "tool_input", "rule": "translated_tool_input", "status": "observed"},
+        {"claude": "tool_response", "rule": "tool_response_from_output", "status": "observed"},
+        {"claude": "tool_use_id", "from": ["tool_use_id"], "type": "string", "optional": true, "status": "observed"}
+      ]
+    },
+    "beforeSubmitPrompt": {
+      "claude_event": "UserPromptSubmit",
+      "required": [{"path": ["prompt"], "type": "string", "status": "observed"}],
+      "fields": [{"claude": "prompt", "from": ["prompt"], "type": "string", "status": "observed"}]
+    },
+    "sessionStart": {
+      "claude_event": "SessionStart",
+      "required": [],
+      "fields": [{"claude": "source", "const": "startup", "status": "observed"}]
+    },
+    "sessionEnd": {
+      "claude_event": "SessionEnd",
+      "required": [],
+      "fields": [{"claude": "reason", "from": ["reason"], "type": "string", "optional": true, "status": "observed"}]
+    },
+    "subagentStart": {
+      "claude_event": "SubagentStart",
+      "required": [
+        {"path": ["subagent_type"], "type": "string", "status": "observed"},
+        {"path": ["subagent_id"], "type": "string", "status": "observed"}
+      ],
+      "fields": [
+        {"claude": "agent_type", "from": ["subagent_type"], "type": "string", "status": "observed"},
+        {"claude": "agent_id", "from": ["subagent_id"], "type": "string", "status": "observed"}
+      ]
+    },
+    "subagentStop": {
+      "claude_event": "SubagentStop",
+      "required": [
+        {"path": ["subagent_type"], "type": "string", "status": "observed"},
+        {"path": ["status"], "type": "string", "status": "observed"}
+      ],
+      "fields": [
+        {"claude": "agent_type", "from": ["subagent_type"], "type": "string", "status": "observed"},
+        {"claude": "agent_id", "from": ["subagent_id"], "type": "string", "optional": true, "status": "unverified"},
+        {"claude": "agent_transcript_path", "from": ["agent_transcript_path"], "type": "string", "optional": true, "status": "doc-only"}
+      ]
+    },
+    "stop": {
+      "claude_event": "Stop",
+      "required": [
+        {"path": ["status"], "type": "string", "status": "observed"},
+        {"path": ["loop_count"], "type": "number", "status": "observed"}
+      ],
+      "fields": []
+    },
+    "afterAgentResponse": {
+      "claude_event": "Stop",
+      "required": [{"path": ["text"], "type": "string", "status": "observed"}],
+      "fields": [
+        {"claude": "last_assistant_message", "from": ["text"], "type": "string", "status": "observed"},
+        {"claude": "prompt_id", "from": ["generation_id"], "type": "string", "optional": true, "status": "observed"}
+      ]
+    },
+    "preCompact": {
+      "claude_event": "PreCompact",
+      "required": [],
+      "fields": [{"claude": "trigger", "from": ["trigger"], "type": "string", "optional": true, "status": "doc-only"}]
+    }
+  },
+  "dropped_output_fields": {
+    "systemMessage": {
+      "events": ["preToolUse", "beforeShellExecution", "beforeReadFile", "postToolUse", "beforeSubmitPrompt", "sessionStart", "sessionEnd", "subagentStart", "subagentStop", "stop", "afterAgentResponse", "preCompact"],
+      "reason": "Cursor's user_message shows only a block or deny, sessionStart accepts it without enforcing it, and the other events have no field for it"
+    },
+    "stopReason": {
+      "events": ["preToolUse", "beforeShellExecution", "beforeReadFile", "postToolUse", "beforeSubmitPrompt", "sessionStart", "sessionEnd", "subagentStart", "subagentStop", "stop", "afterAgentResponse", "preCompact"],
+      "reason": "Cursor has no field that carries a stop reason on any event"
+    },
+    "suppressOutput": {
+      "events": ["preToolUse", "beforeShellExecution", "beforeReadFile", "postToolUse", "beforeSubmitPrompt", "sessionStart", "sessionEnd", "subagentStart", "subagentStop", "stop", "afterAgentResponse", "preCompact"],
+      "reason": "Cursor has no field that hides a hook's output on any event"
+    },
+    "sessionTitle": {
+      "events": ["preToolUse", "beforeShellExecution", "beforeReadFile", "postToolUse", "beforeSubmitPrompt", "sessionStart", "sessionEnd", "subagentStart", "subagentStop", "stop", "afterAgentResponse", "preCompact"],
+      "reason": "Cursor has no field that sets a conversation title on any event"
+    }
+  },
+  "intentionally_absent": [
+    {"claude": "effort", "reason": "Cursor sends no effort level"},
+    {"claude": "stop_hook_active", "reason": "Cursor's loop_count carries the continuation count instead"}
+  ]
+}

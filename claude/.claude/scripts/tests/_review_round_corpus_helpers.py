@@ -1,5 +1,4 @@
-"""Free-text, token and malformed-usage corpus builders shared by test_transcript_review_rounds.py and
-test_transcript_pr_cost.py."""
+"""Transcript corpus builders shared across the transcript-analysis test modules."""
 from pathlib import Path
 
 from .conftest import _agent_use, _asst, _priced, _tool_result, _user_msg, _write_jsonl, _write_subagent_dispatch

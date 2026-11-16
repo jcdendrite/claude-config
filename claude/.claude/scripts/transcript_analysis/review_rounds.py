@@ -182,7 +182,8 @@ def round_opened_by_spawn(rec: dict) -> bool:
     a `Skill` block, the same per-record order _round_open_skill applies.
 
     Public (no leading underscore): the review-bench miner skips such a round,
-    and must agree with _round_open_skill about which shape opened it.
+    and routing_guard.py reads it as that round's spawn_open flag. Both must
+    agree with _round_open_skill about which shape opened it.
     """
     if rec.get("isSidechain") or rec.get("type") != "assistant":
         return False
@@ -202,12 +203,13 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     _round_open_skill's per-record order, so a record holding both a `Skill`
     block and a spawn block is one round. A /slash tag lives on a user record.
 
-    Public (no leading underscore): author_outcome.py, review_trace.py, and the
-    review-bench miner (evals/review_bench/mine_review_rounds.py, which also
-    calls round_opened_by_spawn) are further consumers. author_outcome.py reads only
-    each window's own open_idx/skill (its own outcome-span definition is not
-    this function's window_end -- see docs/transcript-analysis.md's
-    author-outcome section).
+    Public (no leading underscore): author_outcome.py, review_trace.py,
+    routing_guard.py, and the review-bench miner
+    (evals/review_bench/mine_review_rounds.py) are further consumers.
+    routing_guard.py and the miner also call round_opened_by_spawn.
+    author_outcome.py reads only each window's own open_idx/skill (its own
+    outcome-span definition is not this function's window_end -- see
+    docs/transcript-analysis.md's author-outcome section).
 
     cmd_judgment_pair keeps its own `Skill`-only matcher, so it deliberately
     does not open a round on a spawn block.
@@ -296,11 +298,19 @@ def _add_turn_tokens(tokens: dict[str, dict[str, dict[str, int]]], model: str, u
         group[token_class] += count
 
 
+def _record_turn_tokens(token_sink: dict[str, dict[str, dict[str, int]]], model: str, usage: dict) -> None:
+    if model == pricing._SYNTHETIC_MODEL_ID:
+        return
+    _add_turn_tokens(token_sink, model, usage)
+
+
 def _price_dispatch(
     tool_use_id: str,
     dispatch_index: dict[str, tuple[Path, str | None]],
     visited: set[str],
     tally: _DispatchTally,
+    *,
+    token_sink: dict[str, dict[str, dict[str, int]]] | None = None,
 ) -> None:
     """Price one subagent dispatch into `tally` and recurse into every Agent/Task
     spawn inside its own transcript, passing the same tally.
@@ -328,6 +338,8 @@ def _price_dispatch(
     unreadable/missing sibling .jsonl as one bucket, mirroring subagent-mix's
     own Dangling column. tally.resolved is this dispatch plus every nested one
     successfully priced — review-round-cost's own "agents" column.
+
+    `token_sink`, when given, never changes `tally`.
     """
     if tool_use_id in visited:
         return
@@ -361,6 +373,8 @@ def _price_dispatch(
                 else:
                     tally.dollars += sum(dollars_by_class.values())
                     _add_turn_tokens(tally.tokens, model, usage)
+                if token_sink is not None:
+                    _record_turn_tokens(token_sink, model, usage)
         for block in (rec.get("message") or {}).get("content") or []:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
@@ -369,7 +383,88 @@ def _price_dispatch(
             nested_tool_use_id = block.get("id") or ""
             if not nested_tool_use_id:
                 continue
-            _price_dispatch(nested_tool_use_id, dispatch_index, visited, tally)
+            _price_dispatch(nested_tool_use_id, dispatch_index, visited, tally, token_sink=token_sink)
+
+
+def _price_session_rounds(
+    jsonl: Path,
+    records: list[dict],
+    windows: list[tuple[int, int, str]],
+    record_branches: list[str],
+    root_idx: int | None,
+    branch_totals: defaultdict[tuple[int | None, str], float],
+    *,
+    collect_tokens: bool = False,
+) -> list[dict]:
+    """`records` must already be deduped and `windows` and `record_branches` computed from them."""
+    dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
+    visited: set[str] = set()
+
+    round_entries: list[dict] = [
+        {
+            "branch_key": (root_idx, record_branches[open_idx]), "skill": skill,
+            "ts": records[open_idx].get("timestamp"),
+            "main_dollars": 0.0, "agent_dollars": 0.0, "agents": 0,
+            "unpriced_turns": 0, "dangling": 0,
+            "main_tokens": {}, "agent_tokens": {}, "unpriced_tokens": 0, "invalid_usage_records": 0,
+            "open_idx": open_idx, "window_end": window_end,
+            **({"tokens": {}} if collect_tokens else {}),
+        }
+        for open_idx, window_end, skill in windows
+    ]
+
+    window_ptr = 0
+    for idx, rec in enumerate(records):
+        while window_ptr < len(windows) and idx >= windows[window_ptr][1]:
+            window_ptr += 1
+        in_window = window_ptr < len(windows) and windows[window_ptr][0] <= idx
+        round_entry = round_entries[window_ptr] if in_window else None
+        token_sink = round_entry["tokens"] if round_entry is not None and collect_tokens else None
+
+        if rec.get("type") != "assistant":
+            continue
+
+        usage = (rec.get("message") or {}).get("usage")
+        if usage:
+            if session_pricing._usage_is_invalid(usage):
+                if round_entry is not None:
+                    round_entry["invalid_usage_records"] += 1
+            else:
+                model = _turn_model(rec)
+                dollars_by_class, _context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
+                if dollars_by_class is None:
+                    if round_entry is not None:
+                        round_entry["unpriced_turns"] += 1
+                        round_entry["unpriced_tokens"] += unpriced_tokens
+                else:
+                    turn_dollars = sum(dollars_by_class.values())
+                    branch_totals[(root_idx, record_branches[idx])] += turn_dollars
+                    if round_entry is not None:
+                        round_entry["main_dollars"] += turn_dollars
+                        _add_turn_tokens(round_entry["main_tokens"], model, usage)
+                if token_sink is not None:
+                    _record_turn_tokens(token_sink, model, usage)
+
+        for block in (rec.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
+                continue
+            tool_use_id = block.get("id") or ""
+            if not tool_use_id:
+                continue
+            tally = _DispatchTally(tokens=round_entry["agent_tokens"] if round_entry is not None else {})
+            _price_dispatch(tool_use_id, dispatch_index, visited, tally, token_sink=token_sink)
+            branch_totals[(root_idx, record_branches[idx])] += tally.dollars
+            if round_entry is not None:
+                round_entry["agent_dollars"] += tally.dollars
+                round_entry["unpriced_turns"] += tally.unpriced_turns
+                round_entry["unpriced_tokens"] += tally.unpriced_tokens
+                round_entry["invalid_usage_records"] += tally.invalid_usage_records
+                round_entry["dangling"] += tally.dangling
+                round_entry["agents"] += tally.resolved
+
+    return round_entries
 
 
 def compute_review_round_costs(
@@ -448,71 +543,11 @@ def compute_review_round_costs(
         if rounds_only and not windows:
             continue
         record_branches = _session_record_branches(records, windows)
-        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
-        visited: set[str] = set()
-
-        round_entries: list[dict] = [
-            {
-                "branch_key": (root_idx, record_branches[open_idx]), "skill": skill,
-                "ts": records[open_idx].get("timestamp"),
-                "main_dollars": 0.0, "agent_dollars": 0.0, "agents": 0,
-                "unpriced_turns": 0, "dangling": 0,
-                "main_tokens": {}, "agent_tokens": {}, "unpriced_tokens": 0, "invalid_usage_records": 0,
-                "open_idx": open_idx,
-            }
-            for open_idx, _window_end, skill in windows
-        ]
-
-        window_ptr = 0
-        for idx, rec in enumerate(records):
-            while window_ptr < len(windows) and idx >= windows[window_ptr][1]:
-                window_ptr += 1
-            in_window = window_ptr < len(windows) and windows[window_ptr][0] <= idx
-            round_entry = round_entries[window_ptr] if in_window else None
-
-            if rec.get("type") != "assistant":
-                continue
-
-            usage = (rec.get("message") or {}).get("usage")
-            if usage:
-                if session_pricing._usage_is_invalid(usage):
-                    if round_entry is not None:
-                        round_entry["invalid_usage_records"] += 1
-                else:
-                    model = _turn_model(rec)
-                    dollars_by_class, _context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
-                    if dollars_by_class is None:
-                        if round_entry is not None:
-                            round_entry["unpriced_turns"] += 1
-                            round_entry["unpriced_tokens"] += unpriced_tokens
-                    else:
-                        turn_dollars = sum(dollars_by_class.values())
-                        branch_totals[(root_idx, record_branches[idx])] += turn_dollars
-                        if round_entry is not None:
-                            round_entry["main_dollars"] += turn_dollars
-                            _add_turn_tokens(round_entry["main_tokens"], model, usage)
-
-            for block in (rec.get("message") or {}).get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
-                    continue
-                tool_use_id = block.get("id") or ""
-                if not tool_use_id:
-                    continue
-                tally = _DispatchTally(tokens=round_entry["agent_tokens"] if round_entry is not None else {})
-                _price_dispatch(tool_use_id, dispatch_index, visited, tally)
-                branch_totals[(root_idx, record_branches[idx])] += tally.dollars
-                if round_entry is not None:
-                    round_entry["agent_dollars"] += tally.dollars
-                    round_entry["unpriced_turns"] += tally.unpriced_turns
-                    round_entry["unpriced_tokens"] += tally.unpriced_tokens
-                    round_entry["invalid_usage_records"] += tally.invalid_usage_records
-                    round_entry["dangling"] += tally.dangling
-                    round_entry["agents"] += tally.resolved
+        round_entries = _price_session_rounds(jsonl, records, windows, record_branches, root_idx, branch_totals)
 
         for entry in round_entries:
             open_idx = entry.pop("open_idx")
+            del entry["window_end"]
             sort_ts = corpus._parse_ts(entry["ts"])
             entry["sort_key"] = (sort_ts if sort_ts is not None else float("inf"), str(jsonl), open_idx)
             all_rounds.append(entry)
@@ -859,13 +894,13 @@ def _pooled_shares(agg: _PooledBranchTotals) -> dict[str, float | None]:
     return shares
 
 
-def _resample_percentile(sorted_values: Sequence[float]) -> tuple[float, float]:
-    """2.5th/97.5th percentile bounds by index into an already-sorted
-    resample distribution: lo_idx = round(tail * (B - 1)), hi_idx =
-    round((1 - tail) * (B - 1)), tail = (1 - _CI_LEVEL) / 2.
+def _resample_percentile(sorted_values: Sequence[float], level: float | None = None) -> tuple[float, float]:
+    """Percentile bounds by index into an already-sorted resample distribution:
+    lo_idx = round(tail * (B - 1)), hi_idx = round((1 - tail) * (B - 1)),
+    tail = (1 - level) / 2.
     """
     b = len(sorted_values)
-    tail = (1 - _CI_LEVEL) / 2
+    tail = (1 - (_CI_LEVEL if level is None else level)) / 2
     lo_idx = round(tail * (b - 1))
     hi_idx = round((1 - tail) * (b - 1))
     return sorted_values[lo_idx], sorted_values[hi_idx]

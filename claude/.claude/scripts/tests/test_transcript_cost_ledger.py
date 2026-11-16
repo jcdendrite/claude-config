@@ -173,8 +173,8 @@ class TestCostLedgerReadMode:
     def test_read_mode_still_returns_union_with_two_declared_roots(
         self, fake_projects, cost_ledger_file, monkeypatch, tmp_path, capsys
     ):
-        """Mechanism 8 refuses only --record; a plain read with two declared
-        roots must still return the union unchanged -- pins that mechanism 8
+        """The multi-root refusal covers only --record; a plain read with two declared
+        roots must still return the union unchanged -- pins that the refusal
         does not touch read-mode semantics."""
         other = tmp_path / "acct-other"
         other_proj = other / "projects" / "-repo-main"
