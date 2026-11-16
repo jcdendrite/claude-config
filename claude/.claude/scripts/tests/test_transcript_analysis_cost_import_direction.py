@@ -34,8 +34,7 @@ CLI_BACK_IMPORTED_COST_NAMES: set[str] = set()
 
 def _is_guarded_name(name: str) -> bool:
     """A name counts toward the guarded surface unless it's `_`-prefixed
-    (private) or `cmd_`-prefixed. The `cmd_` names are the subcommand handlers
-    cli.py binds via `set_defaults(func=...)`, a sanctioned crossing."""
+    (private) or `cmd_`-prefixed (a subcommand handler, exempt from this guard)."""
     return not name.startswith("_") and not name.startswith("cmd_")
 
 

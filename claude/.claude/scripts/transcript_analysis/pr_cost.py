@@ -1184,3 +1184,75 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         )
     if rows_with_failed_cells or force_refused:
         sys.exit(1)
+
+
+def _add_pr_cost_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_pr_cost = subparsers.add_parser(
+        "pr-cost",
+        help=(
+            "Per-PR AI-tooling dollar cost, joined against PR size/rework/review-surface via"
+            " gh. Default: list uncaptured merged PRs still in the local transcript window."
+            " --record durably appends one row per captured PR to the pr-cost ledger (see"
+            " PR_COST_LEDGER_PATH). Always redacted -- no --no-redact escape hatch. Requires gh."
+        ),
+    )
+    scope._add_project_scope_args(p_pr_cost)
+    scope._add_extra_config_dirs_arg(
+        p_pr_cost,
+        "Additional Claude Code config directory to scan (repeatable). pr-cost refuses"
+        " (exit 2) whenever more than one root resolves, unless --all-accounts is given --"
+        " see docs/pr-cost.md.",
+    )
+    p_pr_cost.add_argument(
+        "--all-accounts", action="store_true",
+        help=(
+            "Scan every declared account in one run instead of refusing when more than one root"
+            " resolves. Each account's own pr_cost_recording config key still individually"
+            " gates whether that account's row is recorded -- see docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--record", action="store_true",
+        help=(
+            "Capture ledger rows for eligible merged PRs. Requires the pr_cost_recording config key"
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--pr", type=int, metavar="N",
+        help="Target exactly one PR number instead of every branch with local corpus activity.",
+    )
+    p_pr_cost.add_argument(
+        "--machine-label", metavar="LABEL",
+        help=(
+            "Narrow read mode's uncaptured-PR listing to one machine: ^[a-z0-9]{1,8}$. Refused"
+            " (exit 1) together with --record -- machine identity is generated and persisted"
+            " automatically there; see docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--force", action="store_true",
+        help="With --record and --pr, append a correcting row for an already-captured PR instead of refusing.",
+    )
+    p_pr_cost.add_argument(
+        "--asof-window-days", type=float, metavar="DAYS",
+        help=(
+            "Close-out window before a merged PR is eligible for capture (default:"
+            f" {_PR_COST_ASOF_WINDOW_DAYS_DEFAULT:g}, a provisional placeholder -- see docs/pr-cost.md)."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--plan-file-glob", metavar="GLOB",
+        help=(
+            "Glob checked against a PR's added files for the plan-slug join cross-check"
+            f" (default: {_DEFAULT_PR_COST_PLAN_FILE_GLOB!r})."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--risk-surface-glob", action="append", dest="risk_surface_globs", metavar="GLOB",
+        help=(
+            "Glob pattern considered risk surface for the risk_surface_flag proxy (repeatable;"
+            " replaces the claude-config defaults entirely when given)."
+        ),
+    )
+    p_pr_cost.set_defaults(func=cmd_pr_cost)
