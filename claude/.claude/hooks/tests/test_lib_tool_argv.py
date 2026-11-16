@@ -409,7 +409,7 @@ class TestCommandInvokesToolSubcmd:
         assert _command_invokes_tool_subcmd("/usr/bin/gh pr merge 291", "gh", "pr", "merge") == 0
 
     def test_value_taking_global_flag_before_subcommand(self) -> None:
-        """Row 4's exact naive-implementation failure case: without
+        """The exact naive-implementation failure case: without
         skipping -R/--repo's own value, `o/r` would misread as the
         subcommand and the match would miss."""
         assert _command_invokes_tool_subcmd("gh --repo o/r pr merge", "gh", "pr", "merge") == 0

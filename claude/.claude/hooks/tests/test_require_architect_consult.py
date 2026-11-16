@@ -22,6 +22,7 @@ from helpers import (
     run_hook_reason,
     scaled_shim_sleep,
     write_architect_consult_latch,
+    write_prewarmed_stub,
     write_reviewer_round_state,
     write_scaled_timeout_shim,
 )
@@ -298,14 +299,14 @@ class TestRequireArchitectConsult:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             "#!/bin/bash\n"
             'case "$*" in\n'
             f'  *subagent_type*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
-            "esac\n"
+            "esac\n",
         )
-        stub.chmod(0o755)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
             result = run_hook(
@@ -594,7 +595,7 @@ class TestRound2PilotCap:
         ) == "allow"
 
     def test_live_plan_review_active_marker_allows_under_pilot(self, isolated_home, tmp_path):
-        """Regression guard for the pilot plan's row 15: under cap=1, the
+        """Regression guard: under cap=1, the
         active-bypass marker check must still run BEFORE cap resolution, or
         the pilot silently degrades into the round-1 trigger design the
         case study rejected. The sibling sentinel-absent test

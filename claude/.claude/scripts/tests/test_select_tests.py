@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-import yaml
+from helpers import ci_test_slice_job
 
 from .conftest import _commit, _init_repo, _make_repo_with_remote
 
@@ -69,8 +69,7 @@ def _pop_segments(prefix: str | None, count: int) -> str | None:
 def _resolve_repo_path_expr(
     node: ast.expr, *, env: dict[str, str | None], test_file_relpath: str,
 ) -> str | None:
-    """Resolves one AST expression to a repo-relative prefix string, per the
-    grammar table in .claude/plans/select-tests-cross-domain-read-completeness.md.
+    """Resolves one AST expression to a repo-relative prefix string.
     Any shape not explicitly handled below is unresolvable by design:
     - a bare string `Constant`
     - a `BoolOp`
@@ -166,10 +165,51 @@ def _expand_target_paths(repo_root: Path, target_paths: list[str]) -> set[Path]:
     return {path for target in target_paths for path in repo_root.glob(target)}
 
 
+def _selection_covers(target_paths: tuple[str, ...], path: str) -> bool:
+    return any(
+        _mod._is_under(path, target) or path in _mod._expand_target(target, repo_root=_REPO_ROOT)
+        for target in target_paths
+    )
+
+
+def _imported_module_basenames(source: str) -> set[str]:
+    """The last dotted segment of every module and imported name in `source`'s
+    import statements. A mention in a comment or string does not count."""
+    basenames: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            basenames.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                basenames.add(node.module.rsplit(".", 1)[-1])
+            basenames.update(alias.name for alias in node.names)
+    return basenames
+
+
+def _skill_structure_validator_importers(sources: dict[str, str]) -> set[str]:
+    """The keys of `sources` that import the skill-structure validator, plus
+    those that import the module of a key that does. The scan follows one hop."""
+    # Gaps:
+    # - evals/ is unscanned.
+    # - Non-test helper modules are unscanned.
+    # - importlib loads are unseen.
+    # - Subprocess reach via require-skill-review.sh is unseen.
+    validator_basename = Path(_mod.SKILL_STRUCTURE_VALIDATOR_MODULE).stem
+    basenames_by_source = {name: _imported_module_basenames(source) for name, source in sources.items()}
+    direct_importers = {name for name, basenames in basenames_by_source.items() if validator_basename in basenames}
+    direct_importer_modules = {Path(name).stem for name in direct_importers}
+    transitive_importers = {
+        name for name, basenames in basenames_by_source.items() if basenames & direct_importer_modules
+    }
+    return direct_importers | transitive_importers
+
+
 class TestModuleLevelRepoPathResolver:
     """Pins _resolve_module_level_repo_paths' grammar directly against small
-    ast.parse-able fixture strings, one case per row of the grammar table
-    plus its negatives -- no real files involved."""
+    ast.parse-able fixture strings, one case per accepted shape (a seeded or
+    in-file name, `Path(__file__)`, `.resolve()`, `.parent`, `.parents[<int
+    literal>]`, `/ "<str literal>"`) plus its negatives -- no real files
+    involved."""
 
     _TEST_FILE = "claude/.claude/scripts/tests/test_example.py"
 
@@ -276,7 +316,7 @@ class TestModuleLevelRepoPathResolver:
         assert "X" not in resolved
 
     def test_parents_subscript_with_a_name_index_is_unresolvable(self):
-        """Pins the grammar table's own restriction to an int Constant --
+        """Pins the resolver's restriction of a `.parents[...]` index to an int Constant --
         a Name index (even one bound to an int elsewhere) doesn't qualify."""
         source = "N = 4\nX = Path(__file__).resolve().parents[N]\n"
         resolved = _resolve_module_level_repo_paths(source, test_file_relpath=self._TEST_FILE)
@@ -357,12 +397,7 @@ class TestCrossDomainReadCompleteness:
                 result = _mod.select_pytest_targets([candidate])
                 if result.is_full_suite:
                     continue
-                covered = any(
-                    _mod._is_under(test_relpath, target)
-                    or test_relpath in _mod._expand_target(target, repo_root=_REPO_ROOT)
-                    for target in result.target_paths
-                )
-                if not covered:
+                if not _selection_covers(result.target_paths, test_relpath):
                     violations.append((test_relpath, candidate, result.target_paths))
         assert not violations, "\n".join(
             f"{test} reads {path!r} by path, but select_pytest_targets([{path!r}]) "
@@ -424,6 +459,75 @@ class TestCrossDomainReadCompleteness:
         assert not _mod._is_test_source_change(
             "plugins/some-plugin/worktrees/tests/test_x.py"
         )
+
+
+class TestSkillStructureValidatorSelection:
+    """A validator change must select every test that imports the validator,
+    by name or through another test module that does."""
+
+    def test_every_test_importing_the_validator_is_selected_by_a_validator_change(self):
+        sources = {relpath: (_REPO_ROOT / relpath).read_text() for relpath in _test_corpus(_REPO_ROOT)}
+        importers = _skill_structure_validator_importers(sources)
+        assert "claude/.claude/hooks/tests/test_agent_roster.py" in importers, (
+            "the scan found no by-name importer: either it is broken, or test_agent_roster.py no longer imports "
+            "the validator and this liveness member needs re-picking"
+        )
+        assert _mod.DOC_COUNTS_TEST_PATH in importers, (
+            "the scan found no transitive importer: either it is broken, or test_doc_counts.py no longer reaches "
+            "the validator through test_agent_roster.py and this liveness member needs re-picking"
+        )
+        stale_declared_members = sorted(_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR - importers)
+        assert not stale_declared_members, (
+            f"HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR members the scan does not find as importers: "
+            f"{stale_declared_members}; remove the member from the set in select-tests.py, or the scan is broken"
+        )
+        result = _mod.select_pytest_targets([_mod.SKILL_STRUCTURE_VALIDATOR_MODULE])
+        assert result.is_full_suite is False
+        uncovered = sorted(
+            importer for importer in importers if not _selection_covers(result.target_paths, importer)
+        )
+        assert not uncovered, (
+            f"select_pytest_targets([{_mod.SKILL_STRUCTURE_VALIDATOR_MODULE!r}]) selects "
+            f"{result.target_paths!r}, which does not cover these importers: {uncovered}"
+        )
+
+    def test_selection_covers_reports_a_path_outside_the_selected_targets_as_uncovered(self):
+        selected_targets = ("claude/.claude/hooks/tests",)
+        assert _selection_covers(selected_targets, "claude/.claude/hooks/tests/test_agent_roster.py")
+        assert not _selection_covers(selected_targets, "claude/.claude/scripts/tests/test_select_tests.py")
+        assert not _selection_covers((), "claude/.claude/hooks/tests/test_agent_roster.py")
+
+    @pytest.mark.parametrize(
+        ("sources", "expected_importers"),
+        [
+            pytest.param(
+                {"claude/.claude/hooks/tests/test_fixture.py": "from validate_skill_structure import parse_frontmatter\n"},
+                {"claude/.claude/hooks/tests/test_fixture.py"},
+                id="from-import",
+            ),
+            pytest.param(
+                {"claude/.claude/hooks/tests/test_fixture.py": "import validate_skill_structure\n"},
+                {"claude/.claude/hooks/tests/test_fixture.py"},
+                id="plain-import",
+            ),
+            pytest.param(
+                {
+                    "claude/.claude/hooks/tests/test_x.py": "import validate_skill_structure\n",
+                    "claude/.claude/hooks/tests/test_y.py": "from .test_x import some_helper\n",
+                    "claude/.claude/hooks/tests/test_z.py": "import os\n",
+                },
+                {"claude/.claude/hooks/tests/test_x.py", "claude/.claude/hooks/tests/test_y.py"},
+                id="relative-import-of-a-validator-importer",
+            ),
+            pytest.param(
+                {"claude/.claude/hooks/tests/test_fixture.py": "import os\n# validate_skill_structure\n"},
+                set(),
+                id="comment-only-mention",
+            ),
+        ],
+    )
+    def test_the_importer_scan_flags_each_import_form_and_ignores_a_comment(self, sources, expected_importers):
+        assert _skill_structure_validator_importers(sources) == expected_importers
 
 
 # Each pair is (select-tests.py attribute of a hand-audited AGENTS_DIR target,
@@ -679,10 +783,9 @@ class TestSelectPytestTargets:
         tracked .py file under plugins/ too, so this .py change now selects
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH alongside SKILLS_TESTS_DIR.
         This path is also SKILL_STRUCTURE_VALIDATOR_MODULE, so it selects
-        HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR's two test files --
-        test_agent_roster.py and test_global_claude_md_groups.py import it
-        by name, and neither sits under SKILLS_TESTS_DIR, so declaring the
-        row is the only way either gets selected."""
+        HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR's test files, none of
+        which sits under SKILLS_TESTS_DIR, so declaring the row is the only
+        way any of them gets selected."""
         result = _mod.select_pytest_targets(["plugins/skill-management/scripts/validate_skill_structure.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -701,14 +804,11 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
-        """Also selects REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-        and MEASURE_EXPLORE_RECALL_TEST (see the SKILL_EVALS_RUNNER comment on CROSS_DOMAIN_EXCEPTIONS)."""
+        """Also selects every evals test in EVALS_TEST_TARGETS (see the SKILL_EVALS_RUNNER comment on
+        CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, *_mod.EVALS_TEST_TARGETS}
 
     def test_evals_readme_change_selects_skills_tests_rather_than_falling_open(self):
         """test_skills.py reads evals/README.md by path (its state-path doc scan)."""
@@ -716,52 +816,37 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR}
 
-    def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+    def test_review_bench_dir_change_selects_every_evals_test_target(self):
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
-    def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
+    def test_review_bench_runner_change_selects_every_evals_test_target(self):
         result = _mod.select_pytest_targets([_mod.REVIEW_BENCH_RUNNER])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
-    def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+    def test_review_bench_fixtures_dir_change_selects_every_evals_test_target(self):
         """evals/fixtures/review-bench/ selects the review_bench tests rather than falling open."""
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_FIXTURES_DIR}/normal-success/session-1.jsonl"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
     def test_review_bench_test_glob_member_change_selects_itself(self):
         """A test_review_bench*.py file selects itself rather than falling open."""
         result = _mod.select_pytest_targets(["evals/test_review_bench_mining.py"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
-    def test_explore_recall_fixture_change_selects_review_bench_measure_subagent_and_explore_recall_tests(self):
+    def test_explore_recall_fixture_change_selects_every_evals_test_target(self):
         """evals/fixtures/explore-recall-cases.json is a sibling of
         REVIEW_BENCH_FIXTURES_DIR, not a path under it. It selects the same
-        three-test target set as the review_bench rows above rather than
-        falling open to FULL_SUITE_TARGETS, whose roots don't collect any
-        evals/ test."""
+        six-member EVALS_TEST_TARGETS set as the review_bench rows above rather
+        than falling open to FULL_SUITE_TARGETS, whose evals/ root runs every
+        evals test."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_FIXTURE])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
     def test_measure_subagent_model_resolution_test_change_also_selects_test_select_tests(self):
         """An edit to evals/test_measure_subagent_model_resolution.py also
@@ -769,31 +854,85 @@ class TestSelectPytestTargets:
         reads that file by path."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST, _mod.SELECT_TESTS_TEST_PATH,
-        }
+        assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, _mod.SELECT_TESTS_TEST_PATH}
 
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
-        """The recall scorer's own test file selects itself, the review_bench
-        tests and the sibling measure_subagent test rather than falling
-        through to the full suite."""
+        """The recall scorer's own test file selects itself and every other test in
+        EVALS_TEST_TARGETS rather than falling through to the full suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_TEST])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
+
+    def test_evals_test_targets_name_exactly_the_six_evals_test_sets(self):
+        """Hand-typed literal, independent of the constant: every row that selects EVALS_TEST_TARGETS compares against
+        the constant itself, so a member dropped from it would otherwise pass all of them."""
+        assert set(_mod.EVALS_TEST_TARGETS) == {
+            "evals/test_review_bench*.py", "evals/test_replay_bench*.py",
+            "evals/test_measure_subagent_model_resolution.py", "evals/test_measure_explore_recall.py",
+            "evals/test_measure_main_session_rule_adherence.py", "evals/test_main_session_rule_adherence_fixtures.py",
         }
+        assert len(_mod.EVALS_TEST_TARGETS) == 6
 
     def test_evals_conftest_change_selects_every_test_it_applies_to(self):
-        """evals/conftest.py applies to the review_bench tests, the replay_bench
-        tests, the measure_subagent test, and the recall scorer's test."""
+        """evals/conftest.py applies to every test in EVALS_TEST_TARGETS."""
         result = _mod.select_pytest_targets([_mod.EVALS_CONFTEST])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
+
+    @pytest.mark.parametrize(
+        "changed_path",
+        [
+            "MEASURE_MAIN_SESSION_RULE_ADHERENCE", "MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST",
+            "MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST", "MEASURE_SUBAGENT_MODEL_RESOLUTION", "SKILL_EVALS_RUNNER",
+        ],
+    )
+    def test_main_session_adherence_gate_tests_are_selected_by_its_module_its_tests_and_its_imports(self, changed_path):
+        """The gate's module imports measure_subagent_model_resolution, the explore-recall gate, run_skill_evals and
+        review_bench.runner."""
+        result = _mod.select_pytest_targets([getattr(_mod, changed_path)])
+        assert result.is_full_suite is False
+        assert _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST in result.target_paths
+        assert _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST in result.target_paths
+
+    def test_main_session_adherence_module_change_also_selects_test_select_tests(self):
+        """test_select_tests.py reads the gate's module by path in its import-closure test, which
+        TestCrossDomainReadCompleteness cannot see."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, _mod.SELECT_TESTS_TEST_PATH}
+
+    def test_evals_process_test_helpers_change_selects_every_evals_test_target(self):
+        result = _mod.select_pytest_targets([_mod.EVALS_PROCESS_TEST_HELPERS])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
+
+    def test_main_session_adherence_fixture_change_selects_the_evals_tests(self):
+        result = _mod.select_pytest_targets([f"{_mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR}/o1-adherent.jsonl"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
+
+    def test_a_dispatch_project_fixture_change_selects_only_the_evals_tests(self):
+        result = _mod.select_pytest_targets([f"{_mod.DISPATCH_PROJECT_FIXTURE_DIR}/page.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
+
+    @pytest.mark.parametrize(
+        "path",
+        [f"{_mod.TEMP_PROJECT_FIXTURE_DIR}/calculator.py", _mod.TEMP_PROJECT_STAGED_PATCH],
+        ids=["temp_project_file", "temp_project_staged_patch"],
+    )
+    def test_a_temp_project_fixture_change_selects_the_evals_tests_and_the_trigger_detector_test(self, path):
+        """test_trigger_detector.py seeds its project from these fixtures through run_skill_evals, an edge
+        no import row models."""
+        result = _mod.select_pytest_targets([path])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER}
+        assert "claude-skills/skills/tests/test_trigger_detector.py" in result.target_paths
+
+    def test_config_dir_module_change_selects_the_main_session_adherence_gate_tests(self):
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/_config_dir.py"])
+        assert _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST in result.target_paths
+        assert _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST in result.target_paths
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
         """Selects its own test rather than the full suite. Also selects
@@ -801,10 +940,7 @@ class TestSelectPytestTargets:
         directly."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
     def test_measure_explore_recall_change_selects_its_own_test_and_the_sibling_pair(self):
         """Vice versa of the row above: an edit to the recall scorer itself
@@ -812,10 +948,7 @@ class TestSelectPytestTargets:
         both files fold into the same review_bench predicate."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
-        }
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
     def test_review_bench_scripts_dependency_change_also_selects_review_bench_tests(self):
         """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REVIEW_BENCH_TEST_GLOB
@@ -932,6 +1065,7 @@ class TestSelectPytestTargets:
             evals_dir / "measure_explore_recall.py",
             *(evals_dir / "replay_bench").glob("*.py"),
             evals_dir / "run_replay_bench.py",
+            evals_dir / "measure_main_session_rule_adherence.py",
         ]
         reached: set[Path] = set()
         while pending:
@@ -1231,27 +1365,6 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
-    def test_github_actions_workflows_rule_md_change_also_selects_hooks_tests(self):
-        """test_ci_path_filter.py (HOOKS_TESTS_DIR) reads this exact file by path,
-        not by import. Both this exact-match row and the RULES_DIR row above
-        supply HOOKS_TESTS_DIR for this path. See this row's own comment in
-        select-tests.py for why both are kept."""
-        result = _mod.select_pytest_targets([_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD])
-        assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
-
-    def test_github_actions_workflows_rule_md_row_declares_hooks_tests_directly(self):
-        """This row's declaration is narrower than the RULES_DIR row's and
-        outlives changes to it."""
-        sibling_rule_path = "claude/.claude/rules/shell-script-conventions.md"
-        matching_rows = [
-            targets
-            for predicate, targets in _mod.CROSS_DOMAIN_EXCEPTIONS
-            if predicate(_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD) and not predicate(sibling_rule_path)
-        ]
-        assert len(matching_rows) == 1
-        assert matching_rows[0] == (_mod.HOOKS_TESTS_DIR,)
-
     def test_plans_dir_change_selects_no_tests(self):
         """No test reads any file under .claude/plans/ by path or
         subprocess, so a plan change is covered without pulling in the
@@ -1266,6 +1379,14 @@ class TestSelectPytestTargets:
         string prefix but is a distinct sibling directory, so it must not
         match."""
         result = _mod.select_pytest_targets([".claude/plans-archive/x.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_workflow_file_change_reaches_the_unmatched_path_fallback(self):
+        """Tests in several test trees read .github/workflows/tests.yml and no
+        row maps it, so an edit to it must keep running the full suite. A row
+        mapping it narrowly would drop tests it must keep selecting."""
+        result = _mod.select_pytest_targets([".github/workflows/tests.yml"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
@@ -1570,6 +1691,27 @@ class TestSelectPytestTargets:
             _mod.CLAUDE_TESTS_DIR, _mod.SELECT_TESTS_TEST_PATH,
         }
 
+    @pytest.mark.parametrize(
+        "edited_path",
+        [
+            "claude/.claude/hooks/tests/test_shellcheck.py",
+            "claude/.claude/hooks/tests/conftest.py",
+            "claude/.claude/scripts/tests/conftest.py",
+            "plugins/lovable-cloud/tests/conftest.py",
+        ],
+    )
+    def test_lint_collection_probe_inputs_select_the_ci_path_filter_test(self, edited_path):
+        """test_ci_path_filter.py's lint-collection probe collects
+        hooks/tests/test_shellcheck.py across trees, so a change to that file or
+        to any conftest.py it collects through must select the probe's test file."""
+        probe_test_path = "claude/.claude/tests/test_ci_path_filter.py"
+        result = _mod.select_pytest_targets([edited_path])
+        assert result.is_full_suite is False
+        assert (_REPO_ROOT / probe_test_path).is_file()
+        assert _selection_covers(result.target_paths, probe_test_path), (
+            f"{edited_path} selects {result.target_paths!r}, which does not cover {probe_test_path}"
+        )
+
     def test_packaging_predicate_matches_a_suffix_named_conftest_file(self):
         """A conftest.py-suffixed name that isn't the exact literal
         "conftest.py" still matches path.endswith("conftest.py"), mirroring
@@ -1682,9 +1824,7 @@ class TestSelectPytestTargets:
         - SKILLS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
         - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope -> _config_dir
         - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
-        A fifth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
-        REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
-        MEASURE_EXPLORE_RECALL_TEST.
+        A fifth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds every test in EVALS_TEST_TARGETS.
         A sixth contributor, the TRANSCRIPT_ANALYSIS_SCRIPT row, adds NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH.
         """
         result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
@@ -1695,8 +1835,7 @@ class TestSelectPytestTargets:
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.REPLAY_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.MEASURE_EXPLORE_RECALL_TEST,
+            *_mod.EVALS_TEST_TARGETS,
             _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
         }
 
@@ -1862,19 +2001,11 @@ class TestCursorAdapterSelection:
     @staticmethod
     def _undeclared_payload_builder_importers(sources: dict[str, str], declared: set[str]) -> set[str]:
         """The keys of `sources` whose code imports the payload builder in any form and are not in `declared`."""
-
-        def imports_the_builder(source: str) -> bool:
-            for node in ast.walk(ast.parse(source)):
-                if isinstance(node, ast.Import) and any(alias.name.endswith("_cursor_payloads") for alias in node.names):
-                    return True
-                if isinstance(node, ast.ImportFrom) and (
-                    (node.module or "").endswith("_cursor_payloads")
-                    or any(alias.name == "_cursor_payloads" for alias in node.names)
-                ):
-                    return True
-            return False
-
-        return {name for name, source in sources.items() if imports_the_builder(source) and name not in declared}
+        return {
+            name
+            for name, source in sources.items()
+            if "_cursor_payloads" in _imported_module_basenames(source) and name not in declared
+        }
 
     def test_every_scripts_test_importing_the_payload_builder_is_a_declared_importer(self):
         sources = {
@@ -1910,8 +2041,8 @@ class TestResolveTargetPaths:
     select_pytest_targets' own tuple(sorted(targets)) contract."""
 
     def test_directory_absorbs_a_file_target_inside_it(self):
-        """Measured collision (ledger row 1): HOOKS_TESTS_DIR silently
-        drops to 623 collected tests instead of 5267 when
+        """Collision: HOOKS_TESTS_DIR silently under-collects, running far
+        fewer tests than the whole directory holds, when
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH, a file inside it, is also
         a selected target."""
         resolved = _mod.resolve_target_paths(
@@ -1920,8 +2051,8 @@ class TestResolveTargetPaths:
         assert resolved == [_mod.HOOKS_TESTS_DIR]
 
     def test_directory_absorbs_a_globs_expansions(self):
-        """Measured collision (ledger row 1): SCRIPTS_TESTS_DIR silently
-        drops to 126 collected tests instead of 2718 when
+        """Collision: SCRIPTS_TESTS_DIR silently under-collects, running far
+        fewer tests than the whole directory holds, when
         TRANSCRIPT_ANALYSIS_TEST_GLOB expands to concrete files already
         inside it."""
         resolved = _mod.resolve_target_paths(
@@ -1940,7 +2071,7 @@ class TestResolveTargetPaths:
 
     def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
         """Structural, synthetic -- not an observed collision. The real
-        rule tables are one level deep (ledger row 15), so only a synthetic
+        rule tables are one level deep, so only a synthetic
         fixture exercises the all-pairs-against-the-original-list behavior
         a progressively-shrinking working list would miss."""
         resolved = _mod.resolve_target_paths(["A", "A/B", "A/B/c.py"], repo_root=_REPO_ROOT)
@@ -1987,7 +2118,7 @@ class TestResolveTargetPaths:
         """Derived invariant, not a fixed fixture: every
         DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
         pair where one covers the other, so this self-updates when a row
-        gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
+        gains a target. Excludes FULL_SUITE_TARGETS.
         Including it collapses the check to the disjoint FULL_SUITE_TARGETS
         roots, making the assertion pass regardless of whether _covers
         works -- and that combined universe (FULL_SUITE_TARGETS plus every
@@ -2298,7 +2429,6 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     *_mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS,
     _mod.RESUME_CONTEXT_SKILL_MD,
     _mod.PLAN_IT_SKILL_MD,
-    _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
     _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
     _mod.PRIVATE_PROJECT_REDACTION_DOC_MD,
@@ -2316,6 +2446,11 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.MEASURE_EXPLORE_RECALL,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
     _mod.MEASURE_EXPLORE_RECALL_FIXTURE,
+    _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE,
+    _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+    _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
+    _mod.EVALS_PROCESS_TEST_HELPERS,
+    _mod.TEMP_PROJECT_STAGED_PATCH,
     _mod.EVALS_README_MD,
     _mod.EVALS_CONFTEST,
     _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
@@ -2336,6 +2471,8 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
     *_mod.CURSOR_ADAPTER_READING_TESTS,
+    _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+    _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
     *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
@@ -2410,11 +2547,7 @@ class TestKnownCrossDomainReadsAudit:
         for reading_test, read_path in _KNOWN_CROSS_DOMAIN_READS:
             result = _mod.select_pytest_targets([read_path])
             assert result.is_full_suite is False, read_path
-            covered = any(
-                _mod._is_under(reading_test, target)
-                or reading_test in _mod._expand_target(target, repo_root=_REPO_ROOT)
-                for target in result.target_paths
-            )
+            covered = _selection_covers(result.target_paths, reading_test)
             assert covered, f"{read_path!r} selects {result.target_paths!r}, which does not cover {reading_test}"
 
     def test_skill_files_read_by_hook_tests_equals_known_reads_under_hooks_tests_dir(self):
@@ -2428,7 +2561,6 @@ class TestKnownCrossDomainReadsAudit:
         assert expected == _mod.SKILL_FILES_READ_BY_HOOK_TESTS
 
 
-_TESTS_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _CI_PYTEST_COMMAND = ("pytest",)
 _CI_LINT_COMMAND = ("ruff", "check")
 _CI_PYTEST_STEP_COUNT = 2
@@ -2457,12 +2589,12 @@ def _ci_step_roots(steps: list[dict]) -> list[tuple[str, frozenset[str]]]:
     its step name, so a rename cannot hide a step from the parity check."""
     pytest_steps = _steps_running(steps, _CI_PYTEST_COMMAND)
     assert len(pytest_steps) == _CI_PYTEST_STEP_COUNT, (
-        f"expected {_CI_PYTEST_STEP_COUNT} pytest steps in tests.yml's tests job, "
+        f"expected {_CI_PYTEST_STEP_COUNT} pytest steps in tests.yml's test-slice job, "
         f"found {[step.get('name') for step in pytest_steps]}"
     )
     lint_steps = _steps_running(steps, _CI_LINT_COMMAND)
     assert len(lint_steps) == 1, (
-        f"expected exactly one `{' '.join(_CI_LINT_COMMAND)}` step in tests.yml's tests job, "
+        f"expected exactly one `{' '.join(_CI_LINT_COMMAND)}` step in tests.yml's test-slice job, "
         f"found {[step.get('name') for step in lint_steps]}"
     )
     (lint_step,) = lint_steps
@@ -2530,7 +2662,7 @@ class TestRuleTablePathFidelity:
         assert outside_targets == ["docs/other"]
 
     def test_full_suite_targets_equal_the_roots_of_every_ci_pytest_and_lint_step(self):
-        steps = yaml.safe_load(_TESTS_WORKFLOW_PATH.read_text())["jobs"]["tests"]["steps"]
+        steps = ci_test_slice_job()["steps"]
         expected_roots = frozenset(root.rstrip("/") for root in _mod.FULL_SUITE_TARGETS)
         assert _steps_whose_roots_differ_from(steps, expected_roots) == []
 
@@ -2606,7 +2738,10 @@ class TestRuleTablePathFidelity:
             assert list(_REPO_ROOT.glob(target)), f"{target} matched no files on disk"
 
     def test_review_bench_directory_constants_exist_on_disk(self):
-        for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR, _mod.REPLAY_BENCH_DIR):
+        for constant in (
+            _mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR, _mod.REPLAY_BENCH_DIR,
+            _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR, _mod.DISPATCH_PROJECT_FIXTURE_DIR, _mod.TEMP_PROJECT_FIXTURE_DIR,
+        ):
             assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
 
     def test_root_scripts_dir_constant_exists_on_disk(self):
@@ -3105,10 +3240,9 @@ class TestMainComposition:
     def test_stderr_scope_matches_recorded_pytest_argv_across_containment_collisions(
         self, monkeypatch, capsys, changed_paths, expected_argv,
     ):
-        """Regression test for ledger row 4: the printed line and the
-        pytest argv used to come from two separately derived calls, so a
-        containment collision could go silently under-collected while
-        stderr still claimed the wider (unresolved) scope.
+        """The printed scope line must match the pytest argv actually run,
+        so a containment collision cannot go under-collected while
+        stderr claims the wider (unresolved) scope.
         resolve_repo_root is monkeypatched to the real _REPO_ROOT, not a
         fake one, because the first case's selection includes a glob
         target that must really expand."""

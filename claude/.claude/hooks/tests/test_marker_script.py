@@ -40,6 +40,7 @@ from helpers import (
     staged_diff_hash_at_base,
     write_marker,
     write_plan_review_marker,
+    write_prewarmed_stub,
     write_review_pr_completion_marker,
     write_review_pr_provenance,
     write_scaled_timeout_shim,
@@ -2732,7 +2733,8 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
 
 class TestMarkerScriptHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates every marker path marker.sh writes, not
-    just $HOME/.claude -- closes the cross-account bypass this plan targets."""
+    just $HOME/.claude -- a marker another account writes under its own config
+    directory, in the same $HOME, never releases this account's gate."""
 
     def test_write_code_review_lands_under_config_dir(
         self, isolated_home, git_repo, tmp_path
@@ -2828,8 +2830,7 @@ class TestMarkerScriptHonorsConfigDir:
 class TestSessionStartTimeResolution:
     """_walk_session's PID-reuse guard: a sessions/<pid> entry is trusted
     only when its recorded start time matches the live process's current
-    `ps -o lstart=` start time. Named invariant (see
-    .claude/plans/retire-sessionend-destructors.md): any entry that doesn't
+    `ps -o lstart=` start time. Named invariant: any entry that doesn't
     satisfy this — mismatched, missing the second line, or empty — is
     untrusted and must fall through to the next ancestor exactly as if the
     file were absent, never resolve to a session id."""
@@ -3300,10 +3301,10 @@ class TestMarkerScriptPlanModeSibling:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "sha256sum"
-        stub.write_text(
-            f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep {scaled_shim_sleep(10)}; fi\nexec {real_sha256sum} "$@"\n'
+        write_prewarmed_stub(
+            stub,
+            f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep {scaled_shim_sleep(10)}; fi\nexec {real_sha256sum} "$@"\n',
         )
-        stub.chmod(0o755)
 
         sid = self.SID
         _seed_session(isolated_home, sid)
@@ -3480,14 +3481,14 @@ class TestMarkerScriptStatusCompletionMarkers:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
         with assert_cap_engaged(stub_dir, production_cap=5):
@@ -5337,14 +5338,14 @@ class TestMarkerScriptVerification:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "cat-file" ] && [ "$4" = "-e" ] && [ "$#" -eq 5 ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
             result = _run(
@@ -5544,14 +5545,14 @@ class TestMarkerScriptVerification:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
             result = _run(
@@ -5580,14 +5581,14 @@ class TestMarkerScriptVerification:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "status" ] && [ "$4" = "--porcelain" ] && [ "$#" -eq 4 ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
             result = _run(
@@ -5636,14 +5637,14 @@ class TestMarkerScriptVerification:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
         env = gh_timeout_shim(
@@ -6129,14 +6130,14 @@ class TestMarkerScriptCheck:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
             result = _run(
@@ -6162,8 +6163,7 @@ class TestMarkerScriptCheck:
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "stat"
-        stub.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_stat} "$@"\n')
-        stub.chmod(0o755)
+        write_prewarmed_stub(stub, f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_stat} "$@"\n')
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
 
         # Both the GNU and BSD stat forms are individually capped at 5s and
@@ -6197,7 +6197,8 @@ class TestMarkerScriptCheck:
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "grep"
         invocation_counter = tmp_path / "grep-qFx-invocation-count"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             'if [ "$1" = "-qFx" ]; then\n'
             f'  count=$(( $(cat {invocation_counter} 2>/dev/null || echo 0) + 1 ))\n'
@@ -6206,9 +6207,8 @@ class TestMarkerScriptCheck:
             f'    sleep {scaled_shim_sleep(10)}\n'
             '  fi\n'
             'fi\n'
-            f'exec {real_grep} "$@"\n'
+            f'exec {real_grep} "$@"\n',
         )
-        stub.chmod(0o755)
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
 
         with assert_cap_engaged(stub_dir, production_cap=5):
@@ -6245,15 +6245,15 @@ class TestMarkerScriptCheck:
         write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         invocation_log = tmp_path / "git-invocation-args"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub,
             '#!/bin/bash\n'
             f'echo "$@" >> {invocation_log}\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_git} "$@"\n'
+            f'exec {real_git} "$@"\n',
         )
-        stub.chmod(0o755)
 
         result = _run(
             ["check", "code-review"],

@@ -13,6 +13,7 @@ import pytest
 from helpers import (
     assert_cap_engaged,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -468,8 +469,7 @@ def test_active_bypass_marker_live_find_hang_capped_withholds_bypass(tmp_path) -
     stub_dir.mkdir()
     write_scaled_timeout_shim(stub_dir)
     stub_find = stub_dir / "find"
-    stub_find.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_find} "$@"\n')
-    stub_find.chmod(0o755)
+    write_prewarmed_stub(stub_find, f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_find} "$@"\n')
 
     with assert_cap_engaged(stub_dir, production_cap=5):
         result = subprocess.run(
@@ -519,8 +519,7 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
     stub_dir.mkdir()
     write_scaled_timeout_shim(stub_dir)
     stub_cat = stub_dir / "cat"
-    stub_cat.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_cat} "$@"\n')
-    stub_cat.chmod(0o755)
+    write_prewarmed_stub(stub_cat, f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_cat} "$@"\n')
 
     with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=1, command="cat"):
         result = subprocess.run(

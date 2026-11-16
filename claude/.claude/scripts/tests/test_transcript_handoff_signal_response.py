@@ -42,7 +42,7 @@ def _handoff_signal_response_args(
 class TestCmdHandoffSignalResponseScopeAndRedaction:
     """cmd_handoff_signal_response's own CLI-boundary contract: the
     resolved-scope banner and the context-distribution-style multi-root
-    --no-redact refusal (.claude/plans/handoff-nudge-rationalization-gap.md)."""
+    --no-redact refusal."""
 
     def test_resolved_scope_banner_reports_a_single_root(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
@@ -310,8 +310,7 @@ class TestCmdHandoffSignalResponseSampleTruncation:
 
 
 class TestCmdHandoffSignalResponseSampleRanking:
-    """--sample ranks by post-signal spend (.claude/plans/handoff-nudge-rationalization-gap.md
-    row 14): the highest-spend rows are where a wrong continue-decision
+    """--sample ranks by post-signal spend: the highest-spend rows are where a wrong continue-decision
     actually cost something."""
 
     @staticmethod
@@ -574,8 +573,8 @@ class TestStartupBurnBenchmark:
 class TestCmdHandoffSignalResponseStartupBurnBenchmark:
     """cmd_handoff_signal_response's own end-to-end startup-burn benchmark
     wiring: a second, independent _resolve_project_scope pass feeds
-    _compute_workstream_dollars, and _startup_burn_benchmark's weighted-average
-    formula (.claude/plans/handoff-nudge-rationalization-gap.md) sets
+    _compute_workstream_dollars, and _startup_burn_benchmark's session-count-weighted
+    average sets
     exceeds_startup_burn_benchmark on every signal row."""
 
     def test_benchmark_and_exceeds_flag_match_hand_computed_values(self, fake_projects, capsys):

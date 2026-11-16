@@ -1405,9 +1405,8 @@ class TestHookEnvelopeIntegrity:
 
 class TestHookSubagentBehavior:
     def test_code_writer_subagent_gets_an_identical_ask(self, isolated_home, tmp_path):
-        """Resolves the assumption ledger's [unverified] subagent row for
-        the hook's own behavior — whether the hook fires identically for a
-        code-writer subagent's tool calls as for the top-level session.
+        """Pins the hook's own behavior: whether the hook fires identically
+        for a code-writer subagent's tool calls as for the top-level session.
         Whether the ask actually RENDERS to the human for a subagent stays
         Anthropic's contract, not something this hook controls."""
         manifest = _manifest_file(tmp_path, '{"dependencies":{}}')

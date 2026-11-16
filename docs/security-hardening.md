@@ -348,7 +348,7 @@ allows silently, since none of those is reachable by crafting the
 manifest's own content. The `python3` case has a residual: a pin file
 (such as `.python-version`) or other cwd-resolved interpreter selection can
 make a version-manager shim fail, and a repository or one agent `Write` can
-set it. In that case this hook allows silently. `docs/hooks.md` § "Python version" states the unverified working-directory premise this rests on, what each other `python3` hook does in the same condition, and when the SessionStart notice reports it. An on-disk pre-state over 5 MB, or the helper
+set it. In that case this hook allows silently. `docs/hooks.md` § "Python version" states the unverified working-directory premise this rests on and when the SessionStart notice reports it. An on-disk pre-state over 5 MB, or the helper
 erroring/timing out/emitting unparseable output, instead degrades to a generic ask naming no packages — manifest
 content is agent-authored, so silence there would be a one-step-suppressible
 reminder. No repo-scoped opt-out sentinel: a `.claude/*-optout` file this

@@ -26,6 +26,7 @@ from helpers import (
     run_hook,
     run_hook_reason,
     run_skill_command,
+    write_prewarmed_stub,
 )
 
 from .conftest import _seed_session
@@ -40,11 +41,11 @@ def fake_gh_pr_exists(tmp_path, monkeypatch):
     bin_dir = tmp_path / "fake-bin-pr"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_text(
+    write_prewarmed_stub(
+        gh,
         '#!/bin/bash\n'
-        'case "$*" in *"pr view"*) echo 42 ;; *) exit 1 ;; esac\n'
+        'case "$*" in *"pr view"*) echo 42 ;; *) exit 1 ;; esac\n',
     )
-    gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     return gh
 
@@ -2799,8 +2800,9 @@ class TestRequireReadyForReview:
 
 class TestRequireReadyForReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the ready-for-review marker directory the
-    same way for marker.sh (write) and this hook (read) -- see marker.sh and
-    the cross-account bypass this closes (ledger row 7)."""
+    same way for marker.sh (write) and this hook (read) -- a marker another
+    account writes under its own config directory, in the same $HOME, never
+    releases this account's gate."""
 
     def test_marker_under_matching_config_dir_allows(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path

@@ -3,8 +3,9 @@
 # the required-check match. If you rename the job, also update the
 # required_status_checks.contexts list via:
 #   gh api -X PUT repos/jcdendrite/claude-config/branches/main/protection
-# (The workflow-level "name:" does NOT affect the context string for GitHub
-# Actions checks — only the job id does.)
+# A job-level "name:", when set, replaces the id as the context string, so the "tests" job carries none.
+# The workflow-level "name:" does not affect the context string.
+# The "tests" job is the aggregate at the end of this file, and passes only when every test-slice leg succeeds.
 
 name: Tests
 
@@ -18,19 +19,27 @@ permissions:
 
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  # A push-to-main run that has started is not cancelled by a newer push, because the `tests` aggregate would report a cancelled run as failed.
+  # A run still waiting in the group can be replaced by a newer push, and a replaced run never runs the `tests` aggregate.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  tests:
+  test-slice:
     runs-on: ubuntu-24.04
-    # pytest runs as two passes (see the "Run tests" steps below): a
-    # parallel pass under -n auto covering everything not marked `timing`,
-    # and a serial (-n0) pass covering only the wall-clock-sensitive `timing`
-    # tests, which would flake under sibling-worker load. Those two passes
-    # dominate the job. The parallel pass includes the repo-wide lint in
-    # claude/.claude/hooks/tests/test_shellcheck.py, which runs one shellcheck
-    # process over every discovered file, so more xdist workers cannot shorten
-    # it. Re-derive this cap whenever either pass grows.
+    strategy:
+      # A failing leg must not cancel the other, so both passes report.
+      fail-fast: false
+      matrix:
+        slice: [parallel, timing]
+    # Each leg runs one pytest pass (see the "Run tests" steps below): the
+    # parallel leg runs a pass under -n auto covering everything not marked
+    # `timing`, and the timing leg runs a serial (-n0) pass covering only the
+    # wall-clock-sensitive `timing` tests, which would flake under
+    # sibling-worker load. The parallel leg dominates. It includes the
+    # repo-wide lint in claude/.claude/hooks/tests/test_shellcheck.py, which
+    # runs one shellcheck process over every discovered file, so more xdist
+    # workers cannot shorten it. Re-derive this cap whenever the parallel
+    # pass grows.
     timeout-minutes: 30
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
@@ -116,7 +125,7 @@ jobs:
       # tests exercise actual direnv hook output, not a stub, so direnv
       # must be a real binary too.
       - name: Install stow and direnv
-        # This step's `if:` must keep matching both "Run tests" steps' `if:` below — conftest.py's require_direnv() hard-fail guarantee depends on all three staying in sync.
+        # Each "Run tests" step's `if:` below must stay this condition plus its own `matrix.slice` test, because conftest.py's require_direnv() hard-fail guarantee depends on it.
         if: steps.detect.outputs.changed == 'true'
         run: |
           sudo apt-get update
@@ -174,17 +183,36 @@ jobs:
         run: sudo locale-gen en_US.UTF-8 tr_TR.UTF-8
 
       - name: Run tests (parallel)
-        # This step's `if:` must keep matching "Install stow and direnv" above and "Run tests (timing, serial)" below — see that step's own comment.
-        if: steps.detect.outputs.changed == 'true'
+        # This step's `if:` must keep the condition described in the "Install stow and direnv" step's comment.
+        if: steps.detect.outputs.changed == 'true' && matrix.slice == 'parallel'
         run: pytest claude/.claude/ claude-skills/ plugins/ evals/ -v -m "not timing"
 
-      # !cancelled() (not bare `if:`) so a parallel-pass failure above doesn't
-      # suppress this step's own report in the same run.
-      # This step's `if:` must keep matching "Install stow and direnv" and "Run tests (parallel)" above — see that step's own comment.
+      # This step's `if:` must keep the condition described in the "Install stow and direnv" step's comment.
       - name: Run tests (timing, serial)
-        if: ${{ !cancelled() && steps.detect.outputs.changed == 'true' }}
+        if: steps.detect.outputs.changed == 'true' && matrix.slice == 'timing'
         run: pytest claude/.claude/ claude-skills/ plugins/ evals/ -v -m timing -n0
 
+      # Runs in the timing leg only, so it reports once.
       - name: Lint
-        if: steps.detect.outputs.changed == 'true'
+        if: steps.detect.outputs.changed == 'true' && matrix.slice == 'timing'
         run: ruff check claude/.claude/ claude-skills/ plugins/ evals/
+
+  tests:
+    needs: test-slice
+    # always(), not !cancelled(): a cancelled run must fail this required check, not skip it.
+    if: always()
+    runs-on: ubuntu-24.04
+    # Bounds a stuck runner for one shell comparison; no vendor value applies.
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every test-slice leg to succeed
+        env:
+          SLICE_RESULT: ${{ needs.test-slice.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$SLICE_RESULT" == "success" ]]; then
+            exit 0
+          fi
+          echo "test-slice finished as '$SLICE_RESULT'; tests passes only when every leg succeeds." >&2
+          exit 1

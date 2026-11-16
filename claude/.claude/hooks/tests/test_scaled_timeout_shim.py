@@ -1,15 +1,6 @@
 """Tests for the scaled `timeout` shim (helpers.py's write_scaled_timeout_shim
 and friends) that every cap-boundary test now installs in place of a real
 wall-clock wait.
-
-Three concerns:
-  - Bidirectional coverage of the shim itself: an integer duration scales
-    correctly, a rejected $1 passes through unscaled and records nothing,
-    and the started/completed logs discriminate a kill from a completion.
-  - A source-scanning tripwire for the five tests in test_lib.py and test_lib_capped_for.py
-    that must never receive this shim (TestProtectedProbeOrderTestsAreUnscaled).
-  - A committed negative control for the discriminator itself
-    (TestCapMarkersDetectNonFiringCap).
 """
 from __future__ import annotations
 
@@ -24,12 +15,15 @@ import pytest
 from helpers import (
     assert_cap_engaged,
     assert_cap_not_engaged,
+    assert_each_stub_warm_exec_ed_once,
     bash_input,
     caps_that_fired,
+    record_subprocess_runs,
     run_hook,
     scaled_cap,
     scaled_shim_sleep,
     scaled_under_cap_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -37,6 +31,7 @@ from helpers import (
 # directly at this module's scope would make pytest collect them a second
 # time under this file's own node-ID, alongside test_lib.py's and test_lib_capped_for.py's.
 from . import test_lib, test_lib_capped_for
+from .conftest import _write_conditional_sleep_shim
 from .test_deny_pii_in_commits import DENY_PII_IN_COMMITS_HOOK, DIFF_CALL_PREDICATE, GHP_TOKEN, _stage
 
 
@@ -50,21 +45,21 @@ def _install_recording_real_timeout(monkeypatch, tmp_path: Path) -> None:
     fake_real_timeout_dir = tmp_path / "fake-real-timeout"
     fake_real_timeout_dir.mkdir()
     fake_timeout = fake_real_timeout_dir / "timeout"
-    fake_timeout.write_text(
+    write_prewarmed_stub(
+        fake_timeout,
         "#!/bin/bash\n"
         "printf '%s\\n' \"$1\"\n"
         'last="${@: -1}"\n'
         '[ "$last" = "__KILL__" ] && exit 124\n'
-        "exit 0\n"
+        "exit 0\n",
     )
-    fake_timeout.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_real_timeout_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 @pytest.mark.timing
 def test_scaled_shim_kills_a_real_hung_command_and_records_both_directions(tmp_path):
-    """End-to-end against the genuine timeout(1)/gtimeout(1) binary (ledger
-    row 5, both directions): a killed invocation records its duration in `started`
+    """End-to-end against the genuine timeout(1)/gtimeout(1) binary (both
+    directions): a killed invocation records its duration in `started`
     and not `completed`, while a completing one records it in both, leaving
     caps_that_fired unchanged."""
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
@@ -106,7 +101,7 @@ def test_duration_scaling_produces_exact_values(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("raw_arg", ["019", "0", "2.5", "", "abc", "-5"])
 def test_regex_rejected_inputs_pass_through_unscaled_and_record_nothing(monkeypatch, tmp_path, raw_arg):
-    """`019` is the regression case ledger row 9 names (bash octal landmine); `0`,
+    """`019` is the regression case (bash octal landmine); `0`,
     `2.5`, an empty $1, a non-numeric $1, and a negative $1 round out the
     regex-boundary enumeration. All six take the same unscaled passthrough
     and leave no marker record."""
@@ -134,7 +129,8 @@ def _install_argv_echoing_real_timeout(monkeypatch, tmp_path: Path) -> None:
     fake_real_timeout_dir = tmp_path / "fake-real-timeout"
     fake_real_timeout_dir.mkdir()
     fake_timeout = fake_real_timeout_dir / "timeout"
-    fake_timeout.write_text(
+    write_prewarmed_stub(
+        fake_timeout,
         "#!/bin/bash\n"
         "printf '%s\\n' \"$@\"\n"
         'last="${@: -1}"\n'
@@ -142,9 +138,8 @@ def _install_argv_echoing_real_timeout(monkeypatch, tmp_path: Path) -> None:
         '[ "$last" = "__BUSYBOX_KILL__" ] && exit 143\n'
         '[ "$last" = "__SIGKILL__" ] && exit 137\n'
         '[ "$last" = "__PLAIN_NONZERO__" ] && exit 128\n'
-        "exit 0\n"
+        "exit 0\n",
     )
-    fake_timeout.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_real_timeout_dir}{os.pathsep}{os.environ['PATH']}")
 
 
@@ -248,7 +243,7 @@ def test_multiple_invocations_are_counted_not_overwritten(monkeypatch, tmp_path)
 
 def test_assert_cap_not_engaged_passes_on_completion_and_raises_on_kill(monkeypatch, tmp_path):
     """assert_cap_not_engaged is the inverse of assert_cap_engaged, for the
-    one inverted site (ledger row 7) whose shim sleep must finish inside
+    one inverted site whose shim sleep must finish inside
     its cap: it must pass when the shim ran and nothing was killed, and
     raise when it was."""
     _install_recording_real_timeout(monkeypatch, tmp_path)
@@ -274,9 +269,47 @@ def test_scaled_shim_sleep_always_outlasts_its_tier_cap():
 
 
 def test_scaled_under_cap_sleep_stays_below_its_cap():
-    """The one inverted site (ledger row 7): its sleep must finish inside its
+    """The one inverted site: its sleep must finish inside its
     cap, not outlast it."""
     assert scaled_under_cap_sleep(3.5) < scaled_cap(10)
+
+
+@pytest.mark.parametrize(
+    ("write_shims", "expected_stub_names"),
+    [
+        pytest.param(write_scaled_timeout_shim, ["timeout"], id="write_scaled_timeout_shim"),
+        pytest.param(
+            lambda bin_dir: _write_conditional_sleep_shim(bin_dir, "fake-binary", "true", '[ "$1" = never ]', sleep_seconds=5),
+            ["fake-binary", "timeout"],
+            id="_write_conditional_sleep_shim",
+        ),
+    ],
+)
+def test_every_stub_a_shim_writer_leaves_is_warm_exec_ed_once_with_the_guard_variable(
+    monkeypatch, tmp_path, write_shims, expected_stub_names
+):
+    """No exec happens other than the one warm exec per stub file."""
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — write_scaled_timeout_shim writes nothing")
+    recorded_calls = record_subprocess_runs(monkeypatch)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+
+    write_shims(bin_dir)
+
+    assert_each_stub_warm_exec_ed_once(recorded_calls, [bin_dir / name for name in expected_stub_names])
+
+
+def test_python3_stub_writer_warm_exec_s_the_stub_once_with_the_guard_variable(monkeypatch, tmp_path):
+    # Imported here so a failure importing test_python_floor fails only this test, not the cap-boundary tests.
+    from .test_python_floor import _write_python3_stub
+
+    recorded_calls = record_subprocess_runs(monkeypatch)
+    bin_dir = tmp_path / "bin"
+
+    _write_python3_stub(bin_dir, "exit 0")
+
+    assert_each_stub_warm_exec_ed_once(recorded_calls, [bin_dir / "python3"])
 
 
 class TestProtectedProbeOrderTestsAreUnscaled:
@@ -299,7 +332,7 @@ class TestProtectedProbeOrderTestsAreUnscaled:
         for forbidden in ("write_scaled_timeout_shim", "scaled_shim_sleep", "TIMEOUT_SCALE_DIVISOR"):
             assert forbidden not in source, (
                 f"{fn.__name__} references {forbidden!r} — this test's own premise is "
-                f"that no scaled timeout(1) shim exists on its PATH (ledger row 4); routing it "
+                f"that no scaled timeout(1) shim exists on its PATH; routing it "
                 f"through the shared scaling helper defeats that premise"
             )
 

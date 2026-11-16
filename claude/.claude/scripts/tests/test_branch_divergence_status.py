@@ -20,6 +20,7 @@ from helpers import (
     _make_git_exiting_with_status,
     assert_cap_engaged,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -700,9 +701,9 @@ class TestNoKeyReadsAnOpenPrsBase:
         local, _bare = _make_stacked_repo_without_key(tmp_path)
         shim_dir = tmp_path / "hung-gh-bin"
         shim_dir.mkdir()
-        hung_gh = shim_dir / "gh"
-        hung_gh.write_text(f"#!/bin/sh\nexec sleep {scaled_shim_sleep(_GH_PR_VIEW_CAP_SECONDS + 2)}\n")
-        hung_gh.chmod(0o755)
+        write_prewarmed_stub(
+            shim_dir / "gh", f"#!/bin/sh\nexec sleep {scaled_shim_sleep(_GH_PR_VIEW_CAP_SECONDS + 2)}\n"
+        )
         # The scaled shim also shrinks the script's fetch and git-read caps, so a local fetch must finish within the scaled cap.
         write_scaled_timeout_shim(shim_dir)
         env = {**os.environ, "PATH": os.pathsep.join([str(shim_dir), os.environ.get("PATH", "")])}

@@ -1495,7 +1495,7 @@ class TestDiffFileFlag:
         assert expected_path.read_bytes() == result.stdout.encode()
 
     def test_diff_file_writes_one_byte_artifact_for_a_genuinely_empty_diff(self, tmp_path):
-        """Row 24's newline divergence from --record is sharpest here: the
+        """The newline divergence from --record is sharpest here: the
         artifact for a genuinely empty diff is exactly b"\\n" (one byte), not
         zero -- the one fixture a --record copy-paste would get wrong, per
         test_record_writes_zero_byte_subject_for_a_genuinely_empty_diff's own

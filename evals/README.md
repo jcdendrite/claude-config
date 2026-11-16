@@ -486,6 +486,215 @@ extra batch still counts against `--cumulative-stop-usd`.
 Tests: `evals/test_measure_explore_recall.py`, fixture-based, no live
 sessions.
 
+## Main session rule adherence gate
+
+`measure_main_session_rule_adherence.py` is a separate, one-time, pre-merge
+instrument — not a skill eval. It measures whether the global `CLAUDE.md`'s
+"Main session" rules keep their adherence when a `SessionStart` hook delivers
+them instead of the memory block loading them. It launches short headless
+`claude -p` samples in arms and scores four rules mechanically from the
+parent's stream-json tool calls: the explicit-`model` rule and the
+outside-consult rule (the `dispatch` content file), and the review-before-commit
+rule and the review-ledger rule (the `conduct` content file). A project
+`PreToolUse` hook denies each sample's scorable tools and every dispatch. No
+consult or review executes, and the CLI still ends the run with its own `result`
+event.
+
+The two content files (`main-session/dispatch.md` and `main-session/conduct.md`)
+and the emitter (`emit-main-session-rules.sh`) are the candidate ref's files
+under `claude/.claude/hooks`. They exist only on a ref that carries the hook
+delivery, and only the gate phase reads them.
+
+It runs in two phases, and it is one-time: once the ambient settings register
+the emitter, every arm receives the rules by hook, so the preflight refuses.
+
+- `--phase calibrate` runs the self-check and a calibration on the `memory`
+  arm (the project-level `CLAUDE.md` with the Main session text) and the `none`
+  arm (the same file cut at its `# Main session` line). It needs no new hook.
+  An observable enters when both arms score 30 samples within 45 attempts and
+  the Newcombe lower bound (z = 1.96) for `memory` minus `none` exceeds the 0.15
+  margin.
+  - The self-check launches with every tool disabled and no MCP configuration.
+    Whether the CLI also drops account-level connectors is unconfirmed, so read
+    the first self-check stream's init event (kept with `--keep-artifacts`) and
+    confirm it lists no tools and no MCP servers and reads `permissionMode`
+    `default` before relying on the result. `default` is an alias that
+    `claude --help` omits from the `--permission-mode` choices. A CLI that
+    rejects it ends the first self-check sample with no result event, and the
+    run pauses as unrecognized.
+- `--phase gate` adds the `hook` arm, re-runs the calibration, sizes a
+  two-look non-inferiority comparison of `hook` against `memory` from it, and
+  prints one verdict: pass, fail, miss, inconclusive or void. It reads the
+  emitter, the two gate hooks, `_lib.sh` and the two content files from the
+  candidate ref's `claude/.claude/hooks` directory. It refuses unless the
+  candidate ref's `settings.json` carries all six handlers, each of those hook
+  files exists, and each content file has text. The candidate ref's hooks
+  execute with the operator's credentials and environment, so name only a ref
+  the operator has reviewed.
+  - The planned look is the first of the two comparisons. Its target is the
+    number of scored samples each arm needs per observable, sized from the
+    calibration.
+  - The extension is the second look. It adds half the target for each
+    observable the planned look leaves undecided.
+  - An arm's reach is its scored share of attempts.
+  - A miss is a per-observable flag on the `hook` arm: its reach trails
+    `memory`'s by more than the 0.15 margin, or it scored fewer samples than
+    the target while `memory` scored at least that many. The target is the
+    planned target, plus the extension for an observable that extended. A void
+    run, a delivery failure or a failed observable takes precedence over a
+    miss in the run verdict.
+
+```bash
+# Print the schedule and launch nothing:
+python evals/measure_main_session_rule_adherence.py --phase calibrate --dry-run
+
+# Run the calibration, with every output outside the repository:
+mkdir -p /tmp/msra
+caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibrate \
+  --run-log /tmp/msra/run.jsonl --json /tmp/msra/result.json --keep-artifacts /tmp/msra/streams
+
+# Continue an interrupted or paused run:
+caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibrate \
+  --resume /tmp/msra/run.jsonl --json /tmp/msra/result.json --keep-artifacts /tmp/msra/streams
+```
+
+- Hold a macOS machine awake with `caffeinate -i`. The per-sample timeout runs
+  on `time.monotonic()`, which does not advance while the machine sleeps, so a
+  sleep does not use up `--timeout-s`. It can leave a sample's API connection
+  dead on wake, which ends that sample as a fault or as a timeout.
+- `--resume LOG` continues the run recorded in LOG:
+  - It runs a slot again when its last attempt ended in a fault, a delivery
+    retry, an unrecognized failure or a blocked prompt. That attempt's charge
+    still counts toward spend.
+  - It charges the stage cap for an attempt that started and never finished,
+    once, and runs that slot again.
+  - It removes the temp project and session store of any slot that started and
+    never finished.
+  - It refuses when an arm-input, prompt, scorer, deny-hook, launch-command or
+    seeded-fixture hash, the CLI version, the ambient config commit, the model,
+    the seed, the phase or the account differs from the log's. A refusal leaves
+    the log's records untouched. A final line cut short by a hard kill is
+    repaired first: truncated when it does not parse, completed with a newline
+    when it does.
+  - A run already at its cumulative stop launches nothing.
+  - A stage refused for its projected cost continues with `--resume` and a
+    higher `--cumulative-stop-usd`.
+  - Each interruption followed by a resume charges the stage cap for every
+    attempt that was in flight, so it can add up to `--workers` caps to the
+    spend.
+  - It must run with the original run's `TMPDIR`: the cleanup of an attempt
+    that never finished refuses a temp project directory outside the current
+    temp directory.
+  - It refuses while `ps -axww -o command=` lists the `--session-id` of an attempt
+    that started and never finished. It also refuses when an attempt started
+    and never finished and the process list is empty or cannot be read. End the
+    child, then resume. A hard kill of the harness can leave that attempt's
+    `claude -p` child running, and the cleanup would delete the directories
+    under it.
+    - The check sees only a child whose command line carries its session id.
+      On a system whose `ps` cannot show full command lines even with `ww`, check for stray
+      `claude -p` children by hand before resuming.
+  - A non-default `--base-ref` (and a gate run's `--candidate-ref`) must be repeated on resume. The run header
+    records the commit each resolved to, and a refusal on an `inputs.*_claude_md` hash names the option to pass.
+  - It may reuse the `--json` and `--keep-artifacts` paths.
+- `--dry-run` prints the schedule and runs no preflight, so a clean dry run
+  does not predict a refusal.
+- Do not pull or switch branches in the main checkout during a run: the
+  ambient config checkout is one of the arms' shared inputs, and its commit is
+  read at every stage boundary.
+- Run the harness on Claude Code 2.1.295 or newer. Each sample's deny hook is registered with `onFailure: "block"`,
+  which older versions may not honor, as for every gate registration in the repository `README.md`.
+- A CLI self-update halts the run when the next stage boundary or sample sees
+  the new version. `--resume` then refuses, so the remaining samples need a
+  fresh run. The harness launches the `claude` binary's real path, resolved
+  once at start.
+- A scorer fix after a run does not need new samples: with `--keep-artifacts`,
+  `rescore_kept_streams(DIR)` scores the kept streams again with the current
+  scorer. A prompt change reruns that observable's cells.
+- Run the gate with `--keep-artifacts`. Before reading its table, grep the kept
+  O3 (review-before-commit) streams for Bash commands that contain `commit` but
+  that the scorer's commit pattern does not match, such as
+  a quoted option value containing a space (`git -c "user.name=A B" commit`).
+  The pattern does not match them, so the deny hook does not deny them. Only an
+  unreached sample counts one in its `unscored_target_calls`. A sample that
+  later calls `code-review` scores adherent and counts none.
+
+**Local only.** Like the other instruments here it never runs in CI. `--json`,
+`--keep-artifacts`, `--run-log` and `--resume` are each refused when they
+resolve inside any worktree of this repository, because they carry
+account-local paths. They are written owner-only. The `--json` directory must
+already exist.
+
+Refused before any run file is created:
+
+- a missing `--resume` log
+- an existing `--json` path on a fresh run
+- a non-empty `--keep-artifacts` directory on a fresh run
+- a `--keep-artifacts` path that is not a directory on a resume
+- an unresolvable model
+- an unwritable `--json` directory
+- a registered emitter
+- a missing `claude` binary
+
+Refusals while the arms are built, such as an unknown ref or a gate candidate
+without its handlers, come after the run's `<log>.d` directory and its lock
+file exist, and before the run log.
+
+**Costs are nominal dollars**, the unit of the CLI's `total_cost_usd`. Under
+subscription auth that is a unit of account, not a charge.
+
+- Run it outside working hours at the default worker count. The run's real
+  limit is the usage window of the account it runs under, shared with your own
+  sessions.
+- `--workers` takes 1 to 8. `--timeout-s` takes a whole number of seconds above
+  zero.
+- Dollar figures and the account label appear only in the notices on stderr,
+  the run log and `--json`.
+- Stdout carries the report alone: no dollar figure and no account label, so it
+  can go into a PR body. The report also counts faults by class for each arm
+  and observable.
+- The report prints a model name or CLI version only when it is a short alias, a
+  `claude-<family>-<version>` id or a dotted version, and a placeholder
+  otherwise. The run log and `--json` hold the full values.
+- A delivery failure prints its status class (`sidecar`, `missing`,
+  `receipt-missing` and so on) in the report. Its free-text cause appears only
+  in the halt line on stderr, the run log and `--json`. The self-check answers
+  stay in the run log and `--json`.
+- `--cumulative-stop-usd` ends the run once realized spend reaches it. Samples
+  already in flight finish, so spend can overshoot the stop by up to
+  `--workers` times the stage's per-sample cap.
+- `--budget-cap-usd` caps each sample of the self-check and the smoke. Later
+  stages cap each sample at ten times the largest smoke sample, or keep
+  `--budget-cap-usd` when the smoke reports no positive charge.
+- Both take a finite number above zero.
+- The gate phase refuses its planned look (`planned look refused`) when what
+  remains of `--cumulative-stop-usd` is below the with-extension figure, the
+  projected spend if every observable extends. It prices both arms' attempts at
+  each `memory` cell's calibration reach and mean charge per attempt. A resume
+  skips the refusal once the planned look has started. The attempt-cap ceiling
+  in the notice is not the figure it compares.
+
+**Footprint on the live config dir.** Each sample is a real session, so it
+leaves the following:
+
+- A row in `.session-config-keys-log.jsonl` and a file under `sessions/`.
+- Temp projects and session stores after a hard kill, until `--resume` removes
+  them.
+- Session stores not found when their sample is cleaned up, because the
+  transcript can trail the child's exit, and directories whose delete failed.
+  The run reports the count of each in a notice at its end, and you remove
+  those directories by hand.
+- `.main-session-rules.d/` markers from the gate phase's `hook` samples. The
+  harness deletes the markers it reads, which are those of the hook-arm samples
+  outside the self-check, and no others. It leaves the markers in place for:
+  - a self-check sample
+  - an aborted sample
+  - a sample whose read failed
+
+Tests: `evals/test_measure_main_session_rule_adherence.py` and
+`evals/test_main_session_rule_adherence_fixtures.py`, scripted launcher and
+recorded or synthetic streams, no live sessions.
+
 ## Review bench
 
 The review bench (`evals/review_bench/`) measures whether a reviewer read-rule change

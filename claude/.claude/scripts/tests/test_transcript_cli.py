@@ -154,15 +154,30 @@ class TestConfigDirFlag:
 _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG = (
     "cost-counts", "period-cost", "review-cost-by-size", "read-cost",
 )
+_SUBCOMMANDS_WITH_THEIR_OWN_CONFIG_DIR_FLAG = tuple(
+    name for name in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+    if name not in _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG
+)
+
+
+def _subparsers_by_name(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    subparsers_action = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+    return subparsers_action.choices
+
+
+def _extra_config_dirs_actions(subparser: argparse.ArgumentParser) -> list[argparse.Action]:
+    """Iterates _actions, not _option_string_actions.values(), which lists an aliased flag twice."""
+    return [
+        action for action in subparser._actions
+        if "--config-dir" in action.option_strings or action.dest == "extra_config_dirs"
+    ]
 
 
 def _subcommands_refusing_top_level_config_dir_without_their_own_flag() -> list[str]:
-    subparsers_action = next(
-        action for action in cli.build_parser()._actions if isinstance(action, argparse._SubParsersAction)
-    )
+    subparsers = _subparsers_by_name(cli.build_parser())
     return [
         name for name in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
-        if "--config-dir" not in subparsers_action.choices[name]._option_string_actions
+        if "--config-dir" not in subparsers[name]._option_string_actions
     ]
 
 
@@ -174,6 +189,40 @@ class TestConfigDirRouting:
         assert set(_subcommands_refusing_top_level_config_dir_without_their_own_flag()) == set(
             _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG
         )
+
+    def test_subcommands_registering_their_own_config_dir_are_exactly_the_expected_set(self):
+        """cli.main()'s refusal hint and scope._resolve_cost_roots both key on the extra_config_dirs dest."""
+        registrants = {
+            name for name, subparser in _subparsers_by_name(cli.build_parser()).items()
+            if _extra_config_dirs_actions(subparser)
+        }
+        assert registrants == set(_SUBCOMMANDS_WITH_THEIR_OWN_CONFIG_DIR_FLAG)
+
+    @pytest.mark.parametrize("subcommand", sorted(_SUBCOMMANDS_WITH_THEIR_OWN_CONFIG_DIR_FLAG))
+    def test_own_config_dir_is_one_appending_flag(self, subcommand):
+        """Contract: one appending flag with this dest, metavar and option string.
+
+        The remaining attributes pin the current argparse defaults and may change deliberately.
+        """
+        subparser = _subparsers_by_name(cli.build_parser())[subcommand]
+        (action,) = _extra_config_dirs_actions(subparser)
+        assert type(action) is argparse._AppendAction
+        assert action.option_strings == ["--config-dir"]
+        assert action.dest == "extra_config_dirs"
+        assert action.metavar == "DIR"
+        assert action.required is False
+        assert action.default is None
+        assert action.nargs is None
+        assert action.const is None
+        assert action.type is None
+        assert action.choices is None
+
+    @pytest.mark.parametrize("subcommand", sorted(_SUBCOMMANDS_WITH_THEIR_OWN_CONFIG_DIR_FLAG))
+    def test_repeated_own_config_dir_values_accumulate_in_order(self, subcommand):
+        parser = cli.build_parser()
+        assert parser.parse_args([subcommand]).extra_config_dirs is None
+        parsed = parser.parse_args([subcommand, "--config-dir", "first-dir", "--config-dir", "second-dir"])
+        assert parsed.extra_config_dirs == ["first-dir", "second-dir"]
 
     @pytest.mark.parametrize("subcommand", _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG)
     def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
@@ -275,6 +324,15 @@ def test_read_cost_this_repo_runs_to_a_report_through_main(
     assert "sessions=1 " in out
 
 
+_SUBCOMMANDS_LACKING_A_SCOPE_FLAG = {
+    "user-input": {"--this-repo"},
+    "pr-cost-export": {"--projects", "--this-repo"},
+    "period-cost": {"--projects", "--this-repo"},
+    "friction-count": {"--projects", "--this-repo"},
+    "routing-guard": {"--projects", "--this-repo"},
+}
+
+
 class TestBuildParser:
     """build_parser() as a testable seam — the argparse layer without executing
     a subcommand against the real ~/.claude/projects."""
@@ -287,25 +345,22 @@ class TestBuildParser:
     @staticmethod
     def _subcommand_flags(parser):
         """Subcommand name -> its registered option strings, from the real registrar."""
-        subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-        return {name: set(sub._option_string_actions) for name, sub in subparsers.choices.items()}
+        return {name: set(sub._option_string_actions) for name, sub in _subparsers_by_name(parser).items()}
 
-    def test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions(self):
-        """A subcommand silently losing --this-repo would drop out of the exclusivity walk
-        below, so the set that has --projects without it is pinned explicitly."""
+    def test_subcommands_lacking_a_scope_flag_are_exactly_the_expected_set(self):
+        """The exclusivity walk below skips these subcommands, so each one's missing scope flags are pinned exactly."""
+        scope_flags = {"--projects", "--this-repo"}
         flags = self._subcommand_flags(cli.build_parser())
-        assert {name for name, opts in flags.items() if "--projects" in opts and "--this-repo" not in opts} == {"user-input"}
+        lacking = {name: missing for name, opts in flags.items() if (missing := scope_flags - opts)}
+        assert lacking == _SUBCOMMANDS_LACKING_A_SCOPE_FLAG
 
     def test_every_subcommand_with_both_scope_flags_refuses_them_together(self, capsys):
         """Walks the real registrar, so a subcommand registered later is covered automatically.
         Asserts argparse's own refusal text: a SystemExit from a missing required flag would
         otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
         parser = cli.build_parser()
-        both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
-        # The walk below skips any subcommand that loses either flag, so each name here guards its
-        # own registrar: cost via `cli.py`'s `_add_project_scope_args` call, skill-invocation via
-        # its hand-rolled group, skill-pair and subagents via their modules' registrars.
-        assert {"cost", "skill-invocation", "skill-pair", "subagents"} <= set(both_flags)
+        both_flags = sorted(self._subcommand_flags(parser).keys() - _SUBCOMMANDS_LACKING_A_SCOPE_FLAG.keys())
+        assert both_flags
         not_refused = []
         for name in both_flags:
             try:
@@ -344,14 +399,9 @@ class TestProjectsFlagHasNoArgparseType:
         one-level restriction must stay runtime-validated, since whether it
         applies depends on how many roots this invocation resolves, not on
         the flag's syntax alone."""
-        parser = cli.build_parser()
-        subparsers_action = next(
-            action for action in parser._actions
-            if isinstance(action, argparse._SubParsersAction)
-        )
         projects_registrations = [
             (subcommand, action)
-            for subcommand, subparser in subparsers_action.choices.items()
+            for subcommand, subparser in _subparsers_by_name(cli.build_parser()).items()
             for action in subparser._actions
             if action.dest == "projects"
         ]

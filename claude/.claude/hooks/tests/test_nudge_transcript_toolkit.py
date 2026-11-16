@@ -2,9 +2,11 @@
 
 PostToolUse Edit|Write|MultiEdit hook that reports via `additionalContext`
 when the content just written to a `.py`/`.sh` file looks like a hand-rolled
-transcript-corpus glob (`projects/*/*.jsonl`-shaped) -- see
-`.claude/plans/transcript-parsing-guardrails.md` for the incident this
-backstops.
+transcript-corpus glob (`projects/*/*.jsonl`-shaped). A glob of that shape
+covers one config root. The default scan resolution
+(`scope.resolve_scan_roots`) unions every root `~/.claude/transcript-config-dirs`
+declares. A top-level `--config-dir` narrows it to one root.
+`cost --summary` (via `_resolve_cost_roots`) uses the active root alone.
 """
 from __future__ import annotations
 

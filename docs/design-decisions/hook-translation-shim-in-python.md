@@ -54,7 +54,7 @@ Not measured. By the startup medians above (`jq` 8.2 ms, interpreter 32.2 ms), a
 
 ## Python version floor
 
-The adapter requires python3 3.14 or later. The installer is to refuse an older interpreter. The shim itself carries no floor check. The floor keeps the adapter to the one version CI runs (`.github/workflows/tests.yml`) in place of a second supported version to test. The toolkit's documented 3.11 floor stays for the hooks, which are the toolkit's own code.
+The adapter requires python3 3.14 or later, which is the toolkit's floor: `hooks/_config.sh` holds it and `README.md` § "Requirements" states it. `cursor-adapter.py install` refuses a recorded python3 below the floor, and a `python3` below it on the hooks' PATH. The shim itself carries no floor check. The floor keeps the adapter to the one version CI runs (`.github/workflows/tests.yml`) in place of a second supported version to test.
 
 ## Costs of the Python choice
 
