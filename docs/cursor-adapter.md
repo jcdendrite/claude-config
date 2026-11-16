@@ -69,9 +69,9 @@ After a `git pull`, run `check`: it compares the installed entries with what `ge
 
 ## Parity with Claude Code
 
-Under the adapter, Cursor behaves as Claude Code does wherever the vendor allows. This doc lists each known difference, and a newly found one is noted here. `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` holds each harness registration, permission deny, adapter gate or Cursor tool that the adapter does not carry, with its reason. An entry there that drops a gate or deny falls under the exception below.
+Under the adapter, Cursor behaves as Claude Code does wherever the vendor allows. This doc and `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` together list each known difference. The file holds each harness registration, permission deny, adapter gate or Cursor tool that the adapter does not carry, with its reason. This doc notes any other difference, including a newly found one.
 
-The one exception to noting a difference in this doc is a gate or deny that cannot reach parity under Cursor. A gate or deny that cannot reach parity under Cursor is raised to the engineer as an open decision before it ships.
+A gate or deny that cannot reach parity under Cursor is raised to the engineer as an open decision before it ships, and an entry in the file that drops a gate or deny falls under this.
 
 ## Prerequisites
 
