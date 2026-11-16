@@ -25,7 +25,7 @@ Build `evals/replay_bench/`, a local runner that replays a source repo's past co
 The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D4, row 124):
 - The first PR, merged as #1452, holds Phases 1 and 2 and the `select-tests.py` rows for its own files (Phase 5a). Its last dispatch ran after Verification step 1c, which set the `--max-base-entries` default (Fixture). It needs no `claude -p` run.
 - The second PR, on a follow-on branch from `main` after the first merges, holds Phases 3 and 4 and the rest of Phase 5 (Phase 5b). Verification step 1b ran at its start (row 164), and the live checks run before it merges.
-- This file stays whole and ships with the first PR, where it is already committed (row 127). The second PR edits it in place, so each later change to the plan ships with the code it governs. Its Phase 3 to 5 sections are the second PR's plan, and main holds that design before its code. M21 names the two alternatives set aside.
+- This file stays whole and ships with the first PR (row 127). The second PR edits it in place, so each later change to the plan ships with the code it governs. Its Phase 3 to 5 sections are the second PR's plan, and main holds that design before its code. M21 names the two alternatives set aside.
 
 ### How a replay runs
 
@@ -205,7 +205,8 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 10. [verified: `docs/private-project-redaction.md:136-137`] A subcommand with no scope refusal of its own is not a publication instrument. The runner refuses no wider corpus, so even an own-history figure from it is not publishable.
 11. [verified: this session's probe, as relayed; repo `CLAUDE.md` "Secrets, tokens, credentials"] `CLAUDE_CONFIG_DIR=<empty dir>` printed "Not logged in", and copying credentials into a config dir is barred.
 12. [verified: `claude/.claude/agents/code-writer.md:4`] `code-writer`'s tools are Read, Edit, Write, Bash, Grep and Glob, with no `Skill` tool, so `bare-writer` copies a list without it too.
-13. [verified: `claude/.claude/settings.json`, its `SubagentStop` entry] The `SubagentStop` hook `send-back-skipped-self-review.sh` has the matcher `code-writer`.14. [verified: sub-agents.md, as relayed: settings, managed settings and plugin hooks still apply inside subagents] Both arms' subagents run the account's hooks.
+13. [verified: `claude/.claude/settings.json`, its `SubagentStop` entry] The `SubagentStop` hook `send-back-skipped-self-review.sh` has the matcher `code-writer`.
+14. [verified: sub-agents.md, as relayed: settings, managed settings and plugin hooks still apply inside subagents] Both arms' subagents run the account's hooks.
 15. [verified: sub-agents.md, as relayed] `omitClaudeMd` is a subagent frontmatter field (v2.1.271 and later) that drops user, project and local `CLAUDE.md`. Managed policy still loads.
 16. [verified: Verification step 1a's `bare` run, as relayed; the sub-agents page, as relayed: "For Explore, Plan, and subagents with `omitClaudeMd`, a subdirectory's `CLAUDE.md` and matching path-scoped rules still load when the subagent works with files there."] `omitClaudeMd` does not stop path-scoped rules: the `bare` subagent loaded a user-scope rule by `path_glob_match`. [verified: `claude/.claude/rules/shell-script-conventions.md:49-52`] A leaked rule is not neutral, because one user rule sets a comment-length convention. So every `bare` fixture carries `claudeMdExcludes` (row 115), and the instrument still checks every `bare` run.
 17. [verified: `docs/case-studies/claude-md-glob-zero-segment.md`, its five `-p` trials and the clean trial's two logged lines] An `InstructionsLoaded` command hook fires under `claude -p` and logs `load_reason` and `file_path`.
