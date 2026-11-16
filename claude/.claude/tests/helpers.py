@@ -2581,24 +2581,42 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
 
 
 def _write_arg_matching_exit_shim(
-    shim: Path, real_tool_command: str, arg_pattern: str, exit_status: int
+    shim: Path,
+    real_tool_command: str,
+    arg_pattern: str | None,
+    exit_status: int | None,
+    *,
+    fragments: tuple[str, ...] = (),
+    extra: str = "",
 ) -> None:
-    """Write an executable bash shim at `shim` that exits `exit_status` at once,
-    printing nothing, when any argument matches the shell `case` pattern
-    `arg_pattern`, and otherwise execs `real_tool_command` (a bash-ready word,
-    already quoted) with the original arguments."""
+    """Write an executable bash shim at `shim` that exits
+    `exit_status` at once when its call matches, and otherwise execs
+    `real_tool_command` (a bash-ready word, already quoted) with the original
+    arguments.
+
+    A call matches when any argument matches the shell `case` pattern
+    `arg_pattern` (no pattern matches every call) and every fragment in
+    `fragments` is a substring of the space-padded argument string. With
+    `exit_status` None the shim never exits early. `extra` is shell run before the exec."""
     shim.parent.mkdir(parents=True, exist_ok=True)
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        f'    {arg_pattern})\n'
-        f'      exit {exit_status}\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        f'exec {real_tool_command} "$@"\n'
-    )
+    conditions = []
+    lines = ["#!/bin/bash"]
+    if arg_pattern is not None:
+        lines += [
+            "any_argument_matches() {",
+            '  local arg; for arg in "$@"; do',
+            f"    case \"$arg\" in {arg_pattern}) return 0;; esac",
+            "  done; return 1",
+            "}",
+        ]
+        conditions.append('any_argument_matches "$@"')
+    conditions += [f'[[ " $* " == *{shlex.quote(fragment)}* ]]' for fragment in fragments]
+    if exit_status is not None:
+        lines.append(f"if {' && '.join(conditions) or 'true'}; then exit {exit_status}; fi")
+    if extra:
+        lines.append(extra)
+    lines.append(f'exec {real_tool_command} "$@"')
+    shim.write_text("\n".join(lines) + "\n")
     shim.chmod(0o755)
 
 

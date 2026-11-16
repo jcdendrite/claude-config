@@ -351,6 +351,20 @@ The test matrix is in the Implementation checklist. Each file below names the in
 - `claude/.claude/hooks/tests/test_marker_lib.py` and `claude/.claude/scripts/tests/test_review_ledger_lib.py`: re-pointed at the shared `commit_all` and `write_repo_file` helpers in `claude/.claude/tests/helpers.py` (already listed).
 - `docs/design-decisions/reviewer-responsibility-bounded-to-diff.md`: a dated 2026-10-22 note.
 
+**Cumulative-review fix batch (ledger round 99).** One file outside the phases above: `claude/.claude/hooks/deny-data-file-reads.sh`. The batch also edits `docs/security-hardening.md`, already listed under Phase 1a. The hook edit is comment-only and rewrites the header's Known-gaps list to three channels: `Bash`-based reads, text a subagent returns to the session that dispatched it, and prompt-pasted content. The list drops "subagent reads" and then names the same channels as `docs/security-hardening.md` § Limitations. The doc replaces its `[unverified]` sentence with a flat statement that a dispatched subagent's own `Read` is checked by the hook as the main session's is. The doc names the vendor sentence quoted in `enforce-marker-script-shape.sh` as the basis, and records the probe below with its date, Claude Code version and scope. Forks and nested `claude -p` sessions are stated as not verified, immediately after the flat statement in the doc, and the header points to that statement instead of restating it.
+
+Probe record, run by this session with the engineer's go-ahead: on 2026-11-05, Claude Code 2.1.318, the gate was armed with an empty guard file. A dispatched `general-purpose` subagent `Read` a throwaway `.csv` and received the denial "Blocked by data-file read gate: Read of '<path>' — the '.csv' extension is a data-file shape", the same text the main session received. Only the data-file gate was probed. `deny-env-reads.sh` and `deny-credential-file-reads.sh` share the `Read` matcher, so the same behavior is expected for them.
+
+`[engineer-verified: "Sure you can do that."]` covers making the header edit and stating the claim flatly, not the probe result.
+
+Substitute verification for a comment-only edit to the hook:
+- Every added or removed line begins with `#`.
+- Lines 1-6 and the tier line are untouched.
+- `bash -n` and shellcheck pass.
+- The scoped suite includes `test_hook_alignment.py`, `test_deny_data_file_reads.py` and `test_pr_diff_lib.py`.
+
+The session runs these checks after the edit and records the results in the commit message.
+
 This plan file itself: `.claude/plans/reviewer-containment.md`.
 
 ## Verification

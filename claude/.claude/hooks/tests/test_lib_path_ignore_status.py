@@ -22,7 +22,6 @@ from ._lib_sh_helpers import _LIB_SH
 
 
 def _init_ignoring_repo(repo: Path, *, ignore_rules: str = "agent-reviews/\n") -> Path:
-    """A git repo whose info/exclude holds ignore_rules, with one committed file."""
     init_git_repo_with_commit(repo, branch="main")
     (repo / ".git" / "info" / "exclude").write_text(ignore_rules)
     return repo

@@ -41,13 +41,49 @@ set -euo pipefail
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
 
-# Resolves the PR's base branch into BASE_REF, from gh or else the default-branch guess (BASE_REF_GUESSED=1).
+# Resolves the PR's base branch into BASE_REF in the order the header states, for default mode and --context-files alike.
+# Sets these variables:
+# - STACK_BRANCH: the branch whose stack-base key supplied BASE_REF, empty when none did.
+# - BASE_REF_GUESSED: 1 when the default-branch guess supplied BASE_REF.
+# - GH_PR_VIEW_FAILED: 1 when the key path's gh call exited non-zero.
+# - BASE_STOP_LINE: the one stderr line of a stack-base stop.
+# Returns 0 when BASE_REF resolved, 1 when nothing resolved, and 2 for a stack-base stop.
 # Prints nothing: each mode words its own stderr line.
 # gh exits nonzero for "no PR open yet" and for auth/network failure alike.
 _resolve_base_ref() {
-  BASE_REF_GUESSED=0
-  # 15 s matches the outer cap `_lib_cumulative_diff_hash` puts on this script.
-  # It is a local budget with no vendor spec.
+  local stack_status=0 stack_base_info pr_reply pr_base='' pr_base_quoted base_ref_quoted
+  STACK_BRANCH='' BASE_REF_GUESSED=0 GH_PR_VIEW_FAILED=0 BASE_STOP_LINE=''
+  # Stderr is folded in so a stop's one line reaches BASE_STOP_LINE, which --context-files words into its single halt line.
+  stack_base_info=$(_lib_configured_stack_base "pr-diff-against-base.sh" "$PWD" 2>&1) || stack_status=$?
+  if [ "$stack_status" -eq 0 ]; then
+    stack_base_info=${stack_base_info##*$'\n'}
+    STACK_BRANCH="${stack_base_info%% *}"
+    BASE_REF="${stack_base_info#* }"
+    # A merged or closed PR's base is ignored.
+    # Only an OPEN PR can disagree.
+    # A gh failure or a reply that is not two lines reads as no open PR.
+    # 15 s matches the outer cap `_lib_cumulative_diff_hash` puts on this script.
+    # It is a local budget with no vendor spec.
+    if pr_reply=$(_lib_gh 15 pr view --json state,baseRefName --jq '.state, .baseRefName' 2>/dev/null); then
+      pr_base=$(_lib_open_pr_base "$pr_reply") || pr_base=''
+    else
+      GH_PR_VIEW_FAILED=1
+    fi
+    if [ -n "$pr_base" ] && [ "$pr_base" != "$BASE_REF" ]; then
+      # %q-quoted because a valid branch name can still hold shell metacharacters,
+      # and this text offers a command to copy.
+      printf -v pr_base_quoted '%q' "$pr_base"
+      printf -v base_ref_quoted '%q' "$BASE_REF"
+      BASE_STOP_LINE=$(_lib_print_unusable_stack_base "pr-diff-against-base.sh" "$STACK_BRANCH" "$BASE_REF" \
+        "the open PR for this branch targets $pr_base_quoted, not $base_ref_quoted (to retarget the PR to the key's value instead, the engineer can run: gh pr edit --base $base_ref_quoted)" 2>&1)
+      return 2
+    fi
+    return 0
+  fi
+  if [ "$stack_status" -ne 1 ]; then
+    BASE_STOP_LINE=$stack_base_info
+    return 2
+  fi
   if BASE_REF=$(_lib_gh 15 pr view --json baseRefName --jq .baseRefName 2>/dev/null); then
     return 0
   fi
@@ -89,6 +125,9 @@ CONTEXT_MOVED_FILES=()  # final files already moved into place, removed again un
 CONTEXT_COMPLETED=0     # 1 only once every file is in place and every token is printed
 BASE_REF=''
 BASE_REF_GUESSED=0
+STACK_BRANCH=''
+GH_PR_VIEW_FAILED=0
+BASE_STOP_LINE=''
 
 # Runs on every exit. A command that failed under set -e exits 1 and shows its own status; the script's own exits 2 and 3 and the signal exits are kept.
 # shellcheck disable=SC2329 # invoked indirectly via the trap registered in the --context-files branch below, which shellcheck's static analysis doesn't follow.
@@ -193,17 +232,19 @@ _context_validate_args() {
 }
 
 _context_prepare() {
-  local physical_tmp_base='' physical_root=''
-  # Unsets every name in _LIB_GIT_REPOSITORY_SELECTING_ENV_VARS, which _lib.sh defines.
+  local physical_tmp_base='' physical_root='' base_status=0
   # Command-scope config stays, so the recompute reads the config default mode read.
   # A true-valued pathspec variable makes git check-ignore exit 128.
   # GIT_DIFF_OPTS overrides the pinned -U3.
   unset "${_LIB_GIT_REPOSITORY_SELECTING_ENV_VARS[@]}" GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_DIFF_OPTS
   if [ "$CONTEXT_SOURCE" = cumulative ] || [ "$CONTEXT_SOURCE" = expect-diff ]; then
     CONTEXT_STEP='base-resolution'
-    if ! _resolve_base_ref; then
-      _context_halt base-resolution 1 "gh pr view failed and no default branch resolved from origin"
-    fi
+    _resolve_base_ref || base_status=$?
+    case $base_status in
+      0) ;;
+      1) _context_halt base-resolution 1 "gh pr view failed and no default branch resolved from origin" ;;
+      *) _context_halt base-resolution 1 "${BASE_STOP_LINE#pr-diff-against-base.sh: }" ;;
+    esac
   fi
   # Diff and path bytes are not guaranteed valid in the user's locale, so byte-processing tools run under LC_ALL=C.
   export LC_ALL=C
@@ -231,7 +272,7 @@ _context_prepare() {
 
 # Exits 0 from here with DIFF_EMPTY when nothing changed.
 _context_collect_rows() {
-  local head_status=0 recompute_status=0 handed_status=0 handed='' recomputed=''
+  local head_status=0 merge_base_status=0 recompute_status=0 handed_status=0 handed='' recomputed='' base_origin
   DIFF_PIN=(
     --no-color --no-ext-diff --no-textconv --no-relative -M
     --src-prefix=a/ --dst-prefix=b/ --submodule=short --ignore-submodules=none
@@ -256,7 +297,17 @@ _context_collect_rows() {
       ;;
     *)
       CONTEXT_STEP='merge-base'
-      MERGE_BASE=$(_lib_capped_for "$CONTEXT_GIT_CALL_SECONDS" git merge-base "origin/$BASE_REF" HEAD 2>/dev/null)
+      MERGE_BASE=$(_lib_capped_for "$CONTEXT_GIT_CALL_SECONDS" git merge-base "refs/remotes/origin/$BASE_REF" HEAD 2>/dev/null) || merge_base_status=$?
+      if [ "$merge_base_status" -ne 0 ]; then
+        if [ -n "$STACK_BRANCH" ]; then
+          base_origin="from the stack-base key"
+        elif [ "$BASE_REF_GUESSED" -eq 1 ]; then
+          base_origin="guessed, as gh pr view failed"
+        else
+          base_origin="from gh pr view"
+        fi
+        _context_halt merge-base "$merge_base_status" "no merge-base with origin/$BASE_REF (base $base_origin)"
+      fi
       REVISION="$MERGE_BASE...HEAD"
       BASE_SHA=$MERGE_BASE
       HEAD_FIELD=$HEAD_SHA
@@ -1051,39 +1102,15 @@ if [ "$STAGED" -eq 1 ]; then
   fi
 else
   DIFF_MARKER_DIR_NAME="cumulative-review-diff-markers"
-  # Empty STACK_BRANCH marks the no-key path, whose base order the header states.
-  STACK_BRANCH=""
-  STACK_STATUS=0
-  STACK_BASE_INFO=$(_lib_configured_stack_base "pr-diff-against-base.sh" "$PWD") || STACK_STATUS=$?
-  if [ "$STACK_STATUS" -eq 0 ]; then
-    STACK_BRANCH="${STACK_BASE_INFO%% *}"
-    BASE_REF="${STACK_BASE_INFO#* }"
-    # A merged or closed PR's base is ignored.
-    # Only an OPEN PR can disagree.
-    # A gh failure or a reply that is not two lines reads as no open PR.
-    # Only a gh failure sets GH_PR_VIEW_FAILED, which the `using` line reports.
-    PR_BASE=""
-    GH_PR_VIEW_FAILED=0
-    if PR_REPLY=$(gh pr view --json state,baseRefName --jq '.state, .baseRefName' 2>/dev/null); then
-      PR_BASE=$(_lib_open_pr_base "$PR_REPLY") || PR_BASE=""
-    else
-      GH_PR_VIEW_FAILED=1
-    fi
-    if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "$BASE_REF" ]; then
-      # %q-quoted because a valid branch name can still hold shell metacharacters,
-      # and this text offers a command to copy.
-      printf -v PR_BASE_QUOTED '%q' "$PR_BASE"
-      printf -v BASE_REF_QUOTED '%q' "$BASE_REF"
-      _lib_print_unusable_stack_base "pr-diff-against-base.sh" "$STACK_BRANCH" "$BASE_REF" \
-        "the open PR for this branch targets $PR_BASE_QUOTED, not $BASE_REF_QUOTED (to retarget the PR to the key's value instead, the engineer can run: gh pr edit --base $BASE_REF_QUOTED)"
-      exit 1
-    fi
-  elif [ "$STACK_STATUS" -ne 1 ]; then
-    # Status 2 is the helper's stop with its line already printed. This
-    # script's own exit 2 means a usage error, so every stop exits 1.
-    exit 1
-  elif ! _resolve_base_ref; then
+  BASE_STATUS=0
+  _resolve_base_ref || BASE_STATUS=$?
+  if [ "$BASE_STATUS" -eq 1 ]; then
     printf 'pr-diff-against-base.sh: gh pr view failed and no default branch resolved from origin\n' >&2
+    exit 1
+  elif [ "$BASE_STATUS" -ne 0 ]; then
+    # Status 2 is a stack-base stop. This script's own exit 2 means a usage
+    # error, so every stop exits 1.
+    printf '%s\n' "$BASE_STOP_LINE" >&2
     exit 1
   elif [ "$BASE_REF_GUESSED" -eq 1 ]; then
     printf 'pr-diff-against-base.sh: gh pr view failed; defaulting base to %s\n' "$BASE_REF" >&2

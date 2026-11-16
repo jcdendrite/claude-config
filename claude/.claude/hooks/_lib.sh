@@ -4207,7 +4207,6 @@ _lib_has_unsafe_ssh_dir_reference() {
 }
 
 # _lib_dotenv_basename_is_secret BASENAME
-# Returns 0 for `.env` and any `.env.*` other than `.env.example`, `.env.template` and `.env.sample`, and 1 otherwise.
 # Mirrors deny-env-reads.sh's basename rule; test_deny_env_reads.py's parity test ties the two.
 # Case-sensitive like that hook, so `.ENV` is not secret here either.
 _lib_dotenv_basename_is_secret() {

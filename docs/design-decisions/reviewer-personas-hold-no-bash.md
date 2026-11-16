@@ -44,6 +44,7 @@ Each answer quotes the label the engineer selected or the words they typed. The 
 - A `Check:` line on a counted finding replaces an optional `## Requested checks` section (ratified by "sure, no further changes.", row 77).
 - The Write arm gains an own-name rule, and credential-path and data-file withholding are behavior the ticket did not name. The size rule is dropped.
 - "The `Bash` arm is unchanged" holds, while #1103's "Fix it here" for the git-fragment mis-parse is deferred to #1295 and scoped to `Plan`.
+- The `/code-review` and `/plan-review` dispatchers hand `staff-product-engineer` the spec as data: the ticket and folded-issue text, plus the PR text under `/code-review`. They fetch it read-only, from this repository's own tracker only.
 
 ## Disposition of #1103's known hook gaps
 
@@ -72,7 +73,7 @@ Each answer quotes the label the engineer selected or the words they typed. The 
 - Lane files are bounded per lane except the `.diff`, which is unbounded, and nothing sweeps them.
 - The listing is uncapped, so above the harness's output limit the orchestrator reads the full output file.
 - A wrong in-range listing number is detected only by the orchestrator's `LANE_ROW:` comparison.
-- `/ready-for-review` still prints the whole cumulative diff into the session (#1296). The leak predates this change and the change leaves that skill unedited. That skill also leaves `pr-diff-against-base.sh`'s `--record` and `--diff-file` copies of the whole cumulative diff, withheld blocks included, under the config directory. Nothing in this change keeps a persona's `Glob` or `Read` from those copies. `docs/scripts.md` § "Script reference" (that script's entry) says when each is written and removed.
+- `/ready-for-review` prints the whole cumulative diff into the session (#1296). It also leaves `pr-diff-against-base.sh`'s `--record` and `--diff-file` copies of that diff, withheld blocks included, under the config directory, and nothing keeps a persona's `Glob` or `Read` from them. `skill-fidelity-reviewer` is handed the `--diff-file` copy as its input, so the withholding claim covers lane files only. `docs/scripts.md` § "Script reference" (that script's entry) says when each copy is written and removed.
 
 ## Alternatives set aside
 

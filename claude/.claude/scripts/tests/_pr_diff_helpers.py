@@ -25,7 +25,6 @@ _DIFF_PIN = (
 
 
 def _git_out(repo: Path, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
-    """git in `repo`, stdout kept as bytes."""
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, check=check, env=env)
 
 

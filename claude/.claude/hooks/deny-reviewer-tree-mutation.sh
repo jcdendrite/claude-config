@@ -233,8 +233,7 @@
 #     An exported GIT_LITERAL_PATHSPECS, GIT_GLOB_PATHSPECS, GIT_NOGLOB_PATHSPECS
 #     or GIT_ICASE_PATHSPECS in a reviewer session makes the ignore check exit 128.
 #     So every findings write denies and the reviewer returns inline.
-#     A symlinked agent-reviews directory also makes the ignore check exit 128
-#     (test_lib.py pins this on git 2.43.0), so the write denies.
+#     A symlinked agent-reviews directory also makes the ignore check exit 128, so the write denies.
 #   - The /review-pr findings-directory exemption is create-only and Write-only.
 #     It accepts a path only when all of these hold:
 #       - The tool is Write.
@@ -259,6 +258,7 @@
 #   - Waived under the cooperative tier:
 #       - A Write, Edit or MultiEdit payload with no file_path is allowed.
 #       - The Bash arm's denial text names the Write tool, which Plan may lack (GH-1295).
+#       - A flag-only git form such as `git --version` is denied, because its subcommand is empty and the denial text reads `'git '` (GH-1295).
 #       - The Write arm's agent-reviews branch judges the path string and the ignore check, never the inode.
 #         A symlinked own-name leaf or a hard-linked own-name leaf is not inspected by this hook.
 #         Any agent that holds Bash, `Plan` included, can plant such a link.
@@ -441,10 +441,7 @@ _fragment_raw_write_targets() {
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
 }
 
-# True iff a $1 tool call may create $2, the caller's own not-yet-existing
-# `<agent>-*.md` file directly inside the /review-pr findings directory of
-# session $3, and that directory exists and is a real directory rather than a
-# symlink. $4 is the caller's agent type. Only the Write tool creates a file.
+# Only the Write tool creates a file.
 # Local to this hook, not _lib.sh: no other hook needs it.
 _may_create_own_review_pr_findings_file() {
   local tool_name="$1" file_path="$2" session_id="$3" agent_type="$4" findings_dir
@@ -475,10 +472,7 @@ case "$TOOL_NAME" in
       # or a nested "*/agent-reviews/*"), not a substring — a file literally
       # named agent-reviews-notes.md must not be exempted.
       agent-reviews/*|*/agent-reviews/*)
-        # The nested case keeps the exemption to the caller's own findings
-        # file: the parent must be agent-reviews itself, and the name must
-        # start with the caller's agent type. Every non-matching arm is a
-        # bare `;;`, so control falls to the final deny below.
+        # Every non-matching arm is a bare `;;`, so control falls to the final deny below.
         case "${FILE_PATH%/*}" in
           agent-reviews|*/agent-reviews)
             case "${FILE_PATH##*/}" in

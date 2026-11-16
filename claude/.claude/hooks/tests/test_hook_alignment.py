@@ -554,6 +554,59 @@ def test_plan_writer_gate_wired_on_edit_write_multiedit() -> None:
     )
 
 
+_READ_GATE_HOOKS: tuple[str, ...] = (
+    "deny-env-reads.sh",
+    "deny-data-file-reads.sh",
+    "deny-credential-file-reads.sh",
+)
+
+
+def _matcher_covers_tool(matcher: str, tool_name: str) -> bool:
+    """An empty or `*` matcher covers every tool; any other matcher is a regex over the tool name.
+
+    `re.fullmatch` anchoring is assumed, because no harness source is cited for the matcher grammar.
+    """
+    return matcher in ("", "*") or re.fullmatch(matcher, tool_name) is not None
+
+
+@pytest.mark.parametrize(
+    ("matcher", "covers_grep", "covers_read"),
+    [
+        ("Read|Grep", True, True),
+        ("*", True, True),
+        ("", True, True),
+        ("Grep", True, False),
+        ("Read", False, True),
+    ],
+)
+def test_matcher_covers_tool_control_cases(matcher: str, covers_grep: bool, covers_read: bool) -> None:
+    assert _matcher_covers_tool(matcher, "Grep") is covers_grep
+    assert _matcher_covers_tool(matcher, "Read") is covers_read
+
+
+_HOOKS_REACHABLE_FROM_GREP: frozenset[str] = frozenset()
+
+
+# A deliberate Grep gate updates this test and docs/design-decisions/reviewer-personas-hold-no-bash.md's Residuals together.
+def test_read_gate_hooks_are_registered_only_on_matchers_covering_read_and_not_grep() -> None:
+    for hook_name in _READ_GATE_HOOKS:
+        wired_entries = pretooluse_wired_entries(_MAIN_HOOKS_DIR / hook_name)
+        assert wired_entries, f"{hook_name}: not registered on any PreToolUse matcher"
+        for matcher, entry in wired_entries:
+            assert _matcher_covers_tool(matcher, "Read"), f"{hook_name}: matcher {matcher!r} does not cover Read"
+            assert "if" not in entry, f"{hook_name}: entry carries an `if` key {entry['if']!r}, which can narrow the Read matcher"
+
+    pretooluse_groups = json.loads(_SETTINGS_PATH.read_text())["hooks"]["PreToolUse"]
+    hooks_reachable_from_grep = {
+        Path(shlex.split(entry["command"])[-1]).name
+        for group in pretooluse_groups
+        if _matcher_covers_tool(group.get("matcher", ""), "Grep")
+        for entry in group["hooks"]
+        if entry.get("command")
+    }
+    assert hooks_reachable_from_grep == _HOOKS_REACHABLE_FROM_GREP
+
+
 _SETTINGS_FILE_ASK_RULE = "Edit(//**/.claude/settings*.json)"
 
 

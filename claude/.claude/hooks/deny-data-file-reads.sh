@@ -36,9 +36,11 @@
 # deliberate human action outside Claude.
 #
 # Known gaps (documented, not closed): Bash-based reads (cat/head/grep),
-# subagent reads, and prompt-pasted content do not cross the Read tool
-# boundary; a data file just under the 5 MB threshold still carries many
-# records. This hook is a tripwire against the *accidental* Read of a data
+# text a subagent returns to the session that dispatched it, and
+# prompt-pasted content do not cross the Read tool boundary; a data file
+# just under the 5 MB threshold still carries many records. For a
+# subagent's own Read, see docs/security-hardening.md § "Limitations".
+# This hook is a tripwire against the *accidental* Read of a data
 # dump — defense-in-depth, not an airtight gate. The airtight control is
 # machine segmentation (no PHI on the box), which is policy — see
 # docs/security-hardening.md.

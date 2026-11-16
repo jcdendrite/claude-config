@@ -629,8 +629,18 @@ These hooks reduce *accidental* exposure. They do not make a machine safe
 to hold PII/PHI or live credentials:
 
 - The data-file read hook only intercepts the `Read` tool. `Bash`-based
-  reads (`cat`, `head`, `grep`), subagent reads, and content pasted into a
-  prompt do not cross that boundary. `deny-credential-bash-reads.sh`
+  reads (`cat`, `head`, `grep`), text a subagent returns to the session
+  that dispatched it, and content pasted into a prompt do not cross that
+  boundary. A dispatched subagent's own `Read` is checked by the data-file
+  read hook as the main session's is. Forks and nested `claude -p`
+  sessions are not verified. The basis is the vendor sentence that
+  `enforce-marker-script-shape.sh` quotes from the Claude Code hooks
+  reference, that a subagent's tool events "fire the same configured
+  hooks as in the main conversation". Probe: on 2026-11-05, Claude Code
+  2.1.318, with the gate armed and an empty guard file, a dispatched
+  `general-purpose` subagent `Read` a throwaway `.csv` and got the
+  data-file read gate's denial, the same as the main session. Only the
+  data-file gate was probed. `deny-credential-bash-reads.sh`
   closes this specific gap for credential paths, but only for the Bash tool
   — it has no filesystem resolution, so a credential referenced only
   through an earlier symlink or rename under an innocuous name (not by its

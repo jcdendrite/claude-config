@@ -32,6 +32,7 @@ from helpers import (
     GITLINK_BEFORE,
     HOOKS_DIR,
     LANE_INDEX_ROW_FIELDS,
+    _write_arg_matching_exit_shim,
     ambient_umask,
     assert_cap_engaged,
     commit_all,
@@ -1924,7 +1925,10 @@ _INDEX_HEADER_KEYS = (
 _ZERO_SHA = "0" * 40
 _HARNESS_OUTPUT_LIMIT_BYTES = 30000
 
-def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: tuple[Path, ...] = (), **extra_env: str) -> dict:
+def _context_env(
+    tmp_path: Path, *, base_ref: str | None = "main", state_reply: str | None = None, extra_path: tuple[Path, ...] = (),
+    **extra_env: str,
+) -> dict:
     """An env for a --context-files run: a gh shim, per-test TMPDIR/HOME/CLAUDE_CONFIG_DIR/XDG_CONFIG_HOME, no git config.
 
     A fresh TMPDIR lets a test assert the private temp directory is gone; HOME and CLAUDE_CONFIG_DIR keep the opt-in
@@ -1935,7 +1939,7 @@ def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: t
     env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "DIRENV_"))}
     gh_dir = tmp_path / "gh_shim"
     gh_dir.mkdir(exist_ok=True)
-    (gh_dir / "gh").write_text(_gh_shim_source(base_ref))
+    (gh_dir / "gh").write_text(_gh_shim_source(base_ref, state_reply))
     (gh_dir / "gh").chmod(0o755)
     for name in ("tmp", "home", "isolated-claude-config", "xdg-config"):
         (tmp_path / name).mkdir(exist_ok=True)
@@ -2062,7 +2066,6 @@ def _token_values(result: subprocess.CompletedProcess, token: str) -> list[str]:
 
 
 def _lane_files(result: subprocess.CompletedProcess, agent: str) -> dict[str, Path]:
-    """The index and diff paths a call printed for `agent`, plus the base and history files the index header names."""
     index_path = Path(next(v for v in _token_values(result, "LANE_INDEX") if v.startswith(f"{agent} "))[len(agent) + 1:])
     diff_path = Path(next(v for v in _token_values(result, "LANE_DIFF") if v.startswith(f"{agent} "))[len(agent) + 1:])
     header, _rows = _parse_index(index_path)
@@ -2116,7 +2119,6 @@ def _cquote_index(path: str) -> str:
 
 
 def _cunquote_index(text: str) -> str:
-    """Decode an index-quoted path (the inverse of _cquote_index); an unquoted path comes back unchanged."""
     if not text.startswith('"'):
         return text
     named = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\", '"': '"'}
@@ -2136,7 +2138,6 @@ def _cunquote_index(text: str) -> str:
 
 
 def _tree_snapshot(root: Path) -> dict[str, bytes | str]:
-    """Every file and symlink under root (the .git directory excluded) with its bytes or link target."""
     snapshot: dict[str, bytes | str] = {}
     for current, directories, files in os.walk(root):
         if ".git" in directories:
@@ -2818,25 +2819,12 @@ class GitShim:
         self.log_path.write_text("")
 
 
-def _tool_shim(directory: Path, tool: str, *, fragments: tuple[str, ...] = (), status: int | None = None,
-               stdout: str = "", log: Path | None = None, extra: str = "") -> Path:
-    """A PATH shim for `tool`: when every fragment is a substring of the space-padded argument string, print `stdout` and
-    exit `status` (when `status` is set); otherwise run the real tool. `log` records each call and `extra` is shell run first."""
-    directory.mkdir(parents=True, exist_ok=True)
+def _tool_shim(directory: Path, tool: str, *, status: int | None = None, **shim_options) -> Path:
+    """The `_write_arg_matching_exit_shim` shim for the PATH tool `tool`, written to `directory/tool`."""
     real = shutil.which(tool)
     assert real is not None, tool
-    checks = " && ".join(f'[[ " $* " == *{shlex.quote(fragment)}* ]]' for fragment in fragments) or "true"
-    lines = ["#!/bin/bash"]
-    if log is not None:
-        lines.append(f'printf "%s\\n" {shlex.quote(tool)} >> {shlex.quote(str(log))}')
-    if status is not None:
-        lines.append(f"if {checks}; then printf %s {shlex.quote(stdout)}; exit {status}; fi")
-    if extra:
-        lines.append(extra)
-    lines.append(f'exec {shlex.quote(real)} "$@"')
     shim = directory / tool
-    shim.write_text("\n".join(lines) + "\n")
-    shim.chmod(0o755)
+    _write_arg_matching_exit_shim(shim, shlex.quote(real), None, status, **shim_options)
     return shim
 
 
@@ -3380,6 +3368,7 @@ class TestHaltsAndAtomicity:
         `_lib_repo_root` reports every failure as status 1 whatever git returned, so that one step shows (exit 1).
         """
         shown_status = 1 if case == "repo-root" else status
+        shown_detail = "no merge-base with origin/main (base from gh pr view)" if case == "merge-base" else None
         repo, source_args = _repo_for_failure(tmp_path, source)
         base_env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, base_env, *source_args, list_only=True))[0]
@@ -3390,11 +3379,11 @@ class TestHaltsAndAtomicity:
 
         lane_result = _run_context(repo, env, *source_args, listing=listing_id, lanes=("staff-sdet", "staff-backend-engineer=1"))
 
-        _assert_halted_at(lane_result, step, shown_status)
+        _assert_halted_at(lane_result, step, shown_status, shown_detail)
         _assert_nothing_left(repo, env)
         if shared_with_the_list_call:
             list_result = _run_context(repo, env, *source_args, list_only=True)
-            _assert_halted_at(list_result, step, shown_status)
+            _assert_halted_at(list_result, step, shown_status, shown_detail)
 
     def test_a_failing_gh_falls_to_the_guess_and_the_call_exits_0(self, tmp_path):
         repo = _small_repo(tmp_path, "cumulative")
@@ -4129,7 +4118,7 @@ class TestIgnoreCheckAndOutputTargets:
 # merge-base 20 s, and the quick calls 5 s.
 _CAP_BY_SUBCOMMAND = {
     "diff": 60, "diff-tree": 60, "ls-files": 60, "log": 20, "cat-file": 20, "merge-base": 20,
-    "rev-parse": 5, "symbolic-ref": 5, "check-ignore": 5,
+    "rev-parse": 5, "symbolic-ref": 5, "check-ignore": 5, "config": 5,
 }
 # The subcommands whose capped command is not `git` itself: the shared cumulative-diff command starts with `env`.
 _CAPPED_PROGRAM_BY_SUBCOMMAND = {"diff-tree": "env"}
@@ -4884,20 +4873,9 @@ class TestWithholding:
         repo = _canary_repo(tmp_path, source)
         base_env = _context_env(tmp_path)
         shim_dir = tmp_path / "bsd-grep"
-        shim_dir.mkdir()
         real_grep = shutil.which("grep")
         assert real_grep is not None
-        shim = shim_dir / "grep"
-        shim.write_text(
-            "#!/bin/bash\n"
-            'for arg in "$@"; do\n'
-            '  case $arg in\n'
-            '    --null|--null-data|-z|-Z|-[a-zA-Z]*[zZ]*) echo "grep: unknown option -- $arg" >&2; exit 2 ;;\n'
-            "  esac\n"
-            "done\n"
-            f'exec {shlex.quote(real_grep)} "$@"\n'
-        )
-        shim.chmod(0o755)
+        _write_arg_matching_exit_shim(shim_dir / "grep", shlex.quote(real_grep), "--null|--null-data|-z|-Z|-[a-zA-Z]*[zZ]*", 2)
         env = {**base_env, "PATH": f"{shim_dir}{os.pathsep}{base_env['PATH']}"}
         listing_id, _count, rows = _parse_listing(_run_context(repo, env, *_SOURCE_ARGS[source], list_only=True))
         withheld_numbers = ",".join(str(row["n"]) for row in rows if row["withheld"] == "withheld")
@@ -5334,16 +5312,23 @@ class TestHistoryAndBodies:
         assert "diff --git" not in history and len(history) < 1000
 
     def test_bodies_stop_once_a_lanes_bytes_reach_the_lane_cap(self, tmp_path):
-        """Six 250,000-byte pre-images: the fifth base takes the lane past 1 MiB, so row five's history and row six drop."""
+        """Pre-images under the per-path cap and over the history cap: the base that takes the lane past its cap is the last
+        one kept, so that row's history and every later row's base and history drop."""
+        blob_bytes = _lib_constant("BASE_BYTES_PER_PATH") - 4096
+        assert _lib_constant("HISTORY_BYTES_PER_PATH") < blob_bytes < _lib_constant("BASE_BYTES_PER_PATH"), (
+            "the pre-image must sit over the history cap and under the per-path cap"
+        )
+        bases_inside_lane = _lib_constant("CONTEXT_BYTES_PER_LANE") // blob_bytes
+        file_count = bases_inside_lane + 2
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        for number in range(1, 7):
-            write_repo_file(local, f"big{number}.txt", "a" * 250_000 + "\n")
-        commit_all(local, "six big files")
+        for number in range(1, file_count + 1):
+            write_repo_file(local, f"big{number:02d}.txt", "a" * (blob_bytes - 1) + "\n")
+        commit_all(local, "big files")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        for number in range(1, 7):
-            write_repo_file(local, f"big{number}.txt", "b" * 250_000 + "\n")
+        for number in range(1, file_count + 1):
+            write_repo_file(local, f"big{number:02d}.txt", "b" * (blob_bytes - 1) + "\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5351,12 +5336,13 @@ class TestHistoryAndBodies:
         result = _run_context(local, env, "--staged", listing=listing_id, lanes=("staff-sdet",))
 
         _header, rows = _parse_index(_lane_files(result, "staff-sdet")["index"])
-        assert [row["base"] != "-" for row in rows] == [True, True, True, True, True, False]
-        assert [row["history"] != "-" for row in rows] == [True, True, True, True, False, False]
-        assert all("commits-only" in (row["notes"] or "").split(",") for row in rows[:4])
-        assert all("over-cap" in (row["notes"] or "").split(",") for row in rows[4:])
-        # Rows 1-4 are commits-only (4), row 5 loses its history to the lane cap (1), and row 6 loses its base and history (2).
-        assert "CONTEXT_DEGRADED: 7\n" in result.stderr
+        assert [row["base"] != "-" for row in rows] == [position <= bases_inside_lane for position in range(file_count)]
+        assert [row["history"] != "-" for row in rows] == [position < bases_inside_lane for position in range(file_count)]
+        assert all("commits-only" in (row["notes"] or "").split(",") for row in rows[:bases_inside_lane])
+        assert all("over-cap" in (row["notes"] or "").split(",") for row in rows[bases_inside_lane:])
+        # The rows inside the lane are commits-only, the next row loses its history to the lane cap (1), and the last row
+        # loses its base and history (2).
+        assert f"CONTEXT_DEGRADED: {bases_inside_lane + 3}\n" in result.stderr
 
     def test_a_cumulative_history_omits_the_change_s_own_commits_and_keeps_the_base_side_ones(self, tmp_path):
         tmp_path.mkdir(parents=True, exist_ok=True)
@@ -5796,6 +5782,128 @@ class TestBaseResolutionBothModes:
         assert slow.stdout == failing.stdout
         assert slow.stderr == failing.stderr
 
+    @pytest.mark.parametrize(
+        ("base_ref", "state_reply"),
+        [pytest.param(None, None, id="no-pr"), pytest.param("main", "MERGED\nmain\n", id="merged-pr")],
+    )
+    @pytest.mark.parametrize("call", ["list", "lanes", "expect-diff"])
+    def test_the_stack_base_key_names_the_base_of_every_context_call(self, tmp_path, call, base_ref, state_reply):
+        """With the key set, a failing gh or a merged PR leaves the key as the base: the changed paths and the index's `base:`
+        are the stack base's, and no `BASE_GUESSED:` token appears."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
+        env = _context_env(tmp_path, base_ref=base_ref, state_reply=state_reply)
+        source: tuple[str, ...] = ()
+        if call == "expect-diff":
+            handed = tmp_path / "handed.diff"
+            handed.write_bytes(_default_mode_stdout(local, env))
+            source = ("--expect-diff", str(handed))
+
+        listing_id, _count, rows = _parse_listing(_run_context(local, env, *source, list_only=True))
+        assert [row["path"] for row in rows] == ["own.txt"]
+        if call == "list":
+            return
+        result = _run_context(local, env, *source, listing=listing_id, lanes=("staff-sdet",))
+
+        assert result.returncode == 0, result.stderr
+        assert "BASE_GUESSED" not in result.stderr
+        header, _rows = _parse_index(_lane_files(result, "staff-sdet")["index"])
+        assert header["base"] == _git_out(local, "rev-parse", "stack").stdout.decode().strip()
+
+    def test_an_open_pr_targeting_another_base_halts_the_context_call_in_one_line(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+        env = _context_env(tmp_path, base_ref="main", state_reply="OPEN\nmain\n")
+
+        result = _run_context(local, env, list_only=True)
+
+        assert result.returncode == 1
+        assert "--context-files failed at base-resolution (exit 1): " in result.stderr
+        assert "the open PR for this branch targets main, not stack" in result.stderr
+
+    def test_an_unusable_stack_base_value_halts_the_context_call_in_one_line(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path, key_value="-stack")
+        env = _context_env(tmp_path)
+
+        result = _run_context(local, env, list_only=True)
+
+        assert result.returncode == 1
+        assert "--context-files failed at base-resolution (exit 1): " in result.stderr
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base is -stack" in result.stderr
+
+    def test_a_failing_stack_base_read_halts_the_context_call_at_base_resolution(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+        shim = GitShim(tmp_path / "git_shim").add_rule(mode="fail", subcommand="config", status=128)
+        env = shim.env(_context_env(tmp_path))
+
+        result = _run_context(local, env, list_only=True)
+
+        assert result.returncode == 1
+        assert "--context-files failed at base-resolution (exit 1): " in result.stderr
+        assert "failed (status 128), so the stack-base key was not checked" in result.stderr
+
+    def test_a_never_fetched_stack_base_halts_the_context_call_at_merge_base(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path, key_value="never-fetched")
+        env = _context_env(tmp_path)
+
+        result = _run_context(local, env, list_only=True)
+
+        _assert_halted_at(result, "merge-base", 128, "no merge-base with origin/never-fetched (base from the stack-base key)")
+
+    def test_a_guessed_base_with_no_merge_base_halts_the_context_call_naming_the_guess(self, tmp_path):
+        repo = _small_repo(tmp_path, "cumulative")
+        shim = GitShim(tmp_path / "git_shim").add_rule(mode="fail", subcommand="merge-base", status=128)
+        env = shim.env(_context_env(tmp_path, base_ref=None))
+
+        result = _run_context(repo, env, list_only=True)
+
+        _assert_halted_at(result, "merge-base", 128, "no merge-base with origin/main (base guessed, as gh pr view failed)")
+
+    def test_context_mode_measures_from_the_merge_base_of_the_remote_tracking_stack_base(self, tmp_path):
+        """A local branch named `origin/stack` or `stack` at the default tip, or a stack tip past the fork point,
+        would each move the index's `base:` off the fork point if the script measured from any of them."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        fork_point = _git_out(local, "rev-parse", "stack").stdout.decode().strip()
+        _git_out(local, "checkout", "-q", "stack")
+        write_repo_file(local, "later.txt", "later\n")
+        commit_all(local, "advance stack")
+        _git_out(local, "push", "-q", "origin", "stack")
+        _git_out(local, "checkout", "-q", _STACKED_BRANCH)
+        _git_out(local, "branch", "origin/stack", "main")
+        _git_out(local, "branch", "-f", "stack", "main")
+        (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
+        env = _context_env(tmp_path)
+
+        listing_id, _count, rows = _parse_listing(_run_context(local, env, list_only=True))
+        assert [row["path"] for row in rows] == ["own.txt"]
+        result = _run_context(local, env, listing=listing_id, lanes=("staff-sdet",))
+
+        assert result.returncode == 0, result.stderr
+        header, _rows = _parse_index(_lane_files(result, "staff-sdet")["index"])
+        assert header["base"] == fork_point
+
+    @pytest.mark.timing
+    def test_default_mode_with_a_slow_gh_on_the_stack_base_path_reads_it_as_no_open_pr(self, tmp_path):
+        """The stack-base path's gh call runs under the same 15 s cap as the no-key path's."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        (tmp_path / "failing").mkdir()
+        failing = _run_script(local, _env_with_gh_shim(tmp_path / "failing", None))
+        bin_dir = tmp_path / "scaled_timeout"
+        bin_dir.mkdir()
+        if not write_scaled_timeout_shim(bin_dir):
+            pytest.skip("no timeout(1) or gtimeout(1) on PATH")
+        slow_dir = tmp_path / "slow_gh"
+        slow_dir.mkdir()
+        (slow_dir / "gh").write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(15) + 1}\nexit 0\n")
+        (slow_dir / "gh").chmod(0o755)
+        env = {**os.environ, "PATH": f"{slow_dir}{os.pathsep}{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+        with assert_cap_engaged(bin_dir, production_cap=15, command="gh"):
+            slow = _run_script(local, env)
+
+        assert slow.returncode == 0, slow.stderr
+        assert slow.stdout == failing.stdout
+        assert slow.stderr == failing.stderr
+
     def test_context_mode_with_a_failing_gh_exits_0_and_only_the_lane_call_prints_base_guessed(self, tmp_path):
         repo = _small_repo(tmp_path, "cumulative")
         env = _context_env(tmp_path, base_ref=None)
@@ -5849,14 +5957,17 @@ def _lib_constant(name: str) -> int:
 
 
 def _worst_case_calls(source: str, call: str) -> list[tuple[int, int]]:
-    """One entry per capped call a source makes, as (seconds, how many). The guess's five 5 s git calls and gh's 15 s cap are
-    the worst case of `gh pr view` failing; enrichment is its budget plus one call that starts just inside it."""
+    """One entry per capped call a source makes, as (seconds, how many). The key read's two and the guess's five 5 s git calls
+    and gh's 15 s cap are the worst case of `gh pr view` failing; enrichment is its budget plus one call that starts just
+    inside it."""
     git_quick, git_call, diff_call = 5, _lib_constant("CONTEXT_GIT_CALL_SECONDS"), _lib_constant("CONTEXT_DIFF_CALL_SECONDS")
     calls = [(git_quick, 2), (diff_call, 1)]  # _lib_repo_root and rev-parse; the raw diff
     if source == "working-tree":
         calls.append((diff_call, 1))  # git ls-files --others
     if source in ("cumulative", "expect-diff"):
-        calls += [(15, 1), (git_quick, 5), (git_call, 1)]  # gh pr view; the default-branch guess; git merge-base
+        # gh pr view; the no-key path's two key-read git calls plus the default-branch guess's five (the key path makes three
+        # key-read calls and no guess, so it is the lesser path); git merge-base
+        calls += [(15, 1), (git_quick, 7), (git_call, 1)]
     if source == "expect-diff":
         calls.append((diff_call, 1))  # the recompute
     if call == "lanes":
@@ -6181,7 +6292,9 @@ class TestEveryCallHasAFailingCase:
         injected = {row[1][1]["subcommand"] for row in _CORE_FAILURES if row[1][0] == "git"}
         degrading = {"cat-file", "log"}
         guessing = {"symbolic-ref"}
-        assert observed <= injected | degrading | guessing, observed - (injected | degrading | guessing)
+        reading_the_stack_base_key = {"config"}
+        allowed = injected | degrading | guessing | reading_the_stack_base_key
+        assert observed <= allowed, observed - allowed
 
     def test_every_step_name_a_failing_case_prints_is_in_the_closed_list(self):
         assert {row[3] for row in _CORE_FAILURES} <= set(_step_names())
@@ -6211,10 +6324,15 @@ class TestRemainingWiring:
         env = _context_env(tmp_path)
         listing_id, _count, rows = _parse_listing(_run_context(repo, env, "--staged", list_only=True))
         intended = next(row for row in rows if row["path"] == "one.txt")["n"]
+        wrong = intended % len(rows) + 1
+        wrong_path = next(row for row in rows if row["n"] == wrong)["path"]
 
-        result = _run_context(repo, env, "--staged", listing=listing_id, lanes=(f"staff-sdet={intended % len(rows) + 1}",))
+        result = _run_context(repo, env, "--staged", listing=listing_id, lanes=(f"staff-sdet={wrong}",))
 
         echoed = next(line for line in result.stderr.split("\n") if line.startswith("LANE_ROW: "))
+        assert echoed == f"LANE_ROW: staff-sdet {wrong} {wrong_path}"
+        _header, index_rows = _parse_index(_lane_files(result, "staff-sdet")["index"])
+        assert [row["path"] for row in index_rows if row["lane"] == "lane"] == [wrong_path]
         assert not echoed.endswith(" one.txt")
 
     def test_the_private_directory_is_mode_0700_named_by_the_template_and_holds_the_core_and_shared_temps(

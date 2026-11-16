@@ -179,7 +179,6 @@ _pr_diff_index_path() {
   esac
 }
 
-# A diff header name is quoted when it holds a control byte, a double quote or a backslash.
 _pr_diff_git_quote_name() {
   local LC_ALL=C
   case $1 in
@@ -189,7 +188,6 @@ _pr_diff_git_quote_name() {
 }
 
 # _pr_diff_cunquote TEXT
-# Decodes a git C-quoted name; text that is not wrapped in double quotes comes back unchanged.
 _pr_diff_cunquote() {
   local LC_ALL=C text=$1 inner decoded='' index char octal backslash=$'\\'
   case $text in
@@ -327,13 +325,12 @@ _pr_diff_next_range() {
 }
 
 # _pr_diff_budget_exhausted START_SECONDS NOW_SECONDS LIMIT_SECONDS
-# True once the enrichment budget, measured from the first enrichment call, is used up.
 _pr_diff_budget_exhausted() {
   [ $(($2 - $1)) -ge "$3" ]
 }
 
 # _pr_diff_enrichment_has_time
-# True while the enrichment budget, measured from the first call, has time left; the first call starts the clock in ENRICH_START and the start is never reset.
+# The budget is measured from the first call.
 _pr_diff_enrichment_has_time() {
   if [ -z "$ENRICH_START" ]; then
     ENRICH_START=$SECONDS
