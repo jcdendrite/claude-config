@@ -81,11 +81,11 @@ Measured on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell
 
 **Replay.** The runs replayed 61 units through the reviewer with the 2026-11-15 wording. A unit is a past review finding or a claim from this repository. The study recorded for each unit what the right fix would have been, and two classifiers read that record. Each figure below lists one count per run, over three runs.
 - Real findings where the reviewer kept the claim: 8, 8 and 9 of 28. Kept the claim means a no-finding or keep-correct verdict, and a keep-correct verdict lets the claim stay with a possible reword. Across the three runs, 24 of those 25 verdicts were keep-correct.
-- Claims in the study's verify table deleted: 0 of 30 in every run. The table holds 24 claims verified true, 5 partly false and 1 unverifiable.
+- Deleted among the 30 claims the study verified: 0 of 30 in every run. Of those 30, 24 were verified true, 5 partly false and 1 unverifiable.
 - Units deleted outright that classifier A labels as needing a shorter local version: 4, 5 and 4.
 - Units deleted outright that classifier B labels as having a recorded fix that keeps the claim: 2, 2 and 1.
 
-The units and claims come from this repository's own tracked files and review findings, and the study's inputs are local and unpublished. Three runs make these figures directional.
+The units and claims come from this repository's own tracked files and review findings, and the study's inputs are local and unpublished. The figures come from `.claude/plans/comment-rule-false-angle-fix.md` § "Context", except the classifier B counts, which are in `.claude/plans/comment-rule-false-angle-fix.md` § "Assumption ledger", row 36. Three runs make these figures directional.
 
 **Caveats:**
 - The bars at K=5 were scored as the 2026-11-05 run scored them, except for two changes made after the first runs. The precedence cell is scored by fix kind with one finding counted per site, and the negative cell by Prose restating the code findings only. Both cells also meet the original bars: restating with deletion at least 4 of 5, a `False or unsourced claim` finding at most 1 of 5, and any finding at most 1 of 5.
