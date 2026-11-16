@@ -39,6 +39,7 @@ from helpers import (
     link_bash_into,
     scaled_shim_sleep,
     scaled_under_cap_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -179,9 +180,7 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
 def _fake_python3(fake_bin: Path, script_body: str) -> str:
     """Write a fake `python3` shim into fake_bin and return a PATH that finds
     it ahead of the real python3."""
-    shim = fake_bin / "python3"
-    shim.write_text(script_body)
-    shim.chmod(0o755)
+    write_prewarmed_stub(fake_bin / "python3", script_body)
     return f"{fake_bin}:{os.environ['PATH']}"
 
 

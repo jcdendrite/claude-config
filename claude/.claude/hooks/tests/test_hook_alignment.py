@@ -83,6 +83,7 @@ from helpers import (
     run_hook,
     scaled_shim_sleep,
     write_input,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -3415,8 +3416,7 @@ def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
     stub_bin = tmp_path / "stub_bin"
     stub_bin.mkdir()
     fake_jq = stub_bin / "jq"
-    fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
-    fake_jq.chmod(0o755)
+    write_prewarmed_stub(fake_jq, f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
     (stub_bin / "timeout").symlink_to(timeout_path)
     (stub_bin / "bash").symlink_to(bash_path)
     for cmd in ("head", "tail", "cat", "cut", "printf", "sleep", "grep", "dirname", "git"):

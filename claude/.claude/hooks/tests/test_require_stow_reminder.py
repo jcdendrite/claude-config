@@ -22,6 +22,7 @@ from helpers import (
     run_hook,
     run_hook_reason,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -584,15 +585,15 @@ class TestRequireStowReminder:
         stub_dir.mkdir()
         sleep_seconds = scaled_shim_sleep(5) if write_scaled_timeout_shim(stub_dir) else 5
         fake_cat = stub_dir / "cat"
-        fake_cat.write_text(
+        write_prewarmed_stub(
+            fake_cat,
             "#!/bin/bash\n"
             f'if [ "$1" = {shlex.quote(str(body))} ]; then\n'
             "  echo 'partial output: run ./install.sh'\n"
             f"  sleep {sleep_seconds}\n"
             "fi\n"
-            f'exec {real_cat} "$@"\n'
+            f'exec {real_cat} "$@"\n',
         )
-        fake_cat.chmod(0o755)
 
         env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
         with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
@@ -637,14 +638,14 @@ class TestRequireStowReminder:
             "diff": '[ "$1" = diff ] && [[ " $* " == *" --diff-filter=A "* ]]',
         }[killed_git_subcommand]
         fake_git = stub_dir / "git"
-        fake_git.write_text(
+        write_prewarmed_stub(
+            fake_git,
             "#!/bin/bash\n"
             f"if {killed_call_match}; then\n"
             f"  sleep {sleep_seconds}\n"
             "fi\n"
-            f'exec {shlex.quote(real_git)} "$@"\n'
+            f'exec {shlex.quote(real_git)} "$@"\n',
         )
-        fake_git.chmod(0o755)
 
         env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
         with assert_cap_engaged(stub_dir, production_cap=5, command="git"):
@@ -678,16 +679,16 @@ class TestRequireStowReminder:
         sleep_seconds = scaled_shim_sleep(5) if write_scaled_timeout_shim(stub_dir) else 5
         # The install.sh probe also runs `git diff`, so the shim matches on the added-path filter.
         fake_git = stub_dir / "git"
-        fake_git.write_text(
+        write_prewarmed_stub(
+            fake_git,
             "#!/bin/bash\n"
             'if [ "$1" = diff ] && [[ " $* " == *" --diff-filter=A "* ]]; then\n'
             "  printf 'claude/.claude/agents/file.md\\0'\n"
             "  printf 'claude/.claude/rule'\n"
             f"  sleep {sleep_seconds}\n"
             "fi\n"
-            f'exec {shlex.quote(real_git)} "$@"\n'
+            f'exec {shlex.quote(real_git)} "$@"\n',
         )
-        fake_git.chmod(0o755)
 
         env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
         with assert_cap_engaged(stub_dir, production_cap=5, command="git"):

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, ignore_agent_reviews
+from helpers import HOOKS_DIR, SCRIPTS_DIR, ignore_agent_reviews, write_prewarmed_stub
 
 from .conftest import (
     _INHERITED_GIT_VARIABLES,
@@ -402,9 +402,7 @@ def shim_path_env(env: dict[str, str], shim_dir: Path) -> dict[str, str]:
 
 def write_shim(shim_dir: Path, tool: str, body: str) -> None:
     shim_dir.mkdir(exist_ok=True)
-    shim = shim_dir / tool
-    shim.write_text(f"#!/bin/bash\n{body}\n")
-    shim.chmod(0o755)
+    write_prewarmed_stub(shim_dir / tool, f"#!/bin/bash\n{body}\n")
 
 
 def write_cp_shim(shim_dir: Path, body: str) -> None:

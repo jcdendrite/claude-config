@@ -26,6 +26,7 @@ from helpers import (
     run_hook,
     run_hook_reason,
     run_skill_command,
+    write_prewarmed_stub,
 )
 
 from .conftest import _seed_session
@@ -40,11 +41,11 @@ def fake_gh_pr_exists(tmp_path, monkeypatch):
     bin_dir = tmp_path / "fake-bin-pr"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_text(
+    write_prewarmed_stub(
+        gh,
         '#!/bin/bash\n'
-        'case "$*" in *"pr view"*) echo 42 ;; *) exit 1 ;; esac\n'
+        'case "$*" in *"pr view"*) echo 42 ;; *) exit 1 ;; esac\n',
     )
-    gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     return gh
 

@@ -44,6 +44,7 @@ from helpers import (
     scaled_shim_sleep,
     v2_registry_entry,
     write_plugin_registry,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -138,15 +139,14 @@ def _write_python3_wrapper_for_dash_c_calls(bin_dir: Path, *, on_dash_c: str) ->
     real python3. The reconciler's lock probe is its only `-c` call, so the snippet targets that probe alone."""
     real_python3 = shutil.which("python3")
     assert real_python3, "python3 not found on this machine's PATH"
-    wrapper = bin_dir / "python3"
-    wrapper.write_text(
+    write_prewarmed_stub(
+        bin_dir / "python3",
         "#!/bin/sh\n"
         'for arg in "$@"; do\n'
         f'  if [ "$arg" = "-c" ]; then {on_dash_c}; break; fi\n'
         "done\n"
-        f'exec {shlex.quote(real_python3)} "$@"\n'
+        f'exec {shlex.quote(real_python3)} "$@"\n',
     )
-    wrapper.chmod(0o755)
 
 
 @contextlib.contextmanager
