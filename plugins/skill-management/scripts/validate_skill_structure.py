@@ -60,8 +60,10 @@ def parse_frontmatter(skill_file: Path) -> dict:
 
     Reads ``skill_file``, slices between the opening and closing ``---``
     delimiters, and returns the result of ``yaml.safe_load``.
-    Returns ``{}`` when the file does not begin with ``---`` or its block is empty.
-    Raises ``FrontmatterError`` when no ``---`` follows the opening one or the block is not a mapping.
+    Returns ``{}`` when the file does not begin with ``---``.
+    Returns ``{}`` when YAML reads the block as null (empty, ``null`` or comment-only).
+    Raises ``FrontmatterError`` when no ``---`` follows the opening one.
+    Raises ``FrontmatterError`` when the block is any other non-mapping.
     The ``FrontmatterError`` message names no file; callers that turn it into a message name the file.
     Raises ``yaml.YAMLError`` on invalid YAML.
     PyYAML raises a bare ``ValueError`` for an impossible date such as ``2024-02-30``.

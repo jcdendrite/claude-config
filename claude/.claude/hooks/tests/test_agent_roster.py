@@ -281,9 +281,8 @@ class TestDiffInputContractAgents:
                 "the Input contract section — every no-Bash agent states "
                 "this identically."
             )
-        fm = parse_frontmatter(path)
-        tools_value = fm.get("tools") or ""
-        assert "Bash" not in tools_value, (
+        tools_value = parse_frontmatter(path).get("tools") or ""
+        assert "Bash" not in _declared_tool_names(path), (
             f"{name}: 'tools:' now grants Bash ({tools_value!r}), but its "
             "Input contract tells it otherwise. Either drop the contract's "
             "no-Bash claim or revert the tools: grant."
@@ -299,9 +298,7 @@ class TestDiffInputContractAgents:
         """
         expected_no_bash = set()
         for name in CANARY_AGENTS:
-            fm = parse_frontmatter(AGENTS_DIR / name)
-            tools_value = fm.get("tools") or ""
-            if "Bash" not in tools_value:
+            if "Bash" not in _declared_tool_names(AGENTS_DIR / name):
                 expected_no_bash.add(name)
         assert expected_no_bash == set(DIFF_INPUT_NO_BASH_AGENTS), (
             f"CANARY_AGENTS with no Bash grant are {sorted(expected_no_bash)}, but "

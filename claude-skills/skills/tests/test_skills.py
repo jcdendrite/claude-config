@@ -2761,8 +2761,13 @@ class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
         with pytest.raises(FrontmatterError):
             parse_frontmatter(skill_file)
 
-    def test_an_empty_block_reads_as_an_empty_mapping(self, tmp_path):
-        skill_file = _write_skill_md_fixture(tmp_path, "empty-block-skill", "---\n---\nbody\n")
+    @pytest.mark.parametrize(
+        "skill_text",
+        ["---\n---\nbody\n", "---\nnull\n---\nbody\n", "---\n# only a comment\n---\nbody\n"],
+        ids=["empty-block", "null-block", "comment-only-block"],
+    )
+    def test_a_block_yaml_reads_as_null_parses_to_an_empty_mapping(self, tmp_path, skill_text):
+        skill_file = _write_skill_md_fixture(tmp_path, "null-block-skill", skill_text)
 
         assert parse_frontmatter(skill_file) == {}
 
@@ -2794,15 +2799,20 @@ class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
         assert violations[0].count(str(skill_file)) == 1
         assert message_token in violations[0]
 
-    def test_corpus_budget_skips_a_non_mapping_block(self, tmp_path):
-        non_mapping_file = _write_skill_md_fixture(tmp_path, "scalar-only-skill", _SCALAR_ONLY_SKILL)
+    @pytest.mark.parametrize(
+        "skill_text",
+        [_SCALAR_ONLY_SKILL, _EMPTY_SEQUENCE_SKILL, _MALFORMED_YAML_SKILL, _IMPOSSIBLE_DATE_SKILL, _UNCLOSED_BLOCK_SKILL],
+        ids=["scalar-only-block", "empty-sequence-block", "malformed-yaml", "impossible-date", "unclosed-block"],
+    )
+    def test_corpus_budget_skips_an_unparseable_block(self, tmp_path, skill_text):
+        unparseable_file = _write_skill_md_fixture(tmp_path, "unparseable-skill", skill_text)
         counted_file = _write_skill_md_fixture(
             tmp_path,
             "counted-skill",
             "---\nname: counted-skill\ndescription: Counted.\n---\nbody\n",
         )
 
-        violations = corpus_budget_violations([non_mapping_file, counted_file], 0)
+        violations = corpus_budget_violations([unparseable_file, counted_file], 0)
 
         assert len(violations) == 1
         assert "across 1 model-invokable skills" in violations[0]
