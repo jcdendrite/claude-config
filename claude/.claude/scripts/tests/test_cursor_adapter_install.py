@@ -20,11 +20,12 @@ import subprocess
 import sys
 import threading
 import types
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from helpers import CLAUDE_DIR
+from helpers import CLAUDE_DIR, ambient_umask
 
 sys.path.insert(0, str(CLAUDE_DIR))
 from hooks.tests._cursor_payloads import (  # noqa: E402 (the import needs the sys.path entry above)
@@ -108,19 +109,22 @@ def make_tool_bin(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
-    home = tmp_path / "home"
-    (home / ".claude").mkdir(parents=True)
-    for name in ("scripts", "hooks", "settings.json"):
-        (home / ".claude" / name).symlink_to(CLAUDE_DIR / name)
-    (home / ".cursor").mkdir()
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(mode=0o700)
-    (config_dir / "settings.json").symlink_to(CLAUDE_DIR / "settings.json")
-    bin_dir = make_tool_bin(tmp_path)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("PATH", str(bin_dir))
-    return World(tmp_path, home, config_dir, bin_dir, load_adapter())
+def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
+    # The installer refuses group- or world-writable targets, so files and directories must not inherit a 0002 umask.
+    # The yield stays inside the with so the pin also covers hooks.json and state directories that test bodies create.
+    with ambient_umask(0o022):
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        for name in ("scripts", "hooks", "settings.json"):
+            (home / ".claude" / name).symlink_to(CLAUDE_DIR / name)
+        (home / ".cursor").mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(mode=0o700)
+        (config_dir / "settings.json").symlink_to(CLAUDE_DIR / "settings.json")
+        bin_dir = make_tool_bin(tmp_path)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+        yield World(tmp_path, home, config_dir, bin_dir, load_adapter())
 
 
 @pytest.fixture
