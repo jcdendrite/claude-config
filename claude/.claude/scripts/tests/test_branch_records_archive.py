@@ -136,14 +136,14 @@ class TestArchiveWorktree:
         env = build_archive_env(tmp_path)
         config_dir = Path(env["CLAUDE_CONFIG_DIR"])
         _seed_session(Path(env["HOME"]), "branch-records-session", config_dir=config_dir)
-        subprocess.run(
+        writer = subprocess.run(
             [
                 "bash", str(SCRIPTS_DIR / "review-ledger.sh"), "append", "code-review",
-                "--finding", "f", "--disposition", "ADDRESS", "--rationale", "r", "--round", "1",
-                "--reviewer", "staff-sdet",
+                "--disposition", "CLEAN", "--round", "1",
             ],
-            cwd=archive_worktree.worktree, env=env, check=True, capture_output=True,
+            cwd=archive_worktree.worktree, env=env, capture_output=True, text=True, check=False,
         )
+        assert writer.returncode == 0, writer.stderr
         [ledger_file] = (config_dir / "review-narrative-ledger").glob("*.jsonl")
 
         report = run_archive(tmp_path, env, archive_worktree)
