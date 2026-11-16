@@ -3751,7 +3751,7 @@ def install_log_entries(install_log: Path) -> list[dict]:
 
 @contextmanager
 def ambient_umask(mask: int):
-    """Run subprocesses under a known umask, restoring the process's own on exit."""
+    """Set the process-wide umask for the with body, so in-process code and child processes both inherit it."""
     previous_mask = os.umask(mask)
     try:
         yield
