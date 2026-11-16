@@ -141,14 +141,11 @@ reviewer angles before returning, catching review-finding-class defects in its
 own context instead of as a parent round-trip.
 
 **Read-then-edit: decision-made test.** A read-then-edit sequence routes to
-`code-writer` only when both conditions hold: (1) the change is already
-decided before you read — you read only to *locate* a known target and apply
-a fixed change, not to determine scope or design a fix from what the file
-reveals; (2) reaching that target costs non-trivial context that will sit in
-the parent for the rest of the session. Failing (1) — still deciding scope,
-approach, or the substantive content as you read — the edit stays inline.
-Discovery reads (mapping an unfamiliar area before deciding) route to
-`Explore`/`general-purpose`, not `code-writer`.
+`code-writer` only when both conditions hold: (1) the change is already decided before you read — you read only to
+*locate* a known target and apply a fixed change, not to determine scope or design a fix from what the file reveals;
+(2) reaching that target costs non-trivial context that will sit in the parent for the rest of the session. Failing
+(1) — still deciding scope, approach, or the substantive content as you read — the edit stays inline, and a read that
+maps an unfamiliar area before deciding is Codebase discovery above, not `code-writer`.
 
 **Implementation of an approved plan is delegated by default.** A plan that cleared `/plan-review` already fixed
 scope and approach, so condition (1) of the decision-made test above holds by construction — dispatch
@@ -173,6 +170,8 @@ commit, the `/code-review` re-run, and the marker. Two further carve-outs, neith
 - Not code (the review-findings PR-body block, a `respond-pr` reply, a plan-file edit) — stays inline.
 - Still being re-decided — fails condition (1), stays inline.
 
+When a return's **Still uncertain** names a claim the writer left unwritten, or another site that states a claim it changed, act on that entry before the next review: have it fixed, or record it as an ADDRESS row. Never drop the entry. Forwarding it to the next reviewer as a known leftover does not count.
+
 A finding surviving a second dispatch stops being delegated — it is now a design question, not a fix. This is not the inverse of the debug-probe carve-out above: a fix the parent designs itself while reading a debug probe's diagnosis fails condition (1) and stays inline. A diagnosis the parent has already fully specified before the locating read still satisfies condition (1) and routes by the ordinary two-condition test, same as any other change — see under this file's § "Debug-investigation probe → `general-purpose` or `Explore`".
 
 ### Everything else → `general-purpose`
@@ -192,11 +191,11 @@ This does not conflict with per-phase `code-writer` dispatch above: dispatching 
 implementation work is not a gate loop, even across several phases dispatched in sequence — each phase dispatch
 returns to the parent, which reviews it before the next one goes out.
 
-`review-orchestrator` is that bounded per-step split for `/code-review`, used only when the user explicitly asks for it (a denial from the review-orchestrator routing gate is that request): one round per dispatch, with this session sequencing the rounds. Stage the review target, then dispatch in the foreground with `model: sonnet` and without worktree isolation. After every dispatch, relay the return to the user verbatim, which keeps its `Spawn decisions:` line and any skipped reviewer as visible as in an inline round. A return that lacks a `Fix paths:` or `HALT:` item, or no return at all, stops: relay what arrived and tell the user to check `git status` for unstaged edits that no return names. Otherwise follow these steps in order:
+`review-orchestrator` is that bounded per-step split for `/code-review`, used only when the user explicitly asks for it (a denial from the review-orchestrator routing gate is that request): one round per dispatch, with this session sequencing the rounds. Stage the review target, then dispatch in the foreground with `model: sonnet` and without worktree isolation. After every dispatch, relay the return to the user verbatim, which keeps its `Spawn decisions:` line and any skipped reviewer as visible as in an inline round. A return that lacks a `Fix paths:`, `Not addressed:` or `HALT:` item, or no return at all, stops: relay what arrived and tell the user to check `git status` for unstaged edits that no return names. Otherwise follow these steps in order:
 
 1. Persist: with a PR open, run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence" yourself, because the agent skips that section. A failed `render` or `gh pr edit` stops and relays the script's or gate's reason.
 2. Stage: when `Fix paths:` names files, validate every entry before staging any. An entry passes only if it matches, character for character, a path that `git status --porcelain --untracked-files=all` lists. It also passes only if it holds no single or double quote. Any other entry stops the loop with the index untouched. That includes a path porcelain v1 C-quotes (one holding whitespace or another unusual character), which the user stages. Then stage every entry in one `git add -- ':(top,literal)<path>'` call. Write each as a single-quoted, root-anchored literal pathspec, so neither this session's working directory nor glob or pathspec magic in the text changes what is staged. If that call fails, stop and tell the user to check `git diff --cached --name-only`, since the index may be partly staged. Each entry is a path relative to the repo root, and a rename lists both its old and its new path. Staging retires any marker written before the fix, because the marker keys on the staged-diff hash.
 3. Check: unless an earlier step stopped, run `~/.claude/scripts/marker.sh check code-review` bare, exactly as written, because the marker-script-shape gate denies an appended `; echo $?`. Any exit other than 0 or 1 stops and shows the user its stderr.
 4. Decide on the `check` outcome. "Stop" means one thing here: dispatch nothing more, start no review, tell the user the cause, and wait for them. A stop at the Persist, Stage or Check step still follows the relay, so the user has seen every `HALT:` entry.
-   - `no-match`: with any `HALT:` entry, name the paths just staged, then run `/code-review` inline in this session at once, invoking the skill with args "unrouted" without the quotation marks, and run the rest of this review loop the same way until a clean round writes the marker. Each such round asks, logs and carries by the skill's own rules. With no `HALT:` entry and a fix just staged, dispatch the next round, which reviews the fix. With neither, stop and point the user to the relayed `Marker:` item. That item covers a failed marker write, an agent that ended early, and a `check` that degraded to no-match. An uncomputable hash, a timeout or an empty staged diff reads as no-match.
+   - `no-match`: first act on each **Still uncertain** entry under `Not addressed:` that `subagent-delegation/SKILL.md` § "Implementation work → `code-writer`" requires acting on. Send every one a fix can settle to one `code-writer` dispatch of your own, then stage the paths its return names as step 2 stages `Fix paths:`. Ask the user now about each one no fix settles, since an ADDRESS row you log here reaches no later round. With any `HALT:` entry, name the paths just staged, including any from your own dispatch, then run `/code-review` inline in this session at once, invoking the skill with args "unrouted" without the quotation marks, and run the rest of this review loop the same way until a clean round writes the marker. Each such round asks, logs and carries by the skill's own rules. With no `HALT:` entry and a fix just staged, dispatch the next round, which reviews the fix. With neither, stop and point the user to the relayed `Marker:` item. That item covers a failed marker write, an agent that ended early, and a `check` that degraded to no-match. An uncomputable hash, a timeout or an empty staged diff reads as no-match.
    - `match`: done only when the return has `Fix paths: none` and `HALT: none`, because a marker then covers the staged state. Any other `match` stops: tell the user that a marker covers a staged fix no round reviewed or a `HALT:` entry nobody decided, so inline `/code-review` would skip at its Step 0.1 and a commit would pass without either, and ask them to decide each halted entry before any commit.
