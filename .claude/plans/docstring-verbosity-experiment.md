@@ -103,7 +103,7 @@ The terms, each a character count over 4:
 
 Row 138 states the body term's weak point and its fallback.
 
-**Entry point.** The 3.12 floor is documentation only. `def _without_child_output[ResultT]` in `evals/replay_bench/runner.py` uses PEP 695 syntax. `evals/run_replay_bench.py` imports that module at the top, so an older interpreter fails at import before `main()` runs.
+**Entry point.** The repository's Python floor is stated in the root `README.md` § "Requirements". The runner itself needs Python 3.12 or newer. `def _without_child_output[ResultT]` in `evals/replay_bench/runner.py` uses PEP 695 syntax. `evals/run_replay_bench.py` imports that module at the top, so an older interpreter fails at import before `main()` runs.
 
 **Summary (`summarize`)** (`replay_bench/summary.py`). It prints to the terminal and writes no file (rows 4, 10). The primary outcome, fixed before any run, is comment-plus-docstring words per added non-test code line (row 63). The paired difference `toolkit − bare` over tasks uses `analysis.bootstrap_interval` over tasks as singleton clusters (row 75). What a null difference shows is stated in `evals/README.md` § "Replay bench" (row 62). Every other figure the records hold stays out (row 157).
 

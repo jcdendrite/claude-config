@@ -114,6 +114,18 @@ class TestAValidRun:
             tails.append(cmd[cmd.index("--allowedTools"):])
         assert tails[0] == tails[1]
 
+    def test_cleanup_deletes_only_the_runs_own_session_store(self, world):
+        sibling_store = world.config_dir / "projects" / "another-project"
+        sibling_store.mkdir(parents=True)
+        sibling_transcript = sibling_store / "another-session.jsonl"
+        sibling_transcript.write_text("{}\n")
+
+        outcome, _launch_stub, _settings = run(world, arms.TOOLKIT.name)
+
+        assert outcome.record.status == "ok", "the run reached cleanup with its own store written"
+        assert sibling_transcript.is_file(), "another session's store under the projects dir survives"
+        assert not (world.config_dir / "projects" / "synthetic-project").exists(), "the run's own store is gone"
+
 
 class TestForgedLog:
     @pytest.mark.parametrize("arm_name", ARM_NAMES)

@@ -1439,7 +1439,8 @@ its first draft's comment density unchanged on these tasks: no arm runs the
 review loop through which the toolkit also shapes comments.
 
 This file's "Why local only — never CI" section applies: every run is a paid
-`claude -p` session. The bench needs Python 3.12 or newer, git 2.32 or newer,
+`claude -p` session. The bench needs the Python floor stated in the
+repository root's `README.md` § "Requirements", git 2.32 or newer,
 Claude Code 2.1.271 or newer and `direnv` on `PATH`. Run it through
 `scripts/venv-run.sh python3`. Results are not a publication instrument,
 because the runner refuses no wider corpus. The design lives in
