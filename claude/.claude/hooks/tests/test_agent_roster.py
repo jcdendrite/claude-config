@@ -27,7 +27,7 @@ from helpers import (
     review_only_agents,
     reviewer_persona_agents,
 )
-from validate_skill_structure import parse_frontmatter
+from validate_skill_structure import FrontmatterError, parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
 
@@ -1245,14 +1245,18 @@ _CISO_TRACING_RECONCILIATION_SENTENCES = (
     "the intended check instead."
 )
 
+def _agent_holds_bash(agent_file) -> bool:
+    """Re-raise FrontmatterError with the agent file name, which its message omits."""
+    try:
+        return "Bash" in _declared_tool_names(agent_file)
+    except FrontmatterError as error:
+        raise FrontmatterError(f"{agent_file.name}: {error}") from error
+
+
 # Any reviewer holding Bash carries the Scratch execution section. Derived from
 # each canary agent's own tools: frontmatter, like DIFF_INPUT_NO_BASH_AGENTS's
 # completeness test, rather than from a second hand-maintained list.
-SCRATCH_SECTION_AGENTS = [
-    name
-    for name in CANARY_AGENTS
-    if "Bash" in (parse_frontmatter(AGENTS_DIR / name).get("tools") or "")
-]
+SCRATCH_SECTION_AGENTS = [name for name in CANARY_AGENTS if _agent_holds_bash(AGENTS_DIR / name)]
 
 # A phrasing that sanctions copying a file, repo, or tree into /tmp.
 _TMP_COPY_SANCTION_PATTERN = re.compile(
@@ -1295,7 +1299,7 @@ class TestScratchExecutionSection:
             name
             for name in review_only_agents()
             if (AGENTS_DIR / f"{name}.md").exists()
-            and "Bash" in (parse_frontmatter(AGENTS_DIR / f"{name}.md").get("tools") or "")
+            and _agent_holds_bash(AGENTS_DIR / f"{name}.md")
             and f"{name}.md" not in SCRATCH_SECTION_AGENTS
         ]
         assert not missing, (

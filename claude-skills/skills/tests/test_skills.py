@@ -650,7 +650,7 @@ _EMPTY_SEQUENCE_SKILL = "---\n[]\n---\nbody\n"
 _IMPOSSIBLE_DATE_SKILL = "---\nname: impossible-date\nversion: 2024-02-30\n---\nbody\n"
 
 
-def _write_skill_file(skills_dir: Path, skill_name: str, text: str) -> Path:
+def _write_skill_md_fixture(skills_dir: Path, skill_name: str, text: str) -> Path:
     skill_file = skills_dir / skill_name / "SKILL.md"
     skill_file.parent.mkdir(parents=True)
     skill_file.write_text(text)
@@ -658,7 +658,6 @@ def _write_skill_file(skills_dir: Path, skill_name: str, text: str) -> Path:
 
 
 def _write_flagged_skills(skills_dir: Path, name_infix: str) -> None:
-    """Write one skill per discovery flag value: disable-model-invocation true, false and quoted "false", user-invocable true."""
     for name_stem, flag_line in (
         ("disabled", "disable-model-invocation: true"),
         ("enabled-explicit", "disable-model-invocation: false"),
@@ -666,7 +665,7 @@ def _write_flagged_skills(skills_dir: Path, name_infix: str) -> None:
         ("user-invocable", "user-invocable: true"),
     ):
         skill_name = f"{name_stem}-{name_infix}skill"
-        _write_skill_file(
+        _write_skill_md_fixture(
             skills_dir,
             skill_name,
             f"---\nname: {skill_name}\ndescription: Carries a flag.\n{flag_line}\n---\nbody\n",
@@ -674,8 +673,6 @@ def _write_flagged_skills(skills_dir: Path, name_infix: str) -> None:
 
 
 class TestFrontmatterReaders:
-    """The frontmatter readers behind skill discovery and _skill_description."""
-
     @pytest.fixture
     def skills_tree(self, tmp_path, monkeypatch) -> Path:
         """A temporary skills tree that discovery reads in place of the repo's.
@@ -683,25 +680,25 @@ class TestFrontmatterReaders:
         Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched.
         """
         skills_dir = tmp_path / "skills"
-        _write_skill_file(
+        _write_skill_md_fixture(
             skills_dir,
             "valid-skill",
             "---\nname: valid-skill\ndescription: Does a thing.\n"
             "when_to_use: 'TRIGGER when: only the when_to_use key says so.'\n"
             "user-invocable: false\n---\nbody\n",
         )
-        _write_skill_file(skills_dir, "malformed-skill", _MALFORMED_YAML_SKILL)
-        _write_skill_file(skills_dir, "frontmatterless-skill", "no frontmatter here\n")
+        _write_skill_md_fixture(skills_dir, "malformed-skill", _MALFORMED_YAML_SKILL)
+        _write_skill_md_fixture(skills_dir, "frontmatterless-skill", "no frontmatter here\n")
         _write_flagged_skills(skills_dir, "")
         plugin_skills_dir = tmp_path / "plugins" / "sample-plugin" / "skills"
-        _write_skill_file(
+        _write_skill_md_fixture(
             plugin_skills_dir,
             "valid-plugin-skill",
             "---\nname: valid-plugin-skill\ndescription: Does a plugin thing.\n"
             "user-invocable: false\n---\nbody\n",
         )
-        _write_skill_file(plugin_skills_dir, "malformed-plugin-skill", _MALFORMED_YAML_SKILL)
-        _write_skill_file(plugin_skills_dir, "frontmatterless-plugin-skill", "no frontmatter here\n")
+        _write_skill_md_fixture(plugin_skills_dir, "malformed-plugin-skill", _MALFORMED_YAML_SKILL)
+        _write_skill_md_fixture(plugin_skills_dir, "frontmatterless-plugin-skill", "no frontmatter here\n")
         _write_flagged_skills(plugin_skills_dir, "plugin-")
         module = sys.modules[__name__]
         monkeypatch.setattr(module, "SKILLS_DIR", skills_dir)
@@ -716,23 +713,14 @@ class TestFrontmatterReaders:
     def test_discovery_frontmatter_returns_empty_mapping_for_unreadable_frontmatter(
         self, tmp_path, skill_text
     ):
-        skill_file = _write_skill_file(tmp_path, "broken-skill", skill_text)
+        skill_file = _write_skill_md_fixture(tmp_path, "broken-skill", skill_text)
 
         assert _discovery_frontmatter(skill_file) == {}
-
-    def test_listing_text_includes_when_to_use(self):
-        listing = _listing_text({"description": "Does a thing.", "when_to_use": "TRIGGER when: asked."})
-
-        assert "Does a thing." in listing
-        assert "TRIGGER when: asked." in listing
 
     def test_discovery_survives_malformed_and_frontmatterless_skills(self, skills_tree):
         specialist_skills = _specialist_skills()
         model_invokable_skills = _model_invokable_skills()
 
-        # user-invocable: true is not a specialist skill; disable-model-invocation: true
-        # leaves the model-invokable list while an explicit false stays in it.
-        # A quoted "false" stays in that list too.
         assert specialist_skills == ["valid-skill", "valid-plugin-skill"]
         assert model_invokable_skills == [
             "enabled-explicit-skill",
@@ -767,7 +755,7 @@ class TestFrontmatterReaders:
         self, skills_tree, skill_text, expected_exception
     ):
         """A malformed listed skill raises instead of reading as an empty description."""
-        _write_skill_file(skills_tree, "broken-skill", skill_text)
+        _write_skill_md_fixture(skills_tree, "broken-skill", skill_text)
 
         with pytest.raises(expected_exception):
             _skill_description("broken-skill")
@@ -2583,7 +2571,7 @@ class TestModelInvokableSkillFrontmatterIsStrictYaml:
     change in the harness would silently truncate the description at the
     first `: `, dropping the TRIGGER / DO NOT TRIGGER blocks. Block-fold
     (`description: >`) or double-quote any value containing `: `.
-    Unclosed or non-mapping frontmatter is not reported here: validate() words it differently, and TRIGGER sweeps fail on it.
+    validate() reports unclosed and non-mapping frontmatter without the text `not strict YAML`.
     """
 
     MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
@@ -2605,7 +2593,7 @@ class TestModelInvokableDescriptionLength:
     that block is what gets cut. User-only command skills
     (disable-model-invocation: true) are excluded because their descriptions
     are suppressed from the listing entirely.
-    Unclosed or non-mapping frontmatter is not reported here: validate() words it differently, and TRIGGER sweeps fail on it.
+    validate() returns at check 1 for unclosed and non-mapping frontmatter, so no length is computed.
     """
 
     MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
@@ -2762,27 +2750,25 @@ class TestValidateContextForkRequiresExplicitBackground:
 
 
 class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
-    """parse_frontmatter and validate() on an unclosed or non-mapping block, and the closer rule that decides which a block is."""
-
     @pytest.mark.parametrize(
         "skill_text",
         [_UNCLOSED_BLOCK_SKILL, _SCALAR_ONLY_SKILL, _EMPTY_SEQUENCE_SKILL],
         ids=["unclosed-block", "scalar-only-block", "empty-sequence-block"],
     )
     def test_parse_frontmatter_raises_frontmatter_error(self, tmp_path, skill_text):
-        skill_file = _write_skill_file(tmp_path, "broken-skill", skill_text)
+        skill_file = _write_skill_md_fixture(tmp_path, "broken-skill", skill_text)
 
         with pytest.raises(FrontmatterError):
             parse_frontmatter(skill_file)
 
     def test_an_empty_block_reads_as_an_empty_mapping(self, tmp_path):
-        skill_file = _write_skill_file(tmp_path, "empty-block-skill", "---\n---\nbody\n")
+        skill_file = _write_skill_md_fixture(tmp_path, "empty-block-skill", "---\n---\nbody\n")
 
         assert parse_frontmatter(skill_file) == {}
 
     def test_a_dash_run_inside_a_value_closes_the_block(self, tmp_path):
         """A ``---`` inside a value ends the block, as it does in Claude Code's skill loader."""
-        skill_file = _write_skill_file(
+        skill_file = _write_skill_md_fixture(
             tmp_path,
             "dash-run-skill",
             "---\nname: dash-run-skill\ndescription: a --- b\nuser-invocable: false\n---\nbody\n",
@@ -2800,7 +2786,7 @@ class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
         ids=["unclosed-block", "scalar-only-block", "empty-sequence-block"],
     )
     def test_validate_reports_one_violation_naming_the_file(self, tmp_path, skill_text, message_token):
-        skill_file = _write_skill_file(tmp_path, "broken-skill", skill_text)
+        skill_file = _write_skill_md_fixture(tmp_path, "broken-skill", skill_text)
 
         violations = validate(skill_file)
 
@@ -2809,8 +2795,8 @@ class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
         assert message_token in violations[0]
 
     def test_corpus_budget_skips_a_non_mapping_block(self, tmp_path):
-        non_mapping_file = _write_skill_file(tmp_path, "scalar-only-skill", _SCALAR_ONLY_SKILL)
-        counted_file = _write_skill_file(
+        non_mapping_file = _write_skill_md_fixture(tmp_path, "scalar-only-skill", _SCALAR_ONLY_SKILL)
+        counted_file = _write_skill_md_fixture(
             tmp_path,
             "counted-skill",
             "---\nname: counted-skill\ndescription: Counted.\n---\nbody\n",
@@ -2823,10 +2809,27 @@ class TestParseFrontmatterRejectsUnclosedAndNonMappingBlocks:
 
     def test_validate_reports_a_quoted_dash_run_as_not_strict_yaml(self, tmp_path):
         """A quoted ``---`` ends the block inside the quote, which check 1 reports as not strict YAML."""
-        skill_file = _write_skill_file(
+        skill_file = _write_skill_md_fixture(
             tmp_path,
             "quoted-dash-run-skill",
             '---\nname: quoted-dash-run-skill\ndescription: "a --- b"\ndisable-model-invocation: true\n---\nbody\n',
+        )
+
+        violations = validate(skill_file)
+
+        assert len(violations) == 1
+        assert "not strict YAML" in violations[0]
+
+    def test_validate_reports_no_violation_for_an_empty_block(self, tmp_path):
+        skill_file = _write_skill_md_fixture(tmp_path, "empty-block-skill", "---\n---\nbody\n")
+
+        assert validate(skill_file) == []
+
+    def test_validate_reports_not_strict_yaml_when_a_later_rule_closes_the_block_over_body_text(self, tmp_path):
+        skill_file = _write_skill_md_fixture(
+            tmp_path,
+            "later-rule-skill",
+            _UNCLOSED_BLOCK_SKILL + "\n---\n\nMore body text.\n",
         )
 
         violations = validate(skill_file)

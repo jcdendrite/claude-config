@@ -1296,7 +1296,6 @@ class TestRenderArmAgent:
         parsed_frontmatter = yaml.safe_load(frontmatter)
         assert parsed_frontmatter["name"] == f"bench-{_LENS}"
         assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
-        assert parsed_frontmatter["tools"] == ", ".join(arms.ARM_TOOLS)
         # Literal, so adding a tool to ARM_TOOLS cannot pass by moving both sides together.
         assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
@@ -1320,7 +1319,7 @@ class TestRenderArmAgent:
         parsed_frontmatter = yaml.safe_load(frontmatter)
         assert parsed_frontmatter["name"] == f"bench-{_LENS}"
         assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
-        assert parsed_frontmatter["tools"] == ", ".join(arms.ARM_TOOLS)
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
         # A field render_arm_agent never touches survives byte-identical.
         assert "description: A test lens." in frontmatter
@@ -1400,7 +1399,7 @@ class TestRenderArmAgentAgainstRealProductionAgentFiles:
         parsed_frontmatter = yaml.safe_load(frontmatter)
         assert parsed_frontmatter["name"] == f"bench-{lens}"
         assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
-        assert parsed_frontmatter["tools"] == ", ".join(arms.ARM_TOOLS)
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
 
     @pytest.mark.parametrize("lens", sorted(arms.LENS_READ_CLAUSES))
