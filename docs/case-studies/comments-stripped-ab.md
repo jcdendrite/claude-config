@@ -275,7 +275,7 @@ A short PR task count is expected.
 
 **The margin.** The repository owner set the 15-point margin on 2026-11-06, replacing the 10-point gap in GH-1408, after the pre-count below and before any authoring session. The owner's decision: "Let's go with the 15-point margin, the two-sided interval. That sounds good." The reason given with the proposal the owner accepted is that Harm excluded becomes reachable at the pre-count's scale. It is not that a harm under 15 points is acceptable.
 
-**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only `L` <= 0 <= `U` < the margin. The table gives the Harm excluded bound if stripping costs nothing.
+**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only `L` <= 0 <= `U` < the row's margin. The table gives that chance if stripping costs nothing.
 
 | Margin | Variance end | 40 tasks | 75 tasks |
 |---|---|---|---|
