@@ -203,7 +203,7 @@ Both counts take the pessimistic end of a variance range. Let `p` and `q` be a t
 
 The cap of 75 is a cost choice that leaves `psi` = 0.30 underpowered. There, the Harm outcome's power at 75 tasks is 0.694 at the pessimistic end if stripping costs 15 points.
 
-The Harm excluded bound (below) is approximate and gives the chance, at zero effect, of the interval condition of Harm excluded. A true effect below zero, where the stripped arm is better, can raise that chance. The outcome's other conditions can only lower the chance of reaching it. Every Harm excluded sizing and reachability figure assumes every PR task the study runs is in the passable subset, defined under Analysis, and the lock cannot know how many run tasks no session passes.
+The Harm excluded bound (below) is approximate and gives the chance, at zero effect, of `L` <= 0 <= `U` < 0.15. A true effect below zero, where the stripped arm is better, can raise that chance. The outcome's other conditions can only lower the chance of reaching it. Every Harm excluded sizing and reachability figure assumes every PR task the study runs is in the passable subset, defined under Analysis, and the lock cannot know how many run tasks no session passes.
 
 **Feasibility pass.** The pass runs before any authoring session and reads no authoring outcome. Before the lock, no session under any model is given a trap's or a PR task's prompt. The trap checks use reference implementations and need no pilot. The study goes ahead only when its confinement verification passes and at least 10 trap tasks passed all their checks. Its stages are:
 
@@ -230,7 +230,7 @@ The lock also records two probabilities at `n`, the smaller of the PR task count
 - The probability of the Harm outcome if stripping costs 15 points: `Phi(d*sqrt(n/V) - z_a)`. It is not applicable at `psi` = 0.10.
 - The *Harm excluded bound*, the chance of `L` <= 0 <= `U` < 0.15 if stripping costs nothing: `Phi(min(z_a, d*sqrt(n/V) - z_a)) - Phi(-z_a)`. It is approximate, being a normal approximation, and it is the chance at zero effect, not a maximum over effects.
 
-In the lock, the experimenter decides whether the study goes ahead at that `n`. The go decision also records the simulated chance at `n` that the primary interval's bootstrap gives `L` <= 0 <= `U` < 0.15 if stripping costs 15 points, at each `psi` on the grid that is at least 0.15 and at both ends of the variance range. The verdict reads a percentile bootstrap, which is anti-conservative toward Harm excluded at small counts, roughly under 20 tasks. This record can only count against going ahead and relaxes no condition of the decision rule. No authoring outcome exists yet, so the choice cannot bias the result.
+In the lock, the experimenter decides whether the study goes ahead at that `n`. No authoring outcome exists yet, so the choice cannot bias the result. The go decision also records the simulated chance at `n` that the primary interval's bootstrap gives `L` <= 0 <= `U` < 0.15 if stripping costs 15 points, at each `psi` on the grid that is at least 0.15 and at both ends of the variance range. The verdict reads a percentile bootstrap, which is anti-conservative toward Harm excluded at small counts, roughly under 20 tasks. This record can only count against going ahead and relaxes no condition of the decision rule.
 
 ## Analysis
 
@@ -248,7 +248,7 @@ Secondary results are descriptive and never change the verdict: trap pass rates 
 
 ## Decision rule
 
-The rule applies to `Delta` and its two-sided 95% interval from `L` to `U`. The 15-point margin enters twice: as the effect the sizing targets, and as the harm that the Harm excluded outcome must exclude. The four outcomes are exclusive and cover every result:
+The rule applies to `Delta` and its two-sided 95% interval from `L` to `U`. The 15-point margin enters twice: as the effect the sizing targets, and as the harm that the Harm excluded outcome must exclude. The four outcomes are exclusive:
 
 1. *Harm*: `L` > 0, with no minimum gap. No narrowing of the comment rules may cite this study. Harm shows that the whole comment set helps on this distribution. It does not show that the comments a narrowing would drop help.
 2. *Harm excluded*, when all six of these hold:
@@ -275,7 +275,7 @@ A short PR task count is expected.
 
 **The margin.** The repository owner set the 15-point margin on 2026-11-06, replacing the 10-point gap in GH-1408, after the pre-count below and before any authoring session. The owner's decision: "Let's go with the 15-point margin, the two-sided interval. That sounds good." The reason given with the proposal the owner accepted is that Harm excluded becomes reachable at the pre-count's scale. It is not that a harm under 15 points is acceptable.
 
-**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only the interval condition of Harm excluded. The table gives the Harm excluded bound if stripping costs nothing.
+**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only `L` <= 0 <= `U` < 0.15. The table gives the Harm excluded bound if stripping costs nothing.
 
 | Margin | Variance end | 40 tasks | 75 tasks |
 |---|---|---|---|
@@ -284,9 +284,9 @@ A short PR task count is expected.
 | 15 points | pessimistic | 0.539 | 0.803 |
 | 15 points | favorable | 0.932 | 0.950 |
 
-The chance that the 15-point interval condition holds if stripping truly costs `e` is `Phi(min(z_a, d*sqrt(n/V) - z_a) - e*sqrt(n/V)) - Phi(-z_a - e*sqrt(n/V))`, with `V` the variance under that effect, as in the Lock section. The 10-point and 5-point figures below use it. If stripping truly costs 10 points, the chance is 0.108 at 40 tasks and 0.167 at 75 at the pessimistic end. At the favorable end it is 0.241 and 0.069. There it falls at 75 tasks, because the interval's lower bound then usually exceeds 0, which is a Harm result.
+The chance that `L` <= 0 <= `U` < 0.15 holds if stripping truly costs `e` is `Phi(min(z_a, d*sqrt(n/V) - z_a) - e*sqrt(n/V)) - Phi(-z_a - e*sqrt(n/V))`, with `V` the variance under that effect, as in the Lock section. The 10-point and 5-point figures below use it. If stripping truly costs 10 points, the chance is 0.108 at 40 tasks and 0.167 at 75 at the pessimistic end. At the favorable end it is 0.241 and 0.069. Across the variance range at 75 tasks it runs from 0.07 to 0.26.
 
-If stripping truly costs 5 points, the chance that the 15-point interval condition holds is 0.292 at 40 tasks and 0.494 at 75 at the pessimistic end. At the favorable end it is 0.693 and 0.607. A real drop of 5 points meets the interval condition of Harm excluded between 0.49 and 0.74 of the time at 75 tasks across the variance range, and the other conditions can only lower that.
+If stripping truly costs 5 points, the chance that `L` <= 0 <= `U` < 0.15 holds is 0.292 at 40 tasks and 0.494 at 75 at the pessimistic end. At the favorable end it is 0.693 and 0.607. A real drop of 5 points meets `L` <= 0 <= `U` < 0.15 between 0.49 and 0.74 of the time at 75 tasks, peaking between the two ends of the variance range, and the other conditions can only lower that.
 
 At a zero estimate and the pessimistic end, `U` is 13.9 points at 40 tasks and 10.1 at 75. Its gap below 15 points is all the headroom the worst-case recomputation has. A zero estimate gives `U` < 0.15 at the pessimistic end only from `n` >= `z_a^2*psi/0.15^2`, which is 34.1 at `psi` = 0.20. Below that, Harm excluded needs the stripped arm to score above the intact arm.
 
