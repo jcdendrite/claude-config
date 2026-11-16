@@ -81,6 +81,7 @@ _CODE_REVIEW_SKILL = "code-review"
 # targets, not a second validator.
 _DISPOSITION_ADDRESS = "ADDRESS"
 _DISPOSITION_SETTLED = "SETTLED"
+_DISPOSITION_CONSULT = "CONSULT"
 _AUTHORING_AGENT_CODE_WRITER = "code-writer"
 _AUTHORING_AGENT_INLINE = "inline"
 _AUTHORING_AGENT_MIXED = "mixed"
@@ -442,7 +443,8 @@ def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
     """Group a session's round-keyed rows into blocks: each maximal run of
     one (file, round) pair is one block, in entry order. A row without an
     integer, non-bool `round` (a pre-round legacy row, or a JSON boolean)
-    belongs to no block.
+    belongs to no block. A CONSULT row records a round-cap consult's verdict,
+    not a review outcome, so it belongs to no block either.
 
     A round value whose rows are split across two non-adjacent runs keeps a
     second, separate block, which dict-style first-occurrence dedup would
@@ -451,6 +453,7 @@ def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
     keyed_entries = [
         (file_index, row) for file_index, row in row_entries
         if isinstance(row.get("round"), int) and not isinstance(row.get("round"), bool)
+        and row.get("disposition") != _DISPOSITION_CONSULT
     ]
     return [
         [row for _file_index, row in run]

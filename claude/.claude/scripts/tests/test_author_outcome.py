@@ -660,6 +660,11 @@ class TestRoundNumberMismatch:
         rows = [_ledger_row(round=None, disposition="ADDRESS"), _ledger_row(round=None, disposition="DEFER")]
         assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is None
 
+    def test_a_round_that_logged_only_a_round_cap_verdict_is_a_fewer_blocks_mismatch(self):
+        """The verdict-only round has no block, as a round that logged nothing has none."""
+        rows = [_ledger_row(round=1, disposition="ADDRESS"), _ledger_row(round=2, disposition="CONSULT", finding="")]
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) == ao._MISMATCH_FEWER_BLOCKS
+
     def test_empty_ledger_is_not_a_mismatch(self):
         assert ao._round_number_mismatch([], round_open_count=3) is None
 
@@ -849,6 +854,13 @@ class TestLedgerPossiblySwept:
             [(0, 1)], rows, records, session_keyed_file_opened=True, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
+    def test_old_session_whose_only_ledger_rows_are_consult_is_not_possibly_swept(self):
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        rows = [_ledger_row(round=1, disposition="CONSULT")]
+        assert ao._ledger_possibly_swept(
+            [(0, 1)], rows, records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
+        ) is False
+
     def test_nonempty_ledger_rows_with_no_session_keyed_file_is_never_possibly_swept(self):
         """A session whose rows live only in a branch-keyed file has no
         session-keyed file to find, so the rows alone must clear it."""
@@ -993,6 +1005,25 @@ class TestRoundBlocks:
         key being absent: this one relies on the explicit bool exclusion."""
         rows = [_ledger_row(round=True, disposition="ADDRESS"), _ledger_row(round=False, disposition="DEFER")]
         assert ao._round_blocks(_entries(rows)) == []
+
+    def test_round_cap_verdict_rows_belong_to_no_block(self):
+        """A CONSULT row records a round-cap consult's verdict, not a review outcome."""
+        rows = [
+            _ledger_row(round=1, disposition="CONSULT", finding="", source="n/a"),
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=2, disposition="CONSULT", finding="", source="n/a"),
+        ]
+        blocks = ao._round_blocks(_entries(rows))
+        assert [[row["disposition"] for row in block] for block in blocks] == [["ADDRESS"]]
+
+    def test_a_round_cap_verdict_row_between_two_rows_of_one_round_does_not_split_the_block(self):
+        rows = [
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=1, disposition="CONSULT", finding="", source="n/a"),
+            _ledger_row(round=1, disposition="ADDRESS"),
+        ]
+        blocks = ao._round_blocks(_entries(rows))
+        assert [[row["disposition"] for row in block] for block in blocks] == [["ADDRESS", "ADDRESS"]]
 
     def test_a_legacy_row_between_two_rows_of_one_round_does_not_split_the_block(self):
         rows = [
@@ -1197,6 +1228,7 @@ class TestReviewLedgerSubprocessIntegration:
                 "--finding", "Missing error handling in foo()",
                 "--disposition", "ADDRESS",
                 "--rationale", "fixed inline",
+                "--source", "foo.py:12",
                 "--round", "1",
                 "--reviewer", "staff-sdet",
                 "--authoring-agent", "code-writer",
@@ -1228,7 +1260,7 @@ class TestReviewLedgerSubprocessIntegration:
 
         result = self._run_append(
             ["--finding", "Missing error handling in foo()", "--disposition", "ADDRESS",
-             "--rationale", "fixed inline", "--round", "1", "--reviewer", "staff-sdet"],
+             "--rationale", "fixed inline", "--source", "foo.py:12", "--round", "1", "--reviewer", "staff-sdet"],
             cwd=repo, home=home,
         )
         assert result.returncode == 0, result.stderr
@@ -1237,6 +1269,20 @@ class TestReviewLedgerSubprocessIntegration:
         assert [row["disposition"] for _file_index, row in entries] == ["ADDRESS"]
         assert entries[0][1]["session_id"] == self.SESSION_ID
         assert any_file_found is False, "the row lives in a branch-keyed file, not a session-keyed one"
+
+    def test_real_round_cap_verdict_append_belongs_to_no_block(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = init_git_repo_with_commit(tmp_path / "repo", branch="main")
+        _seed_session(home, self.SESSION_ID)
+
+        result = self._run_append(["--disposition", "CONSULT", "--rationale", "noise", "--round", "1"], cwd=repo, home=home)
+        assert result.returncode == 0, result.stderr
+
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(self._fake_transcript_path(home))
+        assert [row["disposition"] for _file_index, row in entries] == ["CONSULT"]
+        assert any_file_found is True
+        assert ao._round_blocks(entries) == []
 
     def test_real_clean_append_classifies_as_pass(self, tmp_path):
         home = tmp_path / "home"

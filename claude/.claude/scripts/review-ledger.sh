@@ -44,7 +44,7 @@ usage() {
 Usage: ~/.claude/scripts/review-ledger.sh <subcommand> [args]
 
 Subcommands:
-  append code-review --disposition ADDRESS|DEFER|SETTLED|CLEAN --round <N> \
+  append code-review --disposition ADDRESS|DEFER|SETTLED|CLEAN|CONSULT --round <N> \
       [--finding <text> --rationale <text>] [--source <path>[:<start>[-<end>]]] \
       [--decided-by engineer|plan-architect|carry] [--engineer-quote <text>] \
       [--enforcement-invariant] [--carry-forward] [--defer-criterion <name>] \
@@ -56,17 +56,20 @@ Subcommands:
              (this session's ledger on a detached HEAD or the default branch).
              --finding/--rationale are required for ADDRESS|DEFER|SETTLED;
              --finding/--rationale/--source/--reviewer/--relog must be omitted
-             for CLEAN.
+             for CLEAN. CONSULT records the round-cap consult's verdict in
+             --rationale, one of: re-plan, noise, one-defect. --finding,
+             --source, --reviewer and --relog must be omitted.
              --round is the 1-based review round number for this
              /code-review run on this branch.
-             DEFER and SETTLED require --source as <repo-relative path> with an
+             ADDRESS, DEFER and SETTLED require --source as <repo-relative path> with an
              optional :<start>[-<end>] line range (1 to 9 digits, no leading
              zero, start <= end). A path-only source never carries. An
              absolute path under the repo is stored repo-relative, and a
              leading './' is dropped. Any other absolute path, and a '..',
-             '.' or empty segment, is rejected. A range is hashed
+             '.' or empty segment, is rejected. A DEFER or SETTLED range is hashed
              from the working tree (site_hash), and a missing file, a range
-             past the end of file, or blank-only text is rejected.
+             past the end of file, or blank-only text is rejected. An ADDRESS
+             source is never hashed, so its file need not exist.
              DEFER requires --defer-criterion, one of:
              orthogonal-scope, coordinated-multi-pr-effort,
              gold-plating-beyond-declared-user-surface,
@@ -82,7 +85,7 @@ Subcommands:
              SETTLED row that is not a carry). ADDRESS closes it. A DEFER or
              SETTLED supersedes it. An engineer decision is superseded only by
              ADDRESS or an engineer SETTLED, which keeps the label of an
-             invariant decision. CLEAN takes no --ref.
+             invariant decision. CLEAN and CONSULT take no --ref.
              A carry is --decided-by carry (on DEFER or SETTLED) with --ref, a
              range-form --source, --cited-line and --rationale, and never a
              quote, label or --carry-forward. It is accepted only for a live
@@ -104,8 +107,8 @@ Subcommands:
              _LIB_REVIEWER_PERSONA_AGENTS in hooks/_lib.sh, or orchestrator (a
              finding no reviewer agent or Skill-tool review raised), skill-tool
              (a Skill-tool review's finding) or unrostered-agent (a spawned
-             reviewer agent outside the roster). CLEAN takes no lanes; every
-             other disposition takes at least one lane (--reviewer) or --relog,
+             reviewer agent outside the roster). CLEAN and CONSULT take no lanes;
+             ADDRESS, DEFER and SETTLED take at least one lane (--reviewer) or --relog,
              never both. Use --relog only when this row records no raise of its
              own and only re-logs its --ref decision, whose raise an earlier row
              records. A reopen, a gate-denial recovery and a --carry-forward
@@ -145,7 +148,7 @@ Subcommands:
              --trend (accepted once, and only with --out) prints a second
              stdout line after `changed: <path>`: `trend: <series>`. The series
              is comma-separated `round <N>: <count>` entries in round order,
-             one for each round that has a row, for example
+             one for each round that has a row other than a CONSULT row, for example
              `round 1: clean, round 2: 9, round 7: 11`. <count> is the number
              of ADDRESS, DEFER and SETTLED rows logged in that round, carries
              and rows a later --ref retired included. A round with none reads
@@ -449,8 +452,11 @@ case "$SUBCOMMAND" in
         [ -z "$RATIONALE" ] || { printf 'review-ledger.sh: --rationale must be omitted for --disposition CLEAN\n' >&2; exit 2; }
         [ "$SOURCE" = "n/a" ] || { printf 'review-ledger.sh: --source must be omitted for --disposition CLEAN\n' >&2; exit 2; }
         ;;
+      CONSULT)
+        _review_ledger_validate_consult "$FINDING" "$RATIONALE" "$SOURCE" || exit 2
+        ;;
       *)
-        printf "review-ledger.sh: --disposition must be ADDRESS, DEFER, SETTLED, or CLEAN, got '%s'\n" "$DISPOSITION" >&2
+        printf "review-ledger.sh: --disposition must be ADDRESS, DEFER, SETTLED, CLEAN, or CONSULT, got '%s'\n" "$DISPOSITION" >&2
         exit 2
         ;;
     esac
@@ -496,11 +502,13 @@ case "$SUBCOMMAND" in
     # Checked before the first read of the ledger.
     _review_ledger_check_regular_file "$LEDGER_FILE" && _review_ledger_check_regular_file "$LOCK_FILE" || exit 2
 
-    # A decision's source is normalized to a repo-relative path. A range-form
-    # source gets a site hash, and a carry must reproduce its decision's hash.
+    # Every finding's source is normalized to a repo-relative path.
+    # Only a DEFER or SETTLED range-form source gets a site hash, because only a decision is matched by a carry.
     SITE_HASH=""
-    if [ "$DISPOSITION" = DEFER ] || [ "$DISPOSITION" = SETTLED ]; then
+    if [ "$DISPOSITION" = ADDRESS ] || [ "$DISPOSITION" = DEFER ] || [ "$DISPOSITION" = SETTLED ]; then
       SOURCE=$(_review_ledger_normalize_location "$REPO_ROOT" "$SOURCE") || exit 2
+    fi
+    if [ "$DISPOSITION" = DEFER ] || [ "$DISPOSITION" = SETTLED ]; then
       SOURCE_PARTS=$(_review_ledger_location_parts "$SOURCE")
       if [ -z "$SOURCE_PARTS" ] && { [ "$DECIDED_BY" = carry ] || [ -n "$CARRY_FORWARD" ]; }; then
         printf 'review-ledger.sh: a carry, and a --carry-forward decision, need a range-form --source (<path>:<start>[-<end>]), got %s\n' "$SOURCE" >&2
@@ -633,7 +641,7 @@ case "$SUBCOMMAND" in
     # up), and a retired --ref adds a read and a compare. A --ref naming a carry
     # repeats the read and look-up once for its rejection advice.
     # A --relog repeats the read and look-up once to copy the --ref row's lanes.
-    # A range-form source adds one capped awk read for the site hash.
+    # A range-form DEFER or SETTLED source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
     # origin/HEAD resolution, and the candidate rev-parse probes.
     # The bare git rev-parse --show-toplevel and the sweep's find are uncapped.
