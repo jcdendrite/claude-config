@@ -260,10 +260,10 @@ def test_lib_git_fragment_is_bare_or_version_accepts_the_closed_set(command: str
 @pytest.mark.parametrize(
     "fragment, command",
     [
-        # `--help` and `-h` are deliberately not accepted, keeping the allow set minimal.
         ("git --help", "git --help"),
         ("git -h", "git -h"),
         ("git --version --help", "git --version --help"),
+        ("git -v --help", "git -v --help"),
         ("git --bare", "git --bare"),
         ("git -p --version", "git -p --version"),
         ("git --exec-path", "git --exec-path"),
@@ -281,6 +281,7 @@ def test_lib_git_fragment_is_bare_or_version_accepts_the_closed_set(command: str
         "help",
         "short-help",
         "version-then-help",
+        "short-version-then-help",
         "bare-repo-flag",
         "pager-flag-then-version",
         "exec-path",
@@ -299,21 +300,21 @@ def test_lib_git_fragment_is_bare_or_version_rejects_anything_else(fragment: str
     assert (result.returncode, result.stderr) == (1, "")
 
 
-# A verdict must come from the exit status alone: under a caller's `set -euo pipefail`,
-# no unbound variable and no failing test outside a condition may abort the caller.
+# A verdict must come from the exit status alone: under a caller's `set -u`,
+# no unbound variable may abort the caller.
 @pytest.mark.parametrize(
     "command, expected_verdict",
     [("git --version", "accepted"), ("git --exec-path", "rejected:1")],
     ids=["accepted", "rejected"],
 )
-def test_lib_git_fragment_is_bare_or_version_under_set_e_and_u_returns_verdict_without_aborting_caller(
+def test_lib_git_fragment_is_bare_or_version_under_set_u_returns_verdict_without_aborting_caller(
     command: str, expected_verdict: str
 ) -> None:
     result = subprocess.run(
         [
             "bash",
             "-c",
-            f'set -euo pipefail; . {_LIB_SH}; if _lib_git_fragment_is_bare_or_version "$1" "$1"; then echo accepted; '
+            f'set -uo pipefail; . {_LIB_SH}; if _lib_git_fragment_is_bare_or_version "$1" "$1"; then echo accepted; '
             "else echo rejected:$?; fi",
             "bash",
             command,

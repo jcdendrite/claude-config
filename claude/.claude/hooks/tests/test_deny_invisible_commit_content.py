@@ -791,9 +791,11 @@ class TestDenyInvisibleCommitContent:
         ) == "allow"
 
     # Each shape denies in the masked walk (bare chain) and in the quote-stripped
-    # walk (the same chain quoted inside an `echo`, which masking hides). The
-    # `$(...)` rows fail if either call site passes the fragment instead of the
-    # whole command to _lib_git_fragment_is_bare_or_version: the fragment `git `
+    # walk (the same chain quoted inside an `echo`, which masking hides). If the
+    # masked walk passes the fragment instead of the whole command to
+    # _lib_git_fragment_is_bare_or_version, the `unquoted-command-substitution`
+    # and `unquoted-backtick-substitution` rows fail, caught by the masked-walk
+    # reason assertion ("before this call's first real"). The fragment `git `
     # alone is accepted, and only the whole command shows the substitution.
     # An id ending in `accepted-over-deny` marks a shape that stages nothing if
     # run: the gate denies it because only the exact literals are allowed.
@@ -841,6 +843,20 @@ class TestDenyInvisibleCommitContent:
         assert reason is not None
         assert "before this call's first real" not in reason
         assert "before this call's git commit and can change what ends up staged" in reason
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["git ';add' -- x", "git \\;add -- x", "git --version ''"],
+        ids=["quoted-separator", "escaped-separator", "trailing-empty-quote"],
+    )
+    def test_masked_walk_only_lookalike_chained_before_commit_denied(self, shape):
+        """The masked walk is the only layer denying these, since the quote strip reduces them to an accepted literal.
+
+        Like the `accepted-over-deny` rows, none stages anything under default git config.
+        """
+        reason = run_hook_reason(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(f"{shape} && git commit -m x"))
+        assert reason is not None
+        assert "before this call's first real" in reason
 
     def test_backslash_newline_continuation_before_staging_subcommand_denied(self):
         """A backslash-newline continuation joins `git` to `add`, so the chain stages before the commit."""

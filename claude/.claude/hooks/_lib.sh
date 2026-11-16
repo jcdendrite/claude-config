@@ -2087,7 +2087,8 @@ _lib_extract_git_subcmd_args() {
 
 # Exit 0 when FRAGMENT, trimmed of surrounding whitespace, is exactly `git`, `git --version`
 # or `git -v`, and 1 otherwise.
-# COMMAND is the whole command text FRAGMENT was split from.
+# COMMAND is the raw tool-input command, never a masked or quote-stripped form.
+# A derived form can lose the `$` or backtick (`_lib_strip_shell_quotes` deletes a `$` before a quote).
 # `--help` and `-h` are deliberately not accepted, keeping the allow set minimal.
 # Exits 1 when COMMAND holds `$` or a backtick, because an expansion can supply a subcommand
 # word that fragment-splitting hides (`git "$(echo checkout)"` splits into the fragments
