@@ -9790,7 +9790,7 @@ def test_routing_reviewer_table_agents_carry_file_based_output_contract() -> Non
     re-arms the heredoc-abort-on-large-findings failure, which for a
     security reviewer means silently lost findings. `tools:` is read via
     parse_frontmatter rather than a `^tools:` regex, mirroring
-    test_agent_roster.py's `_declared_tools` — a regex silently reports the
+    test_agent_roster.py's `_declared_tool_names` — a regex silently reports the
     tool absent on YAML list form (`tools:\n  - Write`), which would turn
     this assertion into a false pass on exactly the frontmatter shape it
     exists to catch.

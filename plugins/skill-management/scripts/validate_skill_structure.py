@@ -72,7 +72,8 @@ def parse_frontmatter(skill_file: Path) -> dict:
     content = skill_file.read_text()
     if not content.startswith("---"):
         return {}
-    # Claude Code's skill loader ends the block at the first --- after the opener, even mid-line, so this does too.
+    # Only the closer matches Claude Code's skill loader (first --- after the opener, even mid-line);
+    # the opener check above is looser than the loader's.
     closing = content.find("---", 3)
     if closing == -1:
         raise FrontmatterError("frontmatter has no closing --- line")
