@@ -48,7 +48,6 @@ TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.transcript_path | type
 STATE_BLOCK=$(_lib_capped_for 6 python3 "$STATE_SCRIPT" state --transcript="$TRANSCRIPT_PATH" 2>/dev/null) || exit 0
 [ -n "$STATE_BLOCK" ] || exit 0
 
-# shellcheck disable=SC2016 # single-quoted on purpose: `.` is jq's input, not a shell expansion.
 printf '%s' "$STATE_BLOCK" | _lib_jq -Rs \
   '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: .}}' 2>/dev/null || true
 exit 0
