@@ -242,3 +242,39 @@ Run on claude 2.1.323, 2026-11-13, in a scratch repository on a branch named `pr
 - **Cap unit.** A block of emoji prompts measured 13,299 UTF-16 units. The harness stored it in a file and injected a preview of about 3,950 characters, which lost the newest prompts. The block's code-point count was not recorded reliably, so none is stated. The survival probe's 9,000-character block of mixed non-ASCII text was 10,410 UTF-8 bytes and arrived intact. If the harness limit is 10,000 as relayed (not verified against harness documentation), that rules out UTF-8 bytes and code points as the unit, and UTF-16 units fit both observations. A block of N code points holding A characters outside the Basic Multilingual Plane measures N + A UTF-16 units, so at the 9,000 cap it overflows only with more than 1,000 such characters. The script keeps counting code points, and the docs state the limit.
 - **Timing.** On a synthetic copy of about 64 MB, made by repeating one probe transcript's records, one `state` run took 0.9 to 1.2 seconds and peaked at about 190 MB resident, on one machine. That is inside the 6-second cap. The records were string-heavy. In a later measurement on one machine, a 64 MB file of key-dense records (40 keys and a 60-element list each) took 3.8 to 8.4 seconds over three runs and peaked at about 390 MB, so it can pass the cap. On a one-line transcript the script alone took 0.25 to 0.7 seconds warm and about 1 second with no cached bytecode, and the whole hook took 0.5 to 0.9 seconds warm, on one machine.
 - **Not run.** A resumed interactive session, an interrupt inside a `claude -p` run, a `claude -p "/skill args"` invocation, and `claude -p --input-format stream-json` stay unexercised. Two carriers were also never probed: a quoted closing tag for the wrapper the harness puts around hook `additionalContext`, and a custom slash command or MCP prompt body whose first line is `Base directory for this skill: <path>` with an allowed path, which the script would list as a skill line. How the harness shows `additionalContext` in the engineer's terminal was also never probed, so whether a quoted control or escape character reaches the terminal raw, where it would be interpreted as an escape sequence, is unknown.
+
+## Steering probe — does `PreCompact` stdout steer the summary?
+
+Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the compaction summary on the manual and automatic triggers, and the failure modes below left compaction unaffected.
+
+- **Build:** `claude --version` **2.1.326**. Probe date 2026-11-16 (UTC). Re-verify by 2027-02-16, the three-month interval `docs/handoff-nudge.md` uses for vendor behavior. Nothing raises this date when it lapses.
+- **Scope:** booleans and counts only. The sentinels are synthetic strings planted for the probe.
+
+### Method
+
+- A scratch git repository outside this repo, with one scratch project skill of eight numbered steps. No other hooks beyond the stowed ones.
+- A `PreCompact` hook with no matcher logged its stdin, then printed three instructions on exit 0:
+  - include a literal `PRECOMPACT-SENTINEL-<token>` line;
+  - write `CONTROL-<token>` backwards on its own line, which an echo of the hook's stdout cannot produce because the echo carries only the forward form;
+  - under a "Continuity" heading, name the skill's current step number and quote the decision sentence the prompt typed, which held `DECISION-SENTINEL`.
+- A `PostCompact` hook archived stdin, whose `compact_summary` field holds the summary.
+- `<token>` is 8 random uppercase letters with no repeats. A first feasibility run used 8 hex digits and mis-reversed the token by dropping one of two adjacent equal digits. That run is not scored, and hex was dropped.
+- Each item is scored only against the text outside the `<analysis>` block of `compact_summary`. The `isCompactSummary` transcript record the next model sees holds no `<analysis>` block.
+- A run steers when its scored text holds the reversed control exactly and passes the Continuity check. The exact bar stays even though a model can mis-reverse a token.
+- Manual runs ran as `claude -p` turns, then `claude -p "/compact" --continue`. `/compact` works in `-p` mode and fires both hooks. Automatic runs used `--autocompact 100k` and a prompt that read ten large files.
+
+### Results
+
+- **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others. Two of three steer, so manual steers.
+- **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. The first compaction steers and manual steered, so automatic steers, and no further automatic run was needed. Compactions after the first summarize a context that already holds the earlier steered summary, so only the first is independent evidence.
+- **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar. Of the five manual-trigger runs, the unscored feasibility run included, three mis-reversed the token.
+- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel. A later prompt did not fire `PreCompact` again. A first automatic attempt ended before any compaction, because the model declined to read the files, so it was rerun.
+- **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run compacted six times, none steered, and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The steered automatic run compacted eight times without that stop, so this run does not show that a failing hook causes thrashing.
+- **Where the hook's stdout appears:**
+  - Manual: a user record whose content opens `<local-command-stdout>Compacted (ctrl+o to see full summary)` and then a `PreCompact [<hook path>]` line holding the hook's stdout. It carries a `repeatsCompactSummary` key.
+  - Automatic: no such record. The stdout appears in `api-request-blob` records, one per compaction.
+  - Both: the `isCompactSummary` record holds the steered summary.
+
+### Routing outcome
+
+Manual and automatic both steer, so designing a `PreCompact` hook that prints summary instructions is worth pursuing. Its design is not part of these findings.
