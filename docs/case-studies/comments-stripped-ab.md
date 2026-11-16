@@ -275,7 +275,7 @@ A short PR task count is expected.
 
 **The margin.** The repository owner set the 15-point margin on 2026-11-06, replacing the 10-point gap in GH-1408, after the pre-count below and before any authoring session. The owner's decision: "Let's go with the 15-point margin, the two-sided interval. That sounds good." The reason given with the proposal the owner accepted is that Harm excluded becomes reachable at the pre-count's scale. It is not that a harm under 15 points is acceptable.
 
-**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only `L` <= 0 <= `U` < 0.15. The table gives the Harm excluded bound if stripping costs nothing.
+**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only `L` <= 0 <= `U` < the margin. The table gives the Harm excluded bound if stripping costs nothing.
 
 | Margin | Variance end | 40 tasks | 75 tasks |
 |---|---|---|---|
@@ -286,7 +286,7 @@ A short PR task count is expected.
 
 The chance that `L` <= 0 <= `U` < 0.15 holds if stripping truly costs `e` is `Phi(min(z_a, d*sqrt(n/V) - z_a) - e*sqrt(n/V)) - Phi(-z_a - e*sqrt(n/V))`, with `V` the variance under that effect, as in the Lock section. The 10-point and 5-point figures below use it. If stripping truly costs 10 points, the chance is 0.108 at 40 tasks and 0.167 at 75 at the pessimistic end. At the favorable end it is 0.241 and 0.069. Across the variance range at 75 tasks it runs from 0.07 to 0.26.
 
-If stripping truly costs 5 points, the chance that `L` <= 0 <= `U` < 0.15 holds is 0.292 at 40 tasks and 0.494 at 75 at the pessimistic end. At the favorable end it is 0.693 and 0.607. A real drop of 5 points meets `L` <= 0 <= `U` < 0.15 between 0.49 and 0.74 of the time at 75 tasks, peaking between the two ends of the variance range, and the other conditions can only lower that.
+If stripping truly costs 5 points, the chance that `L` <= 0 <= `U` < 0.15 holds is 0.292 at 40 tasks and 0.494 at 75 at the pessimistic end. At the favorable end it is 0.693 and 0.607. A real drop of 5 points meets `L` <= 0 <= `U` < 0.15 between 0.49 and 0.74 of the time at 75 tasks, peaking between the two ends of the variance range. The other conditions can only lower that.
 
 At a zero estimate and the pessimistic end, `U` is 13.9 points at 40 tasks and 10.1 at 75. Its gap below 15 points is all the headroom the worst-case recomputation has. A zero estimate gives `U` < 0.15 at the pessimistic end only from `n` >= `z_a^2*psi/0.15^2`, which is 34.1 at `psi` = 0.20. Below that, Harm excluded needs the stripped arm to score above the intact arm.
 
