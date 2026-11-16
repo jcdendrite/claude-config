@@ -478,12 +478,8 @@ The hook prints nothing in these cases, although `python3` may be missing or bel
 
 With neither `timeout` nor `gtimeout` on PATH, the 2-second cap is unavailable and the probe runs uncapped. A missing or below-floor `python3` still prints the notice. A hung `python3` or `jq` stalls session start, for up to the registration's 10-second timeout, and the cancellation case above then applies.
 
-What each other stowed hook that runs `python3`, directly or through a shared helper, does when that `python3` call exits nonzero. This list does not cover the skill-management plugin's hooks:
-- `require-worktree-for-git-writes.sh` denies every command that reaches its parser, reads included. Where worktree enforcement is active, a command naming `git` reaches the parser from a main-tree session. From a linked worktree it does so when the command holds `cd`, `-C`, `(` or a backtick, when the worktree lock is absent, or when the collision guard denies. With no `python3` on PATH it denies with text naming the recovery routes.
-- The hooks that call `_lib_command_words` deny, with a clause naming `python3` among the failed tools, only after `xargs` cannot split the command (see `claude/.claude/hooks/_lib.sh` `_lib_command_words`), not for every commit or PR command.
-- `send-back-skipped-self-review.sh` allows and logs.
-- `ask-new-dependency-disclosure.sh` allows silently for an absent `python3` or one that fails `python3 -c ''`. For any other `python3` whose helper fails, it degrades to a generic ask.
-- `nudge-error-mode-analysis.sh` stays silent.
+Each other stowed hook that runs `python3`, directly or through `_lib_command_words` in `claude/.claude/hooks/_lib.sh`, states in its header comment what it does when that `python3` call fails.
+This does not cover the skill-management plugin's hooks.
 
 The project-plugin reconciler's lock probe also runs `python3`, and `docs/hooks.md` § "Utility hooks" states the consequence in its `lock_unavailable` row.
 
