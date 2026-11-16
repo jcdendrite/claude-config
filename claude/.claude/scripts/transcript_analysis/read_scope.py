@@ -603,13 +603,9 @@ def _add_read_scope_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     scope._add_project_scope_args(p_read_scope)
-    p_read_scope.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
-        ),
+    scope._add_extra_config_dirs_arg(
+        p_read_scope,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Refused together with --this-repo or --no-redact.",
     )
     p_read_scope.add_argument(
         "--since", metavar="Nd",

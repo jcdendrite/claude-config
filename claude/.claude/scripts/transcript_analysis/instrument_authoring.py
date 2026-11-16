@@ -408,13 +408,9 @@ def _add_instrument_authoring_subparser(subparsers: argparse._SubParsersAction) 
         ),
     )
     scope._add_project_scope_args(p_instrument_authoring)
-    p_instrument_authoring.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root."
-        ),
+    scope._add_extra_config_dirs_arg(
+        p_instrument_authoring,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root.",
     )
     p_instrument_authoring.set_defaults(func=cmd_instrument_authoring)
