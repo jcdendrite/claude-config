@@ -798,7 +798,7 @@ The gitignored sketch file was this section's input (row 80). Its criteria are a
   - a command that starts with exactly that expected pin prefix is left unchanged, so a double fire (row 134) prefixes it once;
   - a command whose first lines are shaped as a pin prefix but differ from the expected one is agent text, and is prefixed again like any other (r17 ciso R2, be R8);
   - from Phase 4 the expected pin prefix holds the unset-and-export line, so a Phase 3 pin prefix is agent text to a Phase 4 shim. No conversation meets both forms, because the doc has Cursor quit around `install`;
-  - only `pin` mode runs the host walk behind that line's host-PID part (OD15), under the bound Routing states. `pin-check` and the strip below match that part by shape, either an export whose value fits Routing's PID grammar or the variable's unset, so neither runs the walk (requirement 28; rows 410, 411). A line shaped as a pin prefix whose host-PID part fits neither shape is agent text, as any other mismatch above is.
+  - only `pin` mode runs the host walk behind that line's host-PID part (OD15), under the bound Routing states. `pin-check` and the strip below match that part by shape, either an export whose value fits Routing's PID grammar or the variable's unset, so neither runs the walk (requirement 28; rows 410, 411). A line shaped as a pin prefix whose host-PID part fits neither shape is agent text, as any other mismatch above is. In every mode the exact-match bullet and the mismatch bullet above compare the host-PID part by shape and every other part of the prefix, the unset and the config-dir and session-id exports included, by exact text, so `pin` mode recognizes an already-prefixed command before it runs any walk, and a second fire (row 134) runs no walk.
 - On every Shell event the shim strips only its own pin prefix from `tool_input.command` before translation, so each hook sees the agent's command, any pin-prefix-shaped text in it included (row 245).
 - An adapter-only, fail-closed, matcher-less beforeShellExecution entry in `pin-check` mode denies a command that does not start with the expected pin prefix, naming the cause. C7 showed beforeShellExecution receives the rewritten command, so a Cursor build that stops applying `updated_input`, or a foreign entry whose rewrite wins, denies every Shell call rather than letting gates evaluate the pinned directory while the command runs elsewhere. `status` counts these denies by cause (r17 ciso R2, be R6, sdet R6). Its scope is the paired case Phase 1 observed, a beforeShellExecution after the same call's preToolUse(Shell). A Shell command that reaches beforeShellExecution with no preToolUse, such as one a UI action may start, would take this deny, and whether one exists is O3(b)'s open question (r21).
 - A generated beforeShellExecution matcher is never anchored at the command's start, so it still selects a prefixed command, and the shim's re-check runs on the stripped one (requirement 7; r19 cd R2).
@@ -1057,7 +1057,7 @@ A Cursor relaunch makes the start-time check reject any `sessions/` entry an ear
       - Phase 4 is what gives `marker.sh` an identity in those calls. Without the adapter a CLI Shell call resolved none (row 409), and whether an IDE one could before Phase 4 is the 3-to-4 window's [unverified] item;
       - `gate-settings-permissions.sh` denies only a `marker.sh` call that is not an exact `permissions.allow` shape, and `marker.sh write code-review` is one (`settings.json:4`), so after Phase 5a the main agent's direct write in those modes still runs and releases the gate;
       - that is Claude Code's main session's case too, where the same allow entry lets that write run;
-      - Phase 5a closes only the non-allowlisted shapes and, through the `enforce-marker-script-shape` twin, the restricted subagent types;
+      - Phase 5a closes only the non-allowlisted shapes and, through the `enforce-marker-script-shape` twin, the restricted subagent types. Until that twin, a restricted subagent's `marker.sh write` also runs wherever it is unprompted, an allowlisted shape included, because the import's copy of that hook exits on any tool name but `Bash` (row 271);
     - the workspace `sandbox.json` report and its Recovery entry wait for Phase 5a;
     - the window before this one, from Phase 3's merge to Phase 4's, is wider, and the partial-install bullet below states it (r20 plat R1);
   - it lists under `additionalReadwritePaths` the directories in the routed config dir that the agent-run scripts write. Those scripts are the identity consumers Identity and routing lists, `marker.sh` and the `/review-pr` scripts among them. It never lists the routed config dir itself. The list is one literal in `cursor-adapter.py`, which requirement 18's behavioral test checks (r17 sdet R1, be R3);
@@ -1911,10 +1911,10 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - the pin's rewrite, by a `pin-check` deny;
       - for cell 5 only, the skill not loading or not running, its subagents included.
     - Outcomes:
-      - a fail of cells 1 to 7 or 9 goes to the engineer as a plan revision. A fail of cell 4 or 5 also returns OD12 to the engineer, naming the failed cell (OD12);
+      - a fail of cells 1 to 7 or 9 goes to the engineer as a plan revision. A fail of cell 4 or 5 also returns OD12 to the engineer, naming the failed cell (OD12). A cell among 1 to 7 recorded "unexercised" or "attribution unexercised" is re-run, and one that stays so goes to the engineer as its fail does;
       - cell 4: a direct write that releases the commit is the residual the sandbox grant's pending bullet states, which Phase 5a does not close for the main agent, not a feature the doc offers (rows 411, 413);
       - cell 8: a command that runs unprompted under `--force` puts the ask entries in the doc's Limitations as not enforced there (Installer's CLI-coexistence block);
-      - cell 10: a result OD15's answer does not account for goes to the engineer before Phase 5a's dispatch, such as a `resolve-session-id` failure where that answer has the walk resolve, or a CLI leg's denied read in a mode that answer does not name (row 409). An active-bypass file that `status` removed confirms the eviction risk the sandbox grant's pending bullet names, and Phase 5a's doc edit states it as observed (row 411);
+      - cell 10: a result OD15's answer does not account for goes to the engineer before Phase 5a's dispatch, such as a `resolve-session-id` failure where that answer has the walk resolve, or a CLI leg's denied read in a mode that answer does not name (row 409). An active-bypass file that `status` removed confirms the eviction risk the sandbox grant's pending bullet names, and Phase 5a's doc edit states it as observed (row 411). A CLI leg recorded "engagement not shown" goes to the engineer before Phase 5a's dispatch, for a choice: proceed with that mode marked unobserved, or get engagement shown first;
       - cell 11, by result (row 413):
         - a CLI subagent call with no `parent_agent_id`: the engineer chooses, before Phase 5a's dispatch, as for step 8's call in 6, between the disclosed limit, after which the doc lists the CLI subagent's agent-keyed bars as not enforced, and a plan revision;
         - a CLI subagent call that carries `parent_agent_id` with no subagentStart: it would meet requirement 8's unattributed-subagent deny from Phase 5a, so the result goes to the engineer as a plan revision before Phase 5a's dispatch;
@@ -2535,7 +2535,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
     - PR record: each phase's PR body records its CI time delta, and these local macOS runs as `pytest -rA` prints them (r26 cd R3):
       - Phases 2 and 4: `TestDirectoryPin`'s shell rows, with the shells run and each candidate's probe result. Phase 2's CI ran those rows under bash alone. From Phase 4, CI installs a pinned zsh and fails where it is absent (OD13), so the macOS run is the record for macOS's `/bin/sh` and its zsh build (r20; rows 411, 412);
       - Phase 3: `TestLaunchGuard`, with `/bin/sh`, bash and zsh all run and none skipped, because CI's `/bin/sh` is dash and macOS's is bash in POSIX mode (r26 plat R4);
-      - Phase 4: requirement 38's macOS-only host-walk row in `TestCursorPayloadDecline`;
+      - Phase 4: requirement 38's macOS-only host-walk rows in `TestCursorPayloadDecline`;
       - Phase 5a: `TestWorkspaceSandboxReport`'s symlink rows, showing the literal `/tmp` and `/var` rows passed, not skipped, because Ubuntu CI's `/tmp` is a real directory and those rows skip there. The `$TMPDIR` and non-symlink `/tmp` rows run on Ubuntu CI against the `/var/tmp` base, and the macOS run shows none skipped for `absent: no base outside /tmp`;
       - any PR that adds a row skipping on Ubuntu CI: that row.
     - Cursor-update checklist: the doc carries a Cursor-update regression checklist, which includes acceptance step 8's observations 1, 2 and 6 and its Control, step 10's cells 1, 5, 6, 7 and 8, step 3's cell 2, step 16, step 18's cells 1, 2 and 9, and the sessionStart entry's host-walk report (rows 404, 409; r2 plat R10; r10 ciso R4; r13; r16; r17 plat R2). This checklist is the one list, and each step that says it joins the checklist points here. The sessionStart entry names it when `cursor_version` changes (Installer).
@@ -2597,7 +2597,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - `pin` mode's walk output: exactly one trailing newline comes off first, so the walk's honest `12` and its newline are accepted, and `12` with two newlines is the rejected single-newline row;
       - the pair: the variable's whole value is the input, so `12` followed by one newline is rejected, and so is the two-lines value;
       - `pin-check` and the strip: a value is the text between the `=` and the line's end, so the single-newline row does not apply. Their two-lines row is a command whose export line holds `12` and whose next line holds `34`, which they read as an accepted prefix followed by agent text;
-      - `check`'s host read: the recorded host's text, with one trailing newline taken off as for the walk's output. An accepted value makes one `(pid, 0)` call, and a rejected value makes none and keeps the state. The accepted `9999999999` makes `os.kill` raise `OverflowError`, which is no `OSError`, so the state is kept and `check` goes on to its next conversation (row 418).
+      - `check`'s host read, whose row ships in Phase 5a with requirement 30's `check` rows: the recorded host's text, with one trailing newline taken off as for the walk's output. An accepted value makes one `(pid, 0)` call, and a rejected value makes none and keeps the state. The accepted `9999999999` makes `os.kill` raise `OverflowError`, which is no `OSError`, so the state is kept and `check` goes on to its next conversation (row 418).
     - Tests, in `TestDirectoryPin`, in `test_cursor_adapter_shim.py` (the directory pin's Recognition; Routing; rows 410, 411):
       - `pin` mode exports the PID its hook-side walk prints;
       - each walk failure Routing lists unsets the variable, exports none, and still pins, and the prefix is byte-identical across them (row 413):
@@ -2634,7 +2634,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
       - through the guard, two conversation ids on one fake host PID with the first one's lock held: the second one's write is denied after the contended-acquire reread, with the `session-keyed` live-holder text that tells the agent to ask the engineer (r17 plat R3);
       - subagent rows, through the guard and the matrix's import arm: a lock the parent holds, then a child call's write, is mine for the twin and the copy alike; a lock a child takes first is the parent's; a child's marker is read by the parent; a nested child's write into the root's lock denies (r17 be R1);
       - a differential row, in `test_lib_cursor_identity.py`: one root, one child and one nested-child payload, and payloads whose `parent_agent_id` is `null`, `""`, a number, an 85-character id and an id ending in a newline, run through the shim's `session_id`, `_lib_adapter_session_pair` and the Shell rewrite's export. The three agree on every payload, by the one definition Identity and routing states (r19 be R1, sdet R7);
-      - `check` rows, with a stubbed host. The `os.kill` stand-in only records each `(pid, signal)` call and returns or raises its seeded result, as the shim's no-signal row's replacement does. Each row asserts after `check` returns that every recorded signal is 0 and the recorded PIDs are the expected ones, so a broad handler cannot swallow the check (r17 sdet R8; row 418):
+      - `check` rows, with a stubbed host. They ship in Phase 5a, with the active-subagent set, the first state `check` removes (Attribution), except the first row's lock-listing assertion, which ships in Phase 4 because that phase's run of acceptance step 5 has `check` name a held lock. The `os.kill` stand-in only records each `(pid, signal)` call and returns or raises its seeded result, as the shim's no-signal row's replacement does. Each row asserts after `check` returns that every recorded signal is 0 and the recorded PIDs are the expected ones, so a broad handler cannot swallow the check (r17 sdet R8; row 418):
         - a live host's state is kept and named, and its locks print with worktree path and session id and a line saying `check` cannot tell a stale lock from a live one (plat R3);
         - a dead host's state is removed;
         - a state dir with two conversations on one host is handled per conversation;
@@ -2713,7 +2713,7 @@ Results enter this plan under the admission rule's Phase 6 clause (Run order). T
         - it sees `CLAUDE_CONFIG_ADAPTER_SESSION_ID` equal to the call's session id, on a root payload, on a child payload whose `parent_agent_id` differs from its `conversation_id`, and on a nested child's (r19 sdet R7);
         - an id that fails the grammar denies, naming the id field that fails the grammar (r21);
         - a Phase 4 pin prefix is recognized and stripped, and a Phase 3 pin prefix is prefixed again as agent text (r19 sdet R1);
-        - a double fire leaves one first line.
+        - a double fire, with the second fire's `ps` failing, leaves one first line.
 
     The informational arm asserts `{}` and a logged count.
 37. **Invariant.** Nothing reaches a gate unclassified or truncated (r3 ciso R5, be R3, be R7):
@@ -2995,7 +2995,7 @@ The classes, by phase:
     - the shim-fault entry's heading quotes the fault text's diagnosis clause.
 - Phase 4:
   - `TestClaudePathSnapshot` (14)
-  - `TestAdapterIdentity` and `TestIdentityConsumers` (29, 30, 31)
+  - `TestAdapterIdentity` and `TestIdentityConsumers` (29, 30, 31), except the `check` rows that Phase 5a's `TestCheckStateRemoval` holds; the first `check` row's lock-listing assertion stays here
   - `TestEnvScrubNestedRun` (31), in each tree's env-scrub file
   - `TestCopyAllowSuppressed` (2)
   - `TestCursorPayloadDecline` (38), in `test_lib_cursor_identity.py`
@@ -3009,6 +3009,7 @@ The classes, by phase:
 - Phase 5a:
   - `TestSettingsPermissionsGate` (4, 5)
   - `TestAgentAttribution` and `TestActiveSetDoubleFire` (8, 35), in `test_cursor_adapter_gates.py` (r21 sdet R6). `TestAgentAttribution` also holds the Delete quoting-matrix rows through `gate-agent-tools.sh` (22; r21)
+  - `TestCheckStateRemoval` (29, 30), in `test_cursor_adapter_install.py`, holding the `check` rows requirement 30 gives this phase and the PID-grammar edge table's `check` host-read row
   - `TestAdapterGateInvariants` (9)
   - `TestCredentialArms` (32)
   - `TestSelfProtection` (39)
@@ -4912,7 +4913,7 @@ If a fetch is denied, the session reports the denial. A denied hooks-doc fetch s
     - each CLI claim step 18 has not recorded is marked pending that step, and Phase 5a's doc edit updates the marks from the record;
     - the quit step before `install` and `uninstall` keeps ending every Cursor CLI session, and adds ending any `cursor-agent` worker left once Cursor quits (Installer);
     - its shells prerequisite line, which names `/bin/sh`, bash and zsh, stands, because this dispatch's `tests.yml` edit has CI run the zsh rows (OD13; row 408);
-    - Limitations and the pending marks also name two items from the sandbox grant's pending bullet: the direct `marker.sh write` in unprompted modes, a standing residual for the main agent that Phase 5a does not close, and the eviction risk under Auto-Review (with Sandbox). They also name `nudge-handoff-near-context-cap.sh --check`'s `cannot-resolve` under the adapter, and the failed-walk registration residual the `sessions/` paragraph states (Identity and routing; rows 411, 413, 417).
+    - Limitations and the pending marks also name two items from the sandbox grant's pending bullet. The first is the direct `marker.sh write`: in unprompted modes, a standing residual for the main agent that Phase 5a does not close, and, until Phase 5a's `enforce-marker-script-shape` twin, a restricted subagent's write wherever it is unprompted, an allowlisted shape included. The second is the eviction risk under Auto-Review (with Sandbox). They also name `nudge-handoff-near-context-cap.sh --check`'s `cannot-resolve` under the adapter, and the failed-walk registration residual the `sessions/` paragraph states (Identity and routing; rows 411, 413, 417).
   - The existing identity tests stay unedited: `test_lib.py`, `test_lib_emit.py`, `test_lib_worktree_collision_guard.py`, `test_marker_script.py`, `test_capture_session_id.py`, `test_record_session_end.py`, `test_lib_markers.py`, `test_marker_worktree_keying.py` and `test_review_ledger_script.py` under `claude/.claude/hooks/tests/`, and `test_marker_clear_stale.py`, `test_handoff_record_conversion.py`, `test_pr_diff_against_base.py` and `test_review_pr_lib.py` under `claude/.claude/scripts/tests/` (requirement 14).
   - `claude/.claude/scripts/marker-clear-stale.py` needs no edit (Identity and routing, row 161).
   - The dispatch re-runs OD5's benchmark, its uninstalled arm on the merge-base `_lib.sh`, with the CLI-shaped chain OD5 names reported apart (OD5; r6 plat R3; row 409).
@@ -5021,7 +5022,7 @@ Projected diff: about 32,700 changed lines across all phases, excluding `.claude
      3. `mktemp -d /tmp/cursor-adapter-merge-base.XXXXXX`, whose printed directory the next steps use as a literal;
      4. `git worktree add <that directory> <that commit>`;
      5. the snapshot test, run against that worktree;
-     6. `git worktree remove --force <that directory>`, which also drops the entry from the `.git/worktrees` registry every session shares. If a session ends before this step, the next one removes that directory and runs `git worktree prune`, which drops the entry (row 411).
+     6. `git worktree remove --force <that directory>`, which also drops the entry from the `.git/worktrees` registry every session shares. If a session ends before this step, the next one finds the leftover worktree in `git worktree list --porcelain` by its `cursor-adapter-merge-base.` directory name. It removes it with `git worktree remove --force`, never a typed `rm -rf` on a `/tmp` path. `git worktree prune` drops the entry of a leftover worktree whose directory is already gone (row 411).
 
      The existing identity tests, `test_lib.py` among them, sit outside Phase 4's list, so the name-only check below keeps them unedited.
    - Phase 4's PR body records the engineer's package confirmation, made before the dispatch (Critical files' Phase 4 `tests.yml` bullet), and that the `pin-zsh` step installed and held that version, from its CI log. It records the chosen pocket and the vulnerability-history check `CLAUDE.md`'s dependency rule asks for, or the engineer's waiver of it (row 415). It also records that CI collected and passed the zsh rows, the launch guard's `TestLaunchGuard` ids and `TestDirectoryPin`'s `-zsh` ids and `chpwd-hook` row alike, rather than skipping or dropping them (OD13; row 411). Row 322's gate holds that Phase 4 does not merge before the re-plan states the CLI-coexistence rule, and this revision states it (the Installer's CLI-coexistence block; r21).
