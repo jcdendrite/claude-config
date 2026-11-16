@@ -1706,7 +1706,11 @@ After each block the per-arm stop looks for an arm with no valid run:
 
 - The first attempt that ends under an instrument reason halts `run` at its
   block's end. It never retries, and the block is already complete. At most
-  that task is lost, and the way forward is to fix the cause and resume.
+  that task is lost. A resume goes on past the block only while the CLI
+  version and the config checkout's commit still match the manifest. A fix
+  that changes either one makes the resume exit 2. That fix needs a new
+  `--campaign-id`, which runs every block again and pays for it again. The
+  config checkout takes no uncommitted edits, which the check cannot see.
 - Any other failed block is task-specific. It is marked complete, and
   `summarize` leaves its task out of the pairs.
 - Two task-specific failed blocks in a row halt `run`. A resume goes on past

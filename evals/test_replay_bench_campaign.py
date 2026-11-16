@@ -442,7 +442,10 @@ class TestThePerArmStop:
         assert env.completed() == {env.world.tasks[0].id}
         error = capsys.readouterr().err
         assert env.world.tasks[0].id in error and "bare" in error and checks.REASON_ARM_LEAK in error
-        assert "the block is complete, so fix the cause and resume to go on past it" in error
+        assert "goes on past the block only while" in error
+        assert "takes no uncommitted edits" in error
+        assert "makes the resume exit 2" in error
+        assert "needs a new --campaign-id" in error
         assert sum(call.agent_name == "bare-writer" for call in first.calls) == 1, "no retry"
         assert env.run(env.world.launch()) == 0
         assert len(env.completed()) == 2

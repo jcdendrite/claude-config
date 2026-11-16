@@ -348,7 +348,12 @@ def _run_locked(
             first = instrument_failures[0]
             return _halt(
                 f"instrument failure in {task.id}, arm {first.arm}: {first.missing_reason}; "
-                "the block is complete, so fix the cause and resume to go on past it"
+                "the block is complete. "
+                "A resume goes on past the block only while the CLI version and the config checkout's commit "
+                "still match the manifest. "
+                "A fix that changes either one makes the resume exit 2 (see the evals README's Run section). "
+                "That fix needs a new --campaign-id, which runs every block again and pays for it again. "
+                "The config checkout takes no uncommitted edits, which the check cannot see."
             )
         if failures:
             failed_blocks.append((task.id, failures))
