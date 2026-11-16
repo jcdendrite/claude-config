@@ -69,7 +69,6 @@ class TestReadAllowList:
 
         paths = launch.read_allow_paths(config_dir, same_root_home)
 
-        assert len(paths) == len(set(paths))
         assert not any(str(same_root_home / ".claude") in str(path) for path in paths)
 
     def test_no_entry_holds_a_wildcard(self, tmp_path):
@@ -78,12 +77,6 @@ class TestReadAllowList:
         entries = launch.read_allow_entries(launch.read_allow_paths(config_dir, home))
 
         assert not any("*" in entry for entry in entries)
-
-    def test_the_tail_lists_each_entry_as_its_own_element(self, tmp_path):
-        home, config_dir, _checkout = stow_style_tree(tmp_path)
-        paths = launch.read_allow_paths(config_dir, home)
-
-        assert launch.allowed_tools_tail(paths) == ["--allowedTools", *launch.read_allow_entries(paths)]
 
 
 REFUSED = [

@@ -16,6 +16,7 @@ from test_replay_bench_runner_support import (
 )
 
 CAP = 2.0
+OTHER_ACCOUNT_KEY = "another-account-key"
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,7 @@ def agent_scenarios(**by_agent):
 
 
 class TestAPassingSmoke:
-    def test_it_prints_instrument_ok(self, world, capsys):
+    def test_it_prints_instrument_ok_writes_the_pass_and_runs_each_arm_once(self, world, capsys):
         exit_code, launch_stub = run_smoke(world)
 
         output = capsys.readouterr().out
@@ -97,6 +98,16 @@ class TestFailedConditions:
 
         assert exit_code == 2 and final.startswith("instrument: read-grant-unexercised")
         assert not smoke_pass_exists(world)
+
+    def test_a_failed_smoke_removes_the_accounts_existing_smoke_pass_and_keeps_another_accounts(self, world, capsys):
+        smoke_pass.write_smoke_pass(world.local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare"))
+        smoke_pass.write_smoke_pass(world.local_dir, OTHER_ACCOUNT_KEY, READING, MODEL_ID, ("toolkit", "bare"))
+        reads_only_fixture = Scenario(tool_calls=[("Read", {"file_path": "src/app.py"}, False)])
+
+        exit_code, _output, _final = self.failing(world, capsys, agent_scenarios(toolkit=reads_only_fixture))
+
+        assert exit_code == 2 and not smoke_pass_exists(world)
+        assert smoke_pass.has_smoke_pass(world.local_dir, OTHER_ACCOUNT_KEY, READING, MODEL_ID, ("toolkit", "bare"))
 
     def test_a_denied_listed_read_fails_read_grant_denied(self, world, capsys):
         denied = Scenario(tool_calls=[("Read", {"file_path": str(world.config_dir / "agents" / "reviewer.md")}, True)])
@@ -288,6 +299,39 @@ class TestAnAbortedSmokeWritesNoRecord:
         error = capsys.readouterr().err
         assert exit_code == 2 and "could not append to the spend file" in error
         assert launch_stub.calls and f"session {launch_stub.calls[0].session_id}" in error
+        assert not smoke_pass_exists(world)
+
+    def test_a_spend_file_abort_removes_the_accounts_existing_smoke_pass(
+        self, world, capsys, monkeypatch,
+    ):
+        smoke_pass.write_smoke_pass(world.local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare"))
+        real_spend_file = smoke.SpendFile
+
+        def spend_file_under_a_regular_file(path, *, budget_cap_usd):
+            blocker = path.parent.parent / "blocker"
+            blocker.write_text("a file, not a directory")
+            return real_spend_file(blocker / "spend.jsonl", budget_cap_usd=budget_cap_usd)
+
+        monkeypatch.setattr(smoke, "SpendFile", spend_file_under_a_regular_file)
+
+        exit_code, _launch_stub = run_smoke(world)
+
+        assert exit_code == 2 and "could not append to the spend file" in capsys.readouterr().err
+        assert not smoke_pass_exists(world)
+
+    def test_an_exception_escaping_the_smoke_still_leaves_the_earlier_smoke_pass_removed(
+        self, world, monkeypatch,
+    ):
+        smoke_pass.write_smoke_pass(world.local_dir, world.account.key, READING, MODEL_ID, ("toolkit", "bare"))
+
+        def spend_file_that_cannot_be_built(path, *, budget_cap_usd):
+            raise RuntimeError("synthetic")
+
+        monkeypatch.setattr(smoke, "SpendFile", spend_file_that_cannot_be_built)
+
+        with pytest.raises(RuntimeError, match="synthetic"):
+            run_smoke(world)
+
         assert not smoke_pass_exists(world)
 
     def test_an_end_reading_that_cannot_be_read_exits_two(

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -65,7 +66,7 @@ def _refuse(repo: Path | str, problem: str) -> HarnessInvalidatedError:
 
 
 def process_failure_text(returncode: int, *, repo: Path | str, direnv: bool) -> str:
-    hint = f"; run `direnv exec {_shown(repo)} true` in a terminal to see direnv's own message" if direnv else ""
+    hint = f"; run `direnv exec {shlex.quote(str(repo))} true` in a terminal to see direnv's own message" if direnv else ""
     return f"exit {returncode}{hint}"
 
 

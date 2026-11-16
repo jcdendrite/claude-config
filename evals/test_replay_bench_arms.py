@@ -63,24 +63,20 @@ class TestRegistry:
 
 
 class TestBodyCharacterCounts:
-    def test_each_body_is_counted_after_the_frontmatter(self, tmp_path):
-        code_writer = tmp_path / "code-writer.md"
-        code_writer.write_text(CODE_WRITER_TEXT)
+    def test_each_body_is_counted_after_the_frontmatter(self):
         bare_writer = arms.bare_writer_markdown(CODE_WRITER_TEXT)
 
-        assert arms.agent_body_chars(code_writer.read_text()) == len("The code-writer body.\n\nA second paragraph.")
+        assert arms.agent_body_chars(CODE_WRITER_TEXT) == len("The code-writer body.\n\nA second paragraph.")
         assert arms.agent_body_chars(bare_writer) == len(arms.BARE_WRITER_BODY)
 
     def test_a_frontmatter_only_file_counts_zero(self):
         assert arms.agent_body_chars("---\nname: x\n---\n") == 0
         assert arms.agent_body_chars("---\nname: x\n---") == 0
 
-    def test_the_count_comes_from_the_accounts_file_not_the_checkouts(self, tmp_path):
+    def test_the_count_comes_from_the_given_config_dirs_file(self, tmp_path):
         account = tmp_path / "account"
-        checkout = tmp_path / "checkout"
-        for directory, body in ((account, "short"), (checkout, "a much longer body than the account's")):
-            (directory / "agents").mkdir(parents=True)
-            (directory / "agents" / "code-writer.md").write_text(f"---\nname: code-writer\n---\n{body}\n")
+        (account / "agents").mkdir(parents=True)
+        (account / "agents" / "code-writer.md").write_text("---\nname: code-writer\n---\nshort\n")
 
         assert arms.agent_body_chars(arms.code_writer_text(account)) == len("short")
 

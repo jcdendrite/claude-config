@@ -85,7 +85,6 @@ def checks_world(tmp_path: Path):
 
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Replay tests that need more than this build their own with the builder."""
     from test_replay_bench_runner_support import build_replay_world
 
     return build_replay_world(tmp_path, monkeypatch)

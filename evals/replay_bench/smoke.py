@@ -153,6 +153,7 @@ def run_smoke(
     run_store = RunStore(campaign_dir / STORE_DIR_NAME)
     run_store.acquire_lock()
     try:
+        smoke_pass.smoke_pass_path(config.local_dir, account.key).unlink(missing_ok=True)
         spend = SpendFile(campaign_dir / SPEND_NAME, budget_cap_usd=config.budget_cap_usd)
         settings = RunSettings(
             campaign_id=campaign_id, attempts_root=campaign_dir / ATTEMPTS_DIR_NAME, local_dir=config.local_dir,

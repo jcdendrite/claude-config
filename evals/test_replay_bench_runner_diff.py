@@ -166,6 +166,20 @@ class TestAgentEditsReachTheDiffOnlyAsIntended:
         assert outcome.record.missing_reason is None
         assert "deleted file mode" in outcome.diff_text
 
+    def test_a_line_inserted_between_unchanged_lines_counts_only_that_line(self, world):
+        def edit(fixture_dir: Path) -> None:
+            app_path = fixture_dir / "src" / "app.py"
+            first_line, second_line = app_path.read_text().splitlines(keepends=True)
+            app_path.write_text(first_line + "inserted = 1\n" + second_line)
+
+        outcome, _stub = run_with_edit(world, edit)
+
+        assert outcome.record.missing_reason is None
+        assert outcome.record.metrics["line_counts"]["non_test"] == {
+            "blank": 0, "docstring": 0, "comment": 0, "code": 1, "prose": 0, "unclassified": 0,
+        }
+        assert outcome.record.metrics["comment_words"]["non_test"] == 0
+
     def test_an_added_binary_adds_no_classified_line(self, world):
         def edit(fixture_dir: Path) -> None:
             (fixture_dir / "blob.bin").write_bytes(b"\x00\x01\x02binary")

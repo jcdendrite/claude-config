@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 import time
 from pathlib import Path
 
@@ -99,6 +100,18 @@ class TestTheProbe:
         preflight.monkeypatch.delenv("CLAUDE_CONFIG_DIR")
         assert preflight.run().config_dir == preflight.config_dir
 
+    def test_a_config_dir_the_direnv_exports_is_the_accounts_config_dir(self, preflight, tmp_path):
+        exported = tmp_path / "exported-config"
+        build_config_dir(exported)
+        preflight.install_direnv(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(exported))}\n{PASSTHROUGH_DIRENV}")
+
+        resolved = preflight.run()
+
+        assert resolved.config_dir == exported
+        assert resolved.config_dir_value == str(exported)
+        assert resolved.key == account.account_key(exported)
+        assert "CLAUDE_CONFIG_DIR" not in resolved.dropped_variables
+
     def test_a_relative_config_dir_is_refused_as_not_an_absolute_path(self, preflight):
         preflight.monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative-config")
 
@@ -129,7 +142,19 @@ class TestTheProbe:
         assert "exit 3" in message and "direnv exec" in message and "true" in message
         assert "sentinel-stderr" not in message
 
-    def test_a_multi_line_profile_value_prints_only_the_variable_name(self, preflight):
+    def test_a_failed_probe_hint_shell_quotes_a_repo_path_with_metacharacters(self, preflight, tmp_path):
+        preflight.repo = tmp_path / "it's $(a repo)"
+        preflight.repo.mkdir()
+        preflight.install_direnv("exit 3\n")
+
+        message = preflight.refusal()
+
+        command = message.split("`")[1]
+        path_token = command.removeprefix("direnv exec ").removesuffix(" true")
+        echoed = subprocess.run(["sh", "-c", f"printf %s {path_token}"], capture_output=True, text=True, check=True)
+        assert echoed.stdout == str(preflight.repo)
+
+    def test_a_multi_line_profile_value_lists_only_the_variable_name(self, preflight):
         preflight.install_direnv(
             'export SENTINEL_PROFILE="first line\nLEAKED_NAME=sentinel-value\nthird line"\nshift 2\nexec "$@"\n'
         )
@@ -147,7 +172,7 @@ class TestTheProbe:
         dropped = preflight.run().dropped_variables
 
         assert "AMBIENT_PROFILE" in dropped
-        assert not {"PATH", "HOME", "HTTPS_PROXY", "CLAUDE_CONFIG_DIR"} & set(dropped)
+        assert not {"PATH", "HOME", "HTTPS_PROXY"} & set(dropped)
 
     def test_a_path_with_an_empty_or_relative_entry_is_refused(self, preflight):
         for bad_path in (f"{preflight.bin}::/usr/bin", f"{preflight.bin}:relative/bin"):
@@ -189,7 +214,7 @@ class TestTheRefusals:
         assert "we*ird" in message
         assert not preflight.claude_ran.exists(), "the readiness check must not have run"
 
-    def test_a_printed_path_or_variable_name_is_in_repr_form(self, preflight, capsys):
+    def test_a_variable_name_prints_in_repr_form_and_a_path_without_raw_control_characters(self, preflight, capsys):
         (preflight.config_dir / "rules" / "esc\x1b\nname*.md").write_text("rule")
         message = preflight.refusal()
         assert "\x1b" not in message and "\n" not in message.split(": ", 1)[1]

@@ -48,7 +48,6 @@ def agent_body_chars(agent_file_text: str) -> int:
 
 
 def bare_writer_markdown(code_writer_text: str) -> str:
-    """An empty field raises, so it never reaches the fixture."""
     tools = msmr.agent_frontmatter_tools(code_writer_text)
     model = msmr.agent_frontmatter_model(code_writer_text)
     effort = agent_frontmatter_effort(code_writer_text)

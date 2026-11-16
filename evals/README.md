@@ -1621,8 +1621,9 @@ you name, and takes no `--k`. It prints its nominal cost ceiling before the
 first launch. For each run it prints the status, instruction loads by class,
 the first-turn prompt size, the Bash commands, out-of-fixture paths, the
 permission-denial count, the allow-list Reads, the change's metrics, the cost,
-the fixture-build seconds and the wall clock. A pass writes the account's
-smoke-pass record.
+the fixture-build seconds and the wall clock. A smoke run removes the
+account's earlier smoke-pass record before it launches, and a pass writes a
+new one.
 
 The `smoke` task must modify a file the base tree holds that one of the
 account's rules matches, because the `toolkit` run's rule load is the positive

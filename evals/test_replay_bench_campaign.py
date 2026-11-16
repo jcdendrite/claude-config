@@ -530,7 +530,7 @@ class TestTheManifestAndTheSmokeGate:
 
         assert not (env.campaign_dir / "manifest.json").exists() and launch_stub.calls == []
 
-    def test_a_first_run_pins_the_inputs_it_was_given(self, env):
+    def test_a_first_run_pins_k(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
 
         assert env.run(env.world.launch(), k=2) == 0
@@ -915,8 +915,8 @@ class TestSpendGuards:
 
     def test_a_resume_compares_the_spend_so_far_plus_the_remaining_ceilings_with_the_stop(self, env):
         env.run(env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, account_stop_usd=1000, allow_early_stop=True)
-        # Two blocks spent $2.00 and two remain with a ceiling of $8.00. The remaining blocks alone ($8.00) and the
-        # spend so far plus them ($10.00) differ, and the all-tasks ceiling is $16.00.
+        # Two blocks spent $2.00 and two remain with a ceiling of $8.00. The remaining blocks alone and the
+        # spend so far plus them ($10.00) differ. The all-tasks ceiling is $16.00.
         resumed = env.world.launch()
         with pytest.raises(HarnessInvalidatedError, match="allow-early-stop"):
             env.run(resumed, cumulative_stop_usd=9.0, account_stop_usd=1000)

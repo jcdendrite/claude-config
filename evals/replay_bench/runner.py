@@ -105,7 +105,7 @@ class BlockOutcome:
 
 
 def checkout_root_for(account: Account) -> Path:
-    """The parent of the account's resolved `CLAUDE.md`, a directory inside the config checkout."""
+    """A directory inside the config checkout."""
     return (account.config_dir / "CLAUDE.md").resolve().parent
 
 

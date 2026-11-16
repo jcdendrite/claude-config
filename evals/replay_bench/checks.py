@@ -157,9 +157,10 @@ def _chain(path: Path) -> tuple[Path, ...]:
 
 @dataclass(frozen=True)
 class ToolkitPaths:
-    """A path belongs when its normalized form or its `realpath` does, so a stowed file reported by its link
-    target still classifies, including where `rules/`, `agents/` or `skills/` is a real directory of per-file
-    links. A directory above the toolkit belongs only up to the config dir, so `ancestors` stops there.
+    """A path belongs when its normalized form or its `realpath` does. A stowed file reported by its link
+    target therefore still classifies. This also holds where `rules/`, `agents/` or `skills/` is a real
+    directory of per-file links. A directory above the toolkit belongs only up to the config dir, so `ancestors`
+    stops there.
     """
 
     claude_md_forms: frozenset[Path]

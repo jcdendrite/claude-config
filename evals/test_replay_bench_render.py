@@ -23,7 +23,7 @@ class TestSafeText:
         assert escaped == "bad\\x1b[31m\\nforged line\\u2028end"
         assert "\x1b" not in escaped and "\n" not in escaped
 
-    def test_keep_line_breaks_leaves_newlines_unescaped_but_not_an_escape(self):
+    def test_keep_line_breaks_keeps_newlines_and_still_escapes_esc(self):
         assert safe_text("one\ntwo\x1b", keep_line_breaks=True) == "one\ntwo\\x1b"
 
 
@@ -55,7 +55,7 @@ class TestSafeStream:
         assert SafeStream(target).isatty() is False
 
 
-class TestEverySinkUsesIt:
+class TestHostileTextInFixtureErrorDetailAndClassifierMessage:
     def test_a_missing_detail_built_from_an_exception_message_is_escaped(self, world, monkeypatch):
         def failing_prune(_dest_dir):
             raise RuntimeError(HOSTILE)

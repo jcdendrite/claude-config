@@ -91,7 +91,7 @@ class TestAValidRun:
         assert [line["cost_usd"] for line in spend_lines(settings)] == [0.5]
         assert leftovers(world, launch_stub) == []
         assert any((world.config_dir / "sessions").iterdir()), "the account's sessions/ file stays"
-        assert not list((world.config_dir / "projects").glob("*/*.jsonl")), "the session store is deleted"
+        assert not list((world.config_dir / "projects").glob("*/*.jsonl")), "the dispatcher transcript is deleted"
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
     def test_the_launch_argv_is_wired(self, world, arm_name):
@@ -156,7 +156,7 @@ class TestTranscriptUnreadable:
         assert outcome.record.missing_reason == review_runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
         assert len(launch_stub.calls) == 2, "a path reason is not an instrument reason, so it retries once"
 
-    def test_an_unreadable_sidecar_fails_in_validity(self, world, monkeypatch):
+    def test_a_sidecar_read_error_maps_to_the_unreadable_transcript_reason(self, world, monkeypatch):
         def unreadable(_path):
             raise OSError("synthetic")
 
@@ -427,8 +427,8 @@ class TestRetryThenMissing:
         assert existing.exists(), "an attempt dir the attempt did not create is not deleted"
 
 
-class TestEveryPostRunGitCallCarriesTheTimeout:
-    def test_every_post_run_git_call_carries_the_configured_limit(self, world, monkeypatch):
+class TestGitDirCallsCarryTheTimeout:
+    def test_each_git_dir_call_carries_the_configured_limit(self, world, monkeypatch):
         limits = []
         real_run = subprocess.run
 
@@ -555,7 +555,7 @@ class TestSpendFigures:
         assert [(line["cost_usd"], line["is_cap_charge"]) for line in spend_lines(settings)] == [(0.25, False)]
 
 
-class TestAFailingWorkerStopsItsSiblings:
+class TestWorkerFailures:
     @pytest.fixture(autouse=True)
     def stub_environment(self, monkeypatch):
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
@@ -1208,7 +1208,7 @@ class TestTheCommandLine:
         assert code == 2 and "--direnv-timeout-s" in capsys.readouterr().err
         assert time.monotonic() - started < 5
 
-    def test_fixture_git_timeout_s_reaches_every_post_run_git_call(
+    def test_fixture_git_timeout_s_reaches_each_git_dir_call(
         self, run_ready, monkeypatch,
     ):
         parsed = run_replay_bench.build_parser().parse_args(["summarize", "--campaign-id", "x"])

@@ -30,8 +30,8 @@ REASON_LAUNCH_NO_OUTPUT = "launch-no-output"
 REASON_LAUNCH_ERROR = "launch-error"
 # A retry would fail the same way on the same input, or would hide evidence about the instrument.
 NO_RETRY_REASONS = checks.INSTRUMENT_REASONS | {REASON_FIXTURE_ERROR, REASON_ANALYSIS_ERROR}
-# A run that never reached its end says nothing about the instrument; `launch-no-output` and `launch-error`
-# return before this check, so they are not listed.
+# A run that never reached its end says nothing about the instrument.
+# `launch-no-output` and `launch-error` return before this check, so they are not listed.
 _RUN_DID_NOT_COMPLETE_REASONS = frozenset({
     review_runner.MISSING_REASON_TIMEOUT, review_runner.VALIDITY_FAIL_NO_RESULT_EVENT,
     review_runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND,

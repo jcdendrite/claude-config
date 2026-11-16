@@ -361,7 +361,7 @@ class _NoIterationDict(dict):
 
 
 class TestToolkitMembershipCost:
-    def test_membership_never_iterates_a_toolkit_collection(self, tmp_path):
+    def test_contains_and_is_rule_file_never_iterate_a_toolkit_collection(self, tmp_path):
         config_dir = tmp_path / "config"
         for number in range(60):
             _touch(config_dir / "agents" / f"agent-{number}.md")
@@ -457,7 +457,7 @@ class TestArmOutcomes:
         )
         assert outcome.reasons == ()
 
-    def test_every_emitted_reason_is_an_instrument_reason(self, checks_world, tmp_path):
+    def test_each_instrument_reason_is_emitted_by_some_scenario(self, checks_world, tmp_path):
         emitted: set[str] = set()
         emitted.add(_parse(checks_world, []).reason or "")
         emitted.add(_parse(checks_world, ["{"]).reason or "")
