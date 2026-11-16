@@ -1842,3 +1842,27 @@ def cmd_period_cost(args: argparse.Namespace) -> None:
     sys.stderr.flush()
     sys.stdout.write(report + "\n")
     sys.stdout.flush()
+
+
+def _add_period_cost_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_period_cost = subparsers.add_parser(
+        "period-cost",
+        help=(
+            "Per-PR and per-review Claude Code spend for an inclusive UTC date range, grouped by repository, as"
+            " Slack mrkdwn. The scope is fixed to the active account's whole projects directory, for an account"
+            " that works for one project owner; no scope flags. Calls gh. --sample prints a synthetic report."
+        ),
+    )
+    p_period_cost.add_argument(
+        "--since", metavar="DATE", type=scope._iso_date,
+        help="Inclusive start date, zero-padded YYYY-MM-DD; required unless --sample",
+    )
+    p_period_cost.add_argument(
+        "--until", metavar="DATE", type=scope._iso_date,
+        help="Inclusive end date, zero-padded YYYY-MM-DD; required unless --sample",
+    )
+    p_period_cost.add_argument(
+        "--sample", action="store_true",
+        help="Print the synthetic sample report; reads no transcript and runs no git or gh. Refuses --since and --until.",
+    )
+    p_period_cost.set_defaults(func=cmd_period_cost)

@@ -236,7 +236,7 @@ def test_transcript_analysis_cost_subprocess_finds_seeded_session(tmp_path):
 
 def test_transcript_analysis_cost_trend_subprocess_finds_seeded_session(tmp_path):
     """Same subprocess-bootstrap proof as the `cost` test above, for
-    cmd_cost_trend's own re-export."""
+    cost-trend's dispatch to cmd_cost_trend."""
     config_dir = _seed_priced_account(tmp_path)
 
     result = _run("transcript-analysis.py", "cost-trend", env=_isolated_config_env(config_dir, tmp_path))
