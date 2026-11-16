@@ -454,6 +454,10 @@ _lib_emit_deny() {
 # note is not the fail-closed case _lib_emit_deny protects against.
 # permissionDecision is the exact lowercase literal "allow" -- the harness
 # is case-sensitive here the same way it is for _lib_emit_deny's "deny".
+# Prints nothing when $INPUT is an untranslated Cursor payload and
+# _lib_cursor_host_pid finds a host, because the Cursor adapter emits no
+# explicit allow. A failed host walk keeps the allow, as with no adapter
+# installed, and so does a caller with no $INPUT.
 # Caller contract matches _lib_emit_deny's. This function prints the JSON
 # envelope (or nothing, on the degrade path) and returns. The caller still
 # issues its own `exit 0` afterward, exactly as every _lib_emit_deny call
@@ -461,6 +465,9 @@ _lib_emit_deny() {
 _lib_emit_allow_with_context() {
   local context="$1"
   local context_json
+  if _lib_payload_is_untranslated_cursor "${INPUT:-}" && _lib_cursor_host_pid >/dev/null 2>&1; then
+    return 0
+  fi
   context_json=$(printf '%s' "$context" | _lib_jq -Rs . 2>/dev/null)
   [ -z "$context_json" ] && return 0
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":%s}}\n' \
@@ -3706,10 +3713,152 @@ _lib_registered_live_sid() {
   printf '%s' "$sid"
 }
 
-# _lib_resolve_claude_pid
+# _lib_payload_is_untranslated_cursor PAYLOAD
+# Returns 0 when PAYLOAD's top level carries `workspace_roots` or
+# `cursor_version`, the keys every Cursor record holds and no Claude Code
+# record does. Tested by presence, not value.
+# Returns 1 for an empty PAYLOAD, without running jq.
+# For a non-empty PAYLOAD, a missing jq, a jq error or a cap kill returns 0, so
+# the callers' host walk decides.
+# PAYLOAD reaches jq on stdin, never as an argument. Prints nothing and sets
+# nothing.
+_lib_payload_is_untranslated_cursor() {
+  local payload="${1:-}" jq_status=0
+  [ -n "$payload" ] || return 1
+  printf '%s\n' "$payload" \
+    | _lib_jq -e 'type == "object" and (has("workspace_roots") or has("cursor_version"))' >/dev/null 2>&1 \
+    || jq_status=$?
+  [ "$jq_status" -ne 1 ]
+}
+
+# _lib_cursor_host_pid
+# Prints the PID of the caller's host process and returns 0. The host is the
+# nearest ancestor whose executable basename is exactly `Cursor`, the main
+# process every Cursor IDE record descends from, found before any `claude`
+# ancestor. Failing that, it is the nearest ancestor named `agent` or
+# `cursor-agent`, the names the Cursor CLI's launcher is invoked by, seen
+# before the walk stopped at a `claude` ancestor or the chain's top.
+# Returns 2 when the walk reaches the chain's top with no host. The top is a
+# PPID read that succeeds with output that is empty, `0` or `1`.
+# Returns 3 when the walk stops at a `claude` ancestor with no CLI process
+# remembered, so a Claude Code process is never passed.
+# Returns 4 when any `ps` read fails, whatever the walk has passed. A read
+# fails when its capped call exits nonzero (a sandbox's exec denial, a cap kill,
+# an ancestor that exited mid-walk), or when a PPID read exits 0 with output
+# that is not all digits once trimmed.
+# A name is the whole `comm` line, trailing whitespace trimmed, after its last
+# `/`, with one leading `-` dropped. The line is never split on whitespace,
+# because a macOS helper's path holds a `Cursor` component followed by a space.
+# Only each read is capped, and the walk has no hop cap, as with
+# _lib_resolve_claude_pid's own walk. Its worst case is the chain's depth times
+# two reads times 7 seconds (_lib_capped_for's 5-second cap plus its 2-second
+# kill grace).
+# Each read captures its own status with no pipe, so the status is the capped
+# call's whatever `pipefail` the caller sets. `local out` stands apart from its
+# assignment, because `local out=$(...)` hands back `local`'s status.
+# Callers read any nonzero status as no host, except _lib_adapter_session_pair,
+# which reads 4 to take CLAUDE_CONFIG_ADAPTER_HOST_PID.
+_lib_cursor_host_pid() {
+  local pid="$PPID" remembered_cli_pid=""
+  local out name read_status
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
+    read_status=0
+    out=$(_lib_capped ps -o comm= -p "$pid" 2>/dev/null) || read_status=$?
+    [ "$read_status" -eq 0 ] || return 4
+    name="${out%"${out##*[![:space:]]}"}"
+    name="${name##*/}"
+    name="${name#-}"
+    case "$name" in
+      Cursor)
+        printf '%s' "$pid"
+        return 0
+        ;;
+      claude)
+        if [ -n "$remembered_cli_pid" ]; then
+          printf '%s' "$remembered_cli_pid"
+          return 0
+        fi
+        return 3
+        ;;
+      agent | cursor-agent)
+        [ -n "$remembered_cli_pid" ] || remembered_cli_pid="$pid"
+        ;;
+    esac
+    read_status=0
+    out=$(_lib_capped ps -o ppid= -p "$pid" 2>/dev/null) || read_status=$?
+    [ "$read_status" -eq 0 ] || return 4
+    out="${out#"${out%%[![:space:]]*}"}"
+    out="${out%"${out##*[![:space:]]}"}"
+    if [ -z "$out" ] || [ "$out" = "0" ] || [ "$out" = "1" ]; then
+      pid=""
+    elif [[ "$out" =~ ^[0123456789]+$ ]]; then
+      pid="$out"
+    else
+      return 4
+    fi
+  done
+  if [ -n "$remembered_cli_pid" ]; then
+    printf '%s' "$remembered_cli_pid"
+    return 0
+  fi
+  return 2
+}
+
+# _lib_adapter_session_pair [PAYLOAD]
+# Prints "<session_id> <host_pid>" and returns 0 for a process that runs under
+# the Cursor adapter. Returns 2, printing nothing, otherwise.
+# - Returns 2 when CLAUDECODE is set, which every Claude Code hook carries and
+#   the adapter's shim and Shell rewrite remove.
+# - The host PID is _lib_cursor_host_pid's. On that walk's status 4 alone, it is
+#   CLAUDE_CONFIG_ADAPTER_HOST_PID instead, when no PAYLOAD is given and the
+#   value is 1 to 10 digits with no leading zero and above 1. No ancestor check
+#   ties that variable to the caller.
+# - The session id comes from PAYLOAD when PAYLOAD is given and
+#   _lib_payload_is_untranslated_cursor matches it: its `parent_agent_id` when
+#   it carries one, otherwise its `conversation_id`. A subagent therefore shares
+#   its parent's id. An absent, null or empty `parent_agent_id` is not carried;
+#   any other value that is not a string passing
+#   _lib_valid_session_id_component returns 2 rather than falling back.
+#   Otherwise it is CLAUDE_CONFIG_ADAPTER_SESSION_ID.
+# - The id must pass _lib_valid_session_id_component, and is checked before the
+#   host walk, so a caller with no valid id returns 2 with no `ps` read.
+_lib_adapter_session_pair() {
+  local payload="${1:-}"
+  local host_pid session_id id_output host_status=0
+  [ -z "${CLAUDECODE:-}" ] || return 2
+  if [ -n "$payload" ] && _lib_payload_is_untranslated_cursor "$payload"; then
+    # -j and the trailing "." keep `$(...)` from stripping an id's trailing newline.
+    # shellcheck disable=SC2016 # single-quoted on purpose: $parent is a jq variable, and double-quoting would expand it in the shell.
+    id_output=$(printf '%s\n' "$payload" | _lib_jq -j '
+      .parent_agent_id as $parent
+      | (if $parent == null or $parent == "" then .conversation_id else $parent end)
+      | (if type == "string" then . else "" end) + "."' 2>/dev/null) || return 2
+    [[ "$id_output" == *. ]] || return 2
+    session_id="${id_output%.}"
+  else
+    session_id="${CLAUDE_CONFIG_ADAPTER_SESSION_ID:-}"
+  fi
+  _lib_valid_session_id_component "$session_id" || return 2
+  host_pid=$(_lib_cursor_host_pid) || host_status=$?
+  case "$host_status" in
+    0) ;;
+    4)
+      [ -z "$payload" ] || return 2
+      host_pid="${CLAUDE_CONFIG_ADAPTER_HOST_PID:-}"
+      { [[ "$host_pid" =~ ^[123456789][0123456789]{0,9}$ ]] && [ "$host_pid" != "1" ]; } || return 2
+      ;;
+    *) return 2 ;;
+  esac
+  printf '%s %s' "$session_id" "$host_pid"
+}
+
+# _lib_resolve_claude_pid [PAYLOAD]
 # Prints "<session_id> <pid>" for the live Claude Code main-process PID that
-# is an ancestor of the calling process, and returns 0. Returns 2 with no
-# stdout when no ancestor carries a live, start-time-validated session file.
+# is an ancestor of the calling process, and returns 0. When no ancestor
+# carries a live, start-time-validated session file, it returns
+# _lib_adapter_session_pair's result: 2 with no stdout under Claude Code, and
+# a Cursor conversation's session id and host PID under the Cursor adapter.
+# PAYLOAD is passed to the pair as is.
 # Moved here from marker.sh's private _walk_session (which now delegates to
 # this) so a hook — which cannot safely source marker.sh, since it dispatches
 # on $1 at file scope — can resolve its own session's live PID directly, with
@@ -3723,6 +3872,7 @@ _lib_registered_live_sid() {
 # validated by _lib_registered_live_sid, whose header states the start-time
 # and PID-reuse rules.
 _lib_resolve_claude_pid() {
+  local payload="${1:-}"
   local config_dir pid sid
   config_dir=$(_lib_config_dir) || return 2
   pid=$PPID
@@ -3733,17 +3883,21 @@ _lib_resolve_claude_pid() {
     fi
     pid=$(_lib_capped ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' \t')
   done
-  return 2
+  _lib_adapter_session_pair "$payload"
 }
 
 # _lib_resolve_session_id
-# Prints this session's live, path-safe session id and returns 0. Wraps
-# _lib_resolve_claude_pid's ancestor walk with
+# Prints this session's path-safe session id and returns 0. Wraps
+# _lib_resolve_claude_pid, which resolves it from a live registered ancestor
+# or, with none, from _lib_adapter_session_pair, with
 # _lib_valid_session_id_component's validation. pr-diff-against-base.sh
 # --record needs this resolve-then-validate pair to key its own
 # subject-marker file the way marker.sh already keys every completion marker.
-# Exit 1, empty stdout: no live ancestor session found, or the resolved id
-# fails path-safety validation. Silent on failure -- callers print their own
+# Takes no payload, so the adapter fallback reads only
+# CLAUDE_CONFIG_ADAPTER_SESSION_ID.
+# Exit 1, empty stdout: _lib_resolve_claude_pid resolved no session (no live
+# registered ancestor and no adapter identity), or the resolved id fails
+# path-safety validation. Silent on failure -- callers print their own
 # context-specific error message.
 _lib_resolve_session_id() {
   local out sid
@@ -3888,9 +4042,18 @@ _lib_worktree_reclaim_dead_lock() {
   return 1
 }
 
-# _lib_worktree_lock_is_mine LOCKED_PID LOCKED_SESSION_ID MY_PID MY_SESSION_ID
+# The lock-keying value _lib_worktree_collision_guard passes as
+# _lib_worktree_lock_is_mine's fifth argument. That function treats any other
+# value as not keyed, so every site compares against this constant, never a copy of the string.
+_LIB_WORKTREE_LOCK_KEYING_SESSION="session-keyed"
+
+# _lib_worktree_lock_is_mine LOCKED_PID LOCKED_SESSION_ID MY_PID MY_SESSION_ID [KEYING]
 # Returns 0 when a parsed worktree lock belongs to the caller and 1 otherwise.
 # Prints nothing.
+# A KEYING of _LIB_WORKTREE_LOCK_KEYING_SESSION skips the own-PID rule, so a lock
+# is the caller's only through the session_id rule. Every Cursor conversation
+# under one host process shares that process's PID, so the PID cannot tell them
+# apart. Any other fifth argument, or none, leaves the rules below unchanged.
 # Return 1 is an ordinary outcome, so a caller under `set -e` calls this in a
 # conditional context.
 # LOCKED_PID must come from _lib_worktree_lock_pid's output, and an empty PID
@@ -3906,9 +4069,10 @@ _lib_worktree_reclaim_dead_lock() {
 # An old-format lock with no session_id matches by PID alone.
 _lib_worktree_lock_is_mine() {
   local locked_pid="$1" locked_session_id="$2" my_pid="$3" my_session_id="$4"
+  local lock_keying="${5:-}"
   local config_dir
   [[ -n "$locked_pid" && -n "$my_pid" ]] || return 1
-  [[ "$locked_pid" == "$my_pid" ]] && return 0
+  [[ "$lock_keying" != "$_LIB_WORKTREE_LOCK_KEYING_SESSION" && "$locked_pid" == "$my_pid" ]] && return 0
   [[ -n "$locked_session_id" && "$locked_session_id" == "$my_session_id" ]] || return 1
   config_dir=$(_lib_config_dir) || return 1
   _lib_registered_live_sid "$config_dir" "$locked_pid" >/dev/null && return 1
@@ -3929,6 +4093,12 @@ _lib_worktree_lock_is_mine() {
 #
 # Self-recognition ("is this my own lock?") is decided by
 # `_lib_worktree_lock_is_mine`, which states the rule.
+#
+# The caller's identity comes from `_lib_resolve_claude_pid "${INPUT:-}"`, so a
+# gate that parsed its payload names the call's own session.
+# With `CLAUDECODE` unset and no live registry entry for the resolved PID, the
+# caller is a Cursor conversation and its lock is judged by session_id alone
+# (`_LIB_WORKTREE_LOCK_KEYING_SESSION`).
 #
 # Read-only fast path: a lock `_lib_worktree_lock_is_mine` recognizes returns 0
 # with no write attempt.
@@ -4080,12 +4250,23 @@ _lib_worktree_collision_guard() {
   fi
 
   local my_pid_pair my_pid my_session_id
-  my_pid_pair=$(_lib_resolve_claude_pid) || {
+  my_pid_pair=$(_lib_resolve_claude_pid "${INPUT:-}") || {
     printf "could not resolve this session's own process identity to check the worktree lock"
     return 1
   }
   my_pid="${my_pid_pair##* }"
   my_session_id="${my_pid_pair%% *}"
+
+  # Under Claude Code the pair refuses, so only a registered ancestor can have
+  # resolved the caller. Otherwise a caller whose PID has no live registry entry
+  # is a Cursor conversation, and its lock is keyed by session_id alone. Decided
+  # once, so the reread below judges the lock by the same rule.
+  local lock_keying="" registry_config_dir
+  if [ -z "${CLAUDECODE:-}" ]; then
+    registry_config_dir=$(_lib_config_dir) \
+      && _lib_registered_live_sid "$registry_config_dir" "$my_pid" >/dev/null \
+      || lock_keying="$_LIB_WORKTREE_LOCK_KEYING_SESSION"
+  fi
 
   local porcelain lock_output locked_pid locked_session_id state
   porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
@@ -4100,7 +4281,7 @@ _lib_worktree_collision_guard() {
   # compound list, which `-e` does not abort on.
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
-  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id" "$lock_keying"; then
     return 0
   fi
 
@@ -4130,7 +4311,7 @@ _lib_worktree_collision_guard() {
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
   # Whichever lock the reread finds is judged by `_lib_worktree_lock_is_mine`, as at the first read.
-  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id" "$lock_keying"; then
     return 0
   fi
   case "$state" in
@@ -4143,7 +4324,11 @@ _lib_worktree_collision_guard() {
       ;;
     0)
       if kill -0 "$locked_pid" 2>/dev/null; then
-        printf 'this worktree is already in use by a live Claude Code session (pid %s) — wait for it to finish, or work in a different worktree' "$locked_pid"
+        if [ "$lock_keying" = "$_LIB_WORKTREE_LOCK_KEYING_SESSION" ]; then
+          printf 'this worktree is held by a live process (pid %s%s) — ask the engineer in chat, and do not unlock it yourself' "$locked_pid" "${locked_session_id:+, session $locked_session_id}"
+        else
+          printf 'this worktree is already in use by a live Claude Code session (pid %s) — wait for it to finish, or work in a different worktree' "$locked_pid"
+        fi
       elif _lib_worktree_reclaim_dead_lock "$worktree_root" "$wt_git_dir" "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
         return 0
       else

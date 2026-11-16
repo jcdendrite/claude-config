@@ -1987,40 +1987,83 @@ class TestCursorAdapterSelection:
         assert "claude/.claude/scripts/tests/test_cursor_adapter_shim.py" in result.target_paths
         assert _mod.HOOKS_TESTS_DIR in result.target_paths
 
+    def test_the_identity_fixtures_module_selects_every_scripts_test(self):
+        """The scripts conftest.py imports it, so a break there fails every scripts test."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/_cursor_identity_fixtures.py"])
+        assert result.is_full_suite is False
+        assert _mod.SCRIPTS_TESTS_DIR in result.target_paths
+
+    def test_every_hooks_tests_module_the_scripts_conftest_imports_selects_every_scripts_test(self):
+        """The importer scan reads only test_*.py, so a conftest.py import needs its own check."""
+        # Gaps:
+        # - importlib loads are unseen.
+        # - A hooks-tests module reached through a helper the conftest imports is unseen.
+        # - Package __init__ files are unscanned.
+        scripts_conftest = _REPO_ROOT / _mod.SCRIPTS_TESTS_DIR / "conftest.py"
+        hooks_tests_module_stems = {path.stem for path in (_REPO_ROOT / _mod.HOOKS_TESTS_DIR).glob("*.py")}
+        imported_hooks_tests_modules = _imported_module_basenames(scripts_conftest.read_text()) & hooks_tests_module_stems
+
+        assert "_cursor_identity_fixtures" in imported_hooks_tests_modules
+        for module_basename in sorted(imported_hooks_tests_modules):
+            result = _mod.select_pytest_targets([f"{_mod.HOOKS_TESTS_DIR}/{module_basename}.py"])
+            assert _mod.SCRIPTS_TESTS_DIR in result.target_paths, module_basename
+
+    _HOOKS_TESTS_FIXTURE_MODULES = ("_cursor_payloads", "_cursor_identity_fixtures")
+
     @staticmethod
-    def _undeclared_payload_builder_importers(sources: dict[str, str], declared: set[str]) -> set[str]:
-        """The keys of `sources` whose code imports the payload builder in any form and are not in `declared`."""
+    def _undeclared_fixture_module_importers(
+        module_basename: str, sources: dict[str, str], declared: set[str]
+    ) -> set[str]:
+        """The keys of `sources` whose code imports `module_basename` in any form and are not in `declared`."""
         return {
             name
             for name, source in sources.items()
-            if "_cursor_payloads" in _imported_module_basenames(source) and name not in declared
+            if module_basename in _imported_module_basenames(source) and name not in declared
         }
 
-    def test_every_scripts_test_importing_the_payload_builder_is_a_declared_importer(self):
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
+    def test_every_scripts_test_importing_a_hooks_fixture_module_is_a_declared_importer(self, module_basename):
         sources = {
             f"claude/.claude/scripts/tests/{path.name}": path.read_text()
             for path in (_REPO_ROOT / _mod.SCRIPTS_TESTS_DIR).glob("test_*.py")
         }
         declared = set(_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES)
-        assert self._undeclared_payload_builder_importers(sources, declared) == set()
-        assert self._undeclared_payload_builder_importers(sources, set()), "no scripts test imports the builder"
+        assert self._undeclared_fixture_module_importers(module_basename, sources, declared) == set()
 
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
+    def test_a_hooks_fixture_module_has_a_scripts_test_importer_for_the_scan_to_cover(self, module_basename):
+        """The scan above passes vacuously for a module no scripts test imports."""
+        sources = {
+            f"claude/.claude/scripts/tests/{path.name}": path.read_text()
+            for path in (_REPO_ROOT / _mod.SCRIPTS_TESTS_DIR).glob("test_*.py")
+        }
+        assert self._undeclared_fixture_module_importers(module_basename, sources, set()), (
+            f"no scripts test imports {module_basename}"
+        )
+
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
     @pytest.mark.parametrize(
-        "import_line",
+        "import_template",
         [
-            "from hooks.tests._cursor_payloads import SHIM",
-            "import hooks.tests._cursor_payloads",
-            "from hooks.tests import _cursor_payloads",
+            "from hooks.tests.{module} import SHIM",
+            "import hooks.tests.{module}",
+            "from hooks.tests import {module}",
         ],
     )
-    def test_the_importer_scan_flags_an_undeclared_fixture_in_each_import_form(self, import_line):
-        fixture = {"claude/.claude/scripts/tests/test_fixture.py": f"{import_line}\n"}
-        assert self._undeclared_payload_builder_importers(fixture, set()) == set(fixture)
-        assert self._undeclared_payload_builder_importers(fixture, set(fixture)) == set()
-        assert self._undeclared_payload_builder_importers({"x.py": "import os\n# _cursor_payloads\n"}, set()) == set()
+    def test_the_importer_scan_flags_an_undeclared_fixture_in_each_import_form(self, module_basename, import_template):
+        fixture = {"claude/.claude/scripts/tests/test_fixture.py": import_template.format(module=module_basename) + "\n"}
+        assert self._undeclared_fixture_module_importers(module_basename, fixture, set()) == set(fixture)
+        assert self._undeclared_fixture_module_importers(module_basename, fixture, set(fixture)) == set()
+        assert (
+            self._undeclared_fixture_module_importers(module_basename, {"x.py": f"import os\n# {module_basename}\n"}, set())
+            == set()
+        )
 
-    def test_the_payload_builder_is_a_declared_hooks_tests_module(self):
-        assert "claude/.claude/hooks/tests/_cursor_payloads.py" in _mod.HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
+    def test_a_hooks_fixture_module_selects_every_declared_scripts_test_importer(self, module_basename):
+        result = _mod.select_pytest_targets([f"claude/.claude/hooks/tests/{module_basename}.py"])
+        assert result.is_full_suite is False
+        assert set(_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) <= set(result.target_paths)
 
 
 class TestResolveTargetPaths:

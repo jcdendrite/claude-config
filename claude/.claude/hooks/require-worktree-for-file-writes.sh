@@ -12,7 +12,8 @@
 # function's header for the full design and known gaps.
 #
 # Known gaps: a write that freshly acquires the worktree lock reports that
-# via additionalContext, decided by a plain `[ -e ... ]` pre-check on the
+# via additionalContext (not printed for an untranslated Cursor payload under a
+# Cursor host), decided by a plain `[ -e ... ]` pre-check on the
 # lock file just before the collision-guard call. This pre-check is wired
 # identically to require-worktree-for-git-writes.sh's own pre-check at its
 # one call site here. See that file's Known gaps for the full

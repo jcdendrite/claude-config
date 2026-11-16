@@ -164,6 +164,38 @@ jobs:
           sudo apt-mark hold git git-man
           git --version
 
+      # The pin is one Ubuntu 24.04 (noble) release-pocket build of zsh and zsh-common, installed by name from the runner's apt sources, which apt verifies against the signed index.
+      # The tests need a real zsh, and the pin buys a reproducible build and nothing the tests check.
+      # A release-pocket pin takes no later security build.
+      # To bump, take the build from the apt-cache policy table a failing run prints. packages.ubuntu.com can list a build the runner's mirror does not carry yet.
+      # require_zsh() fails CI only where no zsh is on the runner, so it does not show whether this step ran.
+      - name: Install the pinned zsh package
+        id: pin-zsh
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          CI_ZSH_PACKAGE_VERSION: "5.9-6ubuntu2"
+        run: |
+          set -euo pipefail
+          : "${CI_ZSH_PACKAGE_VERSION:?}"
+
+          # This step runs its own update, so it stays correct if the pin-git step moves or goes.
+          # --error-on=any fails this step on a transient fetch error instead of letting a stale list show up as a false "not found".
+          # Acquire::Retries=3 retries each failed fetch before --error-on=any fails the step.
+          sudo apt-get update --error-on=any -o Acquire::Retries=3
+
+          echo "The apt sources and candidates for zsh and zsh-common:"
+          apt-cache policy zsh zsh-common
+
+          if ! sudo apt-get install -y --no-remove --allow-downgrades "zsh=$CI_ZSH_PACKAGE_VERSION" "zsh-common=$CI_ZSH_PACKAGE_VERSION"; then
+            {
+              echo "apt could not install zsh and zsh-common $CI_ZSH_PACKAGE_VERSION."
+              echo "Read apt's error above and the apt-cache policy table printed earlier, then bump the pin as the comment above this step says."
+            } >&2
+            exit 1
+          fi
+          sudo apt-mark hold zsh zsh-common
+          zsh --version
+
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
         run: nproc

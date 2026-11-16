@@ -20,12 +20,19 @@ set -uo pipefail
 #   undocumented upstream and verified only by manual testing (see
 #   .claude/plans/detect-clean-exit-vs-crash.md).
 #
+# Cursor decline: the hook writes no record when the payload carries a
+# top-level `workspace_roots` or `cursor_version` key and `_lib_cursor_host_pid`
+# returns 0. Both conditions must hold. Otherwise it proceeds as for Claude Code.
+# A failed or cap-killed jq check on a non-empty payload counts as carrying the key.
+#
 # Failure mode: every failure path exits 0, with a one-line diagnostic to
 # stderr only.
 #
 # Per-fire cost: a conditional `ps` shellout (inside _lib_hook_claude_pid,
-# when $CLAUDE_PID is set and numeric) plus jq and find. See the script
-# below for the exact call sequence.
+# when $CLAUDE_PID is set and numeric) plus jq and find. The Cursor-payload
+# decline adds one more capped jq call, after the session-id checks. A
+# Cursor-shaped payload then also runs the host walk, two capped `ps` reads per
+# hop. See the script below for the exact call sequence.
 #
 # SessionEnd hooks share a 1.5s default execution budget across every
 # SessionEnd hook registered for the session (confirmed:
@@ -33,8 +40,9 @@ set -uo pipefail
 # per-hook `timeout` field raises that budget, up to a 60s ceiling.
 # settings.json sets `"timeout": 10` on this hook's registration for that
 # reason. The self-sweep below is capped at 2s, or 4s counting _lib_capped_for's
-# -k SIGKILL grace. The per-fire cost above is comfortably sub-second, and 10
-# is well under the 60s ceiling.
+# -k SIGKILL grace. The per-fire cost above is comfortably sub-second for a
+# Claude Code payload, which skips the host walk, and 10 is well under the 60s
+# ceiling.
 #
 # Two 5s-capped _lib_jq calls run before the first exit gate that depends on
 # jq output, so a systemic jq stall exhausts that 10s budget after two calls:
@@ -68,6 +76,20 @@ fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   echo "[record-session-end] session_id is not a valid path component; no SessionEnd record written" >&2
   exit 0
+fi
+
+# An import copy of this hook declines to write a SessionEnd record for a process under a Cursor host.
+if _lib_payload_is_untranslated_cursor "$INPUT"; then
+  cursor_host_status=0
+  _lib_cursor_host_pid >/dev/null 2>&1 || cursor_host_status=$?
+  if [ "$cursor_host_status" -eq 0 ]; then
+    echo "[record-session-end] untranslated Cursor payload under a Cursor host; no SessionEnd record written" >&2
+    exit 0
+  fi
+  # A process that keeps CLAUDECODE is Claude Code, so it gets no note.
+  if [ -z "${CLAUDECODE:-}" ]; then
+    echo "[record-session-end] untranslated Cursor payload with no Cursor host found (host walk status $cursor_host_status); continuing" >&2
+  fi
 fi
 
 CONFIG_DIR=$(_lib_config_dir) || {
