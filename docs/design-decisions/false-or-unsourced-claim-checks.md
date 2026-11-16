@@ -16,7 +16,7 @@ A "could not verify" finding has no edit to ADDRESS and fits no DEFER criterion,
 
 ## Why a false claim's fix deletes or narrows it
 
-A rewritten claim is modified prose, which the reviewer judges again in the next round. So the fix is the narrowest true statement with whatever the restating angle would delete removed, and a claim with nothing left is deleted, not corrected.
+A rewritten claim is modified prose, which the reviewer judges again in the next round. So the fix is narrowed or deleted, as `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles" states in the `False or unsourced claim` block.
 
 The Restating angle already owns the test for what to cut, so the False angle's fix defers to it. A second False-angle clause saying what to keep or what the reader needs would restate the Restating angle's test.
 
@@ -64,7 +64,7 @@ Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K
 
 ### 2026-11-15 re-run for the false-claim fix rule
 
-Measured on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell, on the reviewer with the 2026-11-15 wording. The subagents had no `Grep` or `Glob`, so each run searched with read-only `Bash` and wrote a `LISTING:` header line naming it.
+Measured on Sonnet 5.5, one fresh general-purpose subagent per run, on the reviewer with the 2026-11-15 wording. Each cell ran K=5, except the pointer cell, which ran 7 times, and the acceptance cell, re-run at K=10. The subagents had no `Grep` or `Glob`, so each must-flag run searched with read-only `Bash` and wrote a `LISTING:` header line naming it.
 
 **Cells.**
 - Must-flag, each 5 of 5: a false default, a false count, a quantified claim found by search, an unsourced number and an unsourced causal claim.
@@ -88,7 +88,7 @@ Measured on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell
 The units and claims come from this repository's own tracked files and review findings, and the study's inputs are local and unpublished. The figures come from `.claude/plans/comment-rule-false-angle-fix.md` § "Context", except the classifier B counts, which are in `.claude/plans/comment-rule-false-angle-fix.md` § "Assumption ledger", row 36. Three runs make these figures directional.
 
 **Caveats:**
-- The bars at K=5 were scored as the 2026-11-05 run scored them, except for two cells. The precedence cell is scored by fix kind with one finding counted per site, and the negative cell by Prose restating the code findings only. Both choices were made after seeing a first set of runs. Both cells also meet the original bars: restating with deletion at least 4 of 5, a `False or unsourced claim` finding at most 1 of 5, and any finding at most 1 of 5.
+- The bars at K=5 were scored as the 2026-11-05 run scored them, except for two cells. The precedence cell is scored by fix kind with one finding counted per site, and the negative cell by Prose restating the code findings only. Both cells also meet the original bars: restating with deletion at least 4 of 5, a `False or unsourced claim` finding at most 1 of 5, and any finding at most 1 of 5.
 - The cells cannot show a change in fix kind. The quantified-claim cell's fix (a claim that only one script calls another) named every caller in each run, which no rule separates from a narrowing. The replay is the only evidence of a shift. The limit-note cell also scores fix kind and shows none for a partly false note.
 - Nothing here measures the goal of fewer review rounds. A replay that re-reviews the fixed text and counts findings would.
 - The record makes no claim about whether the reviewer leaves a limit note alone. The limit-note cell has one true note, whose limit the function's signature can express, and runs split on whether that makes it restating. A true note of a limit that no parameter or branch shows was not measured.
