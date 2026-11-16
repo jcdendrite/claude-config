@@ -68,7 +68,7 @@ The *why-comment filter* reads comment text from the base snapshot alone, before
 
 A *PR task* is an eligible PR that passes both filters, the stripping checks and the loaded-configuration check. The page reports exclusions per filter and check.
 
-One rater makes every filter judgment. The same rater also judges, for each comment or docstring in a touched region that states a reason, constraint or contract the code does not show, whether the prompt states it. It also judges, for each fail-to-pass test of the PR tasks the study runs, whether the test asserts a literal output or text the prompt does not state. A second rater independently judges a random 30 of the PRs that reach the specification filter, or all of them when fewer. That sample covers the filter judgments and not the judgment of which tests assert unstated text.
+One rater makes every filter judgment. The same rater also judges, for each fail-to-pass test of the PR tasks the study runs, whether the test asserts a literal output or text the prompt does not state. A second rater independently judges a random 30 of the PRs that reach the specification filter, or all of them when fewer. That sample covers the filter judgments and not the judgment of which tests assert unstated text.
 
 ### Trap tasks
 
@@ -82,7 +82,7 @@ Each trap starts from a comment stating a rule the code does not show. Its task 
 
 Traps also pass the stripping checks and the loaded-configuration check. Wherever this page reads a trap's tests, scoring included, its held-out test files stand in for the PR's test files at the merge commit, the held-out test is its fail-to-pass test, and its other tests are its pass-to-pass tests. The keep-the-rule reference implementation stands in for the merge commit in the stripping checks only, since scoring starts from the intact base. Traps never enter `Delta`, and the decision rule reads them for the Harm excluded outcome only.
 
-Under the assumption that each trap shows the full built-in effect or none, and that a trap showing none has `d_task` = 0, the trap condition of the Harm excluded outcome needs about four effect-showing traps of ten. A bootstrap draw holds no effect-showing trap with probability 0.6 to the tenth power, about 0.006, at four traps and 0.7 to the tenth power, about 0.028, at three, against the 0.025 tail of the 95% interval. Noisier traps change the chance that the trap interval's lower bound is above 0 in either direction, since a non-showing trap's negative `d_task` lowers it and a positive one raises it, and this is unvalidated and accepted.
+Under the assumption that each trap shows the full built-in effect or none, and that a trap showing none has `d_task` = 0, the trap condition of the Harm excluded outcome needs about four effect-showing traps of ten. A bootstrap draw holds no effect-showing trap with probability 0.6 to the tenth power, about 0.006, at four traps and 0.7 to the tenth power, about 0.028, at three, against the 0.025 tail of the 95% interval. Noisier traps change the chance that the trap interval's lower bound is above 0 in either direction: a non-showing trap with negative `d_task` lowers it, and one with positive `d_task` raises it. This is unvalidated and accepted.
 
 GH-1408's own trap example fails the first check. A comment in `claude/.claude/hooks/_config.sh` states a bash 3.2 rule. `.claude/rules/shell-floor.md` and `docs/hooks.md` state the same rule in markdown, which both arms keep. A trap needs a rule that appears only in a comment.
 
@@ -203,7 +203,7 @@ Both counts take the pessimistic end of a variance range. Let `p` and `q` be a t
 
 The cap of 75 is a cost choice that leaves `psi` = 0.30 underpowered. There, the Harm outcome's power at 75 tasks is 0.694 at the pessimistic end if stripping costs 15 points.
 
-The reachability figures are approximate upper bounds on the chance of reaching Harm excluded. Every Harm excluded sizing and reachability figure assumes every PR task the study runs is in the passable subset, defined under Analysis, and the lock cannot know how many run tasks no session passes.
+The reachability figures are approximate and give the chance, at zero effect, of the interval condition of Harm excluded. A true effect below zero, where the stripped arm is better, can raise that chance. The outcome's other conditions can only lower the chance of reaching it. Every Harm excluded sizing and reachability figure assumes every PR task the study runs is in the passable subset, defined under Analysis, and the lock cannot know how many run tasks no session passes.
 
 **Feasibility pass.** The pass runs before any authoring session and reads no authoring outcome. Before the lock, no session under any model is given a trap's or a PR task's prompt. The trap checks use reference implementations and need no pilot. The study goes ahead only when its confinement verification passes and at least 10 trap tasks passed all their checks. Its stages are:
 
@@ -228,9 +228,9 @@ Before either passes, the loaded-configuration check is shown to reject a delibe
 The lock also records two probabilities at `n`, the smaller of the PR task count and 75, at each `psi` on the grid and at both ends of the variance range. `Phi` is the standard normal distribution function, and `V` is the variance of `d_task` at that end under that effect:
 
 - The probability of the Harm outcome if stripping costs 15 points: `Phi(d*sqrt(n/V) - z_a)`. It is not applicable at `psi` = 0.10.
-- The *Harm excluded bound*, the chance of `L` <= 0 <= `U` < 0.15 if stripping costs nothing: `Phi(min(z_a, d*sqrt(n/V) - z_a)) - Phi(-z_a)`. Being a normal approximation, it only approximately bounds the Harm excluded outcome from above, since that outcome also needs the worst-case, trap and passable-subset conditions.
+- The *Harm excluded bound*, the chance of `L` <= 0 <= `U` < 0.15 if stripping costs nothing: `Phi(min(z_a, d*sqrt(n/V) - z_a)) - Phi(-z_a)`. It is approximate, being a normal approximation, and it is the chance at zero effect, not a maximum over effects.
 
-In the lock, the experimenter decides whether the study goes ahead at that `n`. The go decision also records the simulated false-exclusion rate of the verdict procedure itself at `n`, meaning how often it returns Harm excluded if stripping costs 15 points. The verdict reads a percentile bootstrap, which is anti-conservative toward Harm excluded at small counts, roughly under 20 tasks. This record can only count against going ahead and relaxes no condition of the decision rule. No authoring outcome exists yet, so the choice cannot bias the result.
+In the lock, the experimenter decides whether the study goes ahead at that `n`. The go decision also records the simulated false-exclusion rate of the verdict procedure itself at `n`, meaning how often it returns Harm excluded if stripping costs 15 points, at each `psi` on the grid that is at least 0.15 and at both ends of the variance range. The verdict reads a percentile bootstrap, which is anti-conservative toward Harm excluded at small counts, roughly under 20 tasks. This record can only count against going ahead and relaxes no condition of the decision rule. No authoring outcome exists yet, so the choice cannot bias the result.
 
 ## Analysis
 
@@ -271,7 +271,7 @@ Under every outcome, the `Results` section reports `Delta`, `L` and `U`, the wor
 
 ### Margin and pre-count disclosure
 
-A short PR task count is expected. The page states the following beside the rule.
+A short PR task count is expected.
 
 **The margin.** The repository owner set the 15-point margin on 2026-11-06, replacing the 10-point gap in GH-1408, after the pre-count below and before any authoring session. The owner's decision: "Let's go with the 15-point margin, the two-sided interval. That sounds good." The reason given with the proposal the owner accepted is that Harm excluded becomes reachable at the pre-count's scale. It is not that a harm under 15 points is acceptable.
 
@@ -313,7 +313,7 @@ The `Revisions` section binds the margin from the moment this page ships.
 - The code already passed comment review, and held-out tests cover only what the PR's author tested.
 - Issue bodies vary in how much of the answer they state beyond what the specification filter requires. An issue created after the work began can state more, which pulls `Delta` toward 0 and favors Harm excluded.
 - Memorized answers from this public history pull `Delta` toward 0 and favor Harm excluded. The post-cutoff subgroup and the lock's post-cutoff share are the only checks on memorization, and the subgroup has no minimum size. An uninformative subgroup means memorization is unchecked.
-- A fail-to-pass test that asserts a literal output or text the prompt does not state makes a pass partly reflect phrasing luck. That luck acts equally in both arms and widens the intervals. A task passed by luck also pulls `Delta` toward 0, which favors Harm excluded.
+- A fail-to-pass test that asserts a literal output or text the prompt does not state makes a pass partly reflect phrasing luck. For text no arm can see, that luck acts equally in both arms and widens the intervals, and a task passed by luck pulls `Delta` toward 0, which favors Harm excluded. The reported share counts tests, not tasks, and a pass needs every fail-to-pass test of its task, so a small share can touch most tasks. The share is an upper bound on phrasing luck, because text that a kept comment documents also lands in it. For that text the effect runs the other way: the intact arm can copy it and the stripped arm must guess, which is a comment effect, not luck.
 - Tasks no session can pass pull `Delta` toward 0 and narrow the interval. The sixth condition of Harm excluded keeps them from alone producing it. The share of tasks where no replicate passed in either arm is an upper bound on the tasks no session can pass.
 - The confinement is verified only as far as the feasibility pass's checks reach. A gap they miss leaves no trace, and in the stripped arm it raises the pass rate, which favors Harm excluded.
 - A test that needs a host tool or network access the confinement withholds fails at the merge commit, so it is not a fail-to-pass test. A PR left with none is ineligible.
@@ -336,6 +336,7 @@ Before the lock, a revision may change the design, within these rules:
 
 - No revision may remove the asymmetry of the decision rule.
 - No revision may move the 15-point margin, make Harm excluded easier to reach, or weaken the leak invalidation, unless the repository owner decides it.
+- No revision may drop the public-repository requirement on the harness commit that the opening paragraphs set, unless the repository owner decides it.
 - No revision may replace enforced confinement with detection after the fact, or narrow what the confinement covers, unless the confinement cannot be built and the repository owner decides it.
 
 After the lock, no revision changes the primary design, the manifest or the decision rule.
