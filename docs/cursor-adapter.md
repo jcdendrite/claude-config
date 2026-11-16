@@ -67,6 +67,12 @@ After a `git pull`, run `check`: it compares the installed entries with what `ge
   - A shell's error line numbers count the prefix's line.
 - **The import's copies keep running.** Cursor's Claude Code import runs its own untranslated copies of the hooks beside the adapter's entries, so a hook can fire twice. A deny from either source wins.
 
+## Parity with Claude Code
+
+Under the adapter, Cursor behaves as Claude Code does wherever the vendor allows. This doc and `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` together list each known difference. The file holds each harness registration, permission deny, adapter gate or Cursor tool that the adapter does not carry, with its reason. This doc notes any other difference, including a newly found one.
+
+A gate or deny that cannot reach parity under Cursor is raised to the engineer as an open decision before it ships, and an entry in the file that drops a gate or deny falls under this.
+
 ## Prerequisites
 
 - **Python:** the recorded python3 and the `python3` the hooks run both meet the toolkit's Python floor, which `README.md` § "Requirements" states.

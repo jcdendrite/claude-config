@@ -17,6 +17,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+import yaml
 from review_bench import adjudicate, arms, defects, fixture_repo, local_git
 from review_bench.defects import ConfirmedDefect
 from test_review_bench_mining import (
@@ -1292,8 +1293,11 @@ class TestRenderArmAgent:
         rendered = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
 
         frontmatter, body = arms._split_frontmatter(rendered)
-        assert f"name: bench-{_LENS}" in frontmatter
-        assert f"model: {arms.ARM_MODEL_FRONTMATTER_VALUE}" in frontmatter
+        parsed_frontmatter = yaml.safe_load(frontmatter)
+        assert parsed_frontmatter["name"] == f"bench-{_LENS}"
+        assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
+        # Literal, so adding a tool to ARM_TOOLS cannot pass by moving both sides together.
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
         # A field render_arm_agent never touches survives byte-identical.
         assert "description: A test lens." in frontmatter
@@ -1312,9 +1316,12 @@ class TestRenderArmAgent:
         rendered = arms.render_arm_agent(arms.ARM_FUNCTION_CONTEXT, _LENS, agents_dir=agents_dir)
         frontmatter, body = arms._split_frontmatter(rendered)
 
-        assert f"name: bench-{_LENS}" in frontmatter
-        assert f"model: {arms.ARM_MODEL_FRONTMATTER_VALUE}" in frontmatter
+        parsed_frontmatter = yaml.safe_load(frontmatter)
+        assert parsed_frontmatter["name"] == f"bench-{_LENS}"
+        assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
+        # A field render_arm_agent never touches survives byte-identical.
         assert "description: A test lens." in frontmatter
         assert body == original_body.replace(_READ_CLAUSE, arms.FUNCTION_CONTEXT_CLAUSE, 1)
         assert _READ_CLAUSE not in body
@@ -1389,7 +1396,10 @@ class TestRenderArmAgentAgainstRealProductionAgentFiles:
         assert self._frontmatter_lines_other_than_name_model_tools(
             frontmatter
         ) == self._frontmatter_lines_other_than_name_model_tools(production_frontmatter)
-        assert f"name: bench-{lens}" in frontmatter
+        parsed_frontmatter = yaml.safe_load(frontmatter)
+        assert parsed_frontmatter["name"] == f"bench-{lens}"
+        assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
 
     @pytest.mark.parametrize("lens", sorted(arms.LENS_READ_CLAUSES))

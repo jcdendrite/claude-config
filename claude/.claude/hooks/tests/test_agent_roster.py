@@ -27,7 +27,7 @@ from helpers import (
     review_only_agents,
     reviewer_persona_agents,
 )
-from validate_skill_structure import parse_frontmatter
+from validate_skill_structure import FrontmatterError, parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
 
@@ -199,13 +199,9 @@ class TestReviewerAgentRoster:
         updating the dispatcher to pass findings_path.
         """
         for name in CANARY_AGENTS:
-            path = AGENTS_DIR / name
-            content = path.read_text()
-            tools_match = re.search(r"^tools:\s*(.+)$", content, re.MULTILINE)
-            assert tools_match, f"{name}: no 'tools:' line found in frontmatter"
-            tools_value = tools_match.group(1)
-            assert "Write" in tools_value, (
-                f"{name}: 'Write' not found in tools: {tools_value!r}. "
+            declared_tools = _declared_tool_names(AGENTS_DIR / name)
+            assert "Write" in declared_tools, (
+                f"{name}: 'Write' not found in tools: {sorted(declared_tools)!r}. "
                 "All reviewer agents must declare Write for the file-based output canary."
             )
 
@@ -285,9 +281,8 @@ class TestDiffInputContractAgents:
                 "the Input contract section — every no-Bash agent states "
                 "this identically."
             )
-        fm = parse_frontmatter(path)
-        tools_value = fm.get("tools") or ""
-        assert "Bash" not in tools_value, (
+        tools_value = parse_frontmatter(path).get("tools") or ""
+        assert "Bash" not in _declared_tool_names(path), (
             f"{name}: 'tools:' now grants Bash ({tools_value!r}), but its "
             "Input contract tells it otherwise. Either drop the contract's "
             "no-Bash claim or revert the tools: grant."
@@ -303,9 +298,7 @@ class TestDiffInputContractAgents:
         """
         expected_no_bash = set()
         for name in CANARY_AGENTS:
-            fm = parse_frontmatter(AGENTS_DIR / name)
-            tools_value = fm.get("tools") or ""
-            if "Bash" not in tools_value:
+            if "Bash" not in _declared_tool_names(AGENTS_DIR / name):
                 expected_no_bash.add(name)
         assert expected_no_bash == set(DIFF_INPUT_NO_BASH_AGENTS), (
             f"CANARY_AGENTS with no Bash grant are {sorted(expected_no_bash)}, but "
@@ -779,28 +772,11 @@ class TestNoGateReleaseRosterSync:
                 f"note on why the tools: assertion cannot apply to it."
             )
 
-    @staticmethod
-    def _declared_tools(name: str) -> set[str]:
-        """Tools an agent file grants, via the strict-YAML frontmatter parser.
-
-        Routed through parse_frontmatter rather than a `^tools:` regex so that
-        YAML list form (`tools:\\n  - Skill`) and multi-line values are read
-        correctly — a regex silently reports "Skill absent" for both, which
-        would turn this assertion into a false pass on exactly the frontmatter
-        shape it exists to catch.
-        """
-        fm = parse_frontmatter(AGENTS_DIR / f"{name}.md")
-        declared = fm.get("tools")
-        assert declared, f"{name}.md: no 'tools:' field found in frontmatter"
-        if isinstance(declared, str):
-            return {t.strip() for t in declared.split(",")}
-        return {str(t).strip() for t in declared}
-
     def test_roster_members_do_not_carry_the_skill_tool(self):
         for name in no_gate_release_agents():
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
-            declared = self._declared_tools(name)
+            declared = _declared_tool_names(AGENTS_DIR / f"{name}.md")
             assert "Skill" not in declared, (
                 f"{name}.md declares the Skill tool, but it is listed in "
                 f"_LIB_NO_GATE_RELEASE_AGENTS — whose deny is justified in "
@@ -824,7 +800,7 @@ class TestNoGateReleaseRosterSync:
         for name in no_gate_release_agents():
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
-            declared = self._declared_tools(name)
+            declared = _declared_tool_names(AGENTS_DIR / f"{name}.md")
             dispatch_tools = declared & {"Agent", "Task"}
             assert not dispatch_tools, (
                 f"{name}.md declares {sorted(dispatch_tools)}, but it is listed in "
@@ -845,7 +821,7 @@ class TestNoGateReleaseRosterSync:
         here while silently turning a read-only search agent into one that
         can mutate the tree it is dispatched read-only against.
         """
-        assert self._declared_tools("Explore") == {"Read", "Grep", "Glob"}, (
+        assert _declared_tool_names(AGENTS_DIR / "Explore.md") == {"Read", "Grep", "Glob"}, (
             "Explore.md's tools: line changed. It must stay exactly "
             "Read, Grep, Glob — no Write, Edit, or Bash — per the agent's "
             "own stated design (see Explore.md's body)."
@@ -857,7 +833,7 @@ class TestNoGateReleaseRosterSync:
         Write would reproduce the plan's Context. Bash would bypass every Edit-path gate.
         Skill, Agent and Task stay excluded so it cannot delegate a gate release.
         """
-        assert self._declared_tools("plan-architect") == {
+        assert _declared_tool_names(AGENTS_DIR / "plan-architect.md") == {
             "Read",
             "Grep",
             "Glob",
@@ -978,7 +954,7 @@ class TestReviewOrchestratorRosterPlacement:
         """Its absence from _LIB_NO_GATE_RELEASE_AGENTS rests on holding `Skill`
         (to run the review) and `Agent` (to dispatch code-writer and the
         reviewers), so the set is pinned by equality, not by Edit/Write absence."""
-        assert TestNoGateReleaseRosterSync._declared_tools("review-orchestrator") == {
+        assert _declared_tool_names(AGENTS_DIR / "review-orchestrator.md") == {
             "Skill",
             "Agent",
             "Read",
@@ -1035,10 +1011,14 @@ class TestReviewOrchestratorRosterPlacement:
 def _declared_tool_names(path) -> set[str]:
     """Tool names an agent file's frontmatter grants.
 
-    Returns `{""}` when `tools` is absent. An agent without a `tools:` line inherits
-    every tool, and the empty name matches no permitted-tool set, so the registry
-    test fails closed."""
-    declared = parse_frontmatter(path).get("tools") or ""
+    Read through parse_frontmatter rather than a `^tools:` regex, which reports a
+    tool absent for YAML list form (`tools:\\n  - Skill`) and multi-line values,
+    a false pass on the shape the assertions exist to catch. An agent without a
+    `tools:` line inherits every tool, so an absent or empty value fails here
+    instead of reading as an empty grant.
+    """
+    declared = parse_frontmatter(path).get("tools")
+    assert declared, f"{path.name}: no 'tools:' field found in frontmatter"
     if isinstance(declared, str):
         return {t.strip() for t in declared.split(",")}
     return {str(t).strip() for t in declared}
@@ -1249,14 +1229,18 @@ _CISO_TRACING_RECONCILIATION_SENTENCES = (
     "the intended check instead."
 )
 
+def _agent_holds_bash(agent_file) -> bool:
+    """Re-raise FrontmatterError with the agent file name, which its message omits."""
+    try:
+        return "Bash" in _declared_tool_names(agent_file)
+    except FrontmatterError as error:
+        raise FrontmatterError(f"{agent_file.name}: {error}") from error
+
+
 # Any reviewer holding Bash carries the Scratch execution section. Derived from
 # each canary agent's own tools: frontmatter, like DIFF_INPUT_NO_BASH_AGENTS's
 # completeness test, rather than from a second hand-maintained list.
-SCRATCH_SECTION_AGENTS = [
-    name
-    for name in CANARY_AGENTS
-    if "Bash" in (parse_frontmatter(AGENTS_DIR / name).get("tools") or "")
-]
+SCRATCH_SECTION_AGENTS = [name for name in CANARY_AGENTS if _agent_holds_bash(AGENTS_DIR / name)]
 
 # A phrasing that sanctions copying a file, repo, or tree into /tmp.
 _TMP_COPY_SANCTION_PATTERN = re.compile(
@@ -1299,7 +1283,7 @@ class TestScratchExecutionSection:
             name
             for name in review_only_agents()
             if (AGENTS_DIR / f"{name}.md").exists()
-            and "Bash" in (parse_frontmatter(AGENTS_DIR / f"{name}.md").get("tools") or "")
+            and _agent_holds_bash(AGENTS_DIR / f"{name}.md")
             and f"{name}.md" not in SCRATCH_SECTION_AGENTS
         ]
         assert not missing, (
