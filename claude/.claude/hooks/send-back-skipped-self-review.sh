@@ -8,7 +8,7 @@
 # - SubagentStop matcher code-writer.
 # - No matcher narrows the PreToolUse arm to one agent type, so the script checks agent_type itself.
 #
-# Fail posture: fail-open. Every failure allows, and only the once-per-cycle send-back blocks.
+# Fail posture: fail-open. Every failure allows, including a missing python3 or a nonzero evaluator exit, and only the once-per-cycle send-back blocks.
 #
 # set -e deliberately omitted: an aborting command's own exit status could be 2, which blocks the writer's return.
 #

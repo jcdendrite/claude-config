@@ -22,6 +22,7 @@ from helpers import (
     bash_input,
     run_hook,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -503,8 +504,7 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
 
     # Create a fake jq that sleeps 10 seconds, plus stubs for required tools.
     fake_jq = tmp_path / "jq"
-    fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
-    fake_jq.chmod(0o755)
+    write_prewarmed_stub(fake_jq, f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
 
     # Symlink real timeout and bash so the harness can find them.
     (tmp_path / "timeout").symlink_to(timeout_path)

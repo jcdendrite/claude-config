@@ -56,7 +56,8 @@ The rule itself is documented in `docs/transcript-analysis.md` under "Subagent a
 
 `scope.py` also owns `_add_project_scope_args`, which registers the mutually exclusive
 `--projects`/`--this-repo` flags on a subparser. `_resolve_project_scope` reads the `this_repo`
-attribute that function defines.
+attribute that function defines. `_add_extra_config_dirs_arg` registers the repeatable subcommand-level
+`--config-dir`, whose `extra_config_dirs` values `_resolve_cost_roots` reads.
 
 `scope.py` also owns `_iso_date`, the argparse `type=` validator for every YYYY-MM-DD flag, which
 `_parse_absolute_window_args` relies on.

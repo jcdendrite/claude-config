@@ -25,6 +25,7 @@ from helpers import (
     caps_that_fired,
     plant_traversal_canary,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -502,15 +503,14 @@ class TestNudgeLongTurnSubagent:
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
-        stub = stub_dir / "jq"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub_dir / "jq",
             '#!/bin/bash\n'
             'if [ "$1" = "-n" ]; then\n'
             f'  sleep {scaled_shim_sleep(5)}\n'
             'fi\n'
-            f'exec {real_jq} "$@"\n'
+            f'exec {real_jq} "$@"\n',
         )
-        stub.chmod(0o755)
         extra_env = {"PATH": f"{stub_dir}:{os.environ['PATH']}", "LONG_TURN_NUDGE_SAMPLE_CADENCE": "1"}
 
         scan_state = _scan_state_path(tmp_path)
@@ -738,8 +738,8 @@ class TestNudgeLongTurnSubagent:
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
-        stub = stub_dir / "find"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub_dir / "find",
             '#!/bin/bash\n'
             'for arg in "$@"; do\n'
             '  if [ "$arg" = "-mtime" ]; then\n'
@@ -747,9 +747,8 @@ class TestNudgeLongTurnSubagent:
             '    break\n'
             '  fi\n'
             'done\n'
-            f'exec {real_find} "$@"\n'
+            f'exec {real_find} "$@"\n',
         )
-        stub.chmod(0o755)
         extra_env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
 
         _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE - 1, extra_env=extra_env)
@@ -864,15 +863,14 @@ class TestNudgeLongTurnSubagent:
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
-        stub = stub_dir / "jq"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub_dir / "jq",
             '#!/bin/bash\n'
             'if [ "$1" = "-s" ]; then\n'
             f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
-            f'exec {real_jq} "$@"\n'
+            f'exec {real_jq} "$@"\n',
         )
-        stub.chmod(0o755)
         extra_env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
 
         pre_fires = _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE - 1, extra_env=extra_env)
@@ -962,8 +960,8 @@ class TestNudgeLongTurnSubagent:
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         write_scaled_timeout_shim(stub_dir)
-        stub = stub_dir / "jq"
-        stub.write_text(
+        write_prewarmed_stub(
+            stub_dir / "jq",
             '#!/bin/bash\n'
             'if [ "$1" = "-s" ]; then\n'
             '  tmp=$(mktemp)\n'
@@ -980,9 +978,8 @@ class TestNudgeLongTurnSubagent:
             '  rm -f "$tmp"\n'
             '  exit 0\n'
             'fi\n'
-            f'exec {real_jq} "$@"\n'
+            f'exec {real_jq} "$@"\n',
         )
-        stub.chmod(0o755)
         extra_env = {
             "PATH": f"{stub_dir}:{os.environ['PATH']}",
             "LONG_TURN_NUDGE_MAX_SCAN_WINDOW_BYTES": str(SMALL_SCAN_WINDOW_BYTES),
