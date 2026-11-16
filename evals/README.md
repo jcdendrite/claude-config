@@ -1799,11 +1799,15 @@ missing with its reason.
 - **Uncommitted toolkit edits.** The environment drift check compares the CLI
   version and the config checkout's `HEAD` commit. It cannot see an uncommitted
   edit to a toolkit file the `toolkit` arm reads live.
-- **Environment names.** Whether the shell and Claude Code set eight
-  environment names is unverified: `AI_AGENT`, `CLAUDE_EFFORT`, `CLAUDE_PID`,
-  `COREPACK_ENABLE_AUTO_PIN`, `GIT_EDITOR`,
+- **Environment names.** A names-only listing of a replay agent's Bash
+  environment held eight names that `LAUNCH_ENV_ALLOWLIST` in
+  `evals/replay_bench/launch.py` does not pass: `AI_AGENT`, `CLAUDE_EFFORT`,
+  `CLAUDE_PID`, `COREPACK_ENABLE_AUTO_PIN`, `GIT_EDITOR`,
   `NoDefaultCurrentDirectoryInExePath`, `PYTEST_ADDOPTS` and
-  `__CF_USER_TEXT_ENCODING`.
+  `__CF_USER_TEXT_ENCODING`. Whether Claude Code or the shell sets each one is
+  unverified. A shell startup file may re-export a name the allowlist drops,
+  which is also unverified. No runner check reads the agent's Bash environment,
+  and nothing in the bench settles either question.
 - **Charged cost.** The charged cost is the dispatcher's `total_cost_usd`.
   Whether it covers the subagent's spend is unverified, so the spend stops may
   undercount. An attempt with no usable cost figure, such as a timeout, is
