@@ -188,7 +188,7 @@ Leak review covers every session and test run alike. It finishes before the expe
 
 ## Sample size, feasibility pass and lock
 
-**Sizing.** Every figure uses the grid `psi` = 0.10, 0.20 and 0.30, where `psi` is the probability that an intact-arm session and a stripped-arm session of one task disagree on passing. It is an assumption, centered on GH-1408's 0.20. An effect-conditional figure applies only where `psi` is at least the effect, because the disagreement probability cannot fall below the net pass-rate difference. A 15-point effect therefore makes every such figure not applicable at `psi` = 0.10, and the figures that assume no effect stay. The other inputs are `d` = 0.15, the margin (see the decision rule), `z_a` = 1.95996 from two-sided alpha 0.05, and `z_b` = 0.84162 from power 0.80. Two counts follow:
+**Sizing.** Every figure uses the grid `psi` = 0.10, 0.20 and 0.30, where `psi` is the probability that an intact-arm session and a stripped-arm session of one task disagree on passing. It is an assumption, centered on GH-1408's 0.20. An effect-conditional figure applies only where `psi` is at least the effect, because the disagreement probability cannot fall below the net pass-rate difference. The other inputs are `d` = 0.15, the margin (see the decision rule), `z_a` = 1.95996 from two-sided alpha 0.05, and `z_b` = 0.84162 from power 0.80. Two counts follow:
 
 - The Harm count comes from McNemar's normal-approximation formula `n_harm = (z_a*sqrt(psi) + z_b*sqrt(psi - d^2))^2 / d^2`. It is 68 and 103 at `psi` = 0.20 and 0.30, and not applicable at 0.10. It is a proxy, because the verdict reads an interval, not McNemar's test.
 - The Harm excluded count is where the Harm excluded bound (below) reaches 0.80: `n_harm_excluded = psi*((z_a + z_c)/d)^2`. It is 38, 75 and 112. `z_c` is the standard normal 0.825 quantile, because the bound subtracts the 0.025 that falls in the Stripped better outcome.
@@ -197,7 +197,7 @@ Each arm runs `k` = 3 independent replicate sessions per task. Both arms of a ta
 
 Both counts take the pessimistic end of a variance range. Let `p` and `q` be a task's per-session pass probabilities in the intact and stripped arms. Under no effect, `Var(d_task)` = `E[(p-q)^2]` + (`psi` - `E[(p-q)^2]`)/`k`.
 
-- It is `psi/k` at the *favorable end*, when each task's two arms share one pass probability.
+- It is `psi/k` at the *favorable end*, when `p - q` is the same on every task.
 - It is `psi` at the *pessimistic end*, when each session's result is fixed by its task and arm.
 - Under a true effect `e`, `psi - e^2` replaces `psi` at both ends.
 
@@ -230,7 +230,7 @@ The lock also records two probabilities at `n`, the smaller of the PR task count
 - The probability of the Harm outcome if stripping costs 15 points: `Phi(d*sqrt(n/V) - z_a)`. It is not applicable at `psi` = 0.10.
 - The *Harm excluded bound*, the chance of `L` <= 0 <= `U` < 0.15 if stripping costs nothing: `Phi(min(z_a, d*sqrt(n/V) - z_a)) - Phi(-z_a)`. It is approximate, being a normal approximation, and it is the chance at zero effect, not a maximum over effects.
 
-In the lock, the experimenter decides whether the study goes ahead at that `n`. The go decision also records the simulated false-exclusion rate of the verdict procedure itself at `n`, meaning how often it returns Harm excluded if stripping costs 15 points, at each `psi` on the grid that is at least 0.15 and at both ends of the variance range. The verdict reads a percentile bootstrap, which is anti-conservative toward Harm excluded at small counts, roughly under 20 tasks. This record can only count against going ahead and relaxes no condition of the decision rule. No authoring outcome exists yet, so the choice cannot bias the result.
+In the lock, the experimenter decides whether the study goes ahead at that `n`. The go decision also records the simulated chance at `n` that the primary interval's bootstrap gives `L` <= 0 <= `U` < 0.15 if stripping costs 15 points, at each `psi` on the grid that is at least 0.15 and at both ends of the variance range. The verdict reads a percentile bootstrap, which is anti-conservative toward Harm excluded at small counts, roughly under 20 tasks. This record can only count against going ahead and relaxes no condition of the decision rule. No authoring outcome exists yet, so the choice cannot bias the result.
 
 ## Analysis
 
@@ -275,7 +275,7 @@ A short PR task count is expected.
 
 **The margin.** The repository owner set the 15-point margin on 2026-11-06, replacing the 10-point gap in GH-1408, after the pre-count below and before any authoring session. The owner's decision: "Let's go with the 15-point margin, the two-sided interval. That sounds good." The reason given with the proposal the owner accepted is that Harm excluded becomes reachable at the pre-count's scale. It is not that a harm under 15 points is acceptable.
 
-**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only the interval condition of Harm excluded, and assume every run task is in the passable subset, so a smaller subset lowers them. The table gives the Harm excluded bound if stripping costs nothing.
+**Reachability.** These figures are at `psi` = 0.20 and the favorable and pessimistic ends of the variance range, for 40 and 75 PR tasks, where 75 is the cap. They cover only the interval condition of Harm excluded, and assume every run task is in the passable subset. The table gives the Harm excluded bound if stripping costs nothing.
 
 | Margin | Variance end | 40 tasks | 75 tasks |
 |---|---|---|---|
@@ -313,7 +313,7 @@ The `Revisions` section binds the margin from the moment this page ships.
 - The code already passed comment review, and held-out tests cover only what the PR's author tested.
 - Issue bodies vary in how much of the answer they state beyond what the specification filter requires. An issue created after the work began can state more, which pulls `Delta` toward 0 and favors Harm excluded.
 - Memorized answers from this public history pull `Delta` toward 0 and favor Harm excluded. The post-cutoff subgroup and the lock's post-cutoff share are the only checks on memorization, and the subgroup has no minimum size. An uninformative subgroup means memorization is unchecked.
-- A fail-to-pass test that asserts a literal output or text the prompt does not state makes a pass partly reflect phrasing luck. For text no arm can see, that luck acts equally in both arms and widens the intervals, and a task passed by luck pulls `Delta` toward 0, which favors Harm excluded. The reported share counts tests, not tasks, and a pass needs every fail-to-pass test of its task, so a small share can touch most tasks. The share is an upper bound on phrasing luck, because text that a kept comment documents also lands in it. For that text the effect runs the other way: the intact arm can copy it and the stripped arm must guess, which is a comment effect, not luck.
+- A fail-to-pass test that asserts a literal output or text the prompt does not state makes a pass partly reflect phrasing luck. For text no arm can see, that luck acts equally in both arms and widens the intervals. A task passed by luck pulls `Delta` toward 0, which favors Harm excluded. The reported share counts tests, not tasks, and a pass needs every fail-to-pass test of its task, so a small share can touch most tasks. The share is an upper bound on phrasing luck, because text that a kept comment documents also lands in it. For that text the effect runs the other way: the intact arm can copy it and the stripped arm must guess, which is a comment effect, not luck.
 - Tasks no session can pass pull `Delta` toward 0 and narrow the interval. The sixth condition of Harm excluded keeps them from alone producing it. The share of tasks where no replicate passed in either arm is an upper bound on the tasks no session can pass.
 - The confinement is verified only as far as the feasibility pass's checks reach. A gap they miss leaves no trace, and in the stripped arm it raises the pass rate, which favors Harm excluded.
 - A test that needs a host tool or network access the confinement withholds fails at the merge commit, so it is not a fail-to-pass test. A PR left with none is ineligible.
