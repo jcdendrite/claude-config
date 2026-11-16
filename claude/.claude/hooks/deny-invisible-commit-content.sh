@@ -136,6 +136,13 @@
 #    first command hides a later mutation or `-a` and is allowed
 #    (`git status & git commit -a -m x`, `git status & git add . & git
 #    commit -m x`). This gate's `--continue` support does not close it.
+#  - `--shallow-file` is missing from `_LIB_GIT_GLOBAL_VALUE_FLAGS`. Git
+#    consumes the next word as the flag's value, but the gate reads that word
+#    as the subcommand.
+#  - Program-running global flags (`-c core.fsmonitor=...`, `--git-dir=`,
+#    `--exec-path=`) are admitted before an allowlisted subcommand.
+#    GH-1295 covers only the reviewer gate's Bash arm, and no tracker covers
+#    this gate. The cooperative tier accepts both gaps.
 #
 # Subprocess footprint:
 #  - The quote-strip (sed+tr) that produces COMMAND_UNQUOTED, and the
@@ -367,7 +374,8 @@ while IFS= read -r masked_fragment; do
     fi
     continue
   fi
-  if [ "$COMMIT_FRAGMENT_COUNT" -eq 0 ] && ! [[ "$masked_subcmd" =~ ^($ALLOWED_RE)$ ]]; then
+  if [ "$COMMIT_FRAGMENT_COUNT" -eq 0 ] && ! [[ "$masked_subcmd" =~ ^($ALLOWED_RE)$ ]] \
+    && ! _lib_git_fragment_is_bare_or_version "$masked_fragment" "$COMMAND"; then
     trimmed_masked_fragment=$(_trim_fragment "$masked_fragment")
     emit_deny "'${trimmed_masked_fragment}' runs 'git ${masked_subcmd:-<subcommand>}' before this call's first real ${MASKED_CONCLUDING_LABEL} and can change what ends up staged. Every commit gate reads \`git diff --cached\` before this Bash call executes, so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates — even when a quote-embedded decoy commit earlier in the command hides this fragment from a quote-stripped scan. Staging must run as its own Bash tool call, with the ${MASKED_CONCLUDING_LABEL} as a second, separate call."
     exit 0
@@ -423,7 +431,8 @@ while IFS= read -r fragment; do
     fi
     exit 0
   fi
-  if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
+  if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]] \
+    && ! _lib_git_fragment_is_bare_or_version "$fragment" "$COMMAND"; then
     trimmed_fragment=$(_trim_fragment "$fragment")
     emit_deny "'${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's ${CONCLUDING_FRAGMENT_LABEL} and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with the ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."
     exit 0

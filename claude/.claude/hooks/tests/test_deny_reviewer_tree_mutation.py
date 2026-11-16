@@ -94,7 +94,7 @@ class TestFileWriteTools:
         assert run_hook(HOOK, write_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_write_to_review_pr_findings_directory_under_tmp_allowed(self):
-        """A narrowing of the /tmp arm (GH-1103) that stops admitting this path
+        """A narrowing of the /tmp arm (GH-1295) that stops admitting this path
         string fails here. The path does not exist on disk, so a check of link
         or ownership state is not exercised."""
         path = "/tmp/review-pr-reviewer-findings-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d/staff-sdet-1700000000-branch.md"
@@ -372,6 +372,65 @@ class TestBashGitWrites:
         allow on the git vector so a future refactor moving the agent-type
         check into the Bash arm would break this test, not ship silently."""
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="code-writer")) == "allow"
+
+
+class TestBashGitBareOrVersion:
+    """Only `git`, `git --version` and `git -v` allow, because they write nothing. An
+    empty extracted subcommand alone is not the test: `$SUB` and `$(...)`
+    words extract to empty too, and they can name any subcommand."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --version",
+            "git -v",
+            "git",
+            "git --version | head -1",
+            "git --version && git status",
+            "git --version ''",
+        ],
+        ids=[
+            "version",
+            "short-version",
+            "bare",
+            "version-piped-to-head",
+            "version-then-status",
+            "trailing-empty-quote-cooperative-waiver",
+        ],
+    )
+    def test_reviewer_bare_or_version_git_allowed(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    # The exact-match verdicts are covered by test_lib_fragment_matchers.py. These
+    # cases need the hook's own fragment splitter or quote strip: a `;`/`&&`
+    # chain, a `$(...)` split, the strip that deletes an empty quote pair, and a
+    # backslash-newline continuation. The unquoted `$(...)` row fails if the hook
+    # passes the fragment instead of the whole command to the helper: the
+    # fragment `git ` alone is accepted, and only the whole command shows the
+    # substitution.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git '' --version",
+            "git --version; git checkout -- x",
+            "git --version && git init",
+            'git "$(echo checkout)" -- x',
+            "git $(echo checkout) -- x",
+            "git `echo checkout` -- x",
+            "git \\\ncheckout -- x",
+        ],
+        ids=[
+            "empty-quote-pair-before-version",
+            "version-then-write-semicolon",
+            "version-then-write-and",
+            "command-substitution-subcommand",
+            "unquoted-command-substitution-subcommand",
+            "unquoted-backtick-substitution-subcommand",
+            "backslash-newline-continuation-subcommand",
+        ],
+    )
+    def test_reviewer_bare_or_version_lookalike_denied(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
 
 
 class TestBashGitModeDependentWrites:
@@ -1295,10 +1354,10 @@ class TestKnownGapBypass:
         assert reason is not None
         assert "writes to 'src/x'" in reason
 
-    # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
+    # GH-1295: the three tests below pin the CURRENT (imperfect) allow verdicts
     # for the /tmp link gap in the header's known-gaps list. The hook matches
     # `/tmp/*` as literal text and never resolves links, so each form launders
-    # a write onto a file outside /tmp. When GH-1103 closes the gap, flip the
+    # a write onto a file outside /tmp. When GH-1295 closes the gap, flip the
     # matching assertion to "deny" instead of silently accepting it.
     def test_reviewer_hard_link_into_tmp_allowed(self):
         assert run_hook(HOOK, bash_input("ln src/x /tmp/y", agent_type="ciso-reviewer")) == "allow"

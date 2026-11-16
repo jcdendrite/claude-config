@@ -1,6 +1,7 @@
 """Unit tests for _lib.sh's fragment matchers (_lib_fragment_command_word through
-_lib_commit_fragment_has_worktree_target), _lib_extract_git_subcmd and _lib_extract_git_subcmd_args,
-their quote-blindness composition with _lib_strip_shell_quotes, and _lib_strip_shell_quotes itself.
+_lib_commit_fragment_has_worktree_target), _lib_extract_git_subcmd, _lib_extract_git_subcmd_args and
+_lib_git_fragment_is_bare_or_version, their quote-blindness composition with _lib_strip_shell_quotes,
+and _lib_strip_shell_quotes itself.
 """
 from __future__ import annotations
 
@@ -228,6 +229,99 @@ class TestExtractGitSubcmd:
 class TestExtractGitSubcmdArgs:
     def test_extract_git_subcmd_args(self, fragment: str, expected: list[str]) -> None:
         assert _extract_git_subcmd_args(fragment) == expected
+
+
+def _git_fragment_is_bare_or_version(fragment: str, command: str) -> subprocess.CompletedProcess[str]:
+    """Run the helper on FRAGMENT split from COMMAND, without raising on a non-zero exit."""
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_git_fragment_is_bare_or_version "$1" "$2"',
+            "bash",
+            fragment,
+            command,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git", "git --version", "git -v", "  git --version\t"],
+    ids=["bare", "version", "short-version", "surrounding-whitespace"],
+)
+def test_lib_git_fragment_is_bare_or_version_accepts_the_closed_set(command: str) -> None:
+    result = _git_fragment_is_bare_or_version(command, command)
+    assert (result.returncode, result.stderr) == (0, "")
+
+
+@pytest.mark.parametrize(
+    "fragment, command",
+    [
+        # `--help` and `-h` are deliberately not accepted, keeping the allow set minimal.
+        ("git --help", "git --help"),
+        ("git -h", "git -h"),
+        ("git --version --help", "git --version --help"),
+        ("git --bare", "git --bare"),
+        ("git -p --version", "git -p --version"),
+        ("git --exec-path", "git --exec-path"),
+        ("git -C d --version", "git -C d --version"),
+        ("/usr/bin/git --version", "/usr/bin/git --version"),
+        ("GIT_DIR=x git --version", "GIT_DIR=x git --version"),
+        # The quote strip deletes `''`, leaving two spaces between the words.
+        ("git  --version", "git '' --version"),
+        ("git $SUB", "git $SUB"),
+        # The fragment alone looks bare; the command shows the split.
+        ("git ", 'git "$(echo checkout)" -- x'),
+        ("git ", "git `echo checkout` -- x"),
+    ],
+    ids=[
+        "help",
+        "short-help",
+        "version-then-help",
+        "bare-repo-flag",
+        "pager-flag-then-version",
+        "exec-path",
+        "value-flag-then-version",
+        "absolute-path",
+        "env-prefix",
+        "empty-quote-pair-stripped",
+        "variable-word",
+        "command-substitution-split",
+        "backtick-substitution-split",
+    ],
+)
+def test_lib_git_fragment_is_bare_or_version_rejects_anything_else(fragment: str, command: str) -> None:
+    """Exit 1 with empty stderr, so a crash (exit 127 or 2) cannot pass as a deny."""
+    result = _git_fragment_is_bare_or_version(fragment, command)
+    assert (result.returncode, result.stderr) == (1, "")
+
+
+# A verdict must come from the exit status alone: under a caller's `set -euo pipefail`,
+# no unbound variable and no failing test outside a condition may abort the caller.
+@pytest.mark.parametrize(
+    "command, expected_verdict",
+    [("git --version", "accepted"), ("git --exec-path", "rejected:1")],
+    ids=["accepted", "rejected"],
+)
+def test_lib_git_fragment_is_bare_or_version_under_set_e_and_u_returns_verdict_without_aborting_caller(
+    command: str, expected_verdict: str
+) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'set -euo pipefail; . {_LIB_SH}; if _lib_git_fragment_is_bare_or_version "$1" "$1"; then echo accepted; '
+            "else echo rejected:$?; fi",
+            "bash",
+            command,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (0, f"{expected_verdict}\n", "")
 
 
 # --- _lib_fragment_invokes_git ------------------------------------------

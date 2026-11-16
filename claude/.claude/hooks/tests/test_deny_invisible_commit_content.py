@@ -773,6 +773,85 @@ class TestDenyInvisibleCommitContent:
     def test_readonly_subcommand_chained_before_commit_allowed(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git status && git commit -m x")) == "allow"
 
+    @pytest.mark.parametrize("bare_or_version", ["git --version", "git -v", "git"])
+    def test_bare_or_version_git_chained_before_commit_allowed(self, bare_or_version):
+        """`git`, `git --version` and `git -v` write nothing, so they stage nothing."""
+        assert (
+            run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(f"{bare_or_version} && git commit -m x"))
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("bare_or_version", ["git --version", "git -v", "git"])
+    def test_bare_or_version_git_in_quoted_chain_before_commit_allowed(self, bare_or_version):
+        """Same allowance in the quote-stripped walk, which sees a fragment that
+        masking hides inside the quoted text of an earlier `echo`."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'echo "x && {bare_or_version}" && git commit -m y'),
+        ) == "allow"
+
+    # Each shape denies in the masked walk (bare chain) and in the quote-stripped
+    # walk (the same chain quoted inside an `echo`, which masking hides). The
+    # `$(...)` rows fail if either call site passes the fragment instead of the
+    # whole command to _lib_git_fragment_is_bare_or_version: the fragment `git `
+    # alone is accepted, and only the whole command shows the substitution.
+    # An id ending in `accepted-over-deny` marks a shape that stages nothing if
+    # run: the gate denies it because only the exact literals are allowed.
+    BARE_OR_VERSION_LOOKALIKES = [
+        "git $SUB -- x",
+        'git "$(echo add)" -- x',
+        "git $(echo add) -- x",
+        "git `echo add` -- x",
+        "git --version && git add f",
+        "git --help",
+        "git -h",
+        "git '' --version",
+        "git -C d --version",
+        "git --version > out",
+        "env git --version",
+        "GIT_DIR=x git --version",
+        "/tmp/x/git --version",
+    ]
+    BARE_OR_VERSION_LOOKALIKE_IDS = [
+        "variable-subcommand",
+        "command-substitution-subcommand",
+        "unquoted-command-substitution",
+        "unquoted-backtick-substitution",
+        "version-then-add",
+        "help-accepted-over-deny",
+        "short-help-accepted-over-deny",
+        "empty-quoted-word-before-version-accepted-over-deny",
+        "value-flag-then-version-accepted-over-deny",
+        "stdout-redirect-accepted-over-deny",
+        "env-runner-accepted-over-deny",
+        "env-prefix-accepted-over-deny",
+        "path-qualified-accepted-over-deny",
+    ]
+
+    @pytest.mark.parametrize("shape", BARE_OR_VERSION_LOOKALIKES, ids=BARE_OR_VERSION_LOOKALIKE_IDS)
+    def test_bare_or_version_lookalike_chained_before_commit_denied_by_masked_walk(self, shape):
+        reason = run_hook_reason(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(f"{shape} && git commit -m x"))
+        assert reason is not None
+        assert "before this call's first real" in reason
+
+    @pytest.mark.parametrize("shape", BARE_OR_VERSION_LOOKALIKES, ids=BARE_OR_VERSION_LOOKALIKE_IDS)
+    def test_bare_or_version_lookalike_in_quoted_chain_before_commit_denied_by_stripped_walk(self, shape):
+        command = f'echo "x && {shape}" && git commit -m y'
+        reason = run_hook_reason(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command))
+        assert reason is not None
+        assert "before this call's first real" not in reason
+        assert "before this call's git commit and can change what ends up staged" in reason
+
+    def test_backslash_newline_continuation_before_staging_subcommand_denied(self):
+        """A backslash-newline continuation joins `git` to `add`, so the chain stages before the commit."""
+        command = "git \\\nadd -A && git commit -m x"
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    def test_bare_or_version_git_before_commit_with_command_substitution_message_denied(self):
+        """A `$` in the commit message still denies: an expansion can supply a subcommand."""
+        command = "git --version && git commit -m \"$(cat <<'EOF'\nmessage\nEOF\n)\""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
     def test_fetch_chained_before_commit_allowed(self):
         """`fetch` only updates remote-tracking refs, not the working tree or
         index — read-only under this hook's threat model."""
