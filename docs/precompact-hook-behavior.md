@@ -210,9 +210,15 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
     - The block's first framing line.
     - The headless label and the helper that adds it to a quoted message.
     - NUL removal. The task-notification closer check, the tag-opening check, the command-name check and the empty-text check all judge text with NUL already removed, which is the text the block emits. `_quoted_text` drops a prompt with no text left. The shared render and user-input predicates still run on the raw text.
-    - Two per-record input bounds: the longest accepted `cwd` is 4,096 characters, and `<command-args>` is matched with `str.find`. A `cwd` at the bound still costs about 0.4 to 1 second to walk on one machine.
+    - Two per-record input bounds: the longest accepted `cwd` is 4,096 characters, and `<command-args>` is matched with `str.find`.
     - The module docstring.
-  - The shipped version keeps the cap loop and the ordering, and admits the same prompts as `0a2f3e7ec6c8` except one that holds NUL. The unit tests cover the differences: they pin the first framing line and the label as literals, they keep every admission row written for `0a2f3e7ec6c8`, and they add rows for NUL-bearing prompts. The 62 cuts are real-transcript evidence for `0a2f3e7ec6c8` only. For the shipped version the evidence is those unit tests and the end-to-end run below.
+  - The 62 cuts are real-transcript evidence for `0a2f3e7ec6c8` only. For the shipped version the evidence is the unit tests and the end-to-end run below.
+  - The shipped version keeps the cap loop and the ordering.
+  - It admits the same prompts as `0a2f3e7ec6c8` except one that holds NUL.
+  - The unit tests cover the differences:
+    - They pin the first framing line and the label as literals.
+    - They keep every admission row written for `0a2f3e7ec6c8`.
+    - They add rows for NUL-bearing prompts.
   - The end-to-end findings below ran a version that differs from the shipped one only in NUL handling, the empty-text check after it, the two per-record input bounds, and a docstring and comment edit.
 
 ## Post-compact hook end-to-end findings
