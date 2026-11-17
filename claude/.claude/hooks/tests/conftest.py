@@ -22,6 +22,7 @@ from helpers import (
     git_toplevel,
     init_git_repo_with_commit,
     install_shell_exec_guard,
+    install_unwarmed_stub_guard,
     live_process,
     run_autonomous_shipping_statement,
     scaled_shim_sleep,
@@ -453,11 +454,13 @@ def gh_timeout_shim(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _guard_shell_exec(monkeypatch):
+def _guard_shell_exec(monkeypatch, tmp_path_factory):
     """Fail a test that execs a shell file in a way that can pass without the file running.
     The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
-    fixture because importing one into a conftest trips ruff F401."""
+    fixture because importing one into a conftest trips ruff F401.
+    It also fails a launch under the scaled timeout shim whose PATH holds a stub write_prewarmed_stub did not write."""
     install_shell_exec_guard(monkeypatch)
+    install_unwarmed_stub_guard(monkeypatch, tmp_path_factory.getbasetemp())
 
 
 @pytest.fixture(autouse=True)
