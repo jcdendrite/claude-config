@@ -8,7 +8,8 @@ out-of-session reads. Judge runs (bench-judge-recall / bench-judge-precision),
 adjudicate.py, and analysis.py own the judge-side scope -- this module only
 runs reviewer arms, but its per-run validity checks and RunRecord schema are
 written generically over "the run's own directories" so the judge runs reuse
-them unchanged.
+them. A judge is the top-level session, so it has its own launch command and
+validity entry point (build_judge_command, evaluate_judge_run_validity).
 
 Reuses from evals/measure_subagent_model_resolution.py (see that module's
 own docstring for the reuse record this file adds). Reuses
@@ -62,6 +63,9 @@ from _config_dir import config_dir  # noqa: E402
 # --- Frozen model IDs ------------------------------------------------------
 REVIEWER_MODEL_ID = "claude-sonnet-5"
 JUDGE_MODEL_ID = "claude-opus-5-5"
+# Passed as `--effort` because a top-level `--agent` session ignores the agent
+# file's `effort:` frontmatter.
+JUDGE_EFFORT = "high"
 
 # --- Caps --------------------------------------------------------------------
 
@@ -171,6 +175,27 @@ def build_dispatch_command(
     ]
 
 
+def build_judge_command(
+    inner_prompt: str, *, agent_name: str, declared_tools: frozenset[str], model_id: str, effort: str,
+    session_id: str, budget_cap_usd: float,
+) -> list[str]:
+    """A judge's launch command: the judge agent is the top-level session, with
+    no dispatcher. `--strict-mcp-config` makes the CLI ignore every MCP
+    configuration other than `--mcp-config`, which this command does not pass."""
+    return [
+        "claude", "-p", inner_prompt,
+        "--agent", agent_name,
+        "--tools", ",".join(sorted(declared_tools)),
+        "--strict-mcp-config",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--model", model_id,
+        "--effort", effort,
+        "--session-id", session_id,
+        "--max-budget-usd", str(budget_cap_usd),
+    ]
+
+
 class HarnessInvalidatedError(Exception):
     """Raised by a check that must exit 2, naming the failing field. Carries
     the already-formatted message; run_review_bench.py's `main` catches it
@@ -197,7 +222,9 @@ VALIDITY_FAIL_PROMPT_MISMATCH = "prompt-mismatch"
 VALIDITY_FAIL_NO_DISPATCHER_TOOL_CALL = "no-dispatcher-tool-call"
 VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL = "extra-dispatcher-tool-call"
 VALIDITY_FAIL_WRONG_AGENT = "wrong-agent"
+VALIDITY_FAIL_AGENT_MISMATCH = "agent-mismatch"  # judge runs only
 VALIDITY_FAIL_MODEL_MISMATCH = "model-mismatch"
+VALIDITY_FAIL_EFFORT_MISMATCH = "effort-mismatch"  # judge runs only
 VALIDITY_FAIL_UNDECLARED_TOOL = "undeclared-tool"
 VALIDITY_FAIL_LIVE_CHECKOUT_LEAK = "live-checkout-leak"
 VALIDITY_FAIL_CONFIG_DIR_LEAK = "config-dir-leak"
@@ -208,6 +235,7 @@ VALIDITY_FAIL_SIDECAR_MISSING = "sidecar-missing"
 VALIDITY_FAIL_EMPTY_FINDINGS = "empty-findings"
 VALIDITY_FAIL_TRANSCRIPT_UNREADABLE = "transcript-unreadable"
 VALIDITY_FAIL_API_ERROR_FINAL_RECORD = "api-error-final-record"
+VALIDITY_FAIL_STOP_HOOK_CONTINUATION = "stop-hook-continuation"  # judge runs only
 
 
 @dataclass
@@ -232,7 +260,7 @@ class RunRecord:
     paged_followups: int
     whole_file_reads_of_changed_files: int
     over_read_cap: bool  # any changed file over the read-cap-token threshold (fixture_repo.ChangedFileStat)
-    dispatch_prompt_verbatim: bool
+    dispatch_prompt_verbatim: bool | None  # None: the prompt was not compared (a judge's prompt is a launch argument)
     cli_version: str
     ambient_config_commit: str
     # Cost and token usage from the stream's final result event; None when no
@@ -389,10 +417,15 @@ SESSION_FLUSH_TIMEOUT_S = msmr.SIDECAR_POLL_TIMEOUT_S
 SESSION_FLUSH_POLL_INTERVAL_S = msmr.SIDECAR_POLL_INTERVAL_S
 
 
-def _flushed_file_sizes(session_jsonl: Path) -> dict[Path, int] | None:
+def _flushed_file_sizes(session_jsonl: Path, *, requires_subagent_sidecar: bool) -> dict[Path, int] | None:
     """The size of the transcript and every sidecar file, or None while the
     sidecar lacks its meta file or its transcript (or a file vanishes
-    mid-scan)."""
+    mid-scan). Without a required sidecar, only the transcript's size."""
+    if not requires_subagent_sidecar:
+        try:
+            return {session_jsonl: session_jsonl.stat().st_size}
+        except OSError:
+            return None
     subagent_dir = msmr.subagent_dir_for_session(session_jsonl)
     sidecar_metas = list(subagent_dir.glob("*.meta.json"))
     sidecar_transcripts = list(subagent_dir.glob("*.jsonl"))
@@ -404,18 +437,25 @@ def _flushed_file_sizes(session_jsonl: Path) -> dict[Path, int] | None:
         return None
 
 
-def wait_for_session_flush(projects_root: Path, session_id: str, *, timed_out: bool) -> Path | None:
-    """The session transcript's path once it and a subagent sidecar are on
-    disk and no file's size changed across two consecutive polls, polling up
-    to SESSION_FLUSH_TIMEOUT_S. On timeout still returns the transcript (None
-    if that is missing too) so the caller classifies what is actually there
-    rather than assuming a cause. A timed-out run is never classified from
-    its transcript, so it gets a single check and no wait."""
+def wait_for_session_flush(
+    projects_root: Path, session_id: str, *, timed_out: bool, requires_subagent_sidecar: bool = True,
+) -> Path | None:
+    """The session transcript's path once it and, unless
+    requires_subagent_sidecar is False (a top-level judge session has none), a
+    subagent sidecar are on disk and no file's size changed across two
+    consecutive polls, polling up to SESSION_FLUSH_TIMEOUT_S. On timeout still
+    returns the transcript (None if that is missing too) so the caller
+    classifies what is actually there rather than assuming a cause. A
+    timed-out run is never classified from its transcript, so it gets a single
+    check and no wait."""
     deadline = time.monotonic() + (0.0 if timed_out else SESSION_FLUSH_TIMEOUT_S)
     previous_sizes: dict[Path, int] | None = None
     while True:
         session_jsonl = find_session_jsonl_by_id(projects_root, session_id)
-        sizes = _flushed_file_sizes(session_jsonl) if session_jsonl is not None else None
+        sizes = (
+            _flushed_file_sizes(session_jsonl, requires_subagent_sidecar=requires_subagent_sidecar)
+            if session_jsonl is not None else None
+        )
         if sizes is not None and sizes == previous_sizes:
             return session_jsonl
         previous_sizes = sizes
@@ -552,7 +592,8 @@ def _sum_optional(values: Sequence[int | float | None]) -> int | float | None:
 def combine_attempt_records(records: Sequence[RunRecord]) -> RunRecord:
     """The last attempt's record, carrying attempts=len(records) and the
     cost and token usage summed over every attempt, so a discarded first
-    attempt's spend still counts."""
+    attempt's spend still counts. Only the final attempt's out-of-session
+    reads are recorded."""
     final = records[-1]
     return replace(
         final, attempts=len(records),
@@ -607,23 +648,40 @@ def _read_like_target(tool_name: str, tool_input: dict) -> str | None:
     return base or None
 
 
+def _parse_transcript_record(raw: str) -> dict | None:
+    """The JSON object a transcript line holds, None for a line that is not
+    valid JSON or not an object."""
+    try:
+        rec = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def _content_blocks(rec: dict) -> list:
+    """The record's `message.content` blocks, [] when message or content has
+    any other shape."""
+    message = rec.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, list) else []
+
+
 def extract_read_like_calls(subagent_jsonl: Path) -> list[ReadLikeCall]:
     calls: list[ReadLikeCall] = []
     with open(subagent_jsonl) as fh:
         for raw in fh:
-            try:
-                rec = json.loads(raw)
-            except json.JSONDecodeError:
+            rec = _parse_transcript_record(raw)
+            if rec is None or rec.get("type") != "assistant":
                 continue
-            if rec.get("type") != "assistant":
-                continue
-            for block in (rec.get("message") or {}).get("content") or []:
+            for block in _content_blocks(rec):
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
                 name = block.get("name")
                 if name not in _READ_LIKE_TOOLS:
                     continue
-                tool_input = block.get("input") or {}
+                tool_input = block.get("input")
+                if not isinstance(tool_input, dict):
+                    tool_input = {}
                 path = _read_like_target(name, tool_input)
                 if path:
                     calls.append(
@@ -644,18 +702,15 @@ def _tool_result_text(content) -> str:
 
 
 def extract_tool_results(subagent_jsonl: Path) -> dict[str, str]:
-    """tool_use_id -> its tool_result text, from "user" records in one
-    subagent's own transcript."""
+    """tool_use_id -> its tool_result text, from "user" records in one agent's
+    own transcript (a subagent's, or a judge's top-level session)."""
     results: dict[str, str] = {}
     with open(subagent_jsonl) as fh:
         for raw in fh:
-            try:
-                rec = json.loads(raw)
-            except json.JSONDecodeError:
+            rec = _parse_transcript_record(raw)
+            if rec is None or rec.get("type") != "user":
                 continue
-            if rec.get("type") != "user":
-                continue
-            for block in (rec.get("message") or {}).get("content") or []:
+            for block in _content_blocks(rec):
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
                 tool_use_id = block.get("tool_use_id")
@@ -665,33 +720,79 @@ def extract_tool_results(subagent_jsonl: Path) -> dict[str, str]:
 
 
 def extract_final_text(subagent_jsonl: Path) -> str | None:
-    """The subagent's own last assistant text block -- its findings
-    (RunRecord.findings_text). None when its final assistant record is one
-    Claude Code synthesized (an API error or placeholder turn), whose text
-    is an error message rather than a review. Otherwise the last text block
-    of a non-synthetic record, or "" when none has one."""
+    """The agent's own last assistant text block (a subagent's, or a judge's
+    top-level session) -- its findings (RunRecord.findings_text). None when
+    its final assistant record is one Claude Code synthesized (an API error
+    or placeholder turn), whose text is an error message rather than a
+    review. Otherwise the last text block of a non-synthetic record, or ""
+    when none has one."""
     last_text = ""
     final_record_is_synthetic = False
     with open(subagent_jsonl) as fh:
         for raw in fh:
-            try:
-                rec = json.loads(raw)
-            except json.JSONDecodeError:
+            rec = _parse_transcript_record(raw)
+            if rec is None or rec.get("type") != "assistant":
                 continue
-            if rec.get("type") != "assistant":
-                continue
-            message = rec.get("message") or {}
-            final_record_is_synthetic = bool(
-                rec.get("isApiErrorMessage") or message.get("model") == msmr.SYNTHETIC_MODEL_ID
-            )
+            message = rec.get("message")
+            model = message.get("model") if isinstance(message, dict) else None
+            final_record_is_synthetic = bool(rec.get("isApiErrorMessage") or model == msmr.SYNTHETIC_MODEL_ID)
             if final_record_is_synthetic:
                 continue
-            for block in message.get("content") or []:
+            for block in _content_blocks(rec):
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block.get("text")
                     if isinstance(text, str):
                         last_text = text
     return None if final_record_is_synthetic else last_text
+
+
+def extract_agent_settings(session_jsonl: Path) -> frozenset[str]:
+    """The agent names a top-level `--agent` session's transcript records, from
+    its `{"type": "agent-setting", "agentSetting": <name>}` records."""
+    names: set[str] = set()
+    with open(session_jsonl) as fh:
+        for raw in fh:
+            rec = _parse_transcript_record(raw)
+            if rec is not None and rec.get("type") == "agent-setting" and isinstance(rec.get("agentSetting"), str):
+                names.add(rec["agentSetting"])
+    return frozenset(names)
+
+
+def extract_assistant_efforts(session_jsonl: Path) -> frozenset[str | None]:
+    """The `effort` each real-model assistant record of a transcript carries,
+    None for a record with no string `effort`. A synthetic-model or
+    API-error-flagged record, which Claude Code writes for an API failure, is
+    skipped as `extract_final_text` skips it. Claude Code writes `effort` on
+    every real-model assistant record."""
+    efforts: set[str | None] = set()
+    for rec in msmr._iter_assistant_records(session_jsonl):
+        if rec.get("isApiErrorMessage") or rec["message"].get("model") == msmr.SYNTHETIC_MODEL_ID:
+            continue
+        effort = rec.get("effort")
+        efforts.add(effort if isinstance(effort, str) else None)
+    return frozenset(efforts)
+
+
+# Claude Code writes a blocking Stop hook's reason into the transcript as a
+# meta user record with this string content prefix, and the turn it forces
+# follows. A `stop_hook_summary` record is not the marker: Claude Code writes
+# one for every Stop hook run, blocking or not.
+STOP_HOOK_FEEDBACK_PREFIX = "Stop hook feedback:"
+
+
+def has_stop_hook_feedback(session_jsonl: Path) -> bool:
+    """Whether a blocking Stop hook forced the session to continue after a
+    final answer."""
+    with open(session_jsonl) as fh:
+        for raw in fh:
+            rec = _parse_transcript_record(raw)
+            if rec is None or rec.get("type") != "user" or rec.get("isMeta") is not True:
+                continue
+            message = rec.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str) and content.startswith(STOP_HOOK_FEEDBACK_PREFIX):
+                return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -828,13 +929,15 @@ class RunValidity:
     # prompt-mismatch". A failure recorded before that comparison runs
     # (extra-dispatcher-tool-call, wrong-agent, prompt-mismatch itself)
     # carries False here, since the prompt was never confirmed.
-    prompt_verbatim: bool = False
+    # None means the prompt was not compared: a judge session receives its
+    # prompt as a command-line argument.
+    prompt_verbatim: bool | None = False
     failure_detail: str | None = None
 
 
 def _fail(
     reason: str, *, observed_model: str | None = None, observed_tools: tuple[str, ...] = (),
-    prompt_verbatim: bool = False, detail: str | None = None,
+    prompt_verbatim: bool | None = False, detail: str | None = None,
 ) -> RunValidity:
     return RunValidity(
         ok=False, failure_reason=reason, observed_model=observed_model, observed_tools=observed_tools,
@@ -895,14 +998,9 @@ def evaluate_run_validity(
 
     # Every failure from here on happens after the prompt comparison above
     # already matched, so each carries prompt_verbatim=True.
-    final_result = extract_final_result(stream_lines)
-    if final_result is None:
-        return _fail(VALIDITY_FAIL_NO_RESULT_EVENT, prompt_verbatim=True)
-    result_detail = f"subtype {final_result.subtype!r}, terminal_reason {final_result.terminal_reason!r}"
-    if final_result.terminal_reason and "budget" in final_result.terminal_reason:
-        return _fail(MISSING_REASON_BUDGET, prompt_verbatim=True, detail=result_detail)
-    if final_result.is_error or final_result.subtype != RESULT_SUBTYPE_SUCCESS:
-        return _fail(VALIDITY_FAIL_RESULT_ERROR, prompt_verbatim=True, detail=result_detail)
+    result_failure = _check_final_result(stream_lines)
+    if result_failure is not None:
+        return result_failure
 
     dispatches = msmr.parse_subagent_dispatches(
         dispatcher_session_jsonl, requested_agent_declared_tools=agent_declared_tools
@@ -911,17 +1009,12 @@ def evaluate_run_validity(
         return _fail(VALIDITY_FAIL_SIDECAR_MISSING, prompt_verbatim=True)
     dispatch = dispatches[0]
 
-    if dispatch.observed_model_ids != frozenset({expected_model_id}):
-        return _fail(
-            VALIDITY_FAIL_MODEL_MISMATCH, observed_model=next(iter(dispatch.observed_model_ids), None),
-            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
-        )
-    undeclared = dispatch.observed_tools - agent_declared_tools
-    if undeclared:
-        return _fail(
-            VALIDITY_FAIL_UNDECLARED_TOOL, observed_model=expected_model_id,
-            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
-        )
+    model_or_tool_failure = _check_model_and_tools(
+        dispatch.observed_model_ids, dispatch.observed_tools,
+        expected_model_id=expected_model_id, agent_declared_tools=agent_declared_tools,
+    )
+    if model_or_tool_failure is not None:
+        return model_or_tool_failure
 
     subagent_dir = msmr.subagent_dir_for_session(dispatcher_session_jsonl)
     subagent_jsonls = sorted(subagent_dir.glob("*.jsonl"))
@@ -939,9 +1032,177 @@ def evaluate_run_validity(
             observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
             detail=_os_error_detail(exc),
         )
+    return _classify_agent_reads(
+        read_like_calls, tool_results, findings_text, observed_tools=dispatch.observed_tools,
+        expected_model_id=expected_model_id, fixture_dir=fixture_dir, own_dirs=own_dirs, projects_root=projects_root,
+        own_session_paths=own_session_paths, live_checkout_roots=live_checkout_roots,
+        changed_relpaths=changed_relpaths, fix_commit_relpaths=fix_commit_relpaths,
+    )
+
+
+def evaluate_judge_run_validity(
+    *,
+    session_jsonl: Path,
+    stream_lines: list[bytes],
+    timed_out: bool,
+    expected_agent_name: str,
+    expected_model_id: str,
+    expected_effort: str,
+    agent_declared_tools: frozenset[str],
+    fixture_dir: Path,
+    own_dirs: tuple[Path, ...],
+    projects_root: Path,
+    own_session_paths: tuple[Path, ...],
+    live_checkout_roots: tuple[Path, ...],
+    changed_relpaths: tuple[str, ...],
+    fix_commit_relpaths: tuple[str, ...] = (),
+) -> RunValidity:
+    """evaluate_run_validity for a judge, which is the top-level session: its
+    own transcript carries the agent, model, tool calls and final text, so no
+    dispatcher or sidecar check applies. The launch forces `--model` and
+    `--tools`, so only the transcript's agent record shows `--agent` resolved.
+    A record with no `effort` counts as a mismatch, so a Claude Code version
+    that stops recording it fails every judge run instead of passing unchecked.
+    A run is also invalid when a blocking Stop hook forced a continuation,
+    whose text would become the transcript's last text block in place of the
+    judge's own answer.
+    Unless it timed out, a run whose transcript can be read reports its
+    out-of-session reads whatever its verdict."""
+    if timed_out:
+        return _fail(MISSING_REASON_TIMEOUT, prompt_verbatim=None)
+
+    # Held rather than returned, so a failed result event still lists the run's reads.
+    result_failure = _check_final_result(stream_lines)
+
+    try:
+        read_like_calls = extract_read_like_calls(session_jsonl)
+        tool_results = extract_tool_results(session_jsonl)
+        findings_text = extract_final_text(session_jsonl)
+        observed_agent_names = extract_agent_settings(session_jsonl)
+        observed_efforts = extract_assistant_efforts(session_jsonl)
+        stop_hook_forced_continuation = has_stop_hook_feedback(session_jsonl)
+    except (OSError, ValueError) as exc:  # ValueError includes UnicodeDecodeError from a text-mode read
+        if result_failure is not None:
+            return replace(result_failure, prompt_verbatim=None)
+        detail = _os_error_detail(exc) if isinstance(exc, OSError) else f"{type(exc).__name__}: transcript is not readable"
+        return _fail(VALIDITY_FAIL_TRANSCRIPT_UNREADABLE, prompt_verbatim=None, detail=detail)
+    # The scan reads any transcript's assistant records, not only a subagent's.
+    observed_model_ids, observed_tools = msmr._scan_subagent_jsonl(session_jsonl)
+
+    verdict = result_failure
+    if verdict is None:
+        verdict = _check_judge_identity(
+            observed_agent_names, observed_model_ids, observed_tools, observed_efforts,
+            expected_agent_name=expected_agent_name, expected_model_id=expected_model_id,
+            expected_effort=expected_effort, agent_declared_tools=agent_declared_tools,
+        )
+    if verdict is None and stop_hook_forced_continuation:
+        verdict = _fail(
+            VALIDITY_FAIL_STOP_HOOK_CONTINUATION, observed_model=expected_model_id,
+            observed_tools=tuple(sorted(observed_tools)), prompt_verbatim=True,
+            detail="a Stop hook forced the session to continue after its final answer",
+        )
+    if verdict is None:
+        verdict = _classify_agent_reads(
+            read_like_calls, tool_results, findings_text, observed_tools=observed_tools,
+            expected_model_id=expected_model_id, fixture_dir=fixture_dir, own_dirs=own_dirs,
+            projects_root=projects_root, own_session_paths=own_session_paths,
+            live_checkout_roots=live_checkout_roots, changed_relpaths=changed_relpaths,
+            fix_commit_relpaths=fix_commit_relpaths,
+        )
+    return replace(
+        verdict,
+        prompt_verbatim=None,
+        out_of_session_paths=_out_of_session_read_paths(read_like_calls, fixture_dir=fixture_dir, own_dirs=own_dirs),
+    )
+
+
+def _check_judge_identity(
+    observed_agent_names: frozenset[str], observed_model_ids: frozenset[str], observed_tools: frozenset[str],
+    observed_efforts: frozenset[str | None], *, expected_agent_name: str, expected_model_id: str,
+    expected_effort: str, agent_declared_tools: frozenset[str],
+) -> RunValidity | None:
+    """The first failed check of the agent, model, tools, then effort a judge's
+    transcript records, None when all match."""
+    sorted_observed_tools = tuple(sorted(observed_tools))
+    if observed_agent_names != frozenset({expected_agent_name}):
+        return _fail(
+            VALIDITY_FAIL_AGENT_MISMATCH, observed_model=next(iter(observed_model_ids), None),
+            observed_tools=sorted_observed_tools, prompt_verbatim=True,
+            detail=f"expected agent {expected_agent_name!r}, transcript records {sorted(observed_agent_names)!r}",
+        )
+    model_or_tool_failure = _check_model_and_tools(
+        observed_model_ids, observed_tools, expected_model_id=expected_model_id,
+        agent_declared_tools=agent_declared_tools,
+    )
+    if model_or_tool_failure is not None:
+        return model_or_tool_failure
+    if observed_efforts != frozenset({expected_effort}):
+        return _fail(
+            VALIDITY_FAIL_EFFORT_MISMATCH, observed_model=expected_model_id,
+            observed_tools=sorted_observed_tools, prompt_verbatim=True,
+            detail=f"expected effort {expected_effort!r}, transcript records {sorted(map(str, observed_efforts))!r}",
+        )
+    return None
+
+
+def _check_final_result(stream_lines: list[bytes]) -> RunValidity | None:
+    final_result = extract_final_result(stream_lines)
+    if final_result is None:
+        return _fail(VALIDITY_FAIL_NO_RESULT_EVENT, prompt_verbatim=True)
+    result_detail = f"subtype {final_result.subtype!r}, terminal_reason {final_result.terminal_reason!r}"
+    if final_result.terminal_reason and "budget" in final_result.terminal_reason:
+        return _fail(MISSING_REASON_BUDGET, prompt_verbatim=True, detail=result_detail)
+    if final_result.is_error or final_result.subtype != RESULT_SUBTYPE_SUCCESS:
+        return _fail(VALIDITY_FAIL_RESULT_ERROR, prompt_verbatim=True, detail=result_detail)
+    return None
+
+
+def _check_model_and_tools(
+    observed_model_ids: frozenset[str], observed_tools: frozenset[str], *, expected_model_id: str,
+    agent_declared_tools: frozenset[str],
+) -> RunValidity | None:
+    if observed_model_ids != frozenset({expected_model_id}):
+        return _fail(
+            VALIDITY_FAIL_MODEL_MISMATCH, observed_model=next(iter(observed_model_ids), None),
+            observed_tools=tuple(sorted(observed_tools)), prompt_verbatim=True,
+        )
+    if observed_tools - agent_declared_tools:
+        return _fail(
+            VALIDITY_FAIL_UNDECLARED_TOOL, observed_model=expected_model_id,
+            observed_tools=tuple(sorted(observed_tools)), prompt_verbatim=True,
+        )
+    return None
+
+
+def _out_of_session_read_paths(
+    read_like_calls: list[ReadLikeCall], *, fixture_dir: Path, own_dirs: tuple[Path, ...],
+) -> tuple[str, ...]:
+    """The path of each read-like call that resolves outside own_dirs. A path
+    the OS cannot represent is skipped."""
+    out_of_session: list[str] = []
+    for read_call in read_like_calls:
+        try:
+            resolved = _resolve(read_call.path, base_dir=fixture_dir)
+        except ValueError:
+            continue
+        if is_out_of_session(resolved, own_dirs):
+            out_of_session.append(read_call.path)
+    return tuple(out_of_session)
+
+
+def _classify_agent_reads(
+    read_like_calls: list[ReadLikeCall], tool_results: dict[str, str], findings_text: str | None, *,
+    observed_tools: frozenset[str], expected_model_id: str, fixture_dir: Path, own_dirs: tuple[Path, ...],
+    projects_root: Path, own_session_paths: tuple[Path, ...], live_checkout_roots: tuple[Path, ...],
+    changed_relpaths: tuple[str, ...], fix_commit_relpaths: tuple[str, ...],
+) -> RunValidity:
+    """The checks shared by reviewer and judge runs once an agent's model and
+    tools are confirmed: leaks, out-of-session reads, read statistics, and
+    the findings text."""
+    sorted_observed_tools = tuple(sorted(observed_tools))
     leak_check_relpaths = tuple(dict.fromkeys((*changed_relpaths, *fix_commit_relpaths)))
     leak_targets = live_checkout_leak_targets(live_checkout_roots, leak_check_relpaths)
-    out_of_session: list[str] = []
     has_unresolvable_read_path = False
     for read_call in read_like_calls:
         try:
@@ -952,20 +1213,18 @@ def evaluate_run_validity(
         if is_changed_file_leak(resolved, leak_targets):
             return _fail(
                 VALIDITY_FAIL_LIVE_CHECKOUT_LEAK, observed_model=expected_model_id,
-                observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+                observed_tools=sorted_observed_tools, prompt_verbatim=True,
             )
         if is_config_dir_leak(resolved, projects_root, own_session_paths):
             return _fail(
                 VALIDITY_FAIL_CONFIG_DIR_LEAK, observed_model=expected_model_id,
-                observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+                observed_tools=sorted_observed_tools, prompt_verbatim=True,
             )
-        if is_out_of_session(resolved, own_dirs):
-            out_of_session.append(read_call.path)
 
     if has_unresolvable_read_path:
         return _fail(
             VALIDITY_FAIL_TRANSCRIPT_UNREADABLE, observed_model=expected_model_id,
-            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+            observed_tools=sorted_observed_tools, prompt_verbatim=True,
             detail="a read-like call carried a path that cannot be resolved",
         )
 
@@ -975,17 +1234,18 @@ def evaluate_run_validity(
     if findings_text is None:
         return _fail(
             VALIDITY_FAIL_API_ERROR_FINAL_RECORD, observed_model=expected_model_id,
-            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+            observed_tools=sorted_observed_tools, prompt_verbatim=True,
         )
     if not findings_text.strip():
         return _fail(
             VALIDITY_FAIL_EMPTY_FINDINGS, observed_model=expected_model_id,
-            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+            observed_tools=sorted_observed_tools, prompt_verbatim=True,
         )
 
     return RunValidity(
         ok=True, failure_reason=None, observed_model=expected_model_id,
-        observed_tools=tuple(sorted(dispatch.observed_tools)), out_of_session_paths=tuple(out_of_session),
+        observed_tools=sorted_observed_tools,
+        out_of_session_paths=_out_of_session_read_paths(read_like_calls, fixture_dir=fixture_dir, own_dirs=own_dirs),
         prompt_verbatim=True,
         findings_text=findings_text, stats=stats,
     )

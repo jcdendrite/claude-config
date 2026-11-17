@@ -7,15 +7,11 @@ the review bench.
 module builds their per-defect input files, launches their runs, and parses
 their answers mechanically.
 
-Reuses runner.py's generic per-run primitives -- RunStore, RunRecord,
-build_dispatcher_prompt, build_dispatch_command, evaluate_run_validity,
-read_environment_record, and session-store lookup by session ID -- rather
-than runner.execute_run/run_one_with_retry, which are hardwired to the
-reviewer's own REVIEW_PROMPT_TEMPLATE. runner.py's own module docstring
-scopes only its per-run validity checks and RunRecord schema as generic
-across reviewer and judge runs, not its review-specific orchestration, so
-this module writes its own judge-run orchestration around those primitives
-instead of touching runner.py.
+Reuses runner.py's per-run primitives -- RunStore, RunRecord,
+build_judge_command, evaluate_judge_run_validity, read_environment_record, and
+session-store lookup by session ID. runner.execute_run/run_one_with_retry are
+hardwired to the reviewer's own REVIEW_PROMPT_TEMPLATE and thin dispatcher, so
+this module writes its own judge-run orchestration around those primitives.
 """
 from __future__ import annotations
 
@@ -30,7 +26,7 @@ import time
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from review_bench import fixture_repo, runner
@@ -528,16 +524,33 @@ class JudgeRunContext:
     fix_commit_relpaths: tuple[str, ...] = ()
 
 
+def _validity_without_transcript(lines: list[bytes], *, timed_out: bool) -> runner.RunValidity:
+    """The failure for a judge run with no session transcript. A run the
+    timeout killed may never have flushed one, so the timeout, not the absent
+    store, is its cause. Otherwise a failing result event in the stream, when
+    there is one, names the cause."""
+    if not timed_out:
+        result_failure = runner._check_final_result(lines)
+        if result_failure is not None and result_failure.failure_reason != runner.VALIDITY_FAIL_NO_RESULT_EVENT:
+            return replace(result_failure, prompt_verbatim=None)
+    missing_reason = runner.MISSING_REASON_TIMEOUT if timed_out else runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
+    return runner.RunValidity(
+        ok=False, failure_reason=missing_reason, observed_model=None,
+        observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
+        prompt_verbatim=None,
+    )
+
+
 def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> runner.RunRecord:
     """Launch one judge run and evaluate its validity -- mirrors
-    runner.execute_run's own shape, with a fixed judge inner prompt in place
-    of a rendered review prompt. Never retries; the caller owns
+    runner.execute_run's own shape, except the judge is the top-level session
+    rather than a dispatched subagent. Never retries; the caller owns
     retry-then-missing."""
     launch = launch if launch is not None else runner.msmr._run_claude_to_completion
     inner_prompt = build_judge_inner_prompt(ctx.data_file_name)
-    dispatch_prompt = runner.build_dispatcher_prompt(ctx.agent_name, inner_prompt)
-    cmd = runner.build_dispatch_command(
-        dispatch_prompt, model_id=ctx.model_id, session_id=session_id, budget_cap_usd=ctx.budget_cap_usd,
+    cmd = runner.build_judge_command(
+        inner_prompt, agent_name=ctx.agent_name, declared_tools=ctx.agent_declared_tools, model_id=ctx.model_id,
+        effort=runner.JUDGE_EFFORT, session_id=session_id, budget_cap_usd=ctx.budget_cap_usd,
     )
 
     start = time.monotonic()
@@ -545,22 +558,18 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
     wall_clock_s = time.monotonic() - start
 
     projects_root = runner.config_dir() / "projects"
-    session_jsonl = runner.wait_for_session_flush(projects_root, session_id, timed_out=timed_out)
+    session_jsonl = runner.wait_for_session_flush(
+        projects_root, session_id, timed_out=timed_out, requires_subagent_sidecar=False,
+    )
 
     if session_jsonl is None:
-        # A run the timeout killed may never have flushed a transcript; the
-        # timeout, not the absent store, is its recorded cause.
-        missing_reason = runner.MISSING_REASON_TIMEOUT if timed_out else runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
-        validity = runner.RunValidity(
-            ok=False, failure_reason=missing_reason, observed_model=None,
-            observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
-        )
+        validity = _validity_without_transcript(lines, timed_out=timed_out)
     else:
         own_session_paths = runner.own_session_paths_for(session_jsonl)
-        validity = runner.evaluate_run_validity(
-            dispatcher_session_jsonl=session_jsonl, stream_lines=lines, timed_out=timed_out,
-            expected_agent_name=ctx.agent_name, expected_inner_prompt=inner_prompt,
-            expected_model_id=ctx.model_id, agent_declared_tools=ctx.agent_declared_tools,
+        validity = runner.evaluate_judge_run_validity(
+            session_jsonl=session_jsonl, stream_lines=lines, timed_out=timed_out,
+            expected_agent_name=ctx.agent_name, expected_model_id=ctx.model_id,
+            expected_effort=runner.JUDGE_EFFORT, agent_declared_tools=ctx.agent_declared_tools,
             fixture_dir=ctx.fixture_dir, own_dirs=(ctx.fixture_dir, *own_session_paths),
             projects_root=projects_root, own_session_paths=own_session_paths,
             live_checkout_roots=ctx.live_checkout_roots, changed_relpaths=ctx.changed_relpaths,

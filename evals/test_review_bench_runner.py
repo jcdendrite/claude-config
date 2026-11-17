@@ -1,14 +1,16 @@
 """Tests for evals/review_bench/runner.py. Offline throughout:
-every per-run validity check is driven by synthetic subagent transcripts
+every reviewer validity check is driven by synthetic subagent transcripts
 under evals/fixtures/review-bench/, in the JSONL sidecar shape
-test_measure_subagent_model_resolution.py's own helpers write. No test
-launches `claude`.
+test_measure_subagent_model_resolution.py's own helpers write. Judge validity
+checks run over the same scenarios reshaped as a top-level session transcript
+(see _load_top_level_scenario). No test launches `claude`.
 """
 from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
 import json
+import locale
 import os
 import shutil
 import signal
@@ -32,6 +34,7 @@ from test_review_bench_mining import _commit, _git, _init_repo, _write
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "review-bench"
 
 AGENT_NAME = "bench-staff-backend-engineer"
+JUDGE_AGENT_NAME = "bench-judge-recall"
 MODEL_ID = "claude-sonnet-5"
 INNER_PROMPT = "REVIEW_PROMPT_PLACEHOLDER"
 DECLARED_TOOLS = frozenset({"Read", "Grep", "Glob"})
@@ -40,6 +43,16 @@ DECLARED_TOOLS = frozenset({"Read", "Grep", "Glob"})
 SUCCESS_STREAM_LINES = [
     json.dumps({"type": "result", "subtype": "success", "is_error": False, "terminal_reason": "completed"}).encode()
 ]
+
+
+def _default_text_codec_accepts_non_text_bytes() -> bool:
+    """`open()` defaults to `locale.getpreferredencoding(False)`, which honors Python's UTF-8 mode
+    where `locale.getencoding()` does not."""
+    try:
+        b"\xff\xfe".decode(locale.getpreferredencoding(False))
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _own_session_paths(scenario_dir: Path) -> tuple[Path, Path]:
@@ -76,6 +89,55 @@ def _load_scenario(tmp_path: Path, name: str) -> Path:
         text = jsonl_path.read_text()
         if "{FIXTURE_DIR}" in text:
             jsonl_path.write_text(text.replace("{FIXTURE_DIR}", str(dest)))
+    return dest
+
+
+def _load_top_level_scenario(tmp_path: Path, name: str, *, agent_name: str = JUDGE_AGENT_NAME) -> Path:
+    """A scenario reshaped as a judge session: the subagent's own transcript
+    becomes the session transcript behind an agent record and a user prompt
+    record, with no dispatcher record and no sidecar. Record shapes model
+    top-level `--agent` sessions as observed in a local judge transcript: the
+    agent record is written again after a `last-prompt` record, each assistant
+    record holds one content block and carries `effort`, the first assistant
+    record holds only thinking, and text that trails a tool call follows that
+    call's tool-result record. No captured transcript is committed, so a Claude
+    Code change to these shapes shows only on the first live judge run, which
+    fails closed. The session ID is a placeholder."""
+    dest = _load_scenario(tmp_path, name)
+    subagent_dir = dest / "session-1" / "subagents"
+    subagent_records = [json.loads(line) for line in (subagent_dir / "agent-1.jsonl").read_text().splitlines()]
+    first_assistant_message = next(rec["message"] for rec in subagent_records if rec.get("type") == "assistant")
+    thinking_only_record = {
+        "type": "assistant",
+        "message": {"model": first_assistant_message["model"], "content": [{"type": "thinking", "thinking": ""}]},
+        "effort": runner.JUDGE_EFFORT,
+    }
+    def one_block_record(record: dict, block: dict) -> dict:
+        return {**record, "message": {**record["message"], "content": [block]}, "effort": runner.JUDGE_EFFORT}
+
+    session_records: list[dict] = []
+    text_awaiting_tool_result: list[dict] = []
+    for record in subagent_records:
+        if record.get("type") != "assistant":
+            session_records.append(record)
+            session_records.extend(text_awaiting_tool_result)
+            text_awaiting_tool_result = []
+            continue
+        content = record["message"]["content"]
+        last_tool_use_index = max((i for i, block in enumerate(content) if block.get("type") == "tool_use"), default=None)
+        split_index = len(content) if last_tool_use_index is None else last_tool_use_index + 1
+        session_records.extend(one_block_record(record, block) for block in content[:split_index])
+        text_awaiting_tool_result.extend(one_block_record(record, block) for block in content[split_index:])
+    session_records.extend(text_awaiting_tool_result)
+    session_id = "00000000-0000-0000-0000-000000000000"
+    agent_record = {"type": "agent-setting", "agentSetting": agent_name, "sessionId": session_id}
+    prompt_record = {"type": "user", "message": {"role": "user", "content": "the judge's launch prompt"}}
+    last_prompt_record = {"type": "last-prompt", "lastPrompt": "the judge's launch prompt", "sessionId": session_id}
+    transcript_records = [
+        agent_record, prompt_record, last_prompt_record, agent_record, thinking_only_record, *session_records,
+    ]
+    (dest / "session-1.jsonl").write_text("\n".join(json.dumps(record) for record in transcript_records) + "\n")
+    shutil.rmtree(subagent_dir)
     return dest
 
 
@@ -311,6 +373,18 @@ class TestCommandConstruction:
         ]
         assert "--permission-mode" not in cmd
 
+    def test_build_judge_command_launches_the_agent_top_level_with_no_dispatcher_prompt(self) -> None:
+        cmd = runner.build_judge_command(
+            "inner judge prompt", agent_name="bench-judge-precision", declared_tools=frozenset({"Read", "Grep", "Glob"}),
+            model_id="claude-opus-5-5", effort="high", session_id="sess-1", budget_cap_usd=11.5,
+        )
+        assert cmd == [
+            "claude", "-p", "inner judge prompt", "--agent", "bench-judge-precision",
+            "--tools", "Glob,Grep,Read", "--strict-mcp-config",
+            "--output-format", "stream-json", "--verbose",
+            "--model", "claude-opus-5-5", "--effort", "high", "--session-id", "sess-1", "--max-budget-usd", "11.5",
+        ]
+
     def test_build_dispatcher_prompt_wraps_inner_prompt_between_markers(self) -> None:
         prompt = runner.build_dispatcher_prompt(AGENT_NAME, "the inner review prompt")
         assert prompt.startswith(runner.DISPATCH_PROMPT_TEMPLATE.format(agent=AGENT_NAME))
@@ -389,23 +463,7 @@ class TestObservedModelCheck:
         result = _evaluate(scenario)
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
-
-    def test_applies_the_same_way_under_a_judge_model_id(self, tmp_path: Path) -> None:
-        """The same check, under the judge's own frozen ID in place of the
-        reviewer's -- the judge runs reuse this unchanged."""
-        scenario = _load_scenario(tmp_path, "normal-success")  # observed model is claude-sonnet-5
-        result = _evaluate(scenario, agent_declared_tools=DECLARED_TOOLS)
-        session_jsonl = scenario / "session-1.jsonl"
-        result_as_judge = runner.evaluate_run_validity(
-            dispatcher_session_jsonl=session_jsonl, stream_lines=SUCCESS_STREAM_LINES, timed_out=False,
-            expected_agent_name=AGENT_NAME, expected_inner_prompt=INNER_PROMPT,
-            expected_model_id="claude-opus-5-5", agent_declared_tools=DECLARED_TOOLS,
-            fixture_dir=scenario, own_dirs=(scenario,), projects_root=scenario / "nope",
-            own_session_paths=_own_session_paths(scenario), live_checkout_roots=(), changed_relpaths=(),
-        )
-        assert result.ok is True
-        assert result_as_judge.ok is False
-        assert result_as_judge.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+        assert result.prompt_verbatim is True
 
 
 class TestDispatcherToolCallChecks:
@@ -429,6 +487,653 @@ class TestDispatcherToolCallChecks:
         assert wrong_result.ok is False
         assert wrong_result.failure_reason == runner.VALIDITY_FAIL_WRONG_AGENT
 
+    def test_a_lone_non_agent_dispatcher_tool_call_fails_as_extra_tool_call(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        _replace_tool_use(scenario / "session-1.jsonl", "toolu_dispatch", name="Read", input_={"file_path": "x.py"})
+        result = _evaluate(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL
+        assert result.failure_detail is not None
+        assert "Read" in result.failure_detail
+
+
+class TestSidecarMissingCheck:
+    def test_a_dispatcher_session_with_no_subagents_directory_fails(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        shutil.rmtree(scenario / "session-1" / "subagents")
+        result = _evaluate(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_SIDECAR_MISSING
+        assert result.prompt_verbatim is True
+
+    def test_a_dispatch_whose_sidecar_transcript_is_absent_fails(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        (scenario / "session-1" / "subagents" / "agent-1.jsonl").unlink()
+        result = _evaluate(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_SIDECAR_MISSING
+
+    def test_a_subagents_directory_that_loses_its_transcript_after_the_dispatch_parse_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        subagent_dir = scenario / "session-1" / "subagents"
+        parsed_dispatches = msmr.parse_subagent_dispatches(
+            scenario / "session-1.jsonl", requested_agent_declared_tools=DECLARED_TOOLS,
+        )
+        (subagent_dir / "agent-1.jsonl").unlink()
+        monkeypatch.setattr(msmr, "parse_subagent_dispatches", lambda *args, **kwargs: parsed_dispatches)
+        result = _evaluate(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_SIDECAR_MISSING
+
+
+JUDGE_DECLARED_TOOLS = frozenset({"Read"})
+
+# API-error record shapes, by which of `isApiErrorMessage` and the synthetic model a record carries.
+API_ERROR_RECORD_FIELDS = [
+    pytest.param({"model": msmr.SYNTHETIC_MODEL_ID, "isApiErrorMessage": True}, id="synthetic-and-flagged"),
+    pytest.param({"model": msmr.SYNTHETIC_MODEL_ID}, id="synthetic-model-only"),
+    pytest.param({"isApiErrorMessage": True}, id="flagged-only"),
+]
+
+_ABSENT_EFFORT = object()
+
+
+def _set_assistant_efforts(jsonl_path: Path, effort: object) -> None:
+    """Give every assistant record in the transcript this `effort`, or drop the key for _ABSENT_EFFORT."""
+    lines = []
+    for raw in jsonl_path.read_text().splitlines():
+        rec = json.loads(raw)
+        if rec.get("type") == "assistant":
+            rec.pop("effort", None)
+            if effort is not _ABSENT_EFFORT:
+                rec["effort"] = effort
+        lines.append(json.dumps(rec))
+    jsonl_path.write_text("\n".join(lines) + "\n")
+
+
+_STOP_HOOK_FEEDBACK_REASON = "also say the word banana before stopping."
+
+
+def _stop_hook_summary_record(*, blocked: bool) -> dict:
+    """A `stop_hook_summary` record, which Claude Code writes after every Stop hook run."""
+    return {
+        "type": "system", "subtype": "stop_hook_summary", "hookErrors": [_STOP_HOOK_FEEDBACK_REASON] if blocked else [],
+        "preventedContinuation": False, "stopReason": "", "hasOutput": blocked,
+    }
+
+
+def _stop_hook_feedback_record() -> dict:
+    """The meta user record Claude Code writes with a blocking Stop hook's reason."""
+    return {
+        "type": "user", "message": {"role": "user", "content": f"Stop hook feedback:\n{_STOP_HOOK_FEEDBACK_REASON}"},
+        "isMeta": True,
+    }
+
+
+def _append_records(session_jsonl: Path, records: list[dict]) -> None:
+    with open(session_jsonl, "a") as fh:
+        for record in records:
+            fh.write(json.dumps(record) + "\n")
+
+
+def _append_blocking_stop_hook_continuation(session_jsonl: Path) -> None:
+    """Append what a Stop hook that blocks once adds after the final answer: the feedback record, its
+    summary, the forced turn, and the summary of the second Stop hook run."""
+    _append_records(session_jsonl, [
+        _stop_hook_feedback_record(),
+        _stop_hook_summary_record(blocked=True),
+        _assistant_text_record("banana", effort=runner.JUDGE_EFFORT),
+        _stop_hook_summary_record(blocked=False),
+    ])
+
+
+def _evaluate_judge(
+    scenario_dir: Path, *, expected_agent_name: str = JUDGE_AGENT_NAME, expected_model_id: str = MODEL_ID,
+    expected_effort: str = runner.JUDGE_EFFORT, stream_lines: list[bytes] | None = None, timed_out: bool = False,
+    session_jsonl: Path | None = None,
+    changed_relpaths: tuple[str, ...] = (), own_dirs: tuple[Path, ...] | None = None, live_checkout_roots: tuple[Path, ...] = (),
+) -> runner.RunValidity:
+    return runner.evaluate_judge_run_validity(
+        session_jsonl=session_jsonl if session_jsonl is not None else scenario_dir / "session-1.jsonl",
+        stream_lines=SUCCESS_STREAM_LINES if stream_lines is None else stream_lines, timed_out=timed_out,
+        expected_agent_name=expected_agent_name, expected_model_id=expected_model_id,
+        expected_effort=expected_effort, agent_declared_tools=JUDGE_DECLARED_TOOLS, fixture_dir=scenario_dir,
+        own_dirs=own_dirs if own_dirs is not None else (scenario_dir,),
+        projects_root=scenario_dir.parent / "not-a-real-projects-root",
+        own_session_paths=_own_session_paths(scenario_dir), live_checkout_roots=live_checkout_roots,
+        changed_relpaths=changed_relpaths,
+    )
+
+
+class TestExtractAgentSettings:
+    def test_non_object_lines_are_skipped(self, tmp_path: Path) -> None:
+        session_jsonl = tmp_path / "session.jsonl"
+        session_jsonl.write_text(
+            "\n".join(["[1, 2]", '"text"', "not json", json.dumps({"type": "agent-setting", "agentSetting": "a"})]) + "\n"
+        )
+        assert runner.extract_agent_settings(session_jsonl) == frozenset({"a"})
+
+    @pytest.mark.parametrize(
+        "agent_setting", [5, None, ["a"], {"name": "a"}, True], ids=["number", "null", "list", "object", "boolean"],
+    )
+    def test_a_record_whose_agent_setting_is_not_a_string_is_not_an_observed_name(
+        self, tmp_path: Path, agent_setting: object,
+    ) -> None:
+        session_jsonl = tmp_path / "session.jsonl"
+        session_jsonl.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "agent-setting", "agentSetting": agent_setting}),
+                    json.dumps({"type": "agent-setting", "agentSetting": "a"}),
+                ]
+            )
+            + "\n"
+        )
+        assert runner.extract_agent_settings(session_jsonl) == frozenset({"a"})
+
+
+def _load_top_level_scenario_with_nul_read(tmp_path: Path) -> Path:
+    """The `out-of-session-read` judge session with one more Read, whose path holds a NUL byte, ahead of its
+    first assistant record."""
+    scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+    session_jsonl = scenario / "session-1.jsonl"
+    nul_read_record = {
+        "type": "assistant", "effort": runner.JUDGE_EFFORT,
+        "message": {
+            "model": MODEL_ID,
+            "content": [{"type": "tool_use", "id": "toolu_read_nul", "name": "Read", "input": {"file_path": "/repo/a\x00b.py"}}],
+        },
+    }
+    records = [json.loads(line) for line in session_jsonl.read_text().splitlines()]
+    first_assistant_index = next(i for i, record in enumerate(records) if record["type"] == "assistant")
+    records.insert(first_assistant_index, nul_read_record)
+    session_jsonl.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    return scenario
+
+
+class TestJudgeRunValidity:
+    """A judge is the top-level session, so the model, tools, reads and final
+    text all come from the session's own transcript."""
+
+    def test_a_top_level_session_with_no_dispatcher_call_is_ok(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, changed_relpaths=("changed_file.py",))
+        assert result.ok is True
+        assert result.observed_model == MODEL_ID
+        assert result.observed_tools == ("Read",)
+        assert result.findings_text == "Finding: file:1 looks fine."
+        assert result.stats.read_calls == 1
+
+    @pytest.mark.parametrize(
+        ("scenario_name", "evaluate_kwargs"),
+        [
+            pytest.param("normal-success", {}, id="ok"),
+            pytest.param("normal-success", {"expected_effort": "low"}, id="identity-check-failure"),
+            pytest.param("undeclared-tool", {}, id="undeclared-tool"),
+            pytest.param("normal-success", {"timed_out": True}, id="timeout"),
+            pytest.param("normal-success", {"stream_lines": []}, id="no-result-event"),
+        ],
+    )
+    def test_a_judge_result_never_asserts_a_prompt_comparison(
+        self, tmp_path: Path, scenario_name: str, evaluate_kwargs: dict,
+    ) -> None:
+        """A judge's prompt is a launch argument, so no verdict can claim the prompt matched or mismatched."""
+        scenario = _load_top_level_scenario(tmp_path, scenario_name)
+        result = _evaluate_judge(scenario, **evaluate_kwargs)
+        assert result.prompt_verbatim is None
+
+    def test_a_judge_result_with_an_unreadable_transcript_never_asserts_a_prompt_comparison(
+        self, tmp_path: Path,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, session_jsonl=scenario / "absent.jsonl")
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+        assert result.prompt_verbatim is None
+
+    def test_a_judge_failure_found_while_classifying_reads_never_asserts_a_prompt_comparison(
+        self, tmp_path: Path,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _rewrite_records(
+            scenario / "session-1.jsonl", lambda block: {**block, "text": " "} if block.get("type") == "text" else block,
+        )
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_EMPTY_FINDINGS
+        assert result.prompt_verbatim is None
+
+    def test_a_transcript_naming_a_different_agent_fails_as_agent_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success", agent_name="bench-judge-precision")
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_AGENT_MISMATCH
+        assert result.failure_detail is not None
+        assert "bench-judge-precision" in result.failure_detail
+        assert result.observed_model == MODEL_ID
+        assert result.observed_tools == ("Read",)
+        assert result.stats == runner.ReadStats.empty()  # a failed verdict carries no read statistics
+
+    def test_a_transcript_with_no_agent_record_fails_as_agent_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        session_jsonl = scenario / "session-1.jsonl"
+        without_agent_record = [
+            line for line in session_jsonl.read_text().splitlines() if json.loads(line).get("type") != "agent-setting"
+        ]
+        session_jsonl.write_text("\n".join(without_agent_record) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_AGENT_MISMATCH
+
+    def test_a_transcript_that_also_names_another_agent_fails_as_agent_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps({"type": "agent-setting", "agentSetting": "bench-judge-precision"}) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_AGENT_MISMATCH
+
+    def test_an_observed_model_other_than_the_expected_one_fails_as_model_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")  # observed model is claude-sonnet-5
+        result = _evaluate_judge(scenario, expected_model_id=runner.JUDGE_MODEL_ID)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+        assert result.observed_model == MODEL_ID
+
+    def test_a_session_mixing_the_expected_model_with_another_fails_as_model_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(_assistant_text_record("more", model=runner.JUDGE_MODEL_ID)) + "\n")
+        result = _evaluate_judge(scenario, expected_model_id=MODEL_ID)
+        assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+
+    def test_a_recorded_effort_other_than_the_expected_one_fails_as_effort_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, expected_effort="low")
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+        assert result.failure_detail is not None
+        assert "low" in result.failure_detail
+        assert runner.JUDGE_EFFORT in result.failure_detail
+
+    def test_an_assistant_record_with_no_effort_fails_as_effort_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(_assistant_text_record("more")) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+
+    def test_a_session_mixing_the_expected_effort_with_another_fails_as_effort_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(_assistant_text_record("more", effort="medium")) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+
+    @pytest.mark.parametrize("effort", [_ABSENT_EFFORT, 5, None], ids=["absent", "non-string", "null"])
+    def test_a_session_whose_every_assistant_record_has_no_string_effort_fails_as_effort_mismatch(
+        self, tmp_path: Path, effort: object,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _set_assistant_efforts(scenario / "session-1.jsonl", effort)
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+
+    def test_an_agent_mismatch_is_reported_ahead_of_a_model_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success", agent_name="bench-judge-precision")
+        result = _evaluate_judge(scenario, expected_model_id=runner.JUDGE_MODEL_ID)
+        assert result.failure_reason == runner.VALIDITY_FAIL_AGENT_MISMATCH
+
+    def test_a_model_mismatch_is_reported_ahead_of_an_effort_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, expected_model_id=runner.JUDGE_MODEL_ID, expected_effort="low")
+        assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+
+    def test_a_tool_outside_the_declared_list_fails_as_undeclared_tool(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "undeclared-tool")
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_UNDECLARED_TOOL
+        assert result.observed_tools == ("Bash",)
+
+    @pytest.mark.parametrize(
+        "mismatch",
+        [
+            {"expected_effort": "low"},
+            {"expected_model_id": runner.JUDGE_MODEL_ID},
+            {"expected_agent_name": "bench-judge-precision"},
+        ],
+        ids=["effort-mismatch", "model-mismatch", "agent-mismatch"],
+    )
+    def test_a_run_failing_an_identity_check_still_records_its_out_of_session_reads(
+        self, tmp_path: Path, mismatch: dict,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",), **mismatch)
+        assert result.ok is False
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    @pytest.mark.parametrize("error_record_fields", API_ERROR_RECORD_FIELDS)
+    def test_an_api_error_record_mid_run_does_not_fail_a_real_final_text(
+        self, tmp_path: Path, error_record_fields: dict,
+    ) -> None:
+        """An API-error record carries no `effort`, so counting it would fail a run that recovered from the error."""
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(_assistant_text_record(API_ERROR_TEXT, **error_record_fields)) + "\n")
+            fh.write(
+                json.dumps(
+                    _assistant_text_record("Finding: file:1 is fine after the retried turn.", effort=runner.JUDGE_EFFORT)
+                )
+                + "\n"
+            )
+        result = _evaluate_judge(scenario)
+        assert result.ok is True
+        assert result.findings_text == "Finding: file:1 is fine after the retried turn."
+
+    def test_a_timed_out_run_fails_as_timeout(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, timed_out=True)
+        assert result.failure_reason == runner.MISSING_REASON_TIMEOUT
+
+    def test_a_missing_transcript_fails_as_transcript_unreadable(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, session_jsonl=scenario / "absent.jsonl")
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+        assert result.failure_detail is not None
+        assert str(scenario) not in result.failure_detail
+
+    def test_a_stream_with_no_result_event_fails(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, stream_lines=[])
+        assert result.failure_reason == runner.VALIDITY_FAIL_NO_RESULT_EVENT
+
+    @pytest.mark.parametrize(
+        ("stream_lines", "expected_reason"),
+        [
+            ([], runner.VALIDITY_FAIL_NO_RESULT_EVENT),
+            (
+                [json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}).encode()],
+                runner.VALIDITY_FAIL_RESULT_ERROR,
+            ),
+        ],
+        ids=["no-result-event", "result-error"],
+    )
+    def test_a_failed_result_event_keeps_its_reason_when_the_transcript_is_unreadable(
+        self, tmp_path: Path, stream_lines: list[bytes], expected_reason: str,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, stream_lines=stream_lines, session_jsonl=scenario / "absent.jsonl")
+        assert result.failure_reason == expected_reason
+        assert result.prompt_verbatim is None
+
+    def test_a_transcript_with_non_object_lines_is_still_ok(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        malformed_assistant_record = {"type": "assistant", "message": "not an object", "effort": runner.JUDGE_EFFORT}
+        malformed_user_record = {"type": "user", "message": {"content": 5}}
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            for line in ("[1, 2]", '"text"', "5", "null", json.dumps(malformed_assistant_record),
+                         json.dumps(malformed_user_record)):
+                fh.write(line + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.ok is True
+        assert result.findings_text == "Finding: file:1 looks fine."
+
+    @pytest.mark.skipif(
+        _default_text_codec_accepts_non_text_bytes(),
+        reason="the default text codec decodes the bytes, so they are not invalid text here",
+    )
+    def test_a_transcript_with_bytes_that_are_not_text_fails_as_transcript_unreadable(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "ab") as fh:
+            fh.write(b"\xff\xfe not text\n")
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+        assert result.failure_detail is not None
+        assert str(scenario) not in result.failure_detail
+
+    def test_an_error_result_event_fails(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        error_stream = [json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}).encode()]
+        result = _evaluate_judge(scenario, stream_lines=error_stream)
+        assert result.failure_reason == runner.VALIDITY_FAIL_RESULT_ERROR
+
+    def test_a_blank_final_text_fails_as_empty_findings(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _rewrite_records(
+            scenario / "session-1.jsonl", lambda block: {**block, "text": " "} if block.get("type") == "text" else block,
+        )
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_EMPTY_FINDINGS
+
+    @pytest.mark.parametrize("error_record_fields", API_ERROR_RECORD_FIELDS)
+    def test_a_final_api_error_record_fails(self, tmp_path: Path, error_record_fields: dict) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        api_error_record = _assistant_text_record(API_ERROR_TEXT, **error_record_fields)
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(api_error_record) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_API_ERROR_FINAL_RECORD
+
+    def test_a_read_outside_the_session_is_recorded_not_failed(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",))
+        assert result.ok is True
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    def test_a_read_of_a_live_checkout_copy_of_a_changed_file_fails(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "live-checkout-leak")
+        result = _evaluate_judge(
+            scenario, live_checkout_roots=(scenario,), changed_relpaths=("fake-live-checkout/changed_file.py",),
+        )
+        assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    def test_a_transcript_with_the_modelled_top_level_record_shapes_is_ok(self, tmp_path: Path) -> None:
+        """Top-level sessions as `_load_top_level_scenario` models them repeat the agent record after the
+        `last-prompt` record, write one content block per assistant record (a thinking-only one included), put
+        `effort` on every assistant record, and write a tool call's tool result before the text that follows it."""
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        records = [json.loads(line) for line in (scenario / "session-1.jsonl").read_text().splitlines()]
+        record_types = [record["type"] for record in records]
+        assistant_records = [record for record in records if record["type"] == "assistant"]
+        assert record_types.count("agent-setting") == 2
+        assert "agent-setting" in record_types[record_types.index("last-prompt"):]
+        assert all(len(record["message"]["content"]) == 1 for record in assistant_records)
+        assert any(record["message"]["content"][0]["type"] == "thinking" for record in assistant_records)
+        assert all(isinstance(record.get("effort"), str) for record in assistant_records)
+        block_types_in_order = [
+            record["message"]["content"][0]["type"] for record in records
+            if record["type"] in ("assistant", "user") and isinstance(record["message"]["content"], list)
+        ]
+        assert block_types_in_order[-3:] == ["tool_use", "tool_result", "text"]
+
+        result = _evaluate_judge(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.ok is True
+
+    def test_a_budget_failure_still_records_its_out_of_session_reads(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        budget_stream = [(FIXTURES_DIR / "budget-stop" / "stream.jsonl").read_text().strip().encode()]
+        result = _evaluate_judge(scenario, stream_lines=budget_stream, own_dirs=(scenario / "session-1",))
+        assert result.failure_reason == runner.MISSING_REASON_BUDGET
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    def test_a_result_error_failure_still_records_its_out_of_session_reads(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        error_stream = [json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}).encode()]
+        result = _evaluate_judge(scenario, stream_lines=error_stream, own_dirs=(scenario / "session-1",))
+        assert result.failure_reason == runner.VALIDITY_FAIL_RESULT_ERROR
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    def test_an_empty_findings_failure_still_records_its_out_of_session_reads(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        _rewrite_records(
+            scenario / "session-1.jsonl", lambda block: {**block, "text": " "} if block.get("type") == "text" else block,
+        )
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",))
+        assert result.failure_reason == runner.VALIDITY_FAIL_EMPTY_FINDINGS
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    def test_a_live_checkout_leak_failure_still_records_its_out_of_session_reads(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "live-checkout-leak")
+        result = _evaluate_judge(
+            scenario, live_checkout_roots=(scenario,), changed_relpaths=("fake-live-checkout/changed_file.py",),
+            own_dirs=(scenario / "session-1",),
+        )
+        assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+        assert str(scenario / "link-to-changed-file.py") in result.out_of_session_paths
+
+    def test_an_undeclared_tool_failure_still_records_its_out_of_session_reads(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        bash_record = {
+            "type": "assistant", "effort": runner.JUDGE_EFFORT,
+            "message": {
+                "model": MODEL_ID,
+                "content": [{"type": "tool_use", "id": "toolu_bash_1", "name": "Bash", "input": {"command": "ls"}}],
+            },
+        }
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(bash_record) + "\n")
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",))
+        assert result.failure_reason == runner.VALIDITY_FAIL_UNDECLARED_TOOL
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    def test_a_timeout_is_reported_ahead_of_a_missing_result_event(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        result = _evaluate_judge(scenario, timed_out=True, stream_lines=[])
+        assert result.failure_reason == runner.MISSING_REASON_TIMEOUT
+
+    def test_a_model_mismatch_is_reported_ahead_of_an_undeclared_tool(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "undeclared-tool")  # observed model claude-sonnet-5, tool Bash
+        result = _evaluate_judge(scenario, expected_model_id=runner.JUDGE_MODEL_ID)
+        assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+
+    def test_an_undeclared_tool_is_reported_ahead_of_an_effort_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "undeclared-tool")
+        result = _evaluate_judge(scenario, expected_effort="low")
+        assert result.failure_reason == runner.VALIDITY_FAIL_UNDECLARED_TOOL
+
+    def test_an_identity_mismatch_is_reported_ahead_of_a_live_checkout_leak(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "live-checkout-leak")
+        result = _evaluate_judge(
+            scenario, expected_effort="low", live_checkout_roots=(scenario,),
+            changed_relpaths=("fake-live-checkout/changed_file.py",),
+        )
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+
+    def test_a_blocking_stop_hook_continuation_fails_as_stop_hook_continuation(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_STOP_HOOK_CONTINUATION
+        assert result.failure_detail is not None
+        assert result.observed_model == MODEL_ID
+        assert result.observed_tools == ("Read",)
+
+    def test_a_stop_hook_feedback_record_alone_fails_as_stop_hook_continuation(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _append_records(scenario / "session-1.jsonl", [_stop_hook_feedback_record()])
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_STOP_HOOK_CONTINUATION
+
+    def test_a_blocking_shaped_stop_hook_summary_without_a_feedback_record_leaves_the_run_ok(
+        self, tmp_path: Path,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        blocking_summary = _stop_hook_summary_record(blocked=True)
+        assert blocking_summary["hasOutput"] is True and blocking_summary["hookErrors"]
+        assert blocking_summary["preventedContinuation"] is False
+        _append_records(scenario / "session-1.jsonl", [blocking_summary])
+        result = _evaluate_judge(scenario)
+        assert result.ok is True
+
+    def test_a_non_blocking_stop_hook_summary_leaves_the_run_ok(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(_stop_hook_summary_record(blocked=False)) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.ok is True
+        assert result.findings_text == "Finding: file:1 looks fine."
+
+    @pytest.mark.parametrize(
+        "user_record",
+        [
+            {"type": "user", "message": {"role": "user", "content": "Stop hook feedback:\nreason"}},
+            {"type": "user", "message": {"role": "user", "content": "Some other meta text"}, "isMeta": True},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Stop hook feedback:\nreason"}]},
+             "isMeta": True},
+            {"type": "user", "message": {"role": "user", "content": "Stop hook feedback:\nreason"}, "isMeta": "true"},
+        ],
+        ids=["not-meta", "other-meta-text", "list-content", "non-boolean-meta"],
+    )
+    def test_a_user_record_that_is_not_meta_stop_hook_feedback_leaves_the_run_ok(
+        self, tmp_path: Path, user_record: dict,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        with open(scenario / "session-1.jsonl", "a") as fh:
+            fh.write(json.dumps(user_record) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.ok is True
+
+    def test_a_stop_hook_continuation_is_reported_behind_an_effort_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        result = _evaluate_judge(scenario, expected_effort="low")
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+
+    def test_a_stop_hook_continuation_is_reported_behind_a_model_mismatch(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        result = _evaluate_judge(scenario, expected_model_id=runner.JUDGE_MODEL_ID)
+        assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+
+    def test_a_stop_hook_continuation_is_reported_behind_an_undeclared_tool(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "undeclared-tool")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        result = _evaluate_judge(scenario)
+        assert result.failure_reason == runner.VALIDITY_FAIL_UNDECLARED_TOOL
+
+    def test_a_stop_hook_continuation_is_reported_behind_a_failed_result_event(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        error_stream = [json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}).encode()]
+        result = _evaluate_judge(scenario, stream_lines=error_stream)
+        assert result.failure_reason == runner.VALIDITY_FAIL_RESULT_ERROR
+
+    def test_a_stop_hook_continuation_is_reported_ahead_of_a_live_checkout_leak(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "live-checkout-leak")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        result = _evaluate_judge(
+            scenario, live_checkout_roots=(scenario,), changed_relpaths=("fake-live-checkout/changed_file.py",),
+        )
+        assert result.failure_reason == runner.VALIDITY_FAIL_STOP_HOOK_CONTINUATION
+
+    def test_a_stop_hook_continuation_failure_still_records_its_out_of_session_reads(self, tmp_path: Path) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "out-of-session-read")
+        _append_blocking_stop_hook_continuation(scenario / "session-1.jsonl")
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",))
+        assert result.failure_reason == runner.VALIDITY_FAIL_STOP_HOOK_CONTINUATION
+        assert str(scenario / "unrelated-sibling" / "unrelated.py") in result.out_of_session_paths
+
+    def test_a_read_with_an_embedded_nul_byte_fails_as_transcript_unreadable_without_raising(
+        self, tmp_path: Path,
+    ) -> None:
+        scenario = _load_top_level_scenario_with_nul_read(tmp_path)
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",))
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+        assert result.failure_detail == "a read-like call carried a path that cannot be resolved"
+
+    def test_a_read_with_an_embedded_nul_byte_is_skipped_when_recording_out_of_session_reads(
+        self, tmp_path: Path,
+    ) -> None:
+        scenario = _load_top_level_scenario_with_nul_read(tmp_path)
+        result = _evaluate_judge(scenario, own_dirs=(scenario / "session-1",), expected_effort="low")
+        assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
+        assert result.out_of_session_paths == (str(scenario / "unrelated-sibling" / "unrelated.py"),)
+
 
 class TestUndeclaredToolCheck:
     def test_subagent_tool_outside_declared_list_fails(self, tmp_path: Path) -> None:
@@ -446,6 +1151,7 @@ class TestLeakAndOutOfSessionChecks:
         )
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+        assert result.prompt_verbatim is True
 
     def test_read_of_the_live_copy_of_a_file_only_the_fix_commit_changed_fails(self, tmp_path: Path) -> None:
         scenario = _load_scenario(tmp_path, "live-checkout-leak")
@@ -507,6 +1213,7 @@ class TestLeakAndOutOfSessionChecks:
         )
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_CONFIG_DIR_LEAK
+        assert result.prompt_verbatim is True
 
     def _evaluate_with_read_of(self, scenario: Path, read_path: Path) -> runner.RunValidity:
         session_jsonl, _ = _own_session_paths(scenario)
@@ -633,6 +1340,12 @@ class TestExtractReadLikeCallTargets:
     def test_a_glob_anchored_to_no_directory_records_no_call(self, tmp_path: Path, tool_input: dict) -> None:
         transcript = tmp_path / "agent.jsonl"
         _write_subagent_transcript_with_tool_call(transcript, name="Glob", input_=tool_input)
+        assert runner.extract_read_like_calls(transcript) == []
+
+    @pytest.mark.parametrize("tool_input", [["file_path"], "file_path", 5, None], ids=["list", "string", "number", "null"])
+    def test_a_call_whose_input_is_not_an_object_records_no_call(self, tmp_path: Path, tool_input: object) -> None:
+        transcript = tmp_path / "agent.jsonl"
+        _write_subagent_transcript_with_tool_call(transcript, name="Read", input_=tool_input)
         assert runner.extract_read_like_calls(transcript) == []
 
 
@@ -828,7 +1541,9 @@ class TestWaitForSessionFlushSettlesOnlyUpToTheTimeout:
     """The transcript and sidecar are returned once no file's size changed
     across two consecutive polls, or at SESSION_FLUSH_TIMEOUT_S, whichever comes
     first. The barrier holds only up to that timeout; a transcript still
-    growing then is returned as it stands."""
+    growing then is returned as it stands. A top-level judge session has no
+    sidecar, so with `requires_subagent_sidecar=False` the transcript alone
+    settles, and the barrier still waits while it grows."""
 
     SESSION_ID = "session-a"
 
@@ -925,6 +1640,32 @@ class TestWaitForSessionFlushSettlesOnlyUpToTheTimeout:
         session_jsonl = runner.wait_for_session_flush(projects_root, self.SESSION_ID, timed_out=True)
         assert session_jsonl is not None
         assert sleeps == []
+
+    def test_a_top_level_session_with_no_sidecar_settles_after_one_poll_interval(
+        self, projects_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        for sidecar_file in (projects_root / "some-hash" / self.SESSION_ID / "subagents").iterdir():
+            sidecar_file.unlink()
+        sleeps = self._record_sleeps(monkeypatch, lambda sleep_count: None)
+        session_jsonl = runner.wait_for_session_flush(
+            projects_root, self.SESSION_ID, timed_out=False, requires_subagent_sidecar=False,
+        )
+        assert session_jsonl == projects_root / "some-hash" / f"{self.SESSION_ID}.jsonl"
+        assert len(sleeps) == 1
+
+    def test_a_top_level_session_keeps_polling_while_its_transcript_is_still_growing(
+        self, projects_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        transcript = projects_root / "some-hash" / f"{self.SESSION_ID}.jsonl"
+
+        def grow_once(sleep_count: int) -> None:
+            if sleep_count == 1:
+                with transcript.open("a") as fh:
+                    fh.write("more output\n")
+
+        sleeps = self._record_sleeps(monkeypatch, grow_once)
+        runner.wait_for_session_flush(projects_root, self.SESSION_ID, timed_out=False, requires_subagent_sidecar=False)
+        assert len(sleeps) == 2
 
     def test_a_session_that_never_appears_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 0.05)
@@ -1171,6 +1912,7 @@ class TestFinalResultChecks:
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_RESULT_ERROR
         assert result.failure_detail == "subtype 'error_during_execution', terminal_reason None"
+        assert result.prompt_verbatim is True
 
     def test_budget_stop_records_budget_missing_reason(self, tmp_path: Path) -> None:
         scenario = _load_scenario(tmp_path, "budget-stop")
@@ -3077,6 +3819,40 @@ class TestRunOrSmokeDefaultFillReachesRunCampaign:
         assert captured_kwargs["workers"] == run_skill_evals.DEFAULT_WORKERS
 
 
+class TestCombineAttemptRecords:
+    @staticmethod
+    def _attempt(*, findings_text: str, out_of_session_paths: tuple[str, ...], total_cost_usd: float | None,
+                 input_tokens: int | None) -> runner.RunRecord:
+        return runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read",), out_of_session_paths=out_of_session_paths, findings_text=findings_text,
+            wall_clock_s=1.0, read_calls=1, read_tokens_est=10, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=0, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+            total_cost_usd=total_cost_usd, input_tokens=input_tokens,
+        )
+
+    def test_keeps_only_the_final_attempts_out_of_session_paths_and_sums_cost_and_tokens(self) -> None:
+        discarded_attempt = self._attempt(
+            findings_text="Discarded.", out_of_session_paths=("/tmp/first-attempt-read.py",),
+            total_cost_usd=0.25, input_tokens=100,
+        )
+        final_attempt = self._attempt(
+            findings_text="Final.", out_of_session_paths=("/tmp/final-attempt-read.py",),
+            total_cost_usd=0.5, input_tokens=None,
+        )
+
+        combined = runner.combine_attempt_records([discarded_attempt, final_attempt])
+
+        assert combined.findings_text == "Final."
+        assert combined.out_of_session_paths == ("/tmp/final-attempt-read.py",)
+        assert combined.attempts == 2
+        assert combined.total_cost_usd == 0.75
+        assert combined.input_tokens == 100  # an attempt with no figure adds nothing, it does not null the sum
+        assert combined.output_tokens is None  # no attempt reported it
+
+
 class TestRunRecordJsonlRoundTrip:
     def test_append_then_read_back(self, tmp_path: Path) -> None:
         path = tmp_path / "records.jsonl"
@@ -3104,6 +3880,23 @@ class TestRunRecordJsonlRoundTrip:
         loaded = runner.read_run_records(path)
         assert len(loaded) == 2
         assert record in loaded and second_record in loaded
+
+    def test_a_dispatch_prompt_verbatim_of_none_survives_a_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "records.jsonl"
+        record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read",), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=1, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=0, over_read_cap=False, dispatch_prompt_verbatim=None,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+
+        runner.append_run_records(path, (record,))
+
+        loaded = runner.read_run_records(path)
+        assert loaded == [record]
+        assert loaded[0].dispatch_prompt_verbatim is None
 
     def test_cost_attempts_and_missing_detail_survive_a_round_trip(self, tmp_path: Path) -> None:
         path = tmp_path / "records.jsonl"
