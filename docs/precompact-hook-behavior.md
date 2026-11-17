@@ -247,7 +247,7 @@ Run on claude 2.1.323, 2026-11-13, in a scratch repository on a branch named `pr
 
 ## Steering probe — does `PreCompact` stdout steer the summary?
 
-Result: yes, in the runs below, all on one build and the manual ones headless. A `PreCompact` hook's stdout on exit 0 steered the summary on both the manual and automatic triggers. Compaction also proceeded when the hook timed out or exited 1. The exit-1 automatic run ended in a thrashing stop that the probe did not attribute to the hook.
+Result: yes, in the runs below, all on one build. A `PreCompact` hook's stdout on exit 0 steered the summary on both the manual and automatic triggers. Compaction also proceeded when the hook timed out or exited 1. The exit-1 automatic run ended in a thrashing stop that the probe did not attribute to the hook.
 
 - **Build:** `claude --version` **2.1.326**. Probe date 2026-11-16 (UTC). Re-verify by 2027-02-16, the three-month interval `docs/handoff-nudge.md` uses for vendor behavior. Nothing raises this date when it lapses.
 - **Scope:** shapes, counts and booleans only. The sentinels are synthetic strings planted for the probe.
@@ -282,6 +282,7 @@ Result: yes, in the runs below, all on one build and the manual ones headless. A
 Plain stdout on exit 0 steers the summary on both triggers, while the `additionalContext` JSON shape was refuted above on build 2.1.233 and not re-tested on 2.1.326. Designing a `PreCompact` hook that prints summary instructions is worth pursuing. Its design is not part of these findings.
 
 Constraints any such hook inherits from these results:
+
 - A hook must not rely on steering to carry a constraint, because steering is model behavior, not a guarantee.
 - The stdout is followed as instructions and re-summarized into later compactions, so it must never be built from prompt, transcript or other untrusted text.
 - Only exit 0 and exit 1 were probed here.
