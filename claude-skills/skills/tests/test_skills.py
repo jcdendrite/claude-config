@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
+import _skill_md_helpers  # monkeypatch target for the helper module's own SKILLS_DIR and _PLUGINS_DIR
 import pytest
 import yaml
 
@@ -676,7 +677,8 @@ class TestFrontmatterReaders:
     def skills_tree(self, tmp_path, monkeypatch) -> Path:
         """A temporary skills tree that discovery reads in place of the repo's.
 
-        Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched.
+        Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched
+        here and in _skill_md_helpers, whose _skill_file and _all_skill_md_paths read their own copies.
         """
         skills_dir = tmp_path / "skills"
         _write_skill_md_fixture(
@@ -700,8 +702,9 @@ class TestFrontmatterReaders:
         _write_skill_md_fixture(plugin_skills_dir, "frontmatterless-plugin-skill", "no frontmatter here\n")
         _write_flagged_skills(plugin_skills_dir, "plugin-")
         module = sys.modules[__name__]
-        monkeypatch.setattr(module, "SKILLS_DIR", skills_dir)
-        monkeypatch.setattr(module, "_PLUGINS_DIR", tmp_path / "plugins")
+        for patched_module in (module, _skill_md_helpers):
+            monkeypatch.setattr(patched_module, "SKILLS_DIR", skills_dir)
+            monkeypatch.setattr(patched_module, "_PLUGINS_DIR", tmp_path / "plugins")
         return skills_dir
 
     @pytest.mark.parametrize(
