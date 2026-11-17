@@ -377,7 +377,9 @@ class TestBuildParser:
 
     def test_every_subcommand_binds_its_own_modules_cmd_handler(self):
         """Each subcommand's registrar lives outside cli.py and binds the cmd_<name> handler its own
-        module defines, checked by name and module rather than by a token the handler prints."""
+        module defines, checked by name and module rather than by a token the handler prints.
+        The registrars the package defines must also equal the subcommands build_parser() walks, so a
+        registrar that is defined but never wired fails here instead of shrinking the walk."""
         walked_snake_names = set()
         wrongly_bound = {}
         for name, subparser in _subparsers_by_name(cli.build_parser()).items():

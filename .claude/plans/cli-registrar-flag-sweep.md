@@ -30,7 +30,7 @@ Evidence from exploration, gathered by a subagent and not yet read by the author
 
 ## Approach
 
-Add one in-process test that checks every subcommand's `set_defaults(func=...)` binding by identity (R1). Derive `rearm-backtest`'s `--spacings` default and help text from `_REARM_BACKTEST_DEFAULT_SPACINGS` so the value has one home, and drop the stale inline-registration clause from `.claude/rules/transcript-analysis-tests.md`. The one production change leaves `rearm-backtest`'s CLI surface unchanged for every stow consumer: the same flags, the same parsed `--spacings` default `"40000,80000,120000"`, and byte-identical `--help` output.
+Add one in-process test that checks every subcommand's `set_defaults(func=...)` binding by handler name and module (R1). Derive `rearm-backtest`'s `--spacings` default and help text from `_REARM_BACKTEST_DEFAULT_SPACINGS` so the value has one home, and drop the stale inline-registration clause from `.claude/rules/transcript-analysis-tests.md`. The one production change leaves `rearm-backtest`'s CLI surface unchanged for every stow consumer: the same flags, the same parsed `--spacings` default `"40000,80000,120000"`, and byte-identical `--help` output.
 
 Line numbers are at the branch's merge-base with `origin/main`. Tests are under `claude/.claude/scripts/tests/`, modules under `claude/.claude/scripts/transcript_analysis/`.
 
