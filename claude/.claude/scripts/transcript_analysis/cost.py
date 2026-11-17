@@ -1253,3 +1253,77 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
         )
     if unpriced_turns:
         print(f"\n  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+
+
+def _add_cost_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_cost = subparsers.add_parser(
+        "cost",
+        help=(
+            "Price-weighted dollar cost by token class (cache read/write/output/input), model ID,"
+            " and context-at-turn bucket, plus top-N sessions by dollars. Redacted by default."
+        ),
+    )
+    scope._add_project_scope_args(p_cost)
+    scope._add_extra_config_dirs_arg(
+        p_cost,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root; --no-redact is refused once this puts more than one"
+        " root in scope.",
+    )
+    p_cost.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_cost.add_argument(
+        "--top", type=int, default=20, metavar="N",
+        help="Maximum number of per-session rows in the top-N-by-dollars section (default: 20).",
+    )
+    p_cost.add_argument(
+        "--by-project", action="store_true",
+        help=(
+            "Add a per-project cost breakdown, keyed on (account root, project family)."
+            " Composes with --projects and --this-repo; one repo's own worktrees"
+            " collapse into a single row instead of fragmenting per branch."
+        ),
+    )
+    p_cost.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "Emit real project names and session IDs instead of anonymized labels."
+            " Never publish --no-redact output — see docs/transcript-analysis.md."
+            " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
+    p_cost.add_argument(
+        "--summary", action="store_true",
+        help=(
+            "Compact, aggregate-only block for a PR body: dollars and tokens by token class,"
+            " model ID, and thread, plus session and priced-turn counts — no per-session or"
+            " per-project row. Requires --this-repo; refuses --projects, --by-project,"
+            " --no-redact, and --config-dir."
+        ),
+    )
+    p_cost.add_argument(
+        "--share-only", action="store_true",
+        help=(
+            "Four dimensionless percentage-share tables (class, model, thread, context bucket) —"
+            " never a dollar figure, a token count, or a grand total. Refuses --by-project,"
+            " --no-redact, --summary, and --top. See docs/transcript-analysis.md."
+        ),
+    )
+    p_cost.set_defaults(func=cmd_cost)
+
+
+def _add_cost_trend_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_cost_trend = subparsers.add_parser(
+        "cost-trend",
+        help="Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.",
+    )
+    scope._add_project_scope_args(p_cost_trend)
+    scope._add_extra_config_dirs_arg(
+        p_cost_trend,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root.",
+    )
+    p_cost_trend.set_defaults(func=cmd_cost_trend)

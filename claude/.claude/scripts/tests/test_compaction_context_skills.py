@@ -577,6 +577,32 @@ class TestPlanLine:
         assert PLAN_LINE_PREFIX not in block
         assert quoted_messages(block) == ["go"]
 
+    def test_cwd_of_4096_characters_gets_a_plan_line_and_one_of_4097_gets_none_with_the_rest_of_the_block(
+        self, tmp_path
+    ):
+        root = tmp_path / "root"
+        plan = make_plan_checkout(root, "x")
+        # Many one-letter segments make the most ancestors per character; none of them exists on disk.
+        padding_length = 4096 - len(str(root))
+        cwd_accepted = str(root) + "/a" * (padding_length // 2) + "a" * (padding_length % 2)
+        cwd_rejected = cwd_accepted + "a"
+        assert len(cwd_accepted) == 4096
+        assert len(cwd_rejected) == 4097
+        records_accepted = [user_prompt("go"), at_checkout(skill_load(), branch="feature/x", cwd=cwd_accepted)]
+        records_rejected = [user_prompt("go"), at_checkout(skill_load(), branch="feature/x", cwd=cwd_rejected)]
+
+        block_accepted = block_for(tmp_path, records_accepted)
+        block_rejected = block_for(tmp_path, records_rejected)
+
+        assert f"`{plan}`" in block_accepted
+        assert PLAN_LINE_PREFIX not in block_rejected
+        assert _listed_paths(block_rejected) == [SKILL_PATH]
+        assert quoted_messages(block_rejected) == ["go"]
+
+    def test_cwd_length_bound_is_4096(self):
+        # A larger bound makes the ancestor walk cost seconds, so a change must be deliberate.
+        assert compaction_context.MAX_CWD_LENGTH == 4096
+
     def test_plan_line_wording_is_pinned(self, tmp_path):
         root = tmp_path / "root"
         plan = make_plan_checkout(root, "x")

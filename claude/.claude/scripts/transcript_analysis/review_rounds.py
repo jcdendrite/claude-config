@@ -1548,3 +1548,41 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             _print_footer(per_root_totals[root_idx], prefix=f"account-{ordinal} ")
     else:
         _print_footer(per_root_totals[None])
+
+
+def _add_review_round_cost_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_review_round_cost = subparsers.add_parser(
+        "review-round-cost",
+        help=(
+            "Per-branch review-round dollar cost: prices every code-review/plan-review/"
+            "ready-for-review invocation's own window (main-thread turns plus every subagent"
+            " dispatched inside it), with a round-vs-non-round reconciliation line. Corpus-wide,"
+            " no gh calls."
+        ),
+    )
+    scope._add_project_scope_args(p_review_round_cost)
+    p_review_round_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
+    p_review_round_cost.add_argument("--since", metavar="DATE", type=scope._iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_review_round_cost.add_argument("--until", metavar="DATE", type=scope._iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_review_round_cost.add_argument(
+        "--skill", metavar="NAME", choices=sorted(REVIEW_SKILLS),
+        help="Print only rounds for one skill name (default: all three); never narrows detection.",
+    )
+    p_review_round_cost.add_argument(
+        "--pooled", action="store_true",
+        help=(
+            "Print only a cross-account pooled block of shares (no dollar amounts, no"
+            " raw counts printed directly, no per-branch rows). Refuses every scope-narrowing flag; see"
+            " docs/private-project-redaction.md."
+        ),
+    )
+    p_review_round_cost.add_argument(
+        "--show-withheld", action="store_true",
+        help=(
+            "With --pooled: print the figures the dominance-precision floor would"
+            " otherwise withhold, plus the two data-quality-gap lines, under a DO NOT"
+            " PUBLISH banner. Never publish this output; cite a plain --pooled run"
+            " instead."
+        ),
+    )
+    p_review_round_cost.set_defaults(func=cmd_review_round_cost)
