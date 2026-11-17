@@ -99,7 +99,8 @@ summary: 2 skills, 7 cases | pass 5/7 | review the 2 FAIL cases above
 - Under `description-fidelity` the `triggers` / `does-not-trig` per-case label
   reads as "the classifier named this skill" / "named a different skill or
   none" — there is no live dispatch in that mode.
-- Exit code is always `0` — measurement, not a gate.
+- Exit code is `0` — measurement, not a gate — unless a hook blocks a
+  `claude -p` prompt; see "A prompt blocked by a hook".
 
 **Noise floor.** Triggering is probabilistic, so the pass rate carries sampling
 noise. At `K=10` a case that genuinely triggers ~60% of the time still reads
@@ -393,6 +394,20 @@ parsers, the anchor extractor, and the stream-json detectors (runtime and
 behavioral-dispatch) are unit-tested offline (synthetic inputs, no `claude -p`)
 in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 `evals/fixtures/`.
+
+## A prompt blocked by a hook
+
+A blocked `claude -p` prompt exits `0` and makes no model turn, so an instrument that scored it would count a miss.
+
+- Every instrument here that launches `claude -p` stops on a blocked prompt instead of scoring the run.
+- `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate stop with `BlockedPromptError` and a nonzero exit.
+- A raised `BlockedPromptError` ends the process with exit status 1 and a traceback naming it, the same status `measure_explore_recall.py`'s gate uses for a FAIL verdict, so read the traceback to tell them apart.
+- An abort loses the results not yet written, because `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate write their `--json` file only at the end of a run.
+- Review bench records a blocked run missing, with reason `blocked-prompt` and the hook's reason as its detail. A block or a judge pair whose runs are all blocked stops with exit `2`, as any all-missing one does.
+- Stream-json launches recognize any hook's block by the `system` event whose `prompt_submit_outcome.kind` is `blocked_by_hook`.
+- `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`, so another hook's block goes unrecognized there.
+- Plain-text output that echoes that prefix reads as a block.
+- The main session rule adherence gate instead pauses on a blocked prompt, and `--resume` reruns it.
 
 ## Linting
 

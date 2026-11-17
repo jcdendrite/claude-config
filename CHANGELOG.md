@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **Every eval instrument that launches `claude -p` now stops on a prompt a hook blocked, instead of scoring the run as a miss.**
+  - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.
+  - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`, so another hook's block goes unrecognized there.
+  - The main session rule adherence gate is unchanged: it pauses on a blocked prompt, and `--resume` reruns it.
 - **`check-skill-length.sh` gives `subagent-delegation/SKILL.md` a line cap of 218, above the 200-line default.** Splitting the skill's run-on `review-orchestrator` protocol lines into lists needed more lines than the default cap left, and the protocol could not move out of the skill. Other skills' caps are unchanged. The change is live on `git pull`.
 - **The evals harness reads SKILL.md and agent frontmatter with PyYAML, and the documented evals commands now run through `scripts/venv-run.sh python3`.** Plugin bumped: `skill-management` 5.1.0 → 5.1.1.
   - A quoted `description` no longer keeps its quotes in the description-fidelity listing.

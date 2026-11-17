@@ -1516,6 +1516,31 @@ class TestExecuteJudgeRunValidityWiring:
         assert record.missing_reason == runner.MISSING_REASON_TIMEOUT
 
 
+class TestBlockedPromptThroughExecuteJudgeRun:
+    def test_a_blocked_prompt_records_missing_with_the_hooks_reason_and_skips_the_flush_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        flush_waits: list[str] = []
+        monkeypatch.setattr(
+            runner, "wait_for_session_flush",
+            lambda projects_root, session_id, *, timed_out: flush_waits.append(session_id),
+        )
+        blocked_event = {
+            "type": "system", "subtype": "informational",
+            "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
+        }
+
+        record = adjudicate.execute_judge_run(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path), session_id="s1",
+            launch=lambda cmd, cwd, timeout_s: ([json.dumps(blocked_event).encode()], False),
+        )
+
+        assert record.status == runner.STATUS_MISSING
+        assert record.missing_reason == runner.MISSING_REASON_BLOCKED_PROMPT
+        assert "synthetic block reason" in record.missing_detail
+        assert flush_waits == []
+
+
 class TestJudgeWriteAheadOrdering:
     def test_each_judge_attempt_records_its_session_id_before_launching(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
