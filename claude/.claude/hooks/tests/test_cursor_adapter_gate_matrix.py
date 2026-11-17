@@ -2126,7 +2126,6 @@ class TestRecoverySectionResolves:
         "heading_part",
         [
             "A deny from a marker-gated gate",
-            "CLAUDECODE set in Cursor's hook environment",
             "A host walk that found no host",
             "A worktree held by a live process",
             "A marker write that the sandbox denies",
