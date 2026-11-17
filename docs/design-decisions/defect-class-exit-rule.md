@@ -78,9 +78,8 @@ Which way each counting choice leaned (`.claude/plans/exit-rule-replay.md` § "R
 - Pass kind is known only where a disposition record survived.
 - Disposition records are self-attested, since any review-only agent can write under `agent-reviews/`.
 - A branch with no recorded cumulative pass cannot show a cut.
-- Recorded passes undercount cumulative passes, which leans against a cut.
-- Left-unfixed groups count only labeled rows, so a branch that did not cut contributed only its recorded-pass rows.
-- A round after the exit pass may have reviewed new work, and no record tells it apart from a fix round.
+- A branch that did not cut contributed only its recorded-pass rows to the left-unfixed groups.
+- No record tells whether a round after the exit pass reviewed new work or a fix.
 - Rows written on a detached HEAD or on the default branch sit in session-keyed files that the selection does not compute.
 - The issue body was compared as it stands, not as it stood when a branch began.
 - The labels are agent judgment over local records that no command re-runs.
