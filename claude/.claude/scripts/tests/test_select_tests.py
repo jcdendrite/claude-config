@@ -1463,7 +1463,7 @@ class TestSelectPytestTargets:
         }
 
     def test_global_claude_md_change_selects_hooks_and_skills_tests(self):
-        """SKILLS_TESTS_DIR's tests read this file by path in six
+        """SKILLS_TESTS_DIR's tests read this file by path in several
         places, including test_global_claude_md_has_no_state_path.
         test_doc_counts.py (HOOKS_TESTS_DIR) reads it by path in
         _count_ground_every_choice_categories. test_nudge_transcript_toolkit.py's
