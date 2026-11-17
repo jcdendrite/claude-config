@@ -429,7 +429,7 @@ machine-identity primitives its own writers call before recording. Binds `config
 The pr-cost command family: `cmd_pr_cost` and every helper used only by it — the branch-to-merged-PR
 join, per-PR gh enrichment, mechanical review-surface proxies, and the read/`--record` report. Every
 stdout/stderr path routes branch and repo values through `redaction._assign_root_scoped_redact_label`,
-never raw. Imports `corpus`, `cost`, `gh_cli`, `ledger_common`, `pr_cost_ledger`, `pricing`,
+never raw. Imports `corpus`, `cost`, `gh_cli`, `ledger_common`, `ledger_rounds`, `pr_cost_ledger`, `pricing`,
 `redaction`, `render`, `review_rounds`, and `scope` all by module. The `cost` import reaches `cost.py`'s own
 `_compute_pr_cost_branch_totals` and `_new_pr_cost_agg` — the pr-cost command group depending on the
 cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT`, and
@@ -449,6 +449,8 @@ The reader for the pr-cost ledger's `review_rounds` cells: `read_ledger_prs` rea
 `select_ledger_prs` applies the selection policy to parsed rows, so the policy is testable without a ledger file.
 Makes no gh call and scans no transcript corpus. Imports `pr_cost_ledger`, `pricing`, `review_rounds`, and
 `scope` all by module. The `scope` import exists so an error names an account by an `account-N` ordinal.
+`pr_cost.py` reads `_round_is_after_merge`, so read mode's per-skill round counts and the reader apply one
+after-merge rule.
 
 ### `cache_rebuild_rules.py`
 

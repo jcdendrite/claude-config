@@ -26,6 +26,7 @@ from transcript_analysis import (
     cost,
     gh_cli,
     ledger_common,
+    ledger_rounds,
     pr_cost_ledger,
     pricing,
     redaction,
@@ -590,6 +591,20 @@ def _new_pr_cost_row(
     }
 
 
+def _review_round_counts(review_rounds_cell: dict | None) -> tuple[int, ...] | None:
+    """Each review skill's rounds not flagged after_merge, in review_rounds.REVIEW_SKILLS order, or None for a row with
+    no cell. A round with no flag counts, because the writer omits the flag only when it cannot place the round
+    against the merge. The count ignores the cell's `rule` and the row's `join_confidence`, so it can differ from a
+    ledger view's."""
+    if review_rounds_cell is None:
+        return None
+    rounds_by_skill = review_rounds_cell["rounds"]
+    return tuple(
+        sum(1 for review_round in rounds_by_skill.get(skill, []) if not ledger_rounds._round_is_after_merge(review_round))
+        for skill in review_rounds.REVIEW_SKILLS
+    )
+
+
 def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict, repo_map: dict) -> None:
     """Read-mode's existing-rows preview -- scrubbed repo, no branch column
     at all (head_branch is already the scrubbed placeholder stored in the
@@ -598,12 +613,21 @@ def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict,
         print("\nNo rows recorded yet.")
         return
     print()
-    print(f"{'Repo':<28} {'PR':>6} {'Machine':<9} {'Status':<20} {'Join':<8} {'CapturedAt':<20}")
+    round_count_headers = [f"{skill}-rounds" for skill in review_rounds.REVIEW_SKILLS]
+    print(
+        f"{'Repo':<28} {'PR':>6} {'Machine':<9} {'Status':<20} {'Join':<8} {'CapturedAt':<20}"
+        f" {' '.join(round_count_headers)}"
+    )
     for row in rows:
         repo_label = redaction._assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
+        round_counts = _review_round_counts(row["review_rounds"])
+        round_count_cells = " ".join(
+            f"{'-' if round_counts is None else round_counts[position]:>{len(header)}}"
+            for position, header in enumerate(round_count_headers)
+        )
         print(
             f"{repo_label:<28} {row['pr_number']:>6} {row['machine']:<9} {row['status']:<20}"
-            f" {row['join_confidence']:<8} {row['captured_at']:<20}"
+            f" {row['join_confidence']:<8} {row['captured_at']:<20} {round_count_cells}"
         )
 
 

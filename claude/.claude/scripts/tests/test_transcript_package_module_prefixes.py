@@ -85,6 +85,7 @@ TEST_FILES = (
     "test_transcript_denials.py",
     "test_transcript_gh_cli.py",
     "test_transcript_pr_cost.py",
+    "test_transcript_pr_cost_read_mode.py",
     "test_transcript_pr_cost_export_accounts.py",
     "test_transcript_pr_cost_ledger.py",
     "test_transcript_read_scope.py",

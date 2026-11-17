@@ -1207,7 +1207,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--plan-file-glob GLOB` — glob checked against a PR's added files for the plan-slug join cross-check (default `.claude/plans/*.md`).
 - `--risk-surface-glob GLOB` — glob pattern considered risk surface for the `risk_surface_flag` proxy (repeatable; replaces the claude-config defaults entirely when given).
 
-**Default (read) output.** Every row currently in the ledger file, followed by every merged PR with local-corpus activity that no row has captured yet — the gap between "recorded" and "still recoverable," mirroring `cost-ledger`'s own uncaptured-week listing.
+**Default (read) output.** Every row currently in the ledger file, each ending in three per-skill round-count columns (`code-review-rounds`, `plan-review-rounds`, `ready-for-review-rounds`; `docs/pr-cost.md` § "The `review_rounds` cell" states what they count), followed by every merged PR with local-corpus activity that no row has captured yet — the gap between "recorded" and "still recoverable," mirroring `cost-ledger`'s own uncaptured-week listing.
 
 **Two modes, one opt-in key.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind the `pr_cost_recording` config key precisely because it durably writes the at-rest data listed in `docs/pr-cost.md` § "Data" to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both opt-in keys together.
 
@@ -1436,7 +1436,7 @@ coverage is lower when few branches are in scope.
 
 A withheld block prints `(95% CI not computed — too few branches in scope)` for every share. A share with a zero-dollar denominator (a branch with a round but no priced spend) prints `(95% CI not computed — no priced branch spend)` for that share alone. Neither wording's own reason clause contains a digit. Under `--show-withheld`, a "Rounds affected by a data-quality gap" section with `dangling dispatch` and `unpriced turn` lines follows the last section above.
 
-**When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` records one figure per branch, plus a round-level `review_rounds` cell in rows recorded after that column was added, which read mode does not print. `review-round-cost` stays the way to read rounds from live transcripts. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
+**When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` records one figure per branch, plus a round-level `review_rounds` cell in rows recorded after that column was added, from which read mode prints three per-skill round counts and no round dollars. `review-round-cost` stays the way to read rounds from live transcripts. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
 
 ---
 
@@ -1446,7 +1446,7 @@ A withheld block prints `(95% CI not computed — too few branches in scope)` fo
 
 **Requires a pr-cost ledger, and no `gh`.** The report makes no `gh` call. It runs one local `origin` remote lookup, then reads the ledger file. Run `pr-cost --record` first (it needs the `pr_cost_recording` config key). When the report reports no PR, it exits 0 with `n/a` aggregates over zero PRs and the diagnostics' counts, and prints one of two `No PR reported.` messages:
 - With no ledger, or a ledger holding no row for this repository, the message says so and points at `pr-cost --record` and the `pr_cost_recording` config key.
-- When rows exist but none is reported, the message names the `--force` re-capture of a row recorded before the `review_rounds` column, with its `cleanupPeriodDays` limit, and refers to the diagnostics' counts of the PRs left out.
+- When rows exist but none is reported, the message refers to the diagnostics' counts of the PRs left out.
 
 **Exit codes.**
 - 2 -- a refused flag scope, an unresolvable config directory, or a non-empty `PR_COST_LEDGER_PATH` while more than one account root resolves.
@@ -1459,7 +1459,7 @@ A withheld block prints `(95% CI not computed — too few branches in scope)` fo
 
 **Flags.**
 - `--this-repo` -- required. It selects the ledger rows recorded for this checkout's origin repository, and the command exits 2 without it and refuses any `--projects` scope.
-- `--all-accounts` -- read every declared account's pr-cost ledger instead of the active account's alone. A PR with more than one row that carries a `review_rounds` cell is excluded and counted, not summed. A private view; see "Publication" below.
+- `--all-accounts` -- read every declared account's pr-cost ledger instead of the active account's alone. A PR with more than one row that carries a `review_rounds` cell is excluded and counted, not summed. A private view that prints the DO NOT PUBLISH banner and no publication pointer; see "Publication" below.
 
 Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--config-dir` flag of its own.
 
@@ -1470,11 +1470,11 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - A degraded `status` excludes nothing. A row's size and rounds come from the bulk discovery call and the local corpus pass, not from the per-PR enrichment call that `status` reports on.
 - A round flagged `after_merge` is removed and counted, because its window opened at or after the PR's merge. A round with no `after_merge` flag stays, because the writer omits the flag only when it cannot place the round against the merge.
 - A PR is excluded and counted under the first reason it meets:
-  - No row of the PR carries a `review_rounds` cell. `pr-cost` read mode lists every recorded PR but does not mark which rows lack a cell. Recapture a PR with `pr-cost --record --force --pr N` only when every session of that PR is inside `cleanupPeriodDays`. `docs/pr-cost.md` § "The re-record contract" states what happens outside it.
+  - No row of the PR carries a `review_rounds` cell.
   - More than one row of the PR carries a cell, whether from another machine identity, another account, or a regenerated machine identity. No field tells those apart, and summing them could double the rounds.
-  - `join_confidence` is `low`. `medium` is kept.
-  - The cell's `rule` differs from the current review-round rule, because rounds counted under different rules do not compare. After a rule change, every older row is excluded until a forced re-capture (which carries the same `cleanupPeriodDays` limit; see `docs/pr-cost.md` § "The re-record contract").
-  - A round that is not after-merge, in any skill's list, holds token splits this checkout's rate table cannot price, such as a model it does not list.
+  - `join_confidence` is `low`. `medium` is kept. A low-confidence row holds the rounds of every PR that used the branch name. `docs/pr-cost.md` § "Join confidence" defines the grade.
+  - The cell's `rule` differs from the current review-round rule, because rounds counted under different rules do not compare. After a rule change, every older row is excluded, and so is a row a newer checkout recorded under a higher `rule`.
+  - A round that is not after-merge, in any skill's list, holds token splits this checkout's rate table cannot price, such as a model it does not list. The report prints a count only, so it does not name the model.
 - The excluded PRs are counts only. No excluded row's branch, machine, host or repository prints.
 
 **What a record measures.** A PR's size is the row's `additions + deletions`. Each round's dollars are its stored main-thread and subagent token splits, re-priced at this checkout's rate table, not the micro-dollars the capture stored. Rows captured under different rate tables compare for the turns the capture priced. A turn the capture could not price is absent from the splits, so it stays missing from the dollars, and the unpriced-turns diagnostic below counts it. A record yields three values: rounds per PR, total dollars per PR, and mean dollars per round (total over rounds). Only `code-review` rounds feed them.
@@ -1493,7 +1493,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - Unpriced turns and dangling dispatches inside the reported rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both. Only the reported PRs' `code-review` rounds before merge add to them.
 - A `MALFORMED USAGE` line prints after the dangling-dispatches line, only when nonzero: `MALFORMED USAGE — <n> usage-bearing turns inside reported rounds had non-numeric or negative token fields and were excluded from this report's dollars`. Those turns are missing from the dollar figures too. The **Round detection caveats.** list under `review-round-cost` defines the exclusion.
 
-**Header.** `REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)`, or `every declared account` under `--all-accounts`. Under a non-empty `PR_COST_LEDGER_PATH`, both modes print `PR_COST_LEDGER_PATH file, account scope unverified` in that slot, with no path or value: every account that ran `pr-cost --record` under the variable wrote that one file, so the file is not verified to hold one account. A scope-unverified notice follows the header on every run.
+**Header.** `REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)`, or `every declared account` under `--all-accounts`. Under a non-empty `PR_COST_LEDGER_PATH`, both modes print `PR_COST_LEDGER_PATH file, account scope unverified` in that slot, with no path or value: every account that ran `pr-cost --record` under the variable wrote that one file, so the file is not verified to hold one account. A scope-unverified notice follows the header on every run. In default mode a one-line publication pointer follows the notice. `--all-accounts` prints the private-view banner and no pointer.
 
 **Known limits.**
 - A PR's size is its final merged size, not the size each round read, so an early round's dollars are set against changes made after it ran.
@@ -1501,7 +1501,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - Bucket medians resolve only at the bucket edges above, so a threshold inside a bucket reads from the per-PR rows.
 - A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost (see "Round detection caveats" under `review-round-cost`): fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
 - Only recorded PRs appear, and a PR is recorded only after its merge, the as-of window and a `pr-cost --record` run. A PR with no row is absent.
-- The writer discovers at most the 1000 most recent merged PRs, so a PR beyond that cap is never recorded, and a branch name reused by a PR beyond it can carry the older PR's rounds.
+- The writer's bulk discovery lists at most 1000 merged PRs per run (`gh pr list --limit 1000`), so a PR beyond that cap is never recorded, and a branch name reused by a PR beyond it can carry the older PR's rounds.
 - A row captured after some of its sessions aged out of Claude Code's retention undercounts its rounds, and no field marks it. A row recorded before the `review_rounds` column existed is excluded.
 - A row records no capture scope. The capture's review-round pass defaults to every project directory, and it joins a round to a PR by head-branch name alone, so a PR's rounds can include another repository's session on a same-named branch.
 - For the same reason, and because the writer has no fork guard, a fork PR whose head name equals a local branch name inherits that branch's rounds, paired with the PR's size.
@@ -1513,12 +1513,13 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
   - A synced config directory shares one machine identity, so the report collapses to the latest capture with no exclusion count. See `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
   - Whether any setup shares a file under distinct identities is unverified.
 
-**Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication.
+**Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". Default mode prints a one-line pointer to that route under the scope-unverified notice, and the proposal quotes the notice. `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr and no pointer, and its output is never proposed for publication.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run; default mode, stdout only):
 ```
 REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)
 Scope unverified -- a pr-cost ledger row does not record which project directories its --record run read, so a PR's rounds can include another repository's session on a same-named branch; see docs/transcript-analysis.md § "review-cost-by-size".
+LEDGER VIEW -- publishable only under docs/private-project-redaction.md § "The owner can authorize one figure, case by case". Quote the scope-unverified notice above in the proposal.
 
 Aggregates -- code-review rounds per merged PR; size is additions + deletions
 Spearman rho of lines against (rho; PRs used):

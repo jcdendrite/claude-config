@@ -42,11 +42,13 @@ _SCOPE_UNVERIFIED_NOTICE = (
     " PR's rounds can include another repository's session on a same-named branch; see docs/transcript-analysis.md"
     " § \"review-cost-by-size\"."
 )
+_LEDGER_PUBLICATION_POINTER = (
+    "LEDGER VIEW -- publishable only under docs/private-project-redaction.md § \"The owner can authorize one figure,"
+    " case by case\". Quote the scope-unverified notice above in the proposal."
+)
 _NO_PR_REPORTED_MESSAGE = (
-    "No PR reported. A row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
-    " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
-    " permanently understates the PR's row. The ledger diagnostics below count the PRs"
-    " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
+    "No PR reported. The ledger diagnostics below count the PRs left out; see docs/transcript-analysis.md"
+    " § \"review-cost-by-size\"."
 )
 _NO_PR_RECORDED_MESSAGE = (
     "No PR reported. The ledger read above has no row for this repository. Run pr-cost --record to capture merged PRs"
@@ -303,6 +305,8 @@ def cmd_review_cost_by_size(args: argparse.Namespace) -> None:
 
     print(_scope_header(all_accounts, pr_cost_ledger.pr_cost_ledger_path_overridden()))
     print(_SCOPE_UNVERIFIED_NOTICE)
+    if not all_accounts:
+        print(_LEDGER_PUBLICATION_POINTER)
     if not records:
         print(_NO_PR_RECORDED_MESSAGE if ledger_read.pr_count == 0 else _NO_PR_REPORTED_MESSAGE)
     _print_aggregates(_compute_aggregates(records))

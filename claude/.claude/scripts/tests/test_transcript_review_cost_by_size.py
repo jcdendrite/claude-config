@@ -38,15 +38,17 @@ _NOTICE_TEXT = (
     " PR's rounds can include another repository's session on a same-named branch; see docs/transcript-analysis.md"
     " § \"review-cost-by-size\"."
 )
+_POINTER_TEXT = (
+    "LEDGER VIEW -- publishable only under docs/private-project-redaction.md § \"The owner can authorize one figure,"
+    " case by case\". Quote the scope-unverified notice above in the proposal."
+)
 _HEADER_LEDGER_PATH_OVERRIDE = (
     "REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; PR_COST_LEDGER_PATH file,"
     " account scope unverified)"
 )
 _NO_PR_REPORTED_TEXT = (
-    "No PR reported. A row recorded before the review_rounds column needs pr-cost --record --force --pr N to refill"
-    " it. That re-capture is safe only while every session of that PR is inside cleanupPeriodDays; outside it, it"
-    " permanently understates the PR's row. The ledger diagnostics below count the PRs"
-    " left out; see docs/transcript-analysis.md § \"review-cost-by-size\"."
+    "No PR reported. The ledger diagnostics below count the PRs left out; see docs/transcript-analysis.md"
+    " § \"review-cost-by-size\"."
 )
 _NO_PR_RECORDED_TEXT = (
     "No PR reported. The ledger read above has no row for this repository. Run pr-cost --record to capture merged PRs"
@@ -69,6 +71,7 @@ _UNPRICED_MODEL_SENTINEL = "zzunpricedmodelsentinel"
 _UNKNOWN_SKILL_SENTINEL = "zzunknownskillsentinel"
 _UNKNOWN_ROUND_KEY_SENTINEL = "zzunknownroundkeysentinel"
 _OVERRIDE_BASENAME = "zzoverridesentinel.tsv"
+_PROJECTS_SENTINEL = "zzprojectsglobsentinel*"
 # 100_000 input tokens on _REPRICED_ROUND_MODEL at its base input rate of $2.00 per million (pricing._MODEL_BASE_INPUT_RATES).
 _DOLLARS_PER_100K_INPUT_TOKENS = 0.20
 
@@ -354,8 +357,8 @@ class TestCmdRefusalsAndFailures:
         [
             pytest.param({"this_repo": False}, id="no-this-repo"),
             pytest.param({"this_repo": False, "all_accounts": True}, id="all-accounts-without-this-repo"),
-            pytest.param({"this_repo": False, "projects": "x"}, id="projects-without-this-repo"),
-            pytest.param({"this_repo": True, "projects": "x"}, id="projects-with-this-repo"),
+            pytest.param({"this_repo": False, "projects": _PROJECTS_SENTINEL}, id="projects-without-this-repo"),
+            pytest.param({"this_repo": True, "projects": _PROJECTS_SENTINEL}, id="projects-with-this-repo"),
         ],
     )
     def test_refuses_without_this_repo_before_any_subprocess_call(self, monkeypatch, capsys, args_kwargs):
@@ -364,7 +367,9 @@ class TestCmdRefusalsAndFailures:
             _run_cmd(monkeypatch, capsys, _review_cost_by_size_args(**args_kwargs), call_log=call_log)
         assert exc_info.value.code == 2
         assert call_log == []
-        assert "review-cost-by-size" in capsys.readouterr().err
+        out, err = capsys.readouterr()
+        assert "review-cost-by-size" in err
+        _assert_withheld(out, err, _PROJECTS_SENTINEL)
 
     def test_default_mode_exits_2_under_its_own_name_when_the_config_dir_is_unresolvable(self, monkeypatch, capsys):
         def unresolvable_config_dir():
@@ -405,6 +410,7 @@ class TestCmdRefusalsAndFailures:
         out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True, all_accounts=True))
         assert out.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
         assert err == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+        assert _POINTER_TEXT not in out + err
 
     @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
     def test_failing_origin_remote_lookup_exits_1_under_this_commands_name(
@@ -512,6 +518,7 @@ class TestCmdSuccessRuns:
 
         lines = out.splitlines()
         assert lines[0] == _HEADER_ACTIVE_ACCOUNT
+        assert lines[1:3] == [review_cost_by_size._SCOPE_UNVERIFIED_NOTICE, _POINTER_TEXT]
         assert err == ""
         assert "DO NOT PUBLISH" not in out
         assert _printed_pr_numbers(out) == [12, 11]
@@ -531,8 +538,9 @@ class TestCmdSuccessRuns:
 
         lines = out.splitlines()
         assert lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
-        assert lines[1] == _HEADER_EVERY_ACCOUNT
+        assert lines[1:3] == [_HEADER_EVERY_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE]
         assert err == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+        assert _POINTER_TEXT not in out + err
         assert _printed_pr_numbers(out) == [31, 12, 11]
         assert _count_line(out, "PRs reported") == 3
         assert _count_line(out, "PRs with a current row for this repository") == 3 + _EXCLUDED_PR_COUNT
@@ -554,6 +562,10 @@ class TestCmdSuccessRuns:
 
         lines = out.splitlines()
         assert lines[1 if all_accounts else 0] == _HEADER_LEDGER_PATH_OVERRIDE
+        if all_accounts:
+            assert _POINTER_TEXT not in out + err
+        else:
+            assert lines[2] == _POINTER_TEXT
         assert _printed_pr_numbers(out) == [41]
         _assert_withheld(out, err, *_success_run_withheld(tmp_path), str(override_file), _OVERRIDE_BASENAME)
 
@@ -582,10 +594,14 @@ class TestCmdSuccessRuns:
         assert f"  {71:>7}  {5:>8,}  {2:>6}  {_dollars_text(3):>10}  {_dollars_text(1.5):>10}" in out.splitlines()
         assert _dollars_text(5) not in out
 
-    def test_the_header_is_followed_by_the_scope_unverified_notice(self, fake_projects, monkeypatch, capsys):
+    def test_the_header_is_followed_by_the_scope_unverified_notice_and_the_publication_pointer(
+        self, fake_projects, monkeypatch, capsys,
+    ):
         _write_account_ledger(fake_projects.parent.parent, [_kept_row(11)])
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
-        assert out.splitlines()[:2] == [_HEADER_ACTIVE_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE]
+        assert out.splitlines()[:3] == [
+            _HEADER_ACTIVE_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE, _POINTER_TEXT,
+        ]
         assert _NO_PR_REPORTED_TEXT not in out
 
     def test_a_degraded_row_is_reported_with_its_size(self, fake_projects, monkeypatch, capsys):
@@ -826,8 +842,8 @@ class TestCmdEmptyReport:
         out, err = _run_report(monkeypatch, capsys, _review_cost_by_size_args_scoped_to_seeded_session(fake_projects))
 
         lines = out.splitlines()
-        assert lines[:3] == [
-            _HEADER_ACTIVE_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE,
+        assert lines[:4] == [
+            _HEADER_ACTIVE_ACCOUNT, review_cost_by_size._SCOPE_UNVERIFIED_NOTICE, _POINTER_TEXT,
             expected_message,
         ]
         assert "  rounds per PR: n/a (n=0)" in lines
@@ -844,8 +860,9 @@ class TestCmdEmptyReport:
 
 
 class TestWording:
-    def test_the_scope_unverified_notice_and_the_no_pr_message_read_verbatim(self):
+    def test_the_scope_unverified_notice_the_pointer_and_the_no_pr_message_read_verbatim(self):
         assert review_cost_by_size._SCOPE_UNVERIFIED_NOTICE == _NOTICE_TEXT
+        assert review_cost_by_size._LEDGER_PUBLICATION_POINTER == _POINTER_TEXT
         assert review_cost_by_size._NO_PR_REPORTED_MESSAGE == _NO_PR_REPORTED_TEXT
         assert review_cost_by_size._NO_PR_RECORDED_MESSAGE == _NO_PR_RECORDED_TEXT
 
@@ -855,6 +872,7 @@ class TestWording:
             pytest.param("_SCOPE_UNVERIFIED_NOTICE", _TRANSCRIPT_ANALYSIS_DOC, id="scope-unverified-notice"),
             pytest.param("_NO_PR_REPORTED_MESSAGE", _TRANSCRIPT_ANALYSIS_DOC, id="no-pr-reported"),
             pytest.param("_NO_PR_RECORDED_MESSAGE", _PR_COST_DOC, id="no-pr-recorded"),
+            pytest.param("_LEDGER_PUBLICATION_POINTER", _PRIVATE_PROJECT_REDACTION_DOC, id="publication-pointer"),
         ],
     )
     def test_each_message_cites_a_real_heading(self, message_name, cited_doc):

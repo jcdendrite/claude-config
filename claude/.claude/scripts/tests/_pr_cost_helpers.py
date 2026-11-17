@@ -595,6 +595,13 @@ def _round_with_priced_splits(main_split: dict, agent_split: dict, **overrides) 
     }
 
 
+def _priceable_round(*, main_input_tokens: int = 1_000, **overrides) -> dict:
+    """A priceable round whose main and agent token splits differ, so a swapped field changes its dollars."""
+    return _round_with_priced_splits(
+        {"standard": {"input": main_input_tokens}}, {"fast": {"output": main_input_tokens * 3}}, **overrides,
+    )
+
+
 def _ledger_pr_row(pr_number: int, *, host: str, repo: str, machine: str, cell: dict | None, **overrides) -> dict:
     """A ledger row for `repo` on `host` carrying `cell` as its review_rounds."""
     return _sample_pr_cost_row(**{

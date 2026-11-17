@@ -8,14 +8,15 @@ import pytest
 from transcript_analysis import ledger_rounds, pr_cost, pr_cost_ledger, pricing, review_rounds, scope
 
 from ._pr_cost_helpers import (
+    _FROZEN_HEADER_CASES,
     _LEDGER_DIR_MARKER,
     _PRE_REVIEW_ROUNDS_HEADER_LINE,
     _current_line_with_cell,
     _ledger_pr_row,
     _pr_cost_args,
     _pre_review_rounds_row_line,
+    _priceable_round,
     _review_rounds_cell,
-    _round_with_priced_splits,
 )
 from ._review_round_corpus_helpers import _priced_with_classes
 from .conftest import _agent_use, _skill_block, _user_msg, _write_jsonl, _write_subagent_dispatch
@@ -33,22 +34,15 @@ _REFUSED_ACROSS_ROOTS_MESSAGE = (
 )
 
 
-def _round(*, main_input_tokens: int = 1_000, **overrides) -> dict:
-    """A priceable round whose main and agent token splits differ, so a swapped field changes its dollars."""
-    return _round_with_priced_splits(
-        {"standard": {"input": main_input_tokens}}, {"fast": {"output": main_input_tokens * 3}}, **overrides,
-    )
-
-
 def _code_review_cell(code_review: list[dict] | None = None, **other_skills: list[dict]) -> dict:
     """A cell whose code-review list is `code_review`, or one priceable round when None."""
-    return _review_rounds_cell({"code-review": [_round()] if code_review is None else code_review, **other_skills})
+    return _review_rounds_cell({"code-review": [_priceable_round()] if code_review is None else code_review, **other_skills})
 
 
 def _cell_with_an_after_merge_round(*rounds: dict) -> dict:
     """A cell whose code-review list holds an after-merge round and then `rounds` (one priceable round by default), so an
     exclusion that reached the after-merge round before deciding would count it."""
-    return _code_review_cell([_round(after_merge=1), *(rounds or [_round()])])
+    return _code_review_cell([_priceable_round(after_merge=1), *(rounds or [_priceable_round()])])
 
 
 def _row(pr_number: int = 1, *, machine: str = "ma", cell: dict | None = None, **overrides) -> dict:
@@ -157,7 +151,7 @@ class TestSelectLedgerPrsExclusions:
             pytest.param(
                 ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND,
                 [_row(1, cell=_cell_with_an_after_merge_round(
-                    _round(main_tokens={_UNPRICED_MODEL: {"standard": {"input": 1}}}),
+                    _priceable_round(main_tokens={_UNPRICED_MODEL: {"standard": {"input": 1}}}),
                 ))],
                 id="unpriceable-round",
             ),
@@ -184,7 +178,7 @@ class TestSelectLedgerPrsExclusions:
         _assert_only_this_reason_counted(_select([low_confidence, second_machine]), ledger_rounds.EXCLUDED_MULTI_ROW)
 
     def test_a_wrong_rule_with_an_unpriceable_round_counts_once_under_rule(self):
-        unpriceable = _round(main_tokens={_UNPRICED_MODEL: {"standard": {"input": 1}}})
+        unpriceable = _priceable_round(main_tokens={_UNPRICED_MODEL: {"standard": {"input": 1}}})
         row = _row(
             1, cell={**_cell_with_an_after_merge_round(unpriceable), "rule": review_rounds.REVIEW_ROUND_RULE + 1},
         )
@@ -220,17 +214,17 @@ class TestSelectLedgerPrsExclusions:
 
     def test_a_row_stamped_a_day_before_the_current_rate_table_is_kept_and_repriced(self):
         stamp = (pricing._PRICING_FETCH_DATE - timedelta(days=1)).isoformat()
-        review_round = _round(main_usd_micros=1, agent_usd_micros=1)
+        review_round = _priceable_round(main_usd_micros=1, agent_usd_micros=1)
         read = _select([_row(1, cell=_code_review_cell([review_round]), rate_stamp=stamp)])
         assert read.prs[0].usd_by_skill["code-review"] == [pytest.approx(_round_usd(review_round))]
 
 
 class TestSelectLedgerPrsRounds:
     def test_usd_by_skill_sums_each_rounds_two_repriced_splits_in_list_order(self):
-        first = _round(main_input_tokens=250_000)
-        second = _round(main_input_tokens=1_000)
-        third = _round(main_input_tokens=70_000)
-        plan = _round(main_input_tokens=70_000)
+        first = _priceable_round(main_input_tokens=250_000)
+        second = _priceable_round(main_input_tokens=1_000)
+        third = _priceable_round(main_input_tokens=70_000)
+        plan = _priceable_round(main_input_tokens=70_000)
         # The stored micro-dollars differ from the splits' price, so only a re-price gives the expected figure.
         for each in (first, second, third, plan):
             each["main_usd_micros"] = 123
@@ -244,7 +238,7 @@ class TestSelectLedgerPrsRounds:
         assert read.prs[0].usd_by_skill["plan-review"] == [pytest.approx(_round_usd(plan))]
 
     def test_a_round_with_no_agent_tokens_is_kept_and_priced_at_its_main_price(self):
-        no_agent = _round(agent_tokens={})
+        no_agent = _priceable_round(agent_tokens={})
         read = _select([_row(1, cell=_code_review_cell([no_agent]))])
         assert read.excluded == dict.fromkeys(ledger_rounds.EXCLUSION_REASONS, 0)
         main_usd = pricing._reprice_token_splits(no_agent["main_tokens"])
@@ -252,26 +246,27 @@ class TestSelectLedgerPrsRounds:
         assert read.prs[0].usd_by_skill["code-review"] == [pytest.approx(main_usd)]
 
     def test_a_round_with_neither_main_nor_agent_tokens_is_kept_at_zero_dollars(self):
-        empty = _round(main_tokens={}, agent_tokens={})
+        empty = _priceable_round(main_tokens={}, agent_tokens={})
         read = _select([_row(1, cell=_code_review_cell([empty]))])
         assert read.excluded == dict.fromkeys(ledger_rounds.EXCLUSION_REASONS, 0)
         assert read.prs[0].usd_by_skill["code-review"] == [0.0]
 
     def test_an_unpriceable_after_merge_round_does_not_exclude_its_pr(self):
-        unpriceable = _round(main_tokens={_UNPRICED_MODEL: {"standard": {"input": 1}}}, after_merge=1)
-        read = _select([_row(1, cell=_code_review_cell([_round(), unpriceable]))])
+        unpriceable = _priceable_round(main_tokens={_UNPRICED_MODEL: {"standard": {"input": 1}}}, after_merge=1)
+        read = _select([_row(1, cell=_code_review_cell([_priceable_round(), unpriceable]))])
         assert [pr.number for pr in read.prs] == [1]
         assert read.excluded[ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND] == 0
 
     def test_an_unpriceable_round_in_another_skills_list_excludes_the_pr(self):
-        unpriceable = _round(agent_tokens={_UNPRICED_MODEL: {"standard": {"output": 1}}})
-        read = _select([_row(1, cell=_code_review_cell([_round()], **{"plan-review": [unpriceable]}))])
+        unpriceable = _priceable_round(agent_tokens={_UNPRICED_MODEL: {"standard": {"output": 1}}})
+        read = _select([_row(1, cell=_code_review_cell([_priceable_round()], **{"plan-review": [unpriceable]}))])
         _assert_only_this_reason_counted(read, ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND)
 
     def test_after_merge_rounds_are_removed_and_counted_per_skill_leaving_the_rest_in_order(self):
-        before_first, before_second = _round(main_input_tokens=1_000), _round(main_input_tokens=2_000)
-        after_merge = _round(main_input_tokens=3_000, after_merge=1)
-        plan_before, plan_after = _round(main_input_tokens=4_000), _round(main_input_tokens=5_000, after_merge=1)
+        before_first, before_second = _priceable_round(main_input_tokens=1_000), _priceable_round(main_input_tokens=2_000)
+        after_merge = _priceable_round(main_input_tokens=3_000, after_merge=1)
+        plan_before = _priceable_round(main_input_tokens=4_000)
+        plan_after = _priceable_round(main_input_tokens=5_000, after_merge=1)
         cell = _code_review_cell(
             [before_first, after_merge, before_second], **{"plan-review": [plan_before, plan_after]},
         )
@@ -283,30 +278,31 @@ class TestSelectLedgerPrsRounds:
         assert read.after_merge_rounds == {"code-review": 1, "plan-review": 1}
 
     def test_after_merge_counts_total_across_kept_prs_per_skill(self):
-        first_pr = _code_review_cell([_round(), _round(after_merge=1)])
+        first_pr = _code_review_cell([_priceable_round(), _priceable_round(after_merge=1)])
         second_pr = _code_review_cell(
-            [_round(), _round(after_merge=1), _round(after_merge=1)], **{"plan-review": [_round(after_merge=1)]},
+            [_priceable_round(), _priceable_round(after_merge=1), _priceable_round(after_merge=1)],
+            **{"plan-review": [_priceable_round(after_merge=1)]},
         )
         read = _select([_row(1, cell=first_pr), _row(2, cell=second_pr)])
         assert [pr.number for pr in read.prs] == [1, 2]
         assert read.after_merge_rounds == {"code-review": 3, "plan-review": 1}
 
     def test_a_round_flagged_zero_or_with_no_flag_is_kept(self):
-        flagged_zero = _round(after_merge=0)
-        no_flag = {key: value for key, value in _round().items() if key != "after_merge"}
+        flagged_zero = _priceable_round(after_merge=0)
+        no_flag = {key: value for key, value in _priceable_round().items() if key != "after_merge"}
         read = _select([_row(1, cell=_code_review_cell([flagged_zero, no_flag]))])
         assert read.prs[0].rounds_by_skill["code-review"] == [flagged_zero, no_flag]
         assert read.after_merge_rounds == {}
 
     def test_a_skill_whose_rounds_are_all_after_merge_stays_as_an_empty_list(self):
-        read = _select([_row(1, cell=_code_review_cell([_round(after_merge=1)]))])
+        read = _select([_row(1, cell=_code_review_cell([_priceable_round(after_merge=1)]))])
         assert read.prs[0].rounds_by_skill == {"code-review": []}
         assert read.prs[0].usd_by_skill == {"code-review": []}
         assert read.after_merge_rounds == {"code-review": 1}
 
     def test_an_added_integer_round_key_and_an_unknown_skill_key_pass_through(self):
-        with_added_key = _round(**{"zz-added-count": 7})
-        read = _select([_row(1, cell=_code_review_cell([with_added_key], **{"zz-unknown-skill": [_round()]}))])
+        with_added_key = _priceable_round(**{"zz-added-count": 7})
+        read = _select([_row(1, cell=_code_review_cell([with_added_key], **{"zz-unknown-skill": [_priceable_round()]}))])
         assert read.prs[0].rounds_by_skill["code-review"][0]["zz-added-count"] == 7
         assert len(read.prs[0].rounds_by_skill["zz-unknown-skill"]) == 1
         assert len(read.prs[0].usd_by_skill["zz-unknown-skill"]) == 1
@@ -374,6 +370,25 @@ class TestReadLedgerPrs:
         assert read.prs == []
         assert read.pr_count == 1
         assert read.excluded[ledger_rounds.EXCLUDED_NO_CELL] == 1
+
+    @pytest.mark.parametrize("header_case", _FROZEN_HEADER_CASES, ids=lambda header_case: header_case.case_id)
+    def test_reading_a_ledger_under_a_frozen_header_leaves_its_bytes_and_directory_unchanged(
+        self, tmp_path, header_case,
+    ):
+        """Only a --record write upgrades a ledger to the current header. The reader never rewrites one."""
+        root = _account_root(tmp_path, "a")
+        _ledger_file(root).write_text(header_case.header_line + "\n" + header_case.literal_row_line + "\n")
+        bytes_before = _ledger_file(root).read_bytes()
+        directory_before = sorted(path.name for path in root.parent.iterdir())
+
+        read = ledger_rounds.read_ledger_prs(
+            [root], header_case.literal_row_parsed["host"], header_case.literal_row_parsed["repo"],
+            subcommand=_SUBCOMMAND,
+        )
+
+        assert read.pr_count == 1
+        assert _ledger_file(root).read_bytes() == bytes_before
+        assert sorted(path.name for path in root.parent.iterdir()) == directory_before
 
     def test_a_ledger_that_fails_to_parse_exits_one_with_the_parse_error_and_no_path(self, tmp_path, capsys):
         root = _account_root(tmp_path, "a")

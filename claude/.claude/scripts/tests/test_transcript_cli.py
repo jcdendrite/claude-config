@@ -281,6 +281,28 @@ def test_review_cost_by_size_without_this_repo_is_refused_through_main(monkeypat
     assert "review-cost-by-size: requires --this-repo" in err
 
 
+def test_review_cost_by_size_refuses_a_top_level_config_dir_without_echoing_its_path(monkeypatch, capsys, tmp_path):
+    """The top-level --config-dir refusal names the flag and never the path it was given."""
+    sentinel_config_dir = tmp_path / "zzconfigdirsentinel"
+
+    def fail_on_any_subprocess(cmd, *args, **kwargs):
+        pytest.fail(f"refusal must precede every subprocess call, got {cmd!r}")
+
+    monkeypatch.setattr(subprocess, "run", fail_on_any_subprocess)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["transcript-analysis.py", "--config-dir", str(sentinel_config_dir), "review-cost-by-size", "--this-repo"],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "review-cost-by-size: the top-level --config-dir has no effect here" in err
+    assert sentinel_config_dir.name not in out + err
+
+
 def test_read_cost_without_this_repo_is_refused_through_main(monkeypatch, capsys):
     """main() reaches cmd_read_cost, which refuses a scope without --this-repo before any scan."""
     monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost"])

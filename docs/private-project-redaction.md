@@ -115,7 +115,9 @@ re-run and check.
   unions every declared root, then exits 2 rather than write or report
   a blended total when more than one resolves. `--all-accounts` opts
   into a per-account loop, whose output publishes nothing — see the
-  next section.
+  next section. Read mode's listing, its per-skill round counts
+  included, is not a publication instrument, because read mode prints
+  every repository's rows in the ledger.
 - `transcript-analysis.py period-cost` reads one account only, but its
   output is never publishable. It covers every repository that account
   worked in, so every figure is per-account and per-project, even on this
@@ -125,7 +127,10 @@ re-run and check.
   publication instrument. It reads pr-cost ledger rows, which do not
   record the project scope their rounds were read from, so it refuses
   no wider corpus. Route a figure from it to "The owner can authorize
-  one figure, case by case" below. Its `--all-accounts` output is never
+  one figure, case by case" below. The proposal for a default-mode
+  figure quotes the report's scope-unverified notice and states that
+  the output cannot show whether a round came from another
+  repository. Its `--all-accounts` output is never
   proposed for publication — see the next section.
 - `transcript-analysis.py read-cost --this-repo`, run from this
   repository's checkout, refuses `--projects` and a top-level
