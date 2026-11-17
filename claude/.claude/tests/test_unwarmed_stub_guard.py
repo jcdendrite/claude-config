@@ -58,6 +58,8 @@ def marker_bin(tmp_path: Path) -> Path:
         *(pytest.param(f"{shebang}\nexit 0\n", id=shebang) for shebang in sorted(helpers._PREWARM_SHEBANGS)),
         pytest.param("#!/bin/sh", id="shebang-only-without-newline"),
         pytest.param(f"#!/bin/sh\n:\n{helpers._PREWARM_GUARD_LINE}\n", id="guard-line-on-line-three"),
+        pytest.param(f"#!/bin/sh\n{helpers._PREWARM_GUARD_LINE} && :\nexit 0\n", id="guard-line-with-trailing-command"),
+        pytest.param(f"#!/bin/sh\n {helpers._PREWARM_GUARD_LINE}\nexit 0\n", id="guard-line-with-leading-space"),
     ],
 )
 def test_cold_sh_family_stub_beside_the_marker_raises_naming_the_stub(script: str, tmp_path: Path, marker_bin: Path) -> None:
@@ -109,7 +111,7 @@ def _build_empty_executable(marker_bin: Path, tmp_path: Path) -> None:
         pytest.param(_build_empty_executable, id="empty-executable"),
     ],
 )
-def test_file_the_check_does_not_read_or_that_is_warm_passes(
+def test_file_the_check_never_flags_passes(
     build: Callable[[Path, Path], None], tmp_path: Path, marker_bin: Path
 ) -> None:
     build(marker_bin, tmp_path)
@@ -183,8 +185,11 @@ def test_subdirectory_of_a_scanned_entry_is_never_opened_or_descended_into(
         opened_paths.append(os.fspath(file))
         return builtins.open(file, *args, **kwargs)
 
-    # A module global named `open` shadows the builtin for helpers only; an open() of a directory raises
-    # OSError, which the check swallows, so only a spy can see whether the regular-file filter held.
+    # A module global named `open` shadows the builtin for helpers only.
+    # An open() of a directory raises OSError, which the check swallows.
+    # Only a spy can therefore see whether the regular-file filter held.
+    # The spy sees only calls through the builtin name `open`, so a move to `Path.open` or `os.open` in helpers
+    # would empty its list without a behavior change.
     monkeypatch.setattr(helpers, "open", recording_open, raising=False)
 
     check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
@@ -272,14 +277,19 @@ def test_cold_stub_in_a_marker_entry_outside_basetemp_raises(tmp_path: Path, mar
     assert str(cold_stub) in str(raised.value)
 
 
-def test_ambient_path_is_read_when_env_is_none_and_an_env_without_path_passes(
-    tmp_path: Path, marker_bin: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ambient_path_is_read_when_env_is_none(tmp_path: Path, marker_bin: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_cold_stub(marker_bin / "cold-stub")
     monkeypatch.setenv("PATH", str(marker_bin))
 
     with pytest.raises(UnwarmedStubError):
         check_scaled_path_stubs_warm(None, None, tmp_path)
+
+
+def test_env_without_path_passes_while_the_ambient_path_holds_a_cold_stub(
+    tmp_path: Path, marker_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_cold_stub(marker_bin / "cold-stub")
+    monkeypatch.setenv("PATH", str(marker_bin))
 
     check_scaled_path_stubs_warm({"HOME": str(tmp_path)}, None, tmp_path)
 

@@ -3205,8 +3205,9 @@ def check_scaled_path_stubs_warm(env, cwd, basetemp: Path) -> None:
     """Raise UnwarmedStubError when the launch's PATH reaches the scaled timeout shim
     and an sh-family executable in a scanned entry lacks the prewarm guard line.
 
-    Symlinks, other shebangs and entries outside `basetemp` that hold no marker are not read,
-    because `write_prewarmed_stub` cannot write them or the run does not own them.
+    Symlinks are skipped before any open.
+    Files with another shebang are read but never flagged.
+    Entries outside `basetemp` that hold no marker are never listed, because the run does not own them.
     """
     entries = _launch_path_entries(env, cwd)
     marker_entries = dict.fromkeys(
