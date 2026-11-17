@@ -1269,10 +1269,8 @@ class TestCommitSnapshotAutoMaintenance:
     def test_the_fixture_commit_starts_no_git_maintenance_child(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Auto-maintenance after a commit takes `.git/objects/maintenance.lock` (builtin/gc.c `maintenance_run_tasks`),
-        so copying the fixture's `.git` can fail with ENOENT on that lock. That failure (shutil.Error during the
-        `.git` copy in replay_bench/tasks.py) was observed on git 2.56.0. It is not reproduced on 2.43.0. This pins
-        that git starts no maintenance child after the fixture commit, whether or not that child detaches."""
+        """Pins that git starts no maintenance child after the fixture commit, whether or not that child detaches.
+        It guards the `.git`-copy ENOENT recorded at the `maintenance.auto=false` comment in `_commit_snapshot`."""
         # Control: without the flag this git must start a maintenance child, or the absence asserted below is vacuous.
         control_dir = tmp_path / "control"
         control_dir.mkdir()
