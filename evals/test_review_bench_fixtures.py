@@ -1255,6 +1255,51 @@ class TestSharedGitTimeoutDefault:
         assert run_git_timeouts == extract_timeouts == snapshot_timeouts == {fixture_repo._LOCAL_GIT_TIMEOUT_S}
 
 
+def _maintenance_child_argvs(trace_path: Path) -> list[list[str]]:
+    trace_events = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    child_argvs = [event["argv"] for event in trace_events if event["event"] == "child_start"]
+    return [argv for argv in child_argvs if "maintenance" in argv]
+
+
+class TestCommitSnapshotAutoMaintenance:
+    def test_the_fixture_commit_starts_no_git_maintenance_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Auto-maintenance after a commit can hold `.git/objects/maintenance.lock`, so copying the fixture's `.git`
+        can fail with ENOENT on that lock. The race itself is not reproduced; this pins that git starts no
+        maintenance child after the fixture commit, whether or not that child detaches."""
+        # Control: without the flag this git must start a maintenance child, or the absence asserted below is vacuous.
+        control_dir = tmp_path / "control"
+        control_dir.mkdir()
+        _git(control_dir, "init", "-q")
+        control_trace_path = tmp_path / "control-trace2-events.json"
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "control"], cwd=control_dir, check=True,
+            capture_output=True,
+            env={**local_git.isolated_git_environment(), **fixture_repo._git_commit_env(),
+                 "GIT_TRACE2_EVENT": str(control_trace_path)},
+        )
+        if not _maintenance_child_argvs(control_trace_path):
+            git_version = _git(control_dir, "--version").strip()
+            pytest.skip(f"{git_version} starts no maintenance child after a commit, so the fixture commit cannot regress")
+
+        extracted = tmp_path / "extracted"
+        extracted.mkdir()
+        _git(extracted, "init", "-q")
+        _write(extracted, "src/app.py", "x = 0\n")
+        trace_path = tmp_path / "trace2-events.json"
+        real_isolated_git_environment = fixture_repo.isolated_git_environment
+        # `isolated_git_environment` strips every `GIT_*` variable, so the trace variable has to be added after it.
+        monkeypatch.setattr(
+            fixture_repo, "isolated_git_environment",
+            lambda: {**real_isolated_git_environment(), "GIT_TRACE2_EVENT": str(trace_path)},
+        )
+
+        fixture_repo._commit_snapshot(extracted, "snapshot")
+
+        assert not _maintenance_child_argvs(trace_path)
+
+
 class TestBuildSingleCommitRepo:
     def test_a_commit_that_is_not_a_full_sha_is_refused_before_any_git_call(self, tmp_path: Path) -> None:
         dest_dir = tmp_path / "dest"
