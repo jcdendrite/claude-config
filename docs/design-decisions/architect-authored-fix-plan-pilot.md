@@ -151,7 +151,7 @@ runtime by the config key.
 
 - **Load.** Every stow consumer loads the region on every `/code-review`.
   `_PINNED_FIX_PLAN_PILOT_CLAUSE` in
-  `claude-skills/skills/tests/test_skills.py` holds its exact text.
+  `claude-skills/skills/tests/test_code_review_disposition_rules.py` holds its exact text.
 - **Line gate.** The region's lines count against `check-skill-length.sh`'s
   500-line cap on `code-review/SKILL.md`, a file every consumer loads.
 - **One `config-get.sh` call per round with a reviewer-spawned finding**,

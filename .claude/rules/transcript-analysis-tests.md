@@ -19,7 +19,7 @@ oracle to agree with, is not its subject.
 - **A shared helper reached through one command:** the command's file when the test pins that command's call
   or the values it passes, and the helper's own module's file when the command is only a convenient driver.
 - **One command's CLI wiring** (its flags, defaults, and `set_defaults(func=...)`): the file of the module
-  that registers its subparser, or `tests/test_transcript_cli.py` when `build_parser()` registers it inline.
+  that registers its subparser.
 - **`build_parser()` or `main()` across commands**, such as a walk of every subparser or `main()`'s
   top-level `--config-dir` handling: `tests/test_transcript_cli.py`.
 - **An invariant several modules share:** `tests/test_transcript_analysis_<invariant>.py`. A test that

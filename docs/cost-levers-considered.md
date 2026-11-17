@@ -771,7 +771,7 @@ No code, skill, hook, or test change ships from this investigation.
 **Re-run recipe**, against a separate clean checkout at the fixture's pinned commit — the checkout holding the scorer differs from that commit, so pointing the scorer at itself would turn its own files into false positives:
 
 ```bash
-evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
+scripts/venv-run.sh python3 evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
   --repo-dir <clean-checkout-at-pinned-commit> --timeout-s 300
 ```
 

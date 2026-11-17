@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
+import _skill_md_helpers  # monkeypatch target for the helper module's own SKILLS_DIR and _PLUGINS_DIR
 import pytest
 import yaml
 
@@ -55,19 +56,49 @@ from _config import schema as config_schema
 # pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
 # path, where the auxiliary-filename constant shared with select-tests.py lives.
 from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
+from _skill_md_helpers import (
+    _AGENTS_DIR,
+    _CODE_REVIEW_FINDING_DISPOSITION_HEADING,
+    _CODE_REVIEW_RIPPLE_HEADING,
+    _CODE_REVIEW_STEP_0_1_HEADING,
+    _GLOBAL_CLAUDE_MD,
+    _PLAN_ARCHITECT_CONSULT_HEADING,
+    _PLAN_ARCHITECT_PATH,
+    _PLUGINS_DIR,
+    _STEP4_HEADING,
+    _agent_body,
+    _all_doc_paths,
+    _all_skill_md_files,
+    _all_skill_md_paths,
+    _assert_citation_resolves_to_heading,
+    _assert_pinned_clause_right_bounded,
+    _blank_code_regions,
+    _blank_frontmatter,
+    _change_type_table_left_columns,
+    _closed_fence_line_indices,
+    _extract_citations,
+    _extract_scope_anchor_region,
+    _fence_excluded_by_marker,
+    _fenced_code_blocks,
+    _heading_section_text,
+    _normalized_anchor_text,
+    _raw_heading_section_text,
+    _resolve_citation_target,
+    _scope_exempt_change_type_row_text,
+    _section_between,
+    _skill_body,
+    _skill_file,
+)
 
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
 from helpers import (
     CLAUDE_DIR,
-    CONSULT_CLASSIFICATION_TABLE,
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
     backticked_field_tokens,
-    change_type_table_rows,
     extract_skill_command,
-    heading_section_bounds,
     heading_texts,
     input_contract_field_tokens,
     input_contract_section,
@@ -87,37 +118,6 @@ from validate_skill_structure import (
     parse_frontmatter,
     validate,
 )
-
-# Plugins live at the repo root, alongside claude/ and claude-skills/: <repo>/plugins/<name>/skills/<skill>/SKILL.md
-_PLUGINS_DIR = REPO_ROOT / "plugins"
-# The stowed global instruction file, installed to ~/.claude/CLAUDE.md.
-_GLOBAL_CLAUDE_MD = CLAUDE_DIR / "CLAUDE.md"
-
-
-_AGENTS_DIR = CLAUDE_DIR / "agents"
-
-
-def _agent_body(agent_name: str) -> str:
-    """Read a claude/.claude/agents/<name>.md body by name."""
-    return (_AGENTS_DIR / f"{agent_name}.md").read_text()
-
-
-def _skill_body(skill_name: str) -> str:
-    """Read a stowed skill's SKILL.md body by name."""
-    return (SKILLS_DIR / skill_name / "SKILL.md").read_text()
-
-
-def _skill_file(skill_name: str) -> Path:
-    """Locate a SKILL.md by name — stowed skills first, then plugin skills."""
-    candidate = SKILLS_DIR / skill_name / "SKILL.md"
-    if candidate.exists():
-        return candidate
-    if _PLUGINS_DIR.exists():
-        for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
-            plugin_candidate = plugin_dir / "skills" / skill_name / "SKILL.md"
-            if plugin_candidate.exists():
-                return plugin_candidate
-    return candidate  # let read_text() surface the FileNotFoundError
 
 
 def _discovery_frontmatter(skill_file: Path) -> dict:
@@ -677,7 +677,8 @@ class TestFrontmatterReaders:
     def skills_tree(self, tmp_path, monkeypatch) -> Path:
         """A temporary skills tree that discovery reads in place of the repo's.
 
-        Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched.
+        Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched
+        here and in _skill_md_helpers, whose functions read their own copies.
         """
         skills_dir = tmp_path / "skills"
         _write_skill_md_fixture(
@@ -701,8 +702,9 @@ class TestFrontmatterReaders:
         _write_skill_md_fixture(plugin_skills_dir, "frontmatterless-plugin-skill", "no frontmatter here\n")
         _write_flagged_skills(plugin_skills_dir, "plugin-")
         module = sys.modules[__name__]
-        monkeypatch.setattr(module, "SKILLS_DIR", skills_dir)
-        monkeypatch.setattr(module, "_PLUGINS_DIR", tmp_path / "plugins")
+        for patched_module in (module, _skill_md_helpers):
+            monkeypatch.setattr(patched_module, "SKILLS_DIR", skills_dir)
+            monkeypatch.setattr(patched_module, "_PLUGINS_DIR", tmp_path / "plugins")
         return skills_dir
 
     @pytest.mark.parametrize(
@@ -843,50 +845,6 @@ class TestConventionSkillWiring:
         assert "write the handoff file in the same turn" in body
 
 
-class TestReviewLedgerAuthoringEffortLiteral:
-    """Asserts code-review's `--authoring-effort` literal equals
-    `code-writer`'s own `effort:` frontmatter. Effort is subagent-definition
-    frontmatter, not a per-dispatch parameter, so a literal that drifted from
-    the agent's actual value would silently mislabel every ledger line."""
-
-    def test_authoring_effort_literal_matches_code_writer_frontmatter(self):
-        # Substring check, not a regex extraction -- catches drift on either
-        # side without hand-parsing prose text (test-conventions §9).
-        code_writer_effort = parse_frontmatter(_AGENTS_DIR / "code-writer.md")["effort"]
-        literal = f"--authoring-effort {code_writer_effort}"
-        skill_body = _skill_body("code-review")
-        assert literal in skill_body, (
-            f"code-review/SKILL.md's --authoring-effort literal must match "
-            f"code-writer.md's own effort: frontmatter ({code_writer_effort!r})"
-        )
-        # An exact count, not a bare substring check, catches a stale
-        # literal on any one of the three known call sites even when the
-        # others are correct.
-        assert skill_body.count(literal) == 3, (
-            f"code-review/SKILL.md must carry {literal!r} at exactly its three "
-            "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
-            "main finding append, main-flow CLEAN append) -- found "
-            f"{skill_body.count(literal)}"
-        )
-
-
-class TestReviewLedgerReviewerLaneLiteral:
-    """The per-finding append template carries `--reviewer '<lane>'` once, in the
-    code span that also names the ADDRESS|DEFER|SETTLED dispositions, so moving
-    the flag onto the CLEAN template, or duplicating it, fails."""
-
-    def test_reviewer_flag_sits_once_on_the_per_finding_append_template(self):
-        skill_body = _skill_body("code-review")
-        literal = "--reviewer '<lane>'"
-
-        assert skill_body.count(literal) == 1, (
-            f"code-review/SKILL.md must carry {literal!r} exactly once, on the per-finding append "
-            f"template -- found {skill_body.count(literal)}"
-        )
-        template_span = re.search(r"`([^`\n]*" + re.escape(literal) + r"[^`\n]*)`", skill_body)
-        assert template_span is not None and "--disposition ADDRESS|DEFER|SETTLED" in template_span.group(1), (
-            f"{literal!r} must sit in the inline code span of the ADDRESS|DEFER|SETTLED append template"
-        )
 
 
 class TestMemorySkillSectionOrdinalCrossReferences:
@@ -2902,20 +2860,14 @@ _EXPECTED_DISPOSITION_RULE_ANCHORS = {
 }
 
 
-def _all_skill_md_paths() -> list[Path]:
-    """Every SKILL.md under the stowed skills dir and plugin skill dirs."""
-    paths = sorted(SKILLS_DIR.glob("*/SKILL.md"))
-    if _PLUGINS_DIR.exists():
-        paths += sorted(_PLUGINS_DIR.glob("*/skills/*/SKILL.md"))
-    return paths
 
 
 # --- Trigger A regression: a $(...)-assigned variable referenced later in the
 # same fenced block. See docs/worktree-bash-guard.md for the full trigger
-# taxonomy this guards one shape of. Fence detection reuses the module-level
-# _FENCE_OPEN_RE (defined further below, keyed on the fence delimiter itself,
-# not a bash/sh language tag) so an untagged ``` fence is scanned the same as
-# a tagged ```bash one.
+# taxonomy this guards one shape of. Fence detection comes from
+# _fenced_code_blocks in _skill_md_helpers.py, which keys _FENCE_OPEN_RE on the
+# fence delimiter itself, not a bash/sh language tag, so an untagged ``` fence
+# is scanned the same as a tagged ```bash one.
 
 # Matches an assignment at the start of a statement -- line start, or after a
 # statement separator (;, &&, ||) -- optionally preceded by local/export/
@@ -2926,45 +2878,6 @@ def _all_skill_md_paths() -> list[Path]:
 _TRIGGER_A_ASSIGN_RE = re.compile(
     r"(?:^|[;&|]\s*)\s*(?:local|export|declare|readonly)?\s*([A-Za-z_][A-Za-z0-9_]*)=\$\("
 )
-_TRIGGER_A_EXCLUSION_MARKER_RE = re.compile(r"<!-- (HOOK_TEST_FIXTURE|HOOK_SCRIPT_CONTENT_EXAMPLE):")
-
-
-def _fenced_code_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
-    """Every *closed* fenced code block as (open_index, content_lines).
-
-    Mirrors _closed_fence_line_indices's own closing-fence detection (a bare
-    run of the opener's character, at least as long as the opener, with no
-    trailing info string) but returns each block's own content instead of a
-    flat index set — the Trigger-A scan needs to look inside each block for
-    the assign-then-reference shape, not just which lines are code.
-    """
-    blocks: list[tuple[int, list[str]]] = []
-    open_index: int | None = None
-    open_run = ""
-    for index, line in enumerate(lines):
-        if open_index is None:
-            fence_match = _FENCE_OPEN_RE.match(line)
-            if fence_match:
-                open_index, open_run = index, fence_match.group(1)
-            continue
-        candidate = line.strip()
-        if candidate and set(candidate) == {open_run[0]} and len(candidate) >= len(open_run):
-            blocks.append((open_index, lines[open_index + 1 : index]))
-            open_index = None
-    return blocks
-
-
-def _fence_excluded_by_marker(lines: list[str], open_index: int) -> bool:
-    """True when the nearest non-blank line before the fence opener is a
-    HOOK_TEST_FIXTURE/HOOK_SCRIPT_CONTENT_EXAMPLE marker comment — an
-    explicit, structural opt-in a pytest-executed fixture or a documentation
-    example (never typed into an agent's Bash tool) uses to exempt itself."""
-    for index in range(open_index - 1, -1, -1):
-        stripped = lines[index].strip()
-        if stripped == "":
-            continue
-        return bool(_TRIGGER_A_EXCLUSION_MARKER_RE.search(stripped))
-    return False
 
 
 def _trigger_a_matches(markdown_text: str) -> list[str]:
@@ -3461,111 +3374,6 @@ def test_handoff_and_brief_reference_find_consumed_continuity_file(skill_name: s
 
 _URL_RE = re.compile(r"https?://")
 
-# An opening fence: up to 3 leading spaces, then 3+ backticks or 3+ tildes.
-_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-
-# An inline code span: a run of N backticks, content, then a matching run of N.
-# The lookarounds pin both delimiters to *whole* backtick runs. Without them the
-# opener backtracks to a shorter run when no equal-length closer exists — so
-# ````text``` would match as a 3-tick span, and any URL between the delimiters
-# would be blanked even though CommonMark leaves the whole thing as literal text.
-# That direction of error is the dangerous one: it exempts a real citation from
-# the scan. `.` excludes newlines, so a span stays on one line.
-_INLINE_CODE_RE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)(?P<body>.+?)(?<!`)(?P=ticks)(?!`)")
-
-
-def _blank_frontmatter(markdown_text: str) -> str:
-    """Blank the leading YAML frontmatter block, preserving the line count.
-
-    No current `description` holds a URL, but frontmatter is metadata rather than
-    body prose, so excluding it makes the invariant unambiguous rather than
-    accidentally true.
-
-    Deliberately does not reuse validate_skill_structure.parse_frontmatter, which
-    is imported in this module: that function answers "what are the frontmatter
-    values" and returns a parsed dict, while this one answers "which lines are
-    frontmatter" and must return text with the line count intact so violation
-    line numbers stay accurate. Same delimiter, different questions.
-    """
-    lines = markdown_text.split("\n")
-    if not lines or lines[0].strip() != "---":
-        return markdown_text
-    for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
-            return "\n".join([""] * (index + 1) + lines[index + 1 :])
-    return markdown_text
-
-
-def _closed_fence_line_indices(lines: list[str]) -> set[int]:
-    """Indices of every line belonging to a *closed* fenced code block.
-
-    An unterminated fence contributes nothing. CommonMark says an unclosed fence
-    runs to the end of the document, and this scan deliberately diverges: under
-    that rule a contributor who forgets one closing fence would silently exempt
-    every line after it — including real citation URLs — with no visible symptom.
-    Treating the unterminated remainder as prose errs toward over-flagging, which
-    surfaces as a test failure pointing at the malformed fence. Every gap in this
-    scan is deliberately biased that direction.
-    """
-    inside: set[int] = set()
-    open_index: int | None = None
-    open_run = ""
-
-    for index, line in enumerate(lines):
-        if open_index is None:
-            fence_match = _FENCE_OPEN_RE.match(line)
-            if fence_match:
-                open_index, open_run = index, fence_match.group(1)
-            continue
-        # A closing fence is a bare run of the opener's character, at least as
-        # long as the opener, with no trailing info string.
-        candidate = line.strip()
-        if candidate and set(candidate) == {open_run[0]} and len(candidate) >= len(open_run):
-            inside.update(range(open_index, index + 1))
-            open_index = None
-
-    return inside
-
-
-def _blank_code_regions(markdown_text: str) -> str:
-    """Blank fenced code blocks and inline code spans, preserving the line count.
-
-    Fences are resolved before inline spans so a ``` delimiter is never misread as
-    three consecutive single-backtick span openers. Blanked regions become empty
-    lines rather than being deleted, so a violation's reported line number still
-    matches the real file.
-    """
-    lines = markdown_text.split("\n")
-    fenced = _closed_fence_line_indices(lines)
-    return "\n".join(
-        "" if index in fenced else _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), line)
-        for index, line in enumerate(lines)
-    )
-
-
-def _all_skill_md_files() -> list[Path]:
-    """Every SKILL.md in the repo, across all three roots that hold one.
-
-    Single-level globs only — never rglob or `**`. `.claude/worktrees/` holds
-    full checkouts of this repo whose SKILL.md files carry live pre-fix URLs, and
-    a recursive glob from the repo root would scan them and fail on another
-    branch's content.
-    """
-    repo_root = REPO_ROOT
-    found: list[Path] = []
-    for base, pattern in [
-        (repo_root / "claude-skills" / "skills", "*/SKILL.md"),
-        (repo_root / ".claude" / "skills", "*/SKILL.md"),
-        (repo_root / "plugins", "*/skills/*/SKILL.md"),
-    ]:
-        matched = list(base.glob(pattern))
-        # Per-root, not just in aggregate: Path.glob on a missing directory
-        # returns empty rather than raising, so a rename that relocates one root
-        # would otherwise shrink the scanned corpus silently while the other two
-        # roots kept the suite green.
-        assert matched, f"{base}/{pattern} matched no SKILL.md — this glob root is wrong"
-        found.extend(matched)
-    return sorted(found)
 
 
 # Skills carrying context: fork. The selection criterion is working set (how
@@ -3862,123 +3670,6 @@ def test_prose_url_detector_flags_a_leaked_citation_and_spares_code() -> None:
     assert _prose_url_line_numbers(document) == [2, 7]
 
 
-# --- Cross-reference integrity: `target` § "Heading" citations resolve ---
-#
-# A citation like `subagent-delegation/SKILL.md` § "Heavy command output" lets
-# one skill point at a section of another (or of a REFERENCES.md/doc) instead
-# of restating it — CLAUDE.md's single-source-of-truth rule applied to skill
-# prose. Nothing else in the repo checks that the target file still exists or
-# that its heading still reads exactly as quoted, so a rename on either side
-# leaves a stale pointer with no reader-visible symptom until someone follows
-# it. This section resolves every such citation in the skill tree against a
-# real file and a real heading in it.
-
-# The backticked target must be adjacent to `§`, with only whitespace (which
-# may include a single newline, so hard-wrapped prose still matches) between
-# the closing backtick and the section mark, and between the mark and the
-# opening quote.
-_CITATION_WITH_TARGET_RE = re.compile(r'`(?P<target>[^`\n]+)`\s+§\s+"(?P<heading>[^"\n]+)"')
-# A bare `§ "Heading"` with no adjacent backticked target resolves against the
-# citing file's own headings. Every with-target match above also satisfies
-# this pattern (the `§ "..."` tail is a substring of it), so callers must
-# discard a bare match whose span falls inside a with-target match's span —
-# see _extract_citations.
-_BARE_CITATION_RE = re.compile(r'§\s+"(?P<heading>[^"\n]+)"')
-
-# Known limit, deliberately not closed: this extractor can't tell a live
-# citation from an illustrative example of the citation grammar, so an
-# example inside a scanned SKILL.md or SKILL_AUXILIARY_MD_NAMES sibling will
-# false-fail. Currently safe only because the grammar's own explanation lives
-# outside the scanned corpus (`.claude/rules/skill-and-agent-self-review.md`).
-
-
-class _Citation(NamedTuple):
-    line: int
-    target: str | None  # None means "resolve against the citing file itself"
-    heading: str
-    span: tuple[int, int]  # match.span() in the (frontmatter-blanked) prose
-
-
-def _extract_citations(markdown_text: str) -> list[_Citation]:
-    """Every `` `target` § "Heading" `` (or bare `§ "Heading"`) citation in a
-    markdown document.
-
-    Excludes frontmatter (`_blank_frontmatter`) and any citation whose match
-    starts on a line inside a *closed* fenced code block
-    (`_closed_fence_line_indices`) — deliberately not `_blank_code_regions`,
-    which blanks inline code spans and would blank the citation's own target.
-    """
-    prose = _blank_frontmatter(markdown_text)
-    lines = prose.split("\n")
-    fenced_lines = _closed_fence_line_indices(lines)
-
-    def _lineno(start: int) -> int:
-        return prose.count("\n", 0, start) + 1
-
-    citations: list[_Citation] = []
-    consumed_spans: list[tuple[int, int]] = []
-
-    for match in _CITATION_WITH_TARGET_RE.finditer(prose):
-        consumed_spans.append(match.span())
-        lineno = _lineno(match.start())
-        if (lineno - 1) in fenced_lines:
-            continue
-        citations.append(
-            _Citation(lineno, match.group("target"), match.group("heading"), match.span())
-        )
-
-    for match in _BARE_CITATION_RE.finditer(prose):
-        if any(start <= match.start() < end for start, end in consumed_spans):
-            continue
-        lineno = _lineno(match.start())
-        if (lineno - 1) in fenced_lines:
-            continue
-        citations.append(_Citation(lineno, None, match.group("heading"), match.span()))
-
-    return citations
-
-
-def _resolve_citation_target(
-    target: str | None,
-    *,
-    citing_file: Path,
-    repo_root: Path,
-    skill_md_files: Callable[[], list[Path]] = _all_skill_md_files,
-) -> Path | None:
-    """Resolve a citation's target to a real file, or None if unresolvable.
-
-    Resolution order: (1) a repo-root-relative path that exists; (2)
-    `<skill-dir>/<file>` under any of `skill_md_files()`'s three roots; (3) a
-    bare filename with no `/`, as a same-directory sibling of the citing
-    file. `target is None` (a bare `§ "..."` citation) always resolves to
-    the citing file itself. A candidate that exists but is a directory does
-    not count as resolved — a directory has no headings to satisfy the
-    citation.
-
-    `skill_md_files` defaults to the real, repo-wide `_all_skill_md_files`
-    but is overridable so a `tmp_path`-rooted test can exercise the
-    cross-skill-directory branch without touching the real repo tree.
-    """
-    if target is None:
-        return citing_file
-
-    root_relative = repo_root / target
-    if root_relative.is_file():
-        return root_relative
-
-    if "/" in target:
-        skill_name, filename = target.split("/", 1)
-        for skill_md_path in skill_md_files():
-            if skill_md_path.parent.name == skill_name:
-                candidate = skill_md_path.parent / filename
-                if candidate.is_file():
-                    return candidate
-    else:
-        same_dir_candidate = citing_file.parent / target
-        if same_dir_candidate.is_file():
-            return same_dir_candidate
-
-    return None
 
 
 def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
@@ -4047,38 +3738,6 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     )
 
 
-def _assert_citation_resolves_to_heading(
-    doc_path: Path,
-    expected_target: str,
-    expected_heading_raw: str,
-    *,
-    repo_root: Path,
-) -> None:
-    """Shared body for the doc → SKILL.md-heading citation tests below:
-    find the citation, resolve its target file, and confirm the target
-    heading actually exists there."""
-    expected_heading = normalize_heading(expected_heading_raw)
-    citations = [
-        citation
-        for citation in _extract_citations(doc_path.read_text())
-        if citation.target == expected_target
-        and normalize_heading(citation.heading) == expected_heading
-    ]
-    assert citations, (
-        f"{doc_path} no longer cites {expected_target}'s "
-        f'"{expected_heading_raw}" section'
-    )
-
-    resolved = _resolve_citation_target(
-        citations[0].target, citing_file=doc_path, repo_root=repo_root
-    )
-    assert resolved is not None, (
-        f"{doc_path}'s citation target {expected_target!r} failed to resolve"
-    )
-    assert expected_heading in heading_texts(resolved.read_text()), (
-        f"{doc_path}'s citation resolved to {resolved} but it has no "
-        f"heading matching {expected_heading!r}"
-    )
 
 
 def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
@@ -5087,39 +4746,6 @@ _EXPECTED_SCOPE_ANCHORS = {
 _SECURITY_CONTROLS_ROW = "Adds/modifies security controls"
 
 
-def _extract_scope_anchor_region(skill_md_path: Path, marker_name: str) -> str:
-    """Extract text strictly between a `<!-- <marker_name> start/end -->` pair.
-
-    Mirrors extract_governing_rule()'s (evals/run_skill_evals.py) presence/
-    order/duplicate validation, parameterized over the marker name instead of
-    that function's hard-coded `DISPOSITION_RULE:` prefix — reusing that
-    prefix would silently enroll a scope rule in the disposition-fidelity
-    eval, which is why this anchor namespace needs its own small parser
-    rather than calling extract_governing_rule() directly.
-    """
-    text = skill_md_path.read_text()
-    start_marker = f"<!-- {marker_name} start -->"
-    end_marker = f"<!-- {marker_name} end -->"
-    start_count = text.count(start_marker)
-    end_count = text.count(end_marker)
-    if start_count > 1 or end_count > 1:
-        raise ValueError(
-            f"{marker_name!r} anchor in {skill_md_path}: appears more than once "
-            f"(start x{start_count}, end x{end_count}) — duplicate anchor names "
-            "are not supported, rename one of them"
-        )
-    start_idx = text.find(start_marker)
-    end_idx = text.find(end_marker)
-    if start_idx == -1 or end_idx == -1:
-        raise ValueError(
-            f"{marker_name!r} anchor not found (or incomplete) in {skill_md_path} "
-            f"— start present: {start_idx != -1}, end present: {end_idx != -1}"
-        )
-    if end_idx < start_idx:
-        raise ValueError(
-            f"{marker_name!r} anchor in {skill_md_path}: end marker appears before start marker"
-        )
-    return text[start_idx + len(start_marker) : end_idx].strip()
 
 
 class TestExtractScopeAnchorRegion:
@@ -5303,14 +4929,6 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
 }
 
 
-def _normalized_anchor_text(skill_md_path: Path, marker_name: str) -> str:
-    """Whitespace-collapsed text of a SCOPE_RULE/SCOPE_EXEMPT_ROW anchor region.
-
-    Collapsing internal whitespace on both sides of a comparison keeps a
-    markdown reflow of the enclosed paragraph from false-failing an
-    exact-text pin against it.
-    """
-    return " ".join(_extract_scope_anchor_region(skill_md_path, marker_name).split())
 
 
 @pytest.mark.parametrize("skill_name,marker_name", sorted(_PINNED_SCOPE_CLAUSES))
@@ -5450,37 +5068,6 @@ def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str
     )
 
 
-def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
-    """Left-column shorthand of every data row in the Change-type table.
-
-    Truncates a left-column cell at its first embedded `|`. Not exercised
-    by any current Change-type row. A future row using pipe-containing
-    inline-code shorthand would truncate here. At the current call sites
-    (`test_scope_exempt_row_resolves_to_real_change_type_row`,
-    `test_scope_exempt_row_excludes_security_controls_row`), a resulting
-    mismatch surfaces as a loud assertion failure, not silently.
-    """
-    return [row.split("|")[1].strip() for row in change_type_table_rows(skill_md_path)]
-
-
-def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
-    """Full row-line text of the Change-type row SCOPE_EXEMPT_ROW's shorthand
-    resolves to.
-
-    Shared row-lookup for the tests that check the comment/prose row for a
-    literal string. They need the row's full text, not just the left-column
-    shorthand `_change_type_table_left_columns` returns.
-    """
-    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-    for line in change_type_table_rows(skill_md_path):
-        # line.split("|")[1] truncates at an embedded pipe in the left cell,
-        # same caveat as _change_type_table_left_columns's identical parse.
-        if line.split("|")[1].strip() == exempt_shorthand:
-            return line
-    raise AssertionError(
-        f"{skill_md_path}: no Change-type row's left column matches "
-        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
-    )
 
 
 class TestChangeTypeTableLeftColumns:
@@ -5559,7 +5146,6 @@ def test_scope_exempt_row_excludes_security_controls_row() -> None:
 
 _PLAN_REVIEW_REFERENCES_MD = _skill_file("plan-review").parent / "REFERENCES.md"
 
-_STEP4_HEADING = "## Step 4 — Design-fitness gate"
 _MAPPING_TABLE_HEADING = "## Tripwire → CLAUDE.md principle mapping"
 _FOUNDATION_RULES_HEADING = "## Foundation-tripwire rules — surfacing incident"
 
@@ -5572,21 +5158,6 @@ _MAPPING_ROW_RE = re.compile(r"^\|\s*(?P<name>[^|]+?)\s*\|")
 _EXPECTED_TRIPWIRE_COUNT = 7
 
 
-def _section_between(
-    lines: list[str], start_heading: str, path: Path
-) -> tuple[int, int]:
-    """Return (start_idx, end_idx) bounding the section under `start_heading`.
-
-    end_idx is exclusive, at the next line starting with '## ' (or len(lines)
-    if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
-    extractor, EOF is not itself a failure here, so a section that is last in
-    its file is bounded correctly). The start heading is asserted found, not
-    inferred — a renamed or deleted heading would otherwise extract as empty
-    and compare equal to another empty extraction.
-    """
-    bounds = heading_section_bounds(lines, start_heading)
-    assert bounds is not None, f"{path}: {start_heading!r} heading not found."
-    return bounds
 
 
 _READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
@@ -6223,57 +5794,6 @@ def test_ready_for_review_step_4_has_the_rerun_that_recovers_omitted_plan_review
 _HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
 
 
-def _heading_section_text(skill_md_path: Path, heading: str) -> str:
-    """Whitespace-collapsed text of the markdown section under `heading`.
-
-    Mirrors _normalized_anchor_text's whitespace-collapse comparison but
-    bounds the region by markdown heading (`_section_between`) rather than an
-    HTML-comment anchor pair — handoff/SKILL.md's warrant-check section
-    carries no such anchor today.
-    """
-    lines = skill_md_path.read_text().splitlines(keepends=True)
-    start_idx, end_idx = _section_between(lines, heading, skill_md_path)
-    return " ".join("".join(lines[start_idx:end_idx]).split())
-
-
-def _raw_heading_section_text(skill_md_path: Path, heading: str) -> str:
-    """Whitespace-preserving companion to _heading_section_text.
-
-    Used where the section's structure — blank lines, bullet markers,
-    heading markers — must survive for a right-edge boundary check; the
-    collapsed form loses that structure.
-    """
-    lines = skill_md_path.read_text().splitlines(keepends=True)
-    start_idx, end_idx = _section_between(lines, heading, skill_md_path)
-    return "".join(lines[start_idx:end_idx])
-
-
-def _assert_pinned_clause_right_bounded(
-    pinned_text: str, raw_section_text: str, *, context: str
-) -> None:
-    """Assert `pinned_text`'s right edge in `raw_section_text` lands on a
-    structural boundary (section end, blank line, or a `-` bullet or `#`
-    heading marker on the next line) rather than mid-sentence, so a
-    contradicting clause appended right after the pinned text is caught
-    instead of silently matching as a substring.
-    """
-    pattern = r"\s+".join(re.escape(word) for word in pinned_text.split())
-    match = re.search(pattern, raw_section_text)
-    assert match is not None, (
-        f"{context}\n  pinned:  {pinned_text!r}\n  section: {raw_section_text!r}"
-    )
-    remainder = raw_section_text[match.end() :]
-    same_line_rest = remainder.lstrip(" \t")
-    boundary_ok = (
-        remainder.strip() == ""
-        or same_line_rest.startswith("\n\n")
-        or (same_line_rest.startswith("\n") and same_line_rest[1:2] in ("-", "#"))
-    )
-    assert boundary_ok, (
-        f"{context}: pinned clause is followed by unbounded trailing "
-        f"content instead of a structural boundary.\n"
-        f"  trailing: {remainder[:120]!r}"
-    )
 
 
 # Each entry is one condition→action-bound bullet from handoff/SKILL.md's
@@ -7319,881 +6839,17 @@ class TestReadyForReviewCiWatchLandsFixUnderFixLoopRule:
         )
 
 
-_CODE_REVIEW_RECORD_COMPLETION_HEADING = "## Step — Record review completion"
-
-# The clean-definition sentence: a finding logged DEFER or SETTLED, by a
-# consult, the human, or a carry, counts as resolved, so none of them blocks
-# the review-completion marker written by `marker.sh write code-review`.
-_PINNED_CLEAN_DEFINITION_CLAUSE = (
-    "A finding logged DEFER or SETTLED (by a consult, the human, or a carry) "
-    "counts as resolved. If the review is **clean** (no blockers, no "
-    "unresolved critical findings, and you reviewed the currently staged "
-    "changes), record it by running this command exactly once:"
-)
 
 
-class TestCodeReviewCleanDefinitionCountsSettledAndDefer:
-    """Pin code-review/SKILL.md's clean-definition sentence, so a future edit
-    can't silently drop the DEFER or SETTLED branch (a consult, human, or
-    carry decision) and make a settled-keep finding block the
-    review-completion marker.
-    """
-
-    def test_clean_definition_clause_matches_live_text(self) -> None:
-        raw_section = _raw_heading_section_text(
-            _skill_file("code-review"), _CODE_REVIEW_RECORD_COMPLETION_HEADING
-        )
-        pinned_text = " ".join(_PINNED_CLEAN_DEFINITION_CLAUSE.split())
-        _assert_pinned_clause_right_bounded(
-            pinned_text,
-            raw_section,
-            context="code-review/SKILL.md: clean-definition clause no longer matches.",
-        )
 
 
-_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradiction-route"
-
-# The whole contradiction-route region: the consult route, the site definition,
-# the settled-site and two-rewrites human stop, the three verdicts, the
-# enforcement-invariant carve-out on *keep current text*, the
-# no-explicit-verdict blocking stop, and how a keep is logged and carried. It
-# is pinned whole so removing or weakening any sentence fails a test. The whole
-# region is compared by exact equality, so any added, removed, or reworded text
-# inside the anchors fails. The mid-sentence "- " tokens are SKILL.md's
-# verdict bullets after whitespace collapse, not typos.
-_PINNED_CONTRADICTION_ROUTE_CLAUSE = (
-    "**A finding whose fix would undo a fix an earlier round applied "
-    "is also a design question, in every round, staged commit-gate "
-    "rounds included.** Write `plan-architect — consult` for it on the "
-    "`Fix route:` line. Dispatch, verbatim relay, and the disagreement "
-    "stop-and-ask follow the heavier-mechanism rule directly above, "
-    "and the consult prompt also carries the earlier finding and its "
-    "fix (the consult never invokes `review-ledger.sh` or `marker.sh`). A "
-    "site is the file plus the contiguous block — paragraph, list "
-    "item, table row, or function — that an earlier round's fix "
-    "edited, that a live DEFER or SETTLED decision's `--source` names, "
-    "or, when the earlier round's outcome was *keep current text* with "
-    "nothing edited, the block the settled finding's own cited "
-    "location named. A finding's location is matched against that site "
-    "via the ledger's `--source` field or the "
-    "fix commit's own diff hunk, read generously enough to include an "
-    "adjacent or wrapped continuation of the same clause and any "
-    "duplicate expression of the same defect elsewhere in the block — "
-    "a finding is not a different site merely because its cited "
-    "location sits just outside the literal edited or cited range. A "
-    "finding against a site an earlier verdict already settled, or "
-    "that two earlier rounds' fixes already rewrote, goes straight to "
-    "the human as a blocking stop-and-ask, with no consult, unless it "
-    "carries as below. Count those rewrites from the ledger, never from "
-    "recall: write the branch's rows with "
-    "`~/.claude/scripts/review-ledger.sh show --out "
-    "agent-reviews/review-history-<suffix>.md`, Grep that file for the "
-    "finding's path, and count the earlier rounds holding an ADDRESS row "
-    "on that path whose `finding` and `rationale` concern this block. The "
-    "path is the key, because a row's range gives its own round's lines "
-    "and later fixes shift them, so the range is a hint, never a test. A "
-    "row the recorded text cannot place in or out of this block makes the "
-    "match uncertain, so that error is over-firing, which stops "
-    "for the engineer. The count sees only where findings pointed, so a "
-    "fix that landed at another path is not counted, an accepted miss. "
-    "`unchanged` writes no file. "
-    "It counts zero only when no earlier round of this session logged a "
-    "row, and is uncertain otherwise. A non-zero exit makes the match "
-    "uncertain. That stop names its trigger — a script "
-    "rejection (relay its reason), a different failure mode, an "
-    "uncertain match, or an invariant-class finding — and quotes the "
-    "earlier decision's words, date and round. The consult's judgment "
-    "standard is that the current text wins unless the finding names a "
-    "defect, under a stated rule, that the current text actually has. "
-    "One consult carries every such finding in the round and returns "
-    "exactly one of the three verdicts per finding: - *Keep current "
-    "text* resolves it with nothing dispatched, logged as "
-    "`--disposition SETTLED --decided-by plan-architect` with the "
-    "verdict in `--rationale` and a range-form `--source` naming the "
-    "whole block, and is never available to a finding the "
-    "enforcement-invariant rule below covers. - *Apply this round's fix* "
-    "is an ordinary ADDRESS row on the `code-writer` route. - *Cannot "
-    "choose* is a blocking stop-and-ask to the human. A finding with "
-    "no explicit per-finding verdict from the consult (failed "
-    "dispatch, empty, hedged, or partial coverage) is likewise a "
-    "blocking stop-and-ask, never *keep current text*. A human keep is "
-    "logged `--disposition SETTLED --decided-by engineer "
-    "--engineer-quote '<their words>'` with a range naming the whole "
-    "block (widen when unsure). It also carries `--ref <id>` to the "
-    "live earlier decision on the same failure mode, if any (take ids "
-    "from the digest's Id column; `append` prints none). It "
-    "adds `--carry-forward` only when the engineer's answer states no "
-    "scope or time limit, neither declines carries nor asks to be asked "
-    "again, and the enforcement-invariant rule below does not apply. "
-    "A keep \"for now\" or \"just this file\", a decline, or an ask to "
-    "be asked again is logged without `--carry-forward`. "
-    "Relay the `stored engineer quote:` line. Every "
-    "stop-and-ask in this section whose keep is logged this way first "
-    "tells the engineer that the answer is quoted in the public "
-    "PR body, where tracker IDs, UUIDs, long hex runs, home paths and "
-    "blocklisted names block the update, and, except at the "
-    "enforcement-invariant stop, that the keep also applies without asking to "
-    "same-failure-mode repeats on this unchanged block unless they "
-    "decline or limit it. A same-failure-mode repeat at a live DEFER decision, or "
-    "at a live engineer SETTLED logged `--carry-forward`, carries "
-    "without a stop. Apply the enforcement-invariant rule to the new "
-    "finding first, since an invariant-class finding never carries. Then "
-    "log it with the decision's disposition, `--decided-by carry --ref "
-    "<id>`, `--rationale` naming the shared defect, the reviewer's "
-    "`--cited-line`, and a `--source` range reproducing the "
-    "decided text at its current lines (rules: `--help`). A DEFER "
-    "carry also restates `--defer-criterion` after re-running the "
-    "closed list. A "
-    "repeat that does not carry takes the stop at a SETTLED site and a "
-    "fresh disposition against the closed list at a DEFER site. An "
-    "ADDRESS or fresh DEFER of a repeat carries `--ref <id>` so the old "
-    "row retires; another finding at the site leaves it live. The "
-    "round report relays each `carry of decision` line, and a reopen "
-    "is logged `ADDRESS --ref <id> --relog` with the decision's `--source`, "
-    "which retires the decision and its carries from the PR block."
-)
 
 
-class TestCodeReviewContradictionRouteRegionPin:
-    """Pin code-review/SKILL.md's contradiction-route region whole, so dropping
-    any of these rules fails a test instead of drifting silently:
-
-    - the enforcement-invariant carve-out on *keep current text*;
-    - the settled-site / two-rewrites human stop;
-    - the no-explicit-verdict blocking stop-and-ask;
-    - the consent notice before an engineer keep is logged;
-    - `--carry-forward` only for an answer with no scope or time limit;
-    - the carry rules: the invariant check before a carry, and a `--source`
-      range reproducing the decided text at its current lines (the rest of the
-      carry rules live in `--help`, pinned by test_review_ledger_script.py);
-    - the `--ref` that retires a decision, and the `ADDRESS --ref` reopen;
-    - the consult prompt's bar on invoking `review-ledger.sh` or `marker.sh`.
-    """
-
-    def test_contradiction_route_region_matches_live_text(self) -> None:
-        skill_md_path = _skill_file("code-review")
-        live_text = _normalized_anchor_text(
-            skill_md_path, _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR
-        )
-        pinned_text = " ".join(_PINNED_CONTRADICTION_ROUTE_CLAUSE.split())
-        assert live_text == pinned_text, (
-            f"{skill_md_path}: {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} no longer "
-            f"matches its pinned text.\n"
-            f"  live:   {live_text!r}\n"
-            f"  pinned: {pinned_text!r}"
-        )
 
 
-_CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
-
-# The whole defer-invariant region: the enforcement-invariant class definition,
-# its never-DEFER-eligible ruling, the ADDRESS-or-blocking-stop disposition,
-# the scope of the bar (an invariant break a round notices anywhere in the PR),
-# and its precedence over checklist item 14's informational-only route.
-# The contradiction-route region's *keep current text* carve-out takes its scope
-# from this class, so it is pinned whole by exact equality, like that region.
-_PINNED_DEFER_INVARIANT_CLAUSE = (
-    "- **\"Enforcement invariant weakened, but disclosed\"** — a "
-    "finding that the diff opens a path around an enforcement "
-    "invariant (a gate, hook, permission check, required-approval, or "
-    "marker guarantee some mechanism currently makes unbypassable) is "
-    "never DEFER-eligible, regardless of which criterion above seems "
-    "to match. Disposition is ADDRESS (fix the hole) or a blocking "
-    "stop-and-ask to the human, whose keep is logged with "
-    "`--enforcement-invariant` and without `--carry-forward`: it is "
-    "asked again on every re-raise, never carried, and never DEFERred. "
-    "Approval of a diff or PR does not function as informed consent "
-    "for an invariant-break buried in the body. The bar applies to an "
-    "invariant break a round notices anywhere in the PR, not only inside "
-    "the diff that round enumerates (the staged diff in a staged round, "
-    "the PR against its base in the cumulative pass). Checklist item 14's "
-    "informational-only route does not apply to such a break."
-)
 
 
-_CODE_REVIEW_FINDING_DISPOSITION_HEADING = "## Finding disposition"
-_CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-new-primitive-route"
-_ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE = (
-    "For a finding the enforcement-invariant rule below covers, Endorsed with "
-    "no plan file and Rejected each end in that rule's blocking stop-and-ask, "
-    "since neither fixes the hole."
-)
 
-
-class TestCodeReviewDeferInvariantRegionPin:
-    """Pin the text that keeps an enforcement-invariant break from being
-    deferred or silently accepted, so drifting from it fails a test.
-
-    Whole-region equality against _PINNED_DEFER_INVARIANT_CLAUSE guards:
-    - the never-DEFER-eligible ruling;
-    - the enforcement-invariant class definition;
-    - the ADDRESS-or-blocking-stop-and-ask disposition;
-    - the bar covering an invariant break noticed anywhere in the PR, not only
-      the diff a round enumerates;
-    - the sentence keeping checklist item 14's informational-only route from
-      absorbing such a break.
-
-    Two narrower checks guard the rest:
-    - The Finding disposition section must contain the walk clause that adds an
-      orchestrator-noticed invariant break to the disposition walk. This pins
-      the clause's presence in that section, not the walk sentence's structure.
-    - The new-primitive-route region must contain
-      _ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE, which ends the
-      Endorsed-with-no-plan-file and Rejected returns of an enforcement-invariant
-      finding's heavier-mechanism consult in the blocking stop-and-ask.
-
-    On failure, update the pinned text only if the new wording preserves what
-    every sentence of the current pinned text guarantees.
-    """
-
-    def test_defer_invariant_region_matches_live_text(self) -> None:
-        skill_md_path = _skill_file("code-review")
-        live_text = _normalized_anchor_text(
-            skill_md_path, _CODE_REVIEW_DEFER_INVARIANT_ANCHOR
-        )
-        pinned_text = " ".join(_PINNED_DEFER_INVARIANT_CLAUSE.split())
-        assert live_text == pinned_text, (
-            f"{skill_md_path}: {_CODE_REVIEW_DEFER_INVARIANT_ANCHOR} no longer "
-            f"matches its pinned text.\n"
-            f"  live:   {live_text!r}\n"
-            f"  pinned: {pinned_text!r}"
-        )
-
-    def test_disposition_walk_covers_orchestrator_noticed_invariant_break(self) -> None:
-        """The Finding disposition section carries the clause that routes an
-        orchestrator-noticed invariant break into the disposition walk."""
-        skill_md_path = _skill_file("code-review")
-        walk_clause = (
-            "plus any break the orchestrator's own pass noticed that the "
-            "enforcement-invariant rule below covers"
-        )
-        section_text = _heading_section_text(
-            skill_md_path, _CODE_REVIEW_FINDING_DISPOSITION_HEADING
-        )
-        assert " ".join(walk_clause.split()) in section_text, (
-            f"{skill_md_path}: the {_CODE_REVIEW_FINDING_DISPOSITION_HEADING} "
-            f"section must still contain {walk_clause!r}"
-        )
-
-    def test_enforcement_invariant_finding_ends_unfixing_consult_returns_in_human_stop(
-        self,
-    ) -> None:
-        """An enforcement-invariant finding's Endorsed-with-no-plan-file and
-        Rejected consult returns still end in the human stop."""
-        skill_md_path = _skill_file("code-review")
-        heavier_mechanism_text = _normalized_anchor_text(
-            skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR
-        )
-        stop_sentence = " ".join(_ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE.split())
-        assert stop_sentence in heavier_mechanism_text, (
-            f"{skill_md_path}: the {_CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR} region "
-            f"must still contain {stop_sentence!r}"
-        )
-
-
-_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR = "DISPOSITION_RULE:code-review-fix-plan-pilot"
-_CODE_REVIEW_DEFER_CRITERIA_HEADING = "**DEFER criteria (closed list).**"
-_CODE_REVIEW_INVALID_DEFER_HEADING = "**Invalid DEFER rationales.**"
-_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING = (
-    "**A fix that would introduce a mechanism heavier, more privileged, or "
-    "wider-scope than the surface already under review is a design question, "
-    "not a fix.**"
-)
-
-# The whole fix-plan pilot region, pinned by exact equality so any edit to it is a visible
-# change to this constant. The mid-sentence "- " tokens are SKILL.md's verdict bullets after
-# whitespace collapse, not typos.
-_PINNED_FIX_PLAN_PILOT_CLAUSE = (
-    "**Once a round has a reviewer-spawned finding, run "
-    "`~/.claude/scripts/config-get.sh architect_fix_plan_pilot`; "
-    "only exit 0 applies this rule.** The contradiction route's "
-    "settled-site stop and carries run first, and the "
-    "reviewer-spawned findings left after them are the payload; "
-    "with none left, dispatch nothing and write no tag. Number the "
-    "payload findings from 1 and mark each one at an earlier "
-    "round's site. Dispatch `plan-architect` once, with "
-    "`MODE=consult` as the prompt's first line. The prompt carries "
-    "the numbered findings; each marked one's earlier finding and "
-    "fix; the contradiction route's judgment standard; the DEFER "
-    "criteria and invalid DEFER rationales below; this round's "
-    "findings-file paths; the diff artifact resolved as for "
-    "`comment-discipline-reviewer`; the plan file and ledger digest "
-    "paths when each exists; the bar on invoking "
-    "`review-ledger.sh` or `marker.sh` stated above; "
-    "and the project layer's path when Step 0.5 loaded one. Ask for "
-    "one row per payload number, each a single line of `<n>.` "
-    "followed by ADDRESS with the fix shape and the files it "
-    "touches, DEFER naming a closed-list criterion, or KEEP (keep "
-    "current text) for a marked number. Ask for exactly one line "
-    "reading `foundation: sound` or `foundation: wrong`. Say that "
-    "reasoning and not-verified notes go outside the rows, that no "
-    "other line starts like a row, and that a finding it cannot "
-    "commit to gets no row. For payload findings a valid table "
-    "decides, this consult replaces the contradiction consult. "
-    "Relay the return verbatim and validate "
-    "it by the list below; never re-litigate a row. Each stop names "
-    "every condition the return failed. Nothing re-dispatches "
-    "automatically. Only the human may re-dispatch or send the "
-    "payload findings through the rest of this section instead. A "
-    "re-dispatch's return is read under the same list. Write one tag on the "
-    "round's `Fix route:` line: `fix-plan: dispatched` when a valid "
-    "table became the disposition, `fix-plan: fell-back` when the "
-    "human chose the rest of this section, and `fix-plan: stopped` "
-    "for any other end. - **Valid table.** Every line starting "
-    "`<n>. ADDRESS`, `<n>. DEFER` or `<n>. KEEP` is a row in the "
-    "shape asked for, the rows' numbers are the payload numbers "
-    "with none missing or repeated, no row is barred as below, and "
-    "exactly one line starts with `foundation:` and reads exactly "
-    "`foundation: sound`. Text outside the rows and `foundation:` "
-    "lines decides nothing. The table is then the disposition. One "
-    "`code-writer` carries its ADDRESS rows, if any, each fix shape "
-    "replacing the Suggested fix. A fix "
-    "that trips the heavier-mechanism limbs takes that rule instead. "
-    "Log each row as the ledger section below "
-    "and a loaded project layer prescribe. Log a KEEP as the "
-    "contradiction route logs a consult's keep. Log an ADDRESS or "
-    "fresh DEFER of a repeat with the `--ref <id>` that route "
-    "requires. Every table-decided row's `--rationale` starts with "
-    "`fix-plan:`. - **`foundation: wrong`**, with or without rows, "
-    "is a blocking stop-and-ask on whether to re-plan; a yes "
-    "re-plans as the round-cap consult's first verdict above does. "
-    "- **Barred row.** A DEFER or KEEP row on a finding the "
-    "enforcement-invariant rule below or a loaded project layer "
-    "bars from DEFER is a blocking stop-and-ask. - **Any other "
-    "return**, a failed dispatch included, is a blocking "
-    "stop-and-ask before any fix is dispatched."
-)
-
-
-class TestCodeReviewFixPlanPilotRegionPin:
-    """Pin code-review/SKILL.md's fix-plan pilot region whole, so dropping or
-    weakening any of its rules fails a test instead of drifting silently.
-    """
-
-    def test_fix_plan_pilot_region_matches_live_text(self) -> None:
-        skill_md_path = _skill_file("code-review")
-        live_text = _normalized_anchor_text(
-            skill_md_path, _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR
-        )
-        pinned_text = " ".join(_PINNED_FIX_PLAN_PILOT_CLAUSE.split())
-        assert live_text == pinned_text, (
-            f"{skill_md_path}: {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} no longer "
-            f"matches its pinned text.\n"
-            f"  live:   {live_text!r}\n"
-            f"  pinned: {pinned_text!r}"
-        )
-
-    def test_region_placed_after_contradiction_route_and_before_defer_criteria(
-        self,
-    ) -> None:
-        """The region's "above", "below" and "the rest of this section"
-        references depend on its position."""
-        skill_md_path = _skill_file("code-review")
-        raw_text = skill_md_path.read_text()
-        contradiction_end = raw_text.find(
-            f"<!-- {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} end -->"
-        )
-        pilot_start = raw_text.find(
-            f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} start -->"
-        )
-        defer_criteria = raw_text.find(_CODE_REVIEW_DEFER_CRITERIA_HEADING)
-        assert -1 not in (contradiction_end, pilot_start, defer_criteria), (
-            f"{skill_md_path}: placement needs the contradiction-route end anchor, "
-            f"the fix-plan pilot start anchor and {_CODE_REVIEW_DEFER_CRITERIA_HEADING}; "
-            f"offsets found: {contradiction_end}, {pilot_start}, {defer_criteria}"
-        )
-        assert contradiction_end < pilot_start < defer_criteria, (
-            f"{skill_md_path}: {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} start anchor must "
-            "fall after the contradiction-route end anchor and before "
-            f"{_CODE_REVIEW_DEFER_CRITERIA_HEADING}"
-        )
-
-    def test_cited_referents_still_exist(self) -> None:
-        """The region cites "the round-cap consult's first verdict", "that
-        rule" (the heavier-mechanism rule, consult through Rejected outcome and
-        disagreement stop) and "invalid DEFER rationales below" by position and
-        name, and none of those is otherwise pinned."""
-        skill_md_path = _skill_file("code-review")
-        round_cap_text = _normalized_anchor_text(
-            skill_md_path, "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
-        )
-        first_bullet_start = round_cap_text.find("- **")
-        assert first_bullet_start != -1 and round_cap_text[
-            first_bullet_start + len("- **") :
-        ].startswith("Foundation is wrong"), (
-            f"{skill_md_path}: the round-cap consult region's first verdict bullet "
-            "must be the re-plan verdict (`Foundation is wrong`)"
-        )
-        heavier_mechanism_text = _normalized_anchor_text(
-            skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR
-        )
-        assert heavier_mechanism_text.startswith(
-            _CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING
-        ), (
-            f"{skill_md_path}: the heavier-mechanism region must open with "
-            f"{_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING!r}"
-        )
-        # A limb-tripping ADDRESS row takes the whole rule, so its Rejected outcome and its
-        # orchestrator-disagreement stop must survive too.
-        for heavier_mechanism_clause in (
-            "**Rejected",
-            "A disagreement between the orchestrator and the returned recommendation "
-            "is a blocking stop-and-ask to the human",
-        ):
-            assert heavier_mechanism_clause in heavier_mechanism_text, (
-                f"{skill_md_path}: the heavier-mechanism region must still contain "
-                f"{heavier_mechanism_clause!r}"
-            )
-        raw_text = skill_md_path.read_text()
-        pilot_end = raw_text.find(
-            f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} end -->"
-        )
-        invalid_defer_heading = raw_text.find(_CODE_REVIEW_INVALID_DEFER_HEADING)
-        assert -1 not in (pilot_end, invalid_defer_heading), (
-            f"{skill_md_path}: the region cites {_CODE_REVIEW_INVALID_DEFER_HEADING} "
-            "by name and needs it below the region; offsets found: "
-            f"{pilot_end}, {invalid_defer_heading}"
-        )
-        assert pilot_end < invalid_defer_heading, (
-            f"{skill_md_path}: {_CODE_REVIEW_INVALID_DEFER_HEADING} must fall "
-            "after the fix-plan pilot region"
-        )
-
-    def test_region_names_a_key_in_the_config_schema(self) -> None:
-        """Guards the region-to-schema wiring, not behavior."""
-        region_text = _normalized_anchor_text(
-            _skill_file("code-review"), _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR
-        )
-        key_match = re.search(r"config-get\.sh ([a-z0-9_]+)", region_text)
-        assert key_match, "fix-plan pilot region no longer names a config-get.sh key"
-        assert key_match.group(1) in config_schema(), (
-            f"{key_match.group(1)!r} is not a key in config-keys.psv"
-        )
-
-
-_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR = "DISPOSITION_RULE:code-review-disposition-challenge"
-_CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING = "## Review-narrative ledger"
-_CODE_REVIEW_THREE_PLUS_DEFER_LEAD = "If you find yourself tagging 3+ findings DEFER"
-_CODE_REVIEW_PROJECT_LAYER_HEADING = "## Step 0.5 — Load project-specific layer"
-_CODE_REVIEW_DIFF_ARTIFACT_LEAD = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
-_DISPOSITION_CHALLENGE_RECORD_PATH = (
-    REPO_ROOT / "docs" / "design-decisions" / "architect-disposition-challenge-pilot.md"
-)
-_PLAN_ARCHITECT_MODE_SELECTION_HEADING = "## Mode selection"
-
-# The whole disposition-challenge region, pinned by exact equality so any edit to it is a
-# visible change to this constant. The mid-sentence "- " tokens are SKILL.md's list markers
-# for the region's verdict and outcome bullets after whitespace collapse, not typos.
-_PINNED_DISPOSITION_CHALLENGE_CLAUSE = (
-    "**Once dispositions are tagged, outside a `/review-pr` pass, if any ADDRESS "
-    "or DEFER is the orchestrator's own decision, run "
-    "`~/.claude/scripts/config-get.sh architect_disposition_challenge_pilot`; "
-    "only exit 0 applies this rule.** A `/review-pr` pass is one run under that "
-    "skill's standing override to report findings and change nothing. This rule "
-    "runs after the contradiction route's carries and settled-site stops and any "
-    "valid fix-plan table, and the round's heavier-mechanism consults and any "
-    "`code-writer` dispatch wait for its result. A row is the orchestrator's own "
-    "unless a valid fix-plan table or the human decided it, it is a carry, or it "
-    "is on the contradiction route. An ADDRESS row the heavier-mechanism rule "
-    "routes to a consult is the orchestrator's own. Mark as barred each of those "
-    "rows whose finding the enforcement-invariant rule above or a loaded project "
-    "layer bars from DEFER, counting a finding as barred when unsure. A barred "
-    "row is not challenged: a barred ADDRESS stays ADDRESS, and a barred DEFER "
-    "becomes ADDRESS or the stop-and-ask the rule that bars it prescribes. Number "
-    "the unbarred rows from 1, and with none dispatch nothing. Dispatch "
-    '`plan-architect` once, with an explicit `model: "opus"`, and with a prompt '
-    "whose first line is exactly `MODE=challenge` and nothing else. The prompt "
-    "carries the numbered rows, each with its finding, disposition and rationale; "
-    "this file's path, naming this section as the rules a row must meet; this "
-    "round's findings-file paths; the diff artifact resolved as for "
-    "`comment-discipline-reviewer`; the plan file's path when one exists; and the "
-    "project layer's path when Step 0.5 loaded one. Take a verdict line only from "
-    "the opening run: the consecutive verdict-shaped lines from the return's "
-    "first line, none when that line is not one. A row with a verdict-shaped line "
-    "outside the opening run has no verdict. Then, per row of its return: - "
-    "**`<n>. uphold`** keeps the row. - **`<n>. flip`.** Re-evaluate the row once "
-    "under the rules above and a loaded project layer's bar from DEFER, with the "
-    "architect's argument in front of you, and concede, applying the flip, only "
-    "when you then reach its result. Otherwise the row is a blocking stop-and-ask "
-    "to the human, relaying the row, your reasoning, and the flip line and its "
-    "argument verbatim. - **A row without exactly one such line**, and every row "
-    "when the dispatch failed or its return ends in a `Stance:` line, which only "
-    "a consult writes, is one blocking stop-and-ask for all such rows, relaying "
-    "the return verbatim. Nothing re-dispatches, and a row the human does not "
-    "decide keeps its disposition. Before the human answers a stop here, give the "
-    "contradiction route's notice once. Log a row the human decides at such a "
-    "stop ADDRESS when it is to be fixed, and otherwise as the contradiction "
-    "route logs a human keep. After the last concession and stop, re-state the "
-    "disposition and the `Fix route:` line of each row whose disposition changed, "
-    "applying the heavier-mechanism rule to each one now ADDRESS, and apply the "
-    "3+ DEFER re-read above to the new count. Start the `--rationale` of each "
-    "barred and each numbered row with `challenge:<outcome>:<scope>`. `<outcome>` "
-    "is `barred` on a barred row, and on a numbered row is: - `upheld` on a row "
-    "the architect upheld. - `conceded` on a flip you conceded. - "
-    "`escalated-architect` when the human, at a flip's stop, chose the flip. - "
-    "`escalated-orchestrator` when the human, at a flip's stop, chose the row's "
-    "original disposition. - `ran-as-consult` on every numbered row when the "
-    "return ends in a `Stance:` line. - `no-verdict` otherwise, on a row without "
-    "a verdict. `<scope>` is `narrowed` or `unnarrowed`, as the `Spawn "
-    "decisions:` line's scope tag says."
-)
-
-# The agent's whole `## MODE=challenge` section, heading line included, whitespace-collapsed.
-_PINNED_PLAN_ARCHITECT_CHALLENGE_SECTION = (
-    "## MODE=challenge The prompt carries numbered dispositions another session "
-    "decided, with the paths of the rules each must meet and of the evidence "
-    "behind it. Never call `Edit`, even when the prompt names a plan file. "
-    "Judge only those rows. Whether the branch's foundation is wrong is a "
-    '`MODE=consult` question, so ignore any "Review-ledger history" line in '
-    "your context. Work out each row's disposition yourself before you read its "
-    "rationale. Challenge in both directions: a DEFER the rules do not allow, "
-    "and an ADDRESS that a closed-list DEFER criterion covers. Flip a row only "
-    "for a defect that meets the Review stance's bar for a rejection, under "
-    "`MODE=consult`. Open the return with one line per row, in row order, and "
-    "start no other line the same way: - `<n>. uphold` - `<n>. flip: <the rule "
-    "the row breaks>`. A flip of an ADDRESS also names the closed-list DEFER "
-    "criterion the finding meets. Then give each flip's argument, concrete "
-    "enough for the dispatching session to re-evaluate the row against, and "
-    "name what you did not verify. End with no `Stance:` line, because only a "
-    "consult return ends with one."
-)
-
-_DISPOSITION_CHALLENGE_PIN_RECOVERY_NOTE = (
-    "If the key is on, this edit needs the key set false and the fixture set re-run: see "
-    'docs/design-decisions/architect-disposition-challenge-pilot.md, in its "Changes after enabling" bullet.'
-)
-
-
-class TestCodeReviewDispositionChallengeRegionPin:
-    """Pin code-review/SKILL.md's disposition-challenge region whole, and the
-    referents it reads from other files, so dropping or weakening any of its
-    rules fails a test instead of drifting silently. The presence tests claim
-    that wiring exists, not that the agent obeys the text.
-    """
-
-    @staticmethod
-    def _region_text() -> str:
-        return _normalized_anchor_text(
-            _skill_file("code-review"), _CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR
-        )
-
-    @classmethod
-    def _region_mode_literal(cls) -> str:
-        mode_match = re.search(r"first line is exactly `(MODE=[^`]+)`", cls._region_text())
-        assert mode_match, "the region no longer states its prompt's first line as exactly `MODE=...`"
-        return mode_match.group(1)
-
-    def test_region_matches_pin(self) -> None:
-        """Change detector: any edit to the region must be mirrored in the pin,
-        as test_pinned_scope_clause_matches_live_text's docstring says of scope clauses."""
-        live_text = self._region_text()
-        pinned_text = " ".join(_PINNED_DISPOSITION_CHALLENGE_CLAUSE.split())
-        assert live_text == pinned_text, (
-            f"{_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR} no longer matches its pinned text.\n"
-            f"  live:   {live_text!r}\n"
-            f"  pinned: {pinned_text!r}\n"
-            f"{_DISPOSITION_CHALLENGE_PIN_RECOVERY_NOTE}"
-        )
-
-    def test_agent_mode_section_matches_pin(self) -> None:
-        """Change detector: any edit to plan-architect.md's challenge section must be
-        mirrored in the pin. The phrase tests below catch a dropped rule, not a reworded one."""
-        live_text = _heading_section_text(_PLAN_ARCHITECT_PATH, f"## {self._region_mode_literal()}")
-        assert live_text == _PINNED_PLAN_ARCHITECT_CHALLENGE_SECTION, (
-            f"{_PLAN_ARCHITECT_PATH}'s challenge section no longer matches its pinned text.\n"
-            f"  live:   {live_text!r}\n"
-            f"  pinned: {_PINNED_PLAN_ARCHITECT_CHALLENGE_SECTION!r}\n"
-            f"{_DISPOSITION_CHALLENGE_PIN_RECOVERY_NOTE}"
-        )
-
-    def test_region_follows_three_plus_defer_paragraph_and_precedes_ledger_section(
-        self,
-    ) -> None:
-        """The region's "the rules above" and "the 3+ DEFER re-read above"
-        depend on this position."""
-        skill_md_path = _skill_file("code-review")
-        collapsed_text = " ".join(skill_md_path.read_text().split())
-        ordered_markers = [
-            " ".join(marker.split())
-            for marker in (
-                f"<!-- {_CODE_REVIEW_DEFER_INVARIANT_ANCHOR} end -->",
-                _CODE_REVIEW_THREE_PLUS_DEFER_LEAD,
-                f"<!-- {_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR} start -->",
-                _CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING,
-            )
-        ]
-        offsets = [collapsed_text.find(marker) for marker in ordered_markers]
-        assert -1 not in offsets, (
-            f"{skill_md_path}: placement needs every marker in {ordered_markers}; offsets found: {offsets}"
-        )
-        assert offsets == sorted(offsets), (
-            f"{skill_md_path}: {_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR} must sit after the "
-            "defer-invariant region and the 3+ DEFER paragraph, and before the "
-            f"{_CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING} section; offsets found: {offsets}"
-        )
-
-    def test_cited_referents_still_exist(self) -> None:
-        skill_md_path = _skill_file("code-review")
-        skill_text = " ".join(skill_md_path.read_text().split())
-        for skill_phrase in (
-            "mandatory **Fix route:** line",
-            _CODE_REVIEW_DIFF_ARTIFACT_LEAD,
-            _CODE_REVIEW_PROJECT_LAYER_HEADING,
-            _CODE_REVIEW_DEFER_CRITERIA_HEADING,
-            _CODE_REVIEW_INVALID_DEFER_HEADING,
-        ):
-            assert skill_phrase in skill_text, (
-                f"{skill_md_path}: the disposition-challenge region cites {skill_phrase!r}, "
-                "which is no longer in the file"
-            )
-        spawn_decisions_paragraphs = [
-            paragraph
-            for paragraph in skill_md_path.read_text().split("\n\n")
-            if paragraph.startswith("The **Spawn decisions:** line also states")
-        ]
-        assert spawn_decisions_paragraphs, f"{skill_md_path}: the Spawn decisions scope paragraph is gone"
-        for scope_tag in ("(narrowed)", "(unnarrowed"):
-            assert scope_tag in spawn_decisions_paragraphs[0], (
-                f"{skill_md_path}: the Spawn decisions scope paragraph no longer carries {scope_tag!r}, "
-                "which the region's <scope> tag copies"
-            )
-        contradiction_text = _normalized_anchor_text(skill_md_path, _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR)
-        for contradiction_phrase in (
-            "A human keep is logged",
-            "Every stop-and-ask in this section whose keep is logged this way first tells the engineer",
-        ):
-            assert contradiction_phrase in contradiction_text, (
-                f"{skill_md_path}: the contradiction-route region must still contain "
-                f"{contradiction_phrase!r}, which the disposition-challenge region reuses by reference"
-            )
-        heavier_mechanism_text = _normalized_anchor_text(skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR)
-        assert heavier_mechanism_text.startswith(_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING), (
-            f"{skill_md_path}: the heavier-mechanism region must open with "
-            f"{_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING!r}"
-        )
-        review_pr_path = _skill_file("review-pr")
-        review_pr_text = " ".join(review_pr_path.read_text().split())
-        for override_phrase in ("**Standing override.**", "change nothing"):
-            assert override_phrase in review_pr_text, (
-                f"{review_pr_path}: the standing override the disposition-challenge region names "
-                f"must still contain {override_phrase!r}"
-            )
-
-    def test_region_verdict_heads_presence_in_agent_mode_section(self) -> None:
-        """Claims presence only: each verdict head the region reads opens a
-        backticked token in the agent's challenge section."""
-        verdict_heads = re.findall(r"`(<n>\. [a-z]+)`", self._region_text())
-        assert verdict_heads, "the region no longer names any backticked `<n>. <word>` verdict head"
-        mode_section = _heading_section_text(_PLAN_ARCHITECT_PATH, f"## {self._region_mode_literal()}")
-        for verdict_head in verdict_heads:
-            assert f"`{verdict_head}" in mode_section, (
-                f"plan-architect.md's challenge section no longer opens a backticked token with {verdict_head!r}"
-            )
-
-    def test_region_mode_literal_is_agent_mode_and_non_consult_row(self) -> None:
-        mode_literal = self._region_mode_literal()
-        agent_lines = _PLAN_ARCHITECT_PATH.read_text().splitlines()
-        assert f"## {mode_literal}" in agent_lines, (
-            f"plan-architect.md has no `## {mode_literal}` heading for the region's mode literal"
-        )
-        matching_rows = [row for row in CONSULT_CLASSIFICATION_TABLE if row[0] == mode_literal]
-        assert matching_rows, f"CONSULT_CLASSIFICATION_TABLE has no row whose prompt is exactly {mode_literal!r}"
-        for _prompt, expect_consult, row_id in matching_rows:
-            assert not expect_consult, f"table row {row_id!r} must classify {mode_literal!r} as no consult"
-
-    def test_mode_selection_names_every_mode_presence(self) -> None:
-        """Claims presence only: the agent's mode-selection section names every mode and the exact-first-line rule."""
-        mode_selection = _heading_section_text(_PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_MODE_SELECTION_HEADING)
-        for required_text in (
-            "`MODE=plan-sections`",
-            "`MODE=consult`",
-            f"`{self._region_mode_literal()}`",
-            "Any other first line, an absent one included, is a consult.",
-        ):
-            assert required_text in mode_selection, (
-                f"plan-architect.md's {_PLAN_ARCHITECT_MODE_SELECTION_HEADING!r} section no longer "
-                f"carries {required_text!r}"
-            )
-
-    def test_region_outcome_tokens_presence_in_record(self) -> None:
-        """Claims presence only, in one direction: the record holds no delimited
-        token list to parse, so a region rename the record misses is what fails."""
-        region_text = self._region_text()
-        outcome_span_start = region_text.find("`<outcome>` is")
-        outcome_span_end = region_text.find("`<scope>` is")
-        assert -1 not in (outcome_span_start, outcome_span_end), (
-            "the region no longer defines `<outcome>` and `<scope>`"
-        )
-        outcome_span = region_text[outcome_span_start:outcome_span_end]
-        outcome_tokens = [
-            token for token in re.findall(r"`([^`]+)`", outcome_span) if re.fullmatch(r"[a-z]+(-[a-z]+)*", token)
-        ]
-        assert outcome_tokens, "no outcome tokens parsed from the region"
-        tag_match = re.search(r"`([^`<]+)<outcome>:<scope>`", region_text)
-        assert tag_match, "the region no longer states its `challenge:<outcome>:<scope>` tag"
-        tag_prefix = tag_match.group(1)
-        record_text = _DISPOSITION_CHALLENGE_RECORD_PATH.read_text()
-        for record_token in (*outcome_tokens, tag_prefix):
-            assert f"`{record_token}`" in record_text, (
-                f"{_DISPOSITION_CHALLENGE_RECORD_PATH} no longer carries `{record_token}`, "
-                "which the region's tag uses"
-            )
-
-    @pytest.mark.parametrize(
-        "phrase, invariant",
-        [
-            pytest.param(
-                "Never call `Edit`, even when the prompt names a plan file.",
-                "the mode keeps the charter-only no-Edit rule, including the plan-file case",
-                id="never-calls-edit",
-            ),
-            pytest.param(
-                "start no other line the same way",
-                "no line other than a row's verdict may start like one, so the verdict count is exact",
-                id="one-line-per-row",
-            ),
-            pytest.param(
-                "End with no `Stance:` line",
-                "only a consult return ends in a Stance line, which the region reads as a consult",
-                id="no-stance-line",
-            ),
-        ],
-    )
-    def test_agent_mode_section_carries_phrase(self, phrase: str, invariant: str) -> None:
-        """Wiring-presence tripwire: claims presence only, not that the agent obeys the phrase."""
-        mode_section = _heading_section_text(_PLAN_ARCHITECT_PATH, f"## {self._region_mode_literal()}")
-        assert phrase in mode_section, (
-            f"plan-architect.md's challenge section no longer carries {phrase!r}: {invariant}."
-        )
-
-    def test_region_stance_token_in_consult_stance_line(self) -> None:
-        """Claims presence only: the line the region detects as a consult return is
-        the line the consult section says it ends with."""
-        region_text = self._region_text()
-        bullet_start = region_text.find("**A row without exactly one such line**")
-        bullet_end = region_text.find("Before the human answers a stop here")
-        assert -1 not in (bullet_start, bullet_end), "the region no longer has its no-verdict bullet"
-        stance_tokens = re.findall(r"`([^`]*:)`", region_text[bullet_start:bullet_end])
-        assert stance_tokens, "the no-verdict bullet no longer detects a backticked `...:` line"
-        consult_section = _heading_section_text(_PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING)
-        for stance_token in stance_tokens:
-            for stance_word in ("review", "design"):
-                assert f"`{stance_token} {stance_word}`" in consult_section, (
-                    f"plan-architect.md's consult section no longer carries `{stance_token} {stance_word}`"
-                )
-
-
-def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings_files() -> None:
-    """The previous round's findings files are picked by the `agent-reviews/` name filter. Without
-    the exclusion list, a digest or history file would pass as a reviewer's findings file."""
-    round_cap_text = _normalized_anchor_text(
-        _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
-    )
-    assert (
-        "never a `review-ledger-`, `review-history-`, `code-review-dispositions-` or `pr-body-` file"
-        in round_cap_text
-    )
-
-
-class TestRoundCapSecondNoiseVerdictStop:
-    """Wiring-presence tripwires on the round-cap region's second-noise-verdict stop and its verdict record.
-    The region has no whole-text pin, so each load-bearing clause is named here."""
-
-    def _region_text(self) -> str:
-        return _normalized_anchor_text(
-            _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
-        )
-
-    @pytest.mark.parametrize(
-        "clause",
-        [
-            pytest.param(
-                "When this round has a finding and the ledger holds two or more `noise` `CONSULT` rows in any rounds, "
-                "this verdict's own included, the verdict is also a blocking stop-and-ask",
-                id="fires-with-a-finding-and-two-noise-rows-in-any-round-its-own-included",
-            ),
-            pytest.param(
-                '`"disposition":"CONSULT","rationale":"noise"`', id="greps-the-shown-disposition-and-rationale-run",
-            ),
-            pytest.param("Treat an uncertain count as two", id="treats-an-uncertain-count-as-two"),
-            pytest.param(
-                "Ask once this round's findings are tagged, before any is logged or fixed",
-                id="asks-once-before-any-finding-is-logged-or-fixed",
-            ),
-            pytest.param(
-                "before retrying the denied spawn, log it with "
-                "`~/.claude/scripts/review-ledger.sh append code-review --disposition CONSULT "
-                "--rationale '<verdict>' --round <N>`",
-                id="logs-the-verdict-before-retrying-the-denied-spawn",
-            ),
-            pytest.param(
-                "An append that still fails after one retry is a blocking stop", id="a-failed-verdict-append-stops",
-            ),
-            pytest.param(
-                "deliberately for every verdict alike", id="the-failed-append-stop-is-uniform-across-verdicts",
-            ),
-            pytest.param("A re-plan does not reset the count", id="a-re-plan-does-not-reset-the-noise-count"),
-            pytest.param(
-                "An `unchanged` after the append is uncertain, not zero", id="unchanged-after-the-append-is-uncertain",
-            ),
-            pytest.param(
-                "naming the trigger (the two rows' rounds, or \"ledger read failed, count unknown\")",
-                id="the-stop-names-its-trigger",
-            ),
-            pytest.param(
-                "dedups to no new row, so count a repeated noise verdict as one more yourself",
-                id="a-deduped-repeat-noise-verdict-is-counted-by-the-session",
-            ),
-            pytest.param(
-                "At a `/ready-for-review` step-4 denial, relay the verdict to the engineer and log no CONSULT row, "
-                "so a step-4 verdict is not counted",
-                id="a-step-4-denial-verdict-is-relayed-and-not-counted",
-            ),
-            pytest.param(
-                "where `<verdict>` is `re-plan`, `noise` or `one-defect`", id="names-the-three-verdict-words",
-            ),
-        ],
-    )
-    def test_region_carries_clause(self, clause: str) -> None:
-        assert clause in self._region_text(), f"the round-cap region no longer carries {clause!r}"
-
-    def test_the_three_options_appear_in_order(self) -> None:
-        region_text = self._region_text()
-        positions = [
-            region_text.find(label)
-            for label in ("*Ship with the live DEFER and SETTLED rows.*", "*Re-plan*", "*Continue review*")
-        ]
-        assert -1 not in positions and positions == sorted(positions), (
-            "the second-noise-verdict stop must offer ship, re-plan, then continue, in that order"
-        )
-
-    def test_ship_leaves_an_invariant_finding_to_the_invariant_rules_own_stop(self) -> None:
-        region_text = self._region_text()
-        ship_label = "*Ship with the live DEFER and SETTLED rows.*"
-        carve_out_sentence = (
-            "A finding the enforcement-invariant rule covers is outside this answer "
-            "and takes that rule's own stop, which names it."
-        )
-        notice_then_log_sentence = (
-            "Give the contradiction route's notice, then log each other finding as that route logs a human keep"
-        )
-        ship_label_position = region_text.find(ship_label)
-        assert ship_label_position != -1, f"the round-cap region no longer carries the Ship label {ship_label!r}"
-        ship_label_end = ship_label_position + len(ship_label)
-        replan_label_start = region_text.find("*Re-plan*", ship_label_end)
-        assert replan_label_start != -1, "the round-cap region carries no *Re-plan* label after the Ship label"
-        ship_segment = region_text[ship_label_end:replan_label_start]
-        carve_out_position = ship_segment.find(carve_out_sentence)
-        assert carve_out_position != -1, (
-            f"the Ship segment no longer carries the carve-out sentence {carve_out_sentence!r}"
-        )
-        notice_then_log_position = ship_segment.find(notice_then_log_sentence)
-        assert notice_then_log_position != -1, (
-            f"the Ship segment no longer carries the notice-then-log sentence {notice_then_log_sentence!r}"
-        )
-        assert carve_out_position < notice_then_log_position, (
-            "the Ship segment must state the carve-out sentence before the notice-then-log sentence"
-        )
 
 
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
@@ -8224,351 +6880,13 @@ def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None
     )
 
 
-_CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"
-
-# The re-review carry-forward paragraph: the disposition records reach each
-# spawn prompt, a record never narrows a review or suppresses a finding the
-# current text supports, and a missing or partial earlier fix is a new finding
-# for any reviewer. It is pinned whole because the right-bound check needs a
-# structural boundary at the pinned text's end.
-_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE = (
-    "On a re-review, or whenever a digest exists, prior decisions are "
-    "this session's context, the "
-    "ledger digest at `agent-reviews/review-ledger-<suffix>.md` when "
-    "it exists, and every disposition record "
-    "`ready-for-review/SKILL.md` § \"3. Code review (halt on "
-    "findings)\" wrote for this branch; put those paths and these "
-    "rules in each spawn prompt (a reviewer sees only its "
-    "prompt). A spawn never invokes "
-    "`review-ledger.sh` or `marker.sh`. The spawn finishes its own review "
-    "before opening the digest or the records — a record or the digest "
-    "never narrows what it reviews or suppresses a finding the current "
-    "text supports, and it names in its findings any record it cannot "
-    "parse, or whose claim the current text contradicts. For each "
-    "earlier ADDRESS row the same agent raised whose Outcome names a "
-    "fix, it confirms the fix landed as the finding required; a "
-    "missing or partial fix is a new finding for any reviewer that "
-    "sees it, whichever agent raised the row. It re-flags a site an "
-    "earlier fix or verdict rewrote only under a different rule than "
-    "the one behind the rewrite, or for a fact the rewrite dropped, "
-    "and when its fix would move a site back toward its earlier "
-    "wording it names the finding it contradicts."
-)
 
 
-class TestCodeReviewRippleCarryForwardPin:
-    """Pin code-review/SKILL.md's re-review carry-forward paragraph, so
-    inverting the record-never-suppresses trust rule, dropping the hand-off
-    of record paths to every spawn prompt, or dropping the any-reviewer
-    partial-fix rule fails a test instead of drifting silently.
-    """
-
-    def test_carry_forward_paragraph_matches_live_text(self) -> None:
-        raw_section = _raw_heading_section_text(
-            _skill_file("code-review"), _CODE_REVIEW_RIPPLE_HEADING
-        )
-        pinned_text = " ".join(_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE.split())
-        _assert_pinned_clause_right_bounded(
-            pinned_text,
-            raw_section,
-            context="code-review/SKILL.md: Ripple effect triage's carry-forward paragraph no longer matches.",
-        )
 
 
-_CODE_REVIEW_STEP_0_1_HEADING = "## Step 0.1 — Short-circuit already-reviewed diff"
 
 
-class TestCodeReviewFirstRoundLedgerShow:
-    """Pin Step 0.1's first-round `show` call, so a session
-    that starts on a branch with earlier rounds continues the branch's round
-    sequence instead of restarting at round 1. The call sends rows to
-    /dev/null because only the stderr header's max round is needed. Only the
-    load-bearing tokens are pinned, so the surrounding wording can change.
-    """
 
-    def test_first_round_reads_show_header_and_continues_from_max_round(self) -> None:
-        step_text = _heading_section_text(
-            _skill_file("code-review"), _CODE_REVIEW_STEP_0_1_HEADING
-        )
-        for required in (
-            "first round",
-            "`~/.claude/scripts/review-ledger.sh show > /dev/null`",
-            "stderr header",
-            "max round",
-            "prints no header",
-            "instead of restarting at round 1",
-        ):
-            assert required in step_text, (
-                f"code-review/SKILL.md: Step 0.1 no longer contains {required!r}."
-            )
-
-
-_REVIEW_LEDGER_LIB = SCRIPTS_DIR / "_review-ledger-lib.sh"
-_CODE_REVIEW_BLOCK_DELIMITER_PATTERN = re.compile(r"<!-- code-review:[a-z]+:(?:start|end) -->")
-
-
-def _review_ledger_block_delimiters() -> tuple[str, str]:
-    """The PR-body block's start and end delimiters, read by sourcing the
-    ledger library that renders them. Fails at the read, with the shell's
-    stderr, when a constant is unset, empty or not shaped like an HTML-comment
-    delimiter, so a caller's `in` check is never run against a degenerate
-    string."""
-    completed = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'set -u; . "$1" && printf "%s\\n%s\\n" "$_REVIEW_LEDGER_DELIM_START" "$_REVIEW_LEDGER_DELIM_END"',
-            "bash",
-            str(_REVIEW_LEDGER_LIB),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    delimiters = completed.stdout.splitlines()
-    assert completed.returncode == 0 and len(delimiters) == 2 and all(delimiters), (
-        f"reading _REVIEW_LEDGER_DELIM_START/_END from {_REVIEW_LEDGER_LIB} gave "
-        f"exit {completed.returncode}, stdout {completed.stdout!r}, stderr {completed.stderr!r}"
-    )
-    start, end = delimiters
-    assert (
-        _CODE_REVIEW_BLOCK_DELIMITER_PATTERN.fullmatch(start)
-        and _CODE_REVIEW_BLOCK_DELIMITER_PATTERN.fullmatch(end)
-        and start != end
-    ), f"{_REVIEW_LEDGER_LIB} renders {start!r} / {end!r}, not two distinct `<!-- code-review:<name>:start|end -->` delimiters"
-    return start, end
-
-
-class TestReviewLedgerBlockDelimiters:
-    """`review-ledger.sh render` replaces the PR-body block located by its
-    delimiters, and `/code-review` and `pr-description` each name the same
-    literals in prose. Drift in the library's constants strands the old block
-    and makes the next render append a second one. Drift in a SKILL.md literal
-    leaves `/code-review` unable to recognize an existing block and leaves the
-    block unprotected by `pr-description`'s lift-out carve-outs.
-    """
-
-    @pytest.mark.parametrize("skill_name", ["code-review", "pr-description"])
-    def test_skill_delimiter_literals_equal_the_script_constants(self, skill_name: str) -> None:
-        start, end = _review_ledger_block_delimiters()
-
-        named_literals = set(_CODE_REVIEW_BLOCK_DELIMITER_PATTERN.findall(_skill_body(skill_name)))
-
-        assert named_literals == {start, end}, (
-            f"{skill_name}/SKILL.md names {sorted(named_literals)} as block delimiters; "
-            f"the review-ledger library renders {[start, end]}"
-        )
-
-    @pytest.mark.parametrize("heading", ["## Prose tightening pass", "## Checks"])
-    def test_pr_description_carve_outs_name_the_delimiters(self, heading: str) -> None:
-        start, end = _review_ledger_block_delimiters()
-
-        section_text = _heading_section_text(_skill_file("pr-description"), heading)
-
-        assert start in section_text and end in section_text, (
-            f"pr-description/SKILL.md {heading!r} must name the block by both delimiters, "
-            f"{start!r} and {end!r}"
-        )
-
-
-_REVIEW_LEDGER_PROSE_CONTROLS = [
-    pytest.param(
-        "code-review", "## Ripple effect triage",
-        "from the repo root, run `~/.claude/scripts/review-ledger.sh render --out agent-reviews/review-ledger-<suffix>.md`",
-        id="digest-render-from-repo-root-into-agent-reviews",
-    ),
-    pytest.param(
-        "code-review", "## Ripple effect triage",
-        "every round, spawn or not, from the repo root, run `~/.claude/scripts/review-ledger.sh render --out",
-        id="digest-render-runs-every-round-whether-or-not-anything-spawns",
-    ),
-    pytest.param(
-        "code-review", "## Ripple effect triage",
-        "or before the digest `render` below when nothing spawns, run `~/.claude/scripts/findings-path-suffix.sh` once",
-        id="suffix-is-generated-before-the-digest-render-when-nothing-spawns",
-    ),
-    pytest.param(
-        "code-review", "## Ripple effect triage",
-        "`Read` it before dispositioning and pass its path to every spawn",
-        id="parent-reads-the-digest-before-dispositioning",
-    ),
-    pytest.param(
-        "code-review", "## Ripple effect triage",
-        "A spawn never invokes `review-ledger.sh` or `marker.sh`",
-        id="spawn-prompt-never-invokes-ledger-or-marker-scripts",
-    ),
-    pytest.param(
-        "code-review", "## Finding disposition",
-        "the consult never invokes `review-ledger.sh` or `marker.sh`",
-        id="consult-prompt-never-invokes-ledger-or-marker-scripts",
-    ),
-    pytest.param(
-        "code-review", "## Finding disposition",
-        "A keep \"for now\" or \"just this file\", a decline, or an ask to be asked again is logged without `--carry-forward`.",
-        id="limited-or-declined-keep-is-logged-without-carry-forward",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "An engineer quote keeps its qualifying clauses, or the engineer is asked for a shorter statement.",
-        id="engineer-quote-keeps-qualifiers",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "An ADDRESS, DEFER or SETTLED append that still fails after the correction and retry above, a non-zero "
-        "PR-body `render`, or a `gh pr edit` that fails "
-        "for any reason, including a denial by the redaction or escaped-backtick gate, is a blocking stop",
-        id="any-pr-edit-failure-is-a-blocking-stop",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "A rejected carry is not a failure.",
-        id="rejected-carry-is-not-a-failure",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "After the superseding row, re-run the PR-open path.",
-        id="gate-denial-recovery-reruns-the-pr-open-path",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "The orchestrator never edits a stored quote, a rendered row or the body file's block.",
-        id="gate-denial-recovery-never-edits-stored-text",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "carrying the engineer's own restated words after they see the denial",
-        id="gate-denial-recovery-uses-the-engineers-restated-words",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "A denied carry row leaves only by superseding its decision",
-        id="gate-denial-recovery-denied-carry-row-route",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "Pass every value you fill in, paths included, in single quotes, writing an embedded `'` as `'\\''` "
-        "and never using double quotes",
-        id="filled-in-flag-values-are-single-quoted",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "--round <N> --source '<file:line>' [--decided-by",
-        id="append-template-requires-and-quotes-the-source-path",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "--defer-criterion '<name>' --ref '<id>' --relog --cited-line '<file:line>']",
-        id="append-template-quotes-criterion-ref-and-cited-line",
-    ),
-    pytest.param(
-        "code-review", "## Finding disposition",
-        "Finding | Lane | Disposition | Rationale",
-        id="disposition-table-names-the-lane-column",
-    ),
-    pytest.param(
-        "code-review", "## Finding disposition",
-        "`skill-tool` marks a Skill-tool review's finding, `unrostered-agent` marks a finding a spawned reviewer "
-        "agent outside the roster raised, and `orchestrator` marks any finding no reviewer agent or Skill-tool "
-        "review raised.",
-        id="lane-cell-defines-the-three-non-roster-literals",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "CLEAN and CONSULT take no lanes",
-        id="clean-and-consult-appends-take-no-lanes",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "as a reopen, a gate-denial recovery and a `--carry-forward` withdrawal do",
-        id="relog-is-for-a-row-that-only-re-logs-its-decision",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "--finding '<summary>' --disposition ADDRESS|DEFER|SETTLED --rationale '<one line>'",
-        id="append-template-quotes-the-finding-and-rationale",
-    ),
-    pytest.param(
-        "code-review", "## Review-narrative ledger",
-        "--engineer-quote '<words>'",
-        id="append-template-quotes-the-engineer-quote",
-    ),
-    pytest.param(
-        "code-review", "## Review-findings persistence",
-        "so never hand-write a row or paraphrase a quote",
-        id="block-rows-come-only-from-render",
-    ),
-    pytest.param(
-        "code-review", "## Review-findings persistence",
-        "persist nothing here",
-        id="no-pr-branch-persists-nothing",
-    ),
-    pytest.param(
-        "code-review", "## Review-findings persistence",
-        "from the repo root, run `gh pr view --json body |",
-        id="pr-body-render-from-repo-root",
-    ),
-    pytest.param(
-        "code-review", "## Review-findings persistence",
-        "render --pr-json - --out agent-reviews/pr-body-<suffix>.md`",
-        id="pr-body-render-into-agent-reviews",
-    ),
-    # `render`'s `changed: <path>` / `unchanged` stdout is pinned in
-    # scripts/tests/test_review_ledger_lib.py, not here.
-    pytest.param(
-        "code-review", "## Review-findings persistence",
-        "only after a `changed:` line (`unchanged` needs no edit)",
-        id="pr-edit-only-after-changed-line",
-    ),
-    pytest.param(
-        "code-review", "## Review-findings persistence",
-        "Run `render` and `gh pr edit` as separate Bash calls, never chained",
-        id="render-and-pr-edit-are-separate-bash-calls",
-    ),
-    pytest.param(
-        "ready-for-review", "## 6. Final hygiene recheck (halt on fail)",
-        "With a PR open, edited or not, then run the PR-open path in `code-review/SKILL.md` "
-        "§ \"Review-findings persistence\": `unchanged` is expected, and `changed:` publishes the ledger's block "
-        "over the body's copy. A failed `render` or `gh pr edit` halts this step.",
-        id="step-6-runs-the-pr-open-path-whenever-a-pr-is-open",
-    ),
-    pytest.param(
-        "ready-for-review", "## 8. Create PR if missing (skip if PR already exists)",
-        "once that re-fetch succeeds run the PR-open path in `code-review/SKILL.md` "
-        "§ \"Review-findings persistence\" with that number. A failed re-fetch, a failed `render`, or a failed or "
-        "denied `gh pr edit` is a blocking stop per `code-review/SKILL.md` § \"Review-narrative ledger\": name the "
-        "PR number, say it exists without the block, and neither launch the CI watch nor report ready.",
-        id="step-8-runs-the-pr-open-path-after-the-confirm-refetch",
-    ),
-]
-
-
-class TestReviewLedgerPublishAndInjectionControls:
-    """Narrow token pins for the `/code-review` and `/ready-for-review` prose
-    that keeps spawns and consults off the ledger and marker scripts, quotes ledger arguments, and gates what reaches
-    the public PR body. Each token fails a test when a later trim drops the
-    control it names, without pinning the surrounding paragraph.
-    """
-
-    @pytest.mark.parametrize("skill_name,heading,token", _REVIEW_LEDGER_PROSE_CONTROLS)
-    def test_section_names_the_control(self, skill_name: str, heading: str, token: str) -> None:
-        section_text = _heading_section_text(_skill_file(skill_name), heading)
-
-        assert token in section_text, f"{skill_name}/SKILL.md {heading!r} no longer contains {token!r}"
-
-    def test_global_instructions_point_a_resumed_session_at_render_for_live_decisions_and_a_bounded_show(self) -> None:
-        body = " ".join(_GLOBAL_CLAUDE_MD.read_text().split())
-
-        assert "`~/.claude/scripts/review-ledger.sh render` for this branch's live decisions" in body
-        assert "`~/.claude/scripts/review-ledger.sh show | tail -n 15` lists the newest rows" in body
-
-    def test_digest_path_reviewers_read_is_the_path_render_writes(self) -> None:
-        section_text = _heading_section_text(_skill_file("code-review"), "## Ripple effect triage")
-
-        read_paths = set(re.findall(r"digest at `([^`]+)`", section_text))
-        written_paths = set(re.findall(r"review-ledger\.sh render --out (\S+?)`", section_text))
-
-        assert read_paths and read_paths == written_paths, (
-            f"digest read at {sorted(read_paths)} but `render --out` writes {sorted(written_paths)}"
-        )
 
 
 _READY_FOR_REVIEW_STEP6_HEADING = "## 6. Final hygiene recheck (halt on fail)"
@@ -9151,7 +7469,7 @@ _MARKER_TRIPLE_SITES = [
 
 def _all_agent_md_paths() -> list[Path]:
     """Every agent body under claude/.claude/agents/ and plugin agents/ dirs —
-    _agent_body() above is by-name only, so a corpus-wide scan needs this."""
+    _agent_body() in _skill_md_helpers.py is by-name only, so a corpus-wide scan needs this."""
     paths = sorted(_AGENTS_DIR.glob("*.md"))
     if _PLUGINS_DIR.exists():
         paths += sorted(_PLUGINS_DIR.glob("*/agents/*.md"))
@@ -9171,31 +7489,6 @@ def _strip_yaml_frontmatter(text: str) -> str:
     return text
 
 
-def _all_doc_paths() -> list[Path]:
-    """Every prose doc file the state-path contract covers: docs/**/*.md,
-    every co-located skill REFERENCES.md, evals/README.md, and the
-    repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
-    docs/case-studies/** hold preserved historical records (CLAUDE.md
-    Axis 3) and are excluded."""
-    repo_root = REPO_ROOT
-    docs_root = repo_root / "docs"
-    paths = [
-        path
-        for path in sorted(docs_root.glob("**/*.md"))
-        if "reports" not in path.relative_to(docs_root).parts
-        and "case-studies" not in path.relative_to(docs_root).parts
-    ]
-    paths += sorted(SKILLS_DIR.glob("**/REFERENCES.md"))
-    if _PLUGINS_DIR.exists():
-        paths += sorted(_PLUGINS_DIR.glob("*/skills/**/REFERENCES.md"))
-    for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md"):
-        candidate = repo_root / name
-        if candidate.exists():
-            paths.append(candidate)
-    evals_readme = repo_root / "evals" / "README.md"
-    if evals_readme.exists():
-        paths.append(evals_readme)
-    return paths
 
 
 def _all_citation_extraction_doc_paths() -> list[Path]:
@@ -9920,7 +8213,6 @@ _REVIEW_ORCHESTRATOR_DESIGN_RECORD = (
     "docs/design-decisions/review-orchestrator-gate-release-decoupling.md"
 )
 _ROUTING_GATE_DESIGN_RECORD = "docs/design-decisions/review-orchestrator-routing-gate.md"
-_CODE_REVIEW_STEP_0_1_HEADING = "## Step 0.1 — Short-circuit already-reviewed diff"
 _CODE_REVIEW_OUTPUT_FORMAT_HEADING = "## Output format"
 
 # The `review-orchestrator` agent body and the dispatching session's protocol
@@ -10134,8 +8426,6 @@ def test_review_orchestrator_agent_body_cites_skill_heading_that_exists(
     )
 
 
-_PLAN_ARCHITECT_PATH = _AGENTS_DIR / "plan-architect.md"
-_PLAN_ARCHITECT_CONSULT_HEADING = "## MODE=consult"
 _PLAN_ARCHITECT_DESIGN_PRINCIPLES_HEADING = "## Design principles"
 
 

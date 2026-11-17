@@ -3782,7 +3782,7 @@ def file_mode(path: Path) -> int:
 # runtimes agree on classification behaviorally, not that their source text
 # matches byte-for-byte -- a byte-equality assertion across the literal sites
 # would still pass with the Python classifier's membership test inverted. A third
-# consumer, test_skills.py's TestCodeReviewDispositionChallengeRegionPin, reads
+# consumer, test_code_review_challenge_and_round_cap.py's TestCodeReviewDispositionChallengeRegionPin, reads
 # the rows without parametrizing them. No pytest import here (see module
 # docstring), so each parametrizing test file wraps these rows in
 # pytest.param(...) at its own @pytest.mark.parametrize call site.
