@@ -257,7 +257,7 @@ Result: yes. A `PreCompact` hook's stdout on exit 0 steered the summary on both 
 - A scratch git repository outside this repo, with one scratch project skill of eight numbered steps. No other hooks beyond the stowed ones.
 - A `PreCompact` hook with no matcher logged its stdin, then printed three instructions on exit 0:
   - include a literal `PRECOMPACT-SENTINEL-<token>` line;
-  - write `CONTROL-<token>` backwards on its own line, which an echo of the hook's stdout cannot produce because the echo carries only the forward form;
+  - write `CONTROL-<token>` backwards on its own line. An echo of the hook's stdout cannot produce it, because the echo carries only the forward form;
   - under a "Continuity" heading, name the skill's current step number and quote the decision sentence the prompt typed, which held `DECISION-SENTINEL`.
 - A `PostCompact` hook archived stdin, whose `compact_summary` field holds the summary.
 - `<token>` is 8 random uppercase letters with no repeats. A first feasibility run used 8 hex digits and mis-reversed the token by dropping one of two adjacent equal digits. That run is not scored.
@@ -267,10 +267,7 @@ Result: yes. A `PreCompact` hook's stdout on exit 0 steered the summary on both 
 
 ### Results
 
-- **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others. Two of three steer, so manual steers.
-- **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. Only the first compaction is independent evidence, because later ones summarize a context that already holds the earlier steered summary. The first passed, so automatic steers.
-- **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar. Of the five manual-trigger runs whose hook exited 0, the unscored feasibility run included, three mis-reversed the token.
-- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel.
+- **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others.- **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. Only the first compaction is independent evidence, because later ones summarize a context that already holds the earlier steered summary.- **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar.- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel.
 - **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run compacted six times, none steered, and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The steered automatic run compacted eight times without that stop. The probe did not isolate the cause, so this run neither shows nor rules out that a failing hook causes thrashing.
 - **Where the hook's stdout appears:**
   - Manual: a user record whose content opens `<local-command-stdout>Compacted (ctrl+o to see full summary)` and then a `PreCompact [<hook path>]` line holding the hook's stdout. It carries a `repeatsCompactSummary` key.
@@ -284,4 +281,4 @@ Plain stdout on exit 0 steers the summary on both triggers, while the `additiona
 Constraints any such hook inherits from these results:
 - Steering is model behavior, not a guarantee, so a hook must not rely on it to carry a constraint.
 - The stdout is followed as instructions and re-summarized into later compactions, so it must never be built from prompt, transcript or other untrusted text.
-- Only exit 0 and exit 1 were probed here. Exit 2 blocks compaction, as the earlier sections record.
+- Only exit 0 and exit 1 were probed here.
