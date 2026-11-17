@@ -61,9 +61,10 @@ HOST_NAME_LOOKALIKES = (
     "node",
 )
 
-# What a stand-in `ps` answers when it shows a `Cursor` host above every caller: any pid but the host's has `bash` as its name
-# and the host as its parent, and the host's parent is pid 1, which ends a walk that goes past the host. It serves a walk that
-# another process starts, which the pid-keyed tree stub below cannot.
+# What a stand-in `ps` answers when it shows a `Cursor` host above every caller.
+# Any pid but the host's has `bash` as its name and the host as its parent.
+# The host's parent is pid 1, which ends a walk that goes past the host.
+# It serves a walk that another process starts, which the pid-keyed tree stub below cannot.
 HOST_PROCESS_ID = "424242"
 HOST_SHOWING_PS_BODY = (
     'case "$2" in\n'
@@ -308,10 +309,10 @@ def install_ps_stub(
 class PidGrammarRow:
     """One row of the PID-grammar edge table.
 
-    `value` is the whole variable value the pair reads, and the text `check`'s host read takes once one trailing
-    newline is off. `pin` mode's walk output carries one more newline of framing, taken off first. `pin-check`
-    and the strip read a value as the text between `=` and the line's end, so a row with
-    `applies_to_line_forms` False has no such form.
+    `value` is the whole `CLAUDE_CONFIG_ADAPTER_HOST_PID` value that `_lib_adapter_session_pair` (`_lib.sh`) reads.
+    It is also the text that `host_walk_pid` (`hook-shim.py`) takes from the walk's output once one trailing newline is off.
+    `recognize_pin_prefix` (`hook-shim.py`), which `pin-check` mode and the pin strip both use, reads a value as the text
+    between `=` and the line's end, so a row with `applies_to_line_forms` False has no such form.
     """
 
     row_id: str

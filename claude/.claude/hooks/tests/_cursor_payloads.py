@@ -641,8 +641,8 @@ def copy_adapter(destination: Path, *, field_table: dict | None = None, parity: 
 
 # The shim ends a host walk at the entry deadline less its GRACE_PERIOD_SECONDS (2) and DRAIN_BOUND_SECONDS (1), so the walk
 # budget is 7 seconds at `hook_args`'s default deadline of 10 and 37 at this value. The slowest rows that run a walk through
-# bash-script `ps` stubs (TestSessionIdentityAcrossTheShim) took about 1.1 seconds unloaded. 40 is a project choice that leaves
-# a load margin of over 30x on that, inside the shim's deadline bounds of 2 to 60.
+# bash-script `ps` stubs (TestSessionIdentityAcrossTheShim) took about 1.1 seconds in one local measurement, unloaded.
+# 40 is a project choice that leaves a load margin on that, inside the shim's deadline bounds of 2 to 60.
 STUBBED_WALK_DEADLINE_SECONDS = 40
 
 

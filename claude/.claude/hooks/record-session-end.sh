@@ -20,11 +20,8 @@ set -uo pipefail
 #   undocumented upstream and verified only by manual testing (see
 #   .claude/plans/detect-clean-exit-vs-crash.md).
 #
-# Cursor decline: the hook writes no record when the payload carries a
-# top-level `workspace_roots` or `cursor_version` key and either CLAUDECODE is
-# unset or `_lib_cursor_host_pid` returns 0. Otherwise it proceeds as for Claude
-# Code. A failed or cap-killed jq check on a non-empty payload counts as
-# carrying the key. _lib_declines_untranslated_cursor_payload states the rule.
+# Cursor decline: the hook writes no record for an untranslated Cursor payload, as
+# _lib_declines_untranslated_cursor_payload decides.
 #
 # Failure mode: every failure path exits 0, with a one-line diagnostic to
 # stderr only.

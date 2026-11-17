@@ -35,11 +35,8 @@
 # is the upstream signal explaining why. If both the $PPID and $CLAUDE_PID
 # candidates are unusable, no lookup file is written at all.
 #
-# Cursor decline: the hook writes no lookup file when the payload carries a
-# top-level `workspace_roots` or `cursor_version` key and either CLAUDECODE is
-# unset or `_lib_cursor_host_pid` returns 0. Otherwise it proceeds as for Claude
-# Code. A failed or cap-killed jq check on a non-empty payload counts as
-# carrying the key. _lib_declines_untranslated_cursor_payload states the rule.
+# Cursor decline: the hook writes no lookup file for an untranslated Cursor payload, as
+# _lib_declines_untranslated_cursor_payload decides.
 #
 # No self-sweep, unlike other retired-destructor replacements: this file is
 # rewritten at every SessionStart and SubagentStart under the resolved PID

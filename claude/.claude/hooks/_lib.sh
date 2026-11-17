@@ -3732,36 +3732,27 @@ _lib_payload_is_untranslated_cursor() {
 }
 
 # _lib_cursor_host_pid
-# Prints the PID of the caller's host process and returns 0. The host is the
-# nearest ancestor whose executable basename is exactly `Cursor`, the main
-# process every Cursor IDE record descends from, found before any `claude`
-# ancestor. Failing that, it is the nearest ancestor named `agent` or
-# `cursor-agent`, the names the Cursor CLI's launcher is invoked by, seen
-# before the walk stopped at a `claude` ancestor or the chain's top.
-# Returns 2 when the walk reaches the chain's top with no host. The top is a
-# PPID read that succeeds with output that is empty, `0` or `1`.
-# Returns 3 when the walk stops at a `claude` ancestor with no CLI process
-# remembered, so a Claude Code process is never passed.
-# Returns 4 when any `ps` read fails, whatever the walk has passed. A read
-# fails when its capped call exits nonzero (a sandbox's exec denial, a cap kill,
-# an ancestor that exited mid-walk), or when a PPID read exits 0 with output
-# that is not all digits once trimmed.
-# A name is the whole `comm` line, trailing whitespace trimmed, after its last
-# `/`, with one leading `-` dropped. The line is never split on whitespace,
-# because a macOS helper's path holds a `Cursor` component followed by a space.
-# The names `Cursor`, `agent` and `cursor-agent` were observed on macOS, where
-# `ps -o comm=` prints an executable's path. On Linux, `comm` is the
-# executable's basename cut to 15 characters, and the Cursor main process's
-# name there is unrecorded, so a different name returns 2.
-# Only each read is capped, and the walk has no hop cap, as with
-# _lib_resolve_claude_pid's own walk. Its worst case is the chain's depth times
-# two reads times 7 seconds (_lib_capped_for's 5-second cap plus its 2-second
-# kill grace).
-# Each read captures its own status with no pipe, so the status is the capped
-# call's whatever `pipefail` the caller sets. `local out` stands apart from its
-# assignment, because `local out=$(...)` hands back `local`'s status.
-# Callers read any nonzero status as no host, except _lib_adapter_session_pair,
-# which reads 4 to take CLAUDE_CONFIG_ADAPTER_HOST_PID.
+# Prints the PID of the caller's host process and returns 0.
+# The host is the nearest ancestor whose executable basename is exactly `Cursor`, the main process every Cursor IDE record
+# descends from. That ancestor is found before any `claude` ancestor.
+# Failing that, the host is the nearest ancestor named `agent` or `cursor-agent`, the names the Cursor CLI's launcher is
+# invoked by. Such an ancestor counts only when it is seen before the walk stops at a `claude` ancestor or the chain's top.
+# A name is never split on whitespace, because a macOS helper's path holds a `Cursor` component followed by a space.
+# The names `Cursor`, `agent` and `cursor-agent` were observed on macOS, where `ps -o comm=` prints an executable's path.
+# On Linux, `comm` is the executable's basename cut to 15 characters, and the Cursor main process's name there is
+# unrecorded, so a different name returns 2.
+# Returns:
+#   - 2 when the walk reaches the chain's top with no host. The top is a PPID read that succeeds with output that is
+#     empty, `0` or `1`.
+#   - 3 when the walk stops at a `claude` ancestor with no CLI process remembered, so a Claude Code process is never passed.
+#   - 4 when any `ps` read fails, whatever the walk has passed. A read fails when its capped call exits nonzero (a
+#     sandbox's exec denial, a cap kill, an ancestor that exited mid-walk), or when a PPID read exits 0 with output that
+#     is not all digits once trimmed.
+# Callers read any nonzero status as no host, except two. _lib_adapter_session_pair reads 4 to take
+# CLAUDE_CONFIG_ADAPTER_HOST_PID. The sessionStart report in cursor-adapter.py reads 3 as its `claude-first` result
+# (HOST_WALK_STATUS_CLAUDE_FIRST).
+# Only each read is capped, and the walk has no hop cap, as with _lib_resolve_claude_pid's own walk. Its worst case is the
+# chain's depth times two reads times 7 seconds (_lib_capped_for's 5-second cap plus its 2-second kill grace).
 _lib_cursor_host_pid() {
   local pid="$PPID" remembered_cli_pid=""
   local out name read_status

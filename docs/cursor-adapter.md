@@ -55,19 +55,19 @@ Every command is `python3 ~/.claude/scripts/cursor-adapter/cursor-adapter.py SUB
 
 When `generate` fails, for example on a registration the checkout no longer translates, the comparison says so first and ends that finding with the sentence that restores the checkout. It still reports the checks that need no generated entries: a changed `tool-map.json`, a stale contract version, a record the shim refuses, the top-level members, and each foreign or duplicated entry.
 
-Quit Cursor and end every Cursor CLI session before `install` and `uninstall`, and relaunch afterwards, because a change to `hooks.json` while Cursor runs is untested. Once Cursor has quit, end any `cursor-agent` worker still running, because such workers have outlived the app. Whether one runs hooks is pending an unrecorded probe.
+Quit Cursor and end every Cursor CLI session before `install` and `uninstall`, and relaunch afterwards, because a change to `hooks.json` while Cursor runs is untested. Once Cursor has quit, end any `cursor-agent` worker still running, because such workers have outlived the app. Whether one runs hooks is pending an unrecorded probe (see "Cursor CLI beside the adapter").
 
 After a `git pull`, run `check`: it compares the installed entries with what `generate` emits now and reports a changed `tool-map.json`. A changed registration or contract version needs a quit, an `install` and a relaunch, which each finding says. An install made with `--acceptance-only` keeps that flag's warning until you re-run `install` without it.
 
 ## What changes in Cursor
 
-- **Every Shell command is rewritten.** The directory pin starts each agent Shell command with `builtin cd -- '<dir>' || exit 1`, so a gate evaluates the directory the command runs in. The directory is the workspace's first root. Four consequences follow:
+- **Every Shell command is rewritten.** The directory pin starts each agent Shell command with two lines, an environment line and then `builtin cd -- '<dir>' || exit 1`, so a gate evaluates the directory the command runs in. The directory is the workspace's first root. Four consequences follow:
   - A `cd` no longer carries over: the next call starts in the pinned directory again. In a multi-root workspace, open as a root each tree the agent works in, and have the agent lead a command with `cd <absolute path> &&` to work under a later root.
   - Cursor's approval prompt, its allowlist matcher and Auto-review read the prefixed text.
   - An entry of your own on `beforeShellExecution` whose matcher is anchored at the start of the command, or whose script tests its first word, stops matching with no error. Such an entry is not supported beside the adapter.
-  - A shell's error line numbers count the prefix's line.
+  - A shell's error line numbers count the prefix's two lines.
 - **Every Shell call runs under the routed config dir.** The rewrite's first line unsets `CLAUDECODE`, exports the routed `CLAUDE_CONFIG_DIR` and the call's session id, and exports or unsets the host process id the hooks resolved, all ahead of the agent's command. The call therefore runs under the routed `CLAUDE_CONFIG_DIR`, replacing a value the Shell's environment holds, such as a per-project one from direnv. A `claude` the agent starts in that call uses the routed account's context, not the project's. `marker.sh` and the other scripts an agent runs resolve the state the hooks read for the same reason.
-- **A worktree lock outlives its conversation.** An IDE conversation's lock names the `Cursor` main process, which every IDE conversation shares, so it reads live while Cursor runs. Closing or archiving the conversation releases nothing. The next conversation's first write in that worktree is denied with text that names the lock's process id, until Cursor quits or you run `git worktree unlock <path>` once nothing works in that worktree (Recovery's live-holder entry).
+- **A worktree lock outlives its conversation.** An IDE conversation's lock names the `Cursor` main process, which every IDE conversation shares, so it reads live while Cursor runs. Closing or archiving the conversation releases nothing. The next conversation's first write in that worktree is denied with text that names the lock's process id, until Cursor quits or you run `git worktree unlock <path>` once nothing works in that worktree (Recovery's live-holder entry). A subagent's calls take its direct parent's conversation id as the session id, so a direct subagent shares its parent's markers and lock, and a nested one does not.
 - **The import's copies keep running.** Cursor's Claude Code import runs its own untranslated copies of the hooks beside the adapter's entries, so a hook can fire twice. A deny from either source wins.
 
 ## Cursor CLI beside the adapter
@@ -87,11 +87,11 @@ The adapter targets the local IDE, and the Cursor CLI (`agent`) reads the same u
 
 ## Cursor-update regression checklist
 
-The sessionStart report names this list when Cursor's version changes. The report also fires once per new CLI build string and when the version record cannot be read, and the same list applies. The engineer, not the agent, runs it after the update, on a new conversation. It holds the checks that exist today:
+The sessionStart report names this list when Cursor's version changes. The report also fires once per new CLI build string and when the version record cannot be read, and the same list applies. The engineer, not the agent, runs it after the update, on a new conversation. It holds these checks:
 
 1. The report's host-walk line reads `Host walk: found.` A `not-found` result means identity no longer resolves, and Recovery's host-walk entry says what to do.
 2. With the Claude Code import's copies of the hooks on, `<routed config dir>/sessions/` holds no `<pid>` file for a live `Cursor`, `agent` or `cursor-agent` process, and a later session start adds none.
-3. A Shell call's command starts with the directory pin's prefix (see "What changes in Cursor"), and the `pin-check` deny count `status` reports does not rise across a new conversation after the update. Read the count before and after, because it never resets.
+3. A Shell call's command starts with the directory pin's two-line prefix (see "What changes in Cursor"), whose first line starts with `unset CLAUDECODE`, and the `pin-check` deny count `status` reports does not rise across a new conversation after the update. Read the count before and after. It covers only the log tail `status` reads, so compare the two only when `status` prints no note that its counts cover the log's last lines at most.
 
 ## Parity with Claude Code
 
@@ -101,7 +101,7 @@ A gate or deny that cannot reach parity under Cursor is raised to the engineer a
 
 A direct `marker.sh write` in an unprompted mode matches Claude Code's main session, and the Limitations entry "Marker-gated gates" covers it.
 
-A write that newly takes a worktree lock prints no "run `git worktree unlock <path>` if this was unintended" note under Cursor, where Claude Code prints one, because Cursor's hooks reference lists no `additional_context` output for `preToolUse` [unverified: relayed from a review of that reference, not re-read for this doc]. That is a vendor limit, and the lock and the collision guard still work.
+A write that newly takes a worktree lock prints no "run `git worktree unlock <path>` if this was unintended" note under Cursor, where Claude Code prints one, because Cursor's hooks reference lists no `additional_context` output for `preToolUse` [unverified: Cursor's hooks reference was not re-read for this claim]. The lock and the collision guard still work.
 
 ## Prerequisites
 
@@ -121,7 +121,7 @@ A write that newly takes a worktree lock prints no "run `git worktree unlock <pa
 - `~/.cursor/hooks.json`: the merged entries.
 - `~/.cursor/cursor-adapter/`: `install.json` (the routed config dir, the recorded tool paths, the contract version and the tool map), `hooks.json.pre-install` (or `hooks.json.pre-install.none` when you had no file) and `manifest.json`.
 - `<routed config dir>/cursor-adapter-state/`: the shim's log `shim.log` and its one rotated file, the first-call marks, and the rotation lock. The directory is mode 0700 and gitignored.
-- `~/.cursor/sandbox.json`: the sandbox grant, which lists the routed config dir's marker and active-bypass directories under `additionalReadwritePaths`, so an agent Shell call under a sandboxed mode can write a marker. The adapter builds the grant, but `install` does not write it yet. `install` writes it once `gate-settings-permissions.sh` is no longer listed in `parity-exceptions.json`, because that gate denies a `marker.sh` shape your permissions do not allow in a mode that gives no prompt.
+- `~/.cursor/sandbox.json`: the sandbox grant, which lists the routed config dir's marker and active-bypass directories under `additionalReadwritePaths`, so an agent Shell call under a sandboxed mode can write a marker. The adapter builds the grant, but `install` does not write it while `gate-settings-permissions.sh` is listed in `parity-exceptions.json`. `install` writes it once that gate is no longer listed, because that gate denies a `marker.sh` shape your permissions do not allow in a mode that gives no prompt.
   - Until then, marker-gated work uses Allowlist with the sandbox off, and `status` prints `sandbox grant: pending.` with that reason.
   - Once `install` writes it, `install` keeps each grant directory your own file already lists and prints how many it found listed. `uninstall` removes only the paths `install` added.
 
@@ -181,6 +181,8 @@ Read the process's name with `ps -o comm= -p <pid>`. On macOS the command prints
 - `agent`, a CLI process: a Cursor CLI conversation holds the lock while its session runs. End that session, after which the lock reads dead, or work in another worktree.
 - Any other name, `claude` among them: a live Claude Code session may hold the worktree. Confirm what the process is, then wait for it to finish, or work in another worktree.
 
+The session the text names can belong to an open ancestor of the denied call, so do not unlock under a working agent. A Claude Code session denied with "already in use by a live Claude Code session" may be meeting a Cursor holder, so read the pid's name as above.
+
 ### A host walk that found no host
 
 The sessionStart report says `Host walk: not-found.`, `status` flags it, a `pin-no-host` outcome in the log marks a Shell call whose pin wrote no host process id, and a gated write into a linked worktree is denied with "could not resolve this session's own process identity". The adapter then has no anchor for this conversation.
@@ -202,6 +204,9 @@ Identity did not resolve for that Shell call. The text's pointer to the `capture
 - `marker.sh`'s own walk found no host, which the host-walk entry above covers.
 - A `ps` read in that walk was denied, as in a sandboxed mode, and the exported host process id is unset or invalid. A call that logged `pin-no-host` exports none.
 - The pin did not rewrite the Shell call, so it exports no session id. For that case see the entry headed "A pin-check deny on every Shell call" below.
+- A Cursor user on the Claude Code import with no adapter installed: the import's copy of the session hook declines the untranslated Cursor payload, and nothing exports a session id. The way out is to install the adapter, or to run the gated operation from a terminal.
+
+`review-ledger.sh` and the review-pr scripts print the same SessionStart-hook pointer, and the same causes apply.
 
 ### A marker write that the sandbox denies
 
@@ -239,7 +244,7 @@ A workspace root was removed, renamed or made unsearchable while the conversatio
 
 Outcome: `pin-check`.
 
-Cursor no longer applies the directory pin's rewrite, so a Shell command reached the check without the pin prefix. `status` counts these denies. Run `uninstall` and report the Cursor version.
+Cursor no longer applies the directory pin's rewrite, or something altered the prefix's environment line, so a Shell command reached the check without the exact pin prefix. `status` counts these denies. Run `uninstall` and report the Cursor version.
 
 ### A directory-input refusal on every Shell call
 
@@ -336,8 +341,8 @@ A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. T
   - With `CLAUDECODE` unset, they decline whatever the host walk returns. With it set, they decline only where the walk finds a host, so a copy whose walk returns no host name or fails still writes its entry. The sessionStart report names a set `CLAUDECODE`.
   - A set `CLAUDECODE` has two possible sources. One is a Cursor started from a Claude Code terminal (Recovery's `CLAUDECODE` entry), and relaunching Cursor without it removes that source. The other is a repository whose `.claude/settings.json` `env` block sets it, which no run has observed reaching Cursor's hooks. No relaunch clears that source.
   - A written entry clears once the registered process exits, because the start-time check then rejects it, and no runtime check flags it in between.
-  - The decline applies with or without the adapter installed, because it keys on the payload's shape. A Cursor user who runs the Claude Code import with no adapter therefore gets no `sessions/` entry after pulling this checkout, and `marker.sh` run from an agent Shell call has no identity, because the session id that gives one is exported only under the adapter. `uninstall` does not undo this.
-  - Nothing prunes `sessions/`, so an older entry that an import copy wrote for its host process stays. The relaunch after `install` covers Cursor processes only, so a CLI process that outlives the install keeps its old entry resolving until it exits.
+  - The decline keys on the payload's shape, so it applies with or without the adapter installed. Without it, `marker.sh` run from an agent Shell call has no identity, because the session id that gives one is exported only under the adapter.
+  - Nothing prunes `sessions/`, so an entry from an earlier checkout stays until its process exits. The relaunch after `install` covers Cursor processes only, so a CLI process that outlives the install keeps its old entry resolving until it exits.
 - **`nudge-handoff-near-context-cap.sh --check`:** it reads `sessions/<pid>` through a walk of its own and finds no entry for a Cursor or CLI process, so under the adapter it prints `cannot-resolve`. That is a gap, not a deny.
 - **Credential redaction:** `redact-credential-values.sh` runs but redacts no tool output under Cursor, MCP output included. Cursor accepts a replacement tool output for `MCP:` tools only, and the hook's matcher selects no `MCP:` tool.
 - **Protections that do not run:** an entry that `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` lists as `pending-phase`, `unsupported` or `declined` is not carried through the adapter. That holds for a registration, a `permissions.deny` entry and an adapter gate. `gate-settings-permissions.sh` carries the `settings.json` `permissions.deny` Bash and Read entries, and Cursor does not enforce them until the phase the file names. `gate-agent-tools.sh` and `gate-credential-exposure.sh` are pending the same way. The Limitations list of the `cursor-adapter/` entry in `docs/scripts.md` § "Script reference" names the shim's own limits, among them the subagent bars and the `stop` and `subagentStop` deny.

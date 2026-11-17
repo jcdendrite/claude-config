@@ -1559,7 +1559,7 @@ def host_walk_pid(record, directory, deadline_at):
     if wrapper is None or bash is None:
         return None
     lib_path = os.path.join(os.path.dirname(os.path.dirname(shim_directory())), "hooks", "_lib.sh")
-    # The walk ends by the entry's deadline less the drain bound, so its pipes drain by the deadline.
+    # The walk ends by the entry's deadline less the kill grace and the drain bound, so its pipes drain by the deadline.
     walk_deadline_at = deadline_at - GRACE_PERIOD_SECONDS - DRAIN_BOUND_SECONDS
     try:
         status, stdout, _ = run_wrapped_hook(
