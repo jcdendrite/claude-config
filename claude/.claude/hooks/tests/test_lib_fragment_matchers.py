@@ -260,6 +260,7 @@ def _fragment_is_git_version_query(fragment: str, command: str = "") -> subproce
         ("git --version & git checkout -- x", "git --version & git checkout -- x", False),
         # Kills a suffix-widening mutant: a longer flag is not `--version`.
         ("git --versionx", "git --versionx", False),
+        # Kills a mutant that widens the literal to also accept the `-v` short form.
         ("git -v", "git -v", False),
         # Kills a `[[:space:]]` mutant: only literal spaces may pad the fragment.
         ("git --version\t", "git --version\t", False),
@@ -267,6 +268,7 @@ def _fragment_is_git_version_query(fragment: str, command: str = "") -> subproce
         # A path-qualified or env-prefixed command word is not the bare `git` word.
         ("/tmp/x/git --version", "/tmp/x/git --version", False),
         ("PATH=/tmp/x git --version", "PATH=/tmp/x git --version", False),
+        # Kills a mutant that accepts a bare `git`, `--help` or `-h`: only the literal `--version` flag matches.
         ("git", "git", False),
         ("git --help", "git --help", False),
         ("git -h", "git -h", False),

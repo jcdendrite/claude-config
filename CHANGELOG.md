@@ -6,6 +6,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`deny-reviewer-tree-mutation.sh` and `deny-invisible-commit-content.sh` now allow a fragment that is exactly `git --version`, with no read-only subcommand.**
+  - **Verdict change:** a fragment that is exactly `git --version` is now allowed. Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
+  - The change is live on `git pull`.
 - **The evals harness reads SKILL.md and agent frontmatter with PyYAML, and the documented evals commands now run through `scripts/venv-run.sh python3`.** Plugin bumped: `skill-management` 5.1.0 → 5.1.1.
   - A quoted `description` no longer keeps its quotes in the description-fidelity listing.
   - `measure_subagent_model_resolution.py` reads a quoted `model:` value and one followed by a comment.

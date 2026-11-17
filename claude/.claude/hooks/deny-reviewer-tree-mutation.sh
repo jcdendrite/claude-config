@@ -73,7 +73,7 @@
 #     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
 #     interpreter write such as `python3 -c`, a tool's own output flag, such
 #     as `git diff --output=<path>`) is not inspected.
-#     GH-1208 tracks the structural fix for this closed enumeration.
+#     The structural fix for this closed enumeration is deferred under GH-1208.
 #   - Plain `ruff check` writes to disk when the target repo's ruff config
 #     sets `fix = true`, or when the command passes `--config fix=true`.
 #     This gap is accepted permanently.
@@ -226,8 +226,10 @@
 #   - `--shallow-file` is missing from `_LIB_GIT_GLOBAL_VALUE_FLAGS`. Git
 #     consumes the next word as the flag's value, but the gate reads that word
 #     as the subcommand.
-#   - Program-running global flags (`-c core.fsmonitor=...`, `--git-dir=`,
-#     `--exec-path=`) are admitted before an allowlisted subcommand.
+#   - A program-running global option or environment assignment is admitted
+#     ahead of an allowlisted subcommand.
+#     Examples are `-c core.fsmonitor=<prog>`, `--config-env=`, `--git-dir=`,
+#     `--exec-path=` and `GIT_EXTERNAL_DIFF=<prog> git diff`.
 #     GH-1295 tracks this gap and the `--shallow-file` gap above.
 #   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
 #     exit status is checked and denies with an explicit message rather than

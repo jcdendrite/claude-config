@@ -787,9 +787,12 @@ class TestDenyInvisibleCommitContent:
     # An id ending in `accepted-over-deny` marks a shape that stages nothing if
     # run: the gate denies it because its subcommand word does not resolve to an
     # allowlisted one.
+    # A double-quoted `$(` shape is absent here: inside the stripped walk's
+    # `echo "..."` wrapper its inner quotes close the outer one, so the row would
+    # exercise the unquoted `$(` already listed below. The masked walk covers it in
+    # test_quoted_command_substitution_subcommand_chained_before_commit_denied_by_masked_walk.
     NON_VERSION_QUERY_SHAPES = [
         "git $SUB -- x",
-        'git "$(echo add)" -- x',
         "git $(echo add) -- x",
         "git `echo add` -- x",
         "git --version && git add f",
@@ -814,24 +817,23 @@ class TestDenyInvisibleCommitContent:
     ]
     NON_VERSION_QUERY_SHAPE_IDS = [
         "variable-subcommand",
-        "command-substitution-subcommand",
         "unquoted-command-substitution",
         "unquoted-backtick-substitution",
         "version-then-add",
-        "value-flag-consumes-version",
+        "value-flag-consumes-version-accepted-over-deny",
         "bare-git-accepted-over-deny",
         "empty-quote-pair-accepted-over-deny",
-        "quoted-separator",
-        "escaped-separator",
+        "quoted-separator-accepted-over-deny",
+        "escaped-separator-accepted-over-deny",
         "help-accepted-over-deny",
         "short-help-accepted-over-deny",
-        "empty-quote-before-version-flag",
+        "empty-quote-before-version-flag-accepted-over-deny",
         "version-then-add-background",
         "shallow-file-value-then-add",
         "escaped-space-config-value-then-add",
         "short-version-accepted-over-deny",
         "path-qualified-git-word",
-        "env-assignment-prefix",
+        "env-assignment-prefix-accepted-over-deny",
         "version-then-command-substitution-write",
         "version-then-backtick-write",
         "version-then-redirect-accepted-over-deny",
@@ -841,6 +843,12 @@ class TestDenyInvisibleCommitContent:
     @pytest.mark.parametrize("shape", NON_VERSION_QUERY_SHAPES, ids=NON_VERSION_QUERY_SHAPE_IDS)
     def test_non_version_query_shape_chained_before_commit_denied_by_masked_walk(self, shape):
         reason = run_hook_reason(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(f"{shape} && git commit -m x"))
+        assert reason is not None
+        assert "before this call's first real" in reason
+
+    def test_quoted_command_substitution_subcommand_chained_before_commit_denied_by_masked_walk(self):
+        command = 'git "$(echo add)" -- x && git commit -m x'
+        reason = run_hook_reason(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command))
         assert reason is not None
         assert "before this call's first real" in reason
 

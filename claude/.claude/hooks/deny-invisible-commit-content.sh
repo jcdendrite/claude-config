@@ -139,10 +139,12 @@
 #  - `--shallow-file` is missing from `_LIB_GIT_GLOBAL_VALUE_FLAGS`. Git
 #    consumes the next word as the flag's value, but the gate reads that word
 #    as the subcommand.
-#  - Program-running global flags (`-c core.fsmonitor=...`, `--git-dir=`,
-#    `--exec-path=`) are admitted before an allowlisted subcommand.
-#    GH-1295 covers only the reviewer gate's Bash arm. The cooperative tier
-#    accepts both gaps.
+#  - A program-running global option or environment assignment is admitted
+#    ahead of an allowlisted subcommand.
+#    Examples are `-c core.fsmonitor=<prog>`, `--config-env=`, `--git-dir=`,
+#    `--exec-path=` and `GIT_EXTERNAL_DIFF=<prog> git diff`.
+#    GH-1295 tracks both gaps for the reviewer gate's Bash arm only.
+#    The cooperative tier accepts both gaps.
 #
 # Subprocess footprint:
 #  - The quote-strip (sed+tr) that produces COMMAND_UNQUOTED, and the
