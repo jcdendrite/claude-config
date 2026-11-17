@@ -399,15 +399,11 @@ in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 
 A blocked `claude -p` prompt exits `0` and makes no model turn, so an instrument that scored it would count a miss.
 
-- Every instrument here that launches `claude -p` stops on a blocked prompt instead of scoring the run.
-- `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate stop with `BlockedPromptError` and a nonzero exit.
-- A raised `BlockedPromptError` ends the process with exit status 1 and a traceback naming it, the same status `measure_explore_recall.py`'s gate uses for a FAIL verdict, so read the traceback to tell them apart.
-- An abort loses the results not yet written, because `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate write their `--json` file only at the end of a run.
-- Review bench records a blocked run missing, with reason `blocked-prompt` and the hook's reason as its detail. A block or a judge pair whose runs are all blocked stops with exit `2`, as any all-missing one does.
-- Stream-json launches recognize any hook's block by the `system` event whose `prompt_submit_outcome.kind` is `blocked_by_hook`.
-- `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`, so another hook's block goes unrecognized there.
-- Plain-text output that echoes that prefix reads as a block.
-- The main session rule adherence gate instead pauses on a blocked prompt, and `--resume` reruns it.
+- No instrument here scores a blocked prompt as a model miss.
+- `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate abort with a nonzero exit and lose the results not yet written.
+- Review bench records a blocked run as missing, with the hook's reason. It stops only when every run in a block is blocked.
+- The main session rule adherence gate pauses on a blocked prompt, and `--resume` reruns it.
+- `run_skill_evals.py`'s plain-text calls recognize only a block whose output opens with `main-session-rules: prompt blocked`. Another hook's block goes unrecognized there.
 
 ## Linting
 

@@ -768,6 +768,46 @@ class TestBlockedPromptThroughExecuteRun:
         assert "synthetic block reason" in record.missing_detail
         assert flush_waits == []
 
+    def test_the_final_blocked_record_keeps_the_hooks_reason_through_retry_into_the_systemic_failure_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            runner, "wait_for_session_flush", lambda projects_root, session_id, *, timed_out: None,
+        )
+        blocked_event = {
+            "type": "system", "subtype": "informational",
+            "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
+        }
+        launch_count = 0
+
+        def always_blocked_launch(cmd, cwd, timeout_s):
+            nonlocal launch_count
+            launch_count += 1
+            return [json.dumps(blocked_event).encode()], False
+
+        ctx = runner.RunContext(
+            campaign_id="c1", defect_id="d1", agent_name=AGENT_NAME, model_id=MODEL_ID,
+            agent_declared_tools=DECLARED_TOOLS, fixture_dir=tmp_path, live_checkout_roots=(),
+            changed_relpaths=(), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
+            environment=runner.EnvironmentRecord("v1", "sha1"),
+        )
+
+        records = [
+            runner.run_one_with_retry(ctx, arm="current-rule", run_index=run_index, launch=always_blocked_launch).record
+            for run_index in range(2)
+        ]
+
+        assert launch_count == 2 * runner.ATTEMPTS_PER_RUN
+        for record in records:
+            assert record.status == runner.STATUS_MISSING
+            assert record.missing_reason == runner.MISSING_REASON_BLOCKED_PROMPT
+            assert record.attempts == runner.ATTEMPTS_PER_RUN
+            assert "synthetic block reason" in record.missing_detail
+        assert runner.all_runs_missing(records) is True
+        message = runner.systemic_failure_message("d1", records)
+        assert f"{runner.MISSING_REASON_BLOCKED_PROMPT} x2" in message
+        assert "synthetic block reason" in message
+
 
 def _flush_run_context(fixture_dir: Path) -> runner.RunContext:
     return runner.RunContext(

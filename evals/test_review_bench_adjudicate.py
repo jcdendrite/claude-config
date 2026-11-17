@@ -1540,6 +1540,33 @@ class TestBlockedPromptThroughExecuteJudgeRun:
         assert "synthetic block reason" in record.missing_detail
         assert flush_waits == []
 
+    def test_the_final_blocked_record_keeps_the_hooks_reason_through_the_judge_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            runner, "wait_for_session_flush", lambda projects_root, session_id, *, timed_out: None,
+        )
+        blocked_event = {
+            "type": "system", "subtype": "informational",
+            "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
+        }
+        launch_count = 0
+
+        def always_blocked_launch(cmd, cwd, timeout_s):
+            nonlocal launch_count
+            launch_count += 1
+            return [json.dumps(blocked_event).encode()], False
+
+        attempt = adjudicate.run_judge_with_retry(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path), launch=always_blocked_launch,
+        )
+
+        assert launch_count == runner.ATTEMPTS_PER_RUN
+        assert attempt.record.status == runner.STATUS_MISSING
+        assert attempt.record.missing_reason == runner.MISSING_REASON_BLOCKED_PROMPT
+        assert attempt.record.attempts == runner.ATTEMPTS_PER_RUN
+        assert "synthetic block reason" in attempt.record.missing_detail
+
 
 class TestJudgeWriteAheadOrdering:
     def test_each_judge_attempt_records_its_session_id_before_launching(

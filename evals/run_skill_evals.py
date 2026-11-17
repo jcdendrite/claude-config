@@ -1500,7 +1500,7 @@ def main() -> int:
             Path(args.json_out).write_text(json.dumps(out, indent=2))
             print(f"Full results written to {args.json_out}")
 
-        return 0  # always 0 — measurement, not a gate
+        return 0  # a completed run returns 0 — measurement, not a gate
 
     finally:
         if tmp_project is not None:

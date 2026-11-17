@@ -1210,6 +1210,34 @@ class TestRaiseIfBlockedPromptStream:
         assert detect_trigger_in_lines(quoting_lines, "code-review", []) == (None, [])
         assert detect_dispatch_in_lines(quoting_lines) is False
 
+    @pytest.mark.parametrize(
+        "quoting_event",
+        [
+            pytest.param(
+                {
+                    "type": "system", "subtype": "hook_response",
+                    "output": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                    "stdout": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                    "stderr": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                },
+                id="hook-response",
+            ),
+            pytest.param(
+                {
+                    "type": "system", "subtype": "informational",
+                    "content": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                },
+                id="informational-without-an-outcome",
+            ),
+        ],
+    )
+    def test_does_not_raise_when_a_system_event_quotes_the_block_text(self, quoting_event: dict) -> None:
+        """Hook output and system notices are free text, so only the structured outcome field counts."""
+        quoting_lines = [json.dumps(quoting_event)]
+        raise_if_blocked_prompt_stream(quoting_lines)
+        assert detect_trigger_in_lines(quoting_lines, "code-review", []) == (None, [])
+        assert detect_dispatch_in_lines(quoting_lines) is False
+
 
 class TestRaiseIfBlockedPromptEvent:
     @pytest.mark.parametrize(
