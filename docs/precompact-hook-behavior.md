@@ -75,7 +75,7 @@ Deferred; no data collected.
 
 `PostCompact`'s input carries the full `compact_summary` Claude Code just generated during compaction. A `PostCompact` hook can't feed anything back to Claude (per the `additionalContext` refutation above), but it can **archive** that summary to disk — a cheap, no-synthesis-required complement to an incremental review-narrative ledger, useful as a raw safety net for whatever the ledger didn't anticipate capturing.
 
-Combined with the `additionalContext` refutation above, the next implementation phase no longer needs a `PreCompact` hook at all, and needs a `PostCompact` hook only for archival (not for reminding Claude of anything — it structurally cannot). The reminder-to-check-the-ledger piece has to be a static, always-loaded CLAUDE.md instruction, not an event-driven injection.
+Combined with the `additionalContext` refutation above, the next implementation phase no longer needs a `PreCompact` hook for injecting context (the "Steering probe" section below shows plain stdout on exit 0 does steer the summary, which `additionalContext` JSON does not), and needs a `PostCompact` hook only for archival (not for reminding Claude of anything — it structurally cannot). The reminder-to-check-the-ledger piece has to be a static, always-loaded CLAUDE.md instruction, not an event-driven injection.
 
 ## What survives compaction — survival probe findings
 
@@ -245,7 +245,7 @@ Run on claude 2.1.323, 2026-11-13, in a scratch repository on a branch named `pr
 
 ## Steering probe — does `PreCompact` stdout steer the summary?
 
-Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the compaction summary on the manual and automatic triggers, and the failure modes below left compaction unaffected.
+Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the compaction summary on the manual and automatic triggers, and compaction proceeded in both failure modes below. The exit-1 automatic run ended in a thrashing stop that the probe did not attribute to the hook.
 
 - **Build:** `claude --version` **2.1.326**. Probe date 2026-11-16 (UTC). Re-verify by 2027-02-16, the three-month interval `docs/handoff-nudge.md` uses for vendor behavior. Nothing raises this date when it lapses.
 - **Scope:** booleans and counts only. The sentinels are synthetic strings planted for the probe.
@@ -266,9 +266,9 @@ Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the
 ### Results
 
 - **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others. Two of three steer, so manual steers.
-- **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. The first compaction steers and manual steered, so automatic steers, and no further automatic run was needed. Compactions after the first summarize a context that already holds the earlier steered summary, so only the first is independent evidence.
+- **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. The first compaction passed every check, so automatic steers. No further automatic run was needed. Compactions after the first summarize a context that already holds the earlier steered summary, so only the first is independent evidence.
 - **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar. Of the five manual-trigger runs, the unscored feasibility run included, three mis-reversed the token.
-- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel. A later prompt did not fire `PreCompact` again. A first automatic attempt ended before any compaction, because the model declined to read the files, so it was rerun.
+- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel.
 - **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run compacted six times, none steered, and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The steered automatic run compacted eight times without that stop, so this run does not show that a failing hook causes thrashing.
 - **Where the hook's stdout appears:**
   - Manual: a user record whose content opens `<local-command-stdout>Compacted (ctrl+o to see full summary)` and then a `PreCompact [<hook path>]` line holding the hook's stdout. It carries a `repeatsCompactSummary` key.
@@ -277,4 +277,9 @@ Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the
 
 ### Routing outcome
 
-Manual and automatic both steer, so designing a `PreCompact` hook that prints summary instructions is worth pursuing. Its design is not part of these findings.
+Plain stdout on exit 0 steers the summary on both triggers, while the `additionalContext` JSON shape stays refuted above. Designing a `PreCompact` hook that prints summary instructions is worth pursuing. Its design is not part of these findings.
+
+Constraints any such hook inherits from these results:
+- Steering is model behavior, not a guarantee, so a hook must not rely on it to carry a constraint.
+- The stdout is followed as instructions and re-summarized into later compactions, so it must be static or sanitized, never built from prompt, transcript or other untrusted text.
+- Only exit 0 and exit 1 were probed here. Exit 2 blocks compaction, as the earlier sections record.
