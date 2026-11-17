@@ -38,19 +38,23 @@ The issue's only evidence is one branch, and it asks for a replay over past ledg
 - Split condition: the issue body names neither its branch name, its worktree directory name nor its branch slug.
 - Split condition: it is not the branch the planning session read, which its name marks.
 - Split condition: its session transcripts in this repository show no sign of informal use of the rule. A branch whose transcripts show such signs is a development branch.
-- The plan did not list that condition. A read-only search of this repository's own session transcripts, dated after the issue was filed, applied it after the original development rows were labeled. It moved branches from the holdout to the development set, and those branches were never labeled. The search was a read outside the snapshot selection, and the session's prompt, not a tool restriction, kept it to this repository's transcripts.
+- The plan did not list that condition. A search of this repository's own session transcripts dated after the issue was filed applied it after the original development rows were labeled. It moved branches from the holdout to the development set, and those branches were never labeled. The search was a read outside the snapshot selection. Only the session's prompt, not a tool restriction, kept it to this repository's transcripts.
 - The labelers gave each finding a `class`: `false-statement`, `wrong-behavior` or `untested-documented-behavior` (the ADDRESS classes), then `test-pinning-grain`, `other` or `unclear`. They also gave an `invariant` flag and a `security` flag.
 - The label definitions and the plan's verdict criteria were fixed before any row was labeled.
 - Rules for reading the holdout (an agreement floor between the labelers, a range-based report and conclusion wording) were added after the original development rows were labeled. They went unused, because the holdout was not labeled.
+- The engineer's hand check is a check by the engineer on rows the session picked. It was added during the run and is not a random sample.
 - The known-answer check ran on invented rows.
 - It first stopped on an invented row whose text did not fit its expected label.
 - The engineer chose to rewrite that invented row to fit the expected label and re-run.
 - After the re-run, no labeler's ADDRESS-class membership differed from the expected one on an invented row.
+- A left-unfixed group is a group of labeled rows that the review loop fixed and the class rules of parts 1 and 2 would have left unfixed, with class `other` or `test-pinning-grain` and `invariant` of `no`, grouped by `class` and `security`.
+- A recorded pass is a cumulative pass whose disposition record survived and whose round the snapshot holds a row for.
 - Two read-only labelers labeled the original development branches' recorded-pass rows, and the remaining rows of a branch that cut.
 - The exit pass was found first, as a branch's first recorded cumulative pass with no ADDRESS-class row.
 - A SETTLED row never blocked a pass.
 - A recorded round counted only when the snapshot held a row for it.
 - A branch cut when the snapshot held a round after its exit pass.
+- An escape is a row, in a round after its branch's exit pass, that a reading puts in an ADDRESS class.
 - The two labelers' label sets agreed on the outcome, so it was not label-sensitive. An outcome the two label sets disagreed on would have been Undecided.
 - The floor of three holdout cuts is a constant the plan fixed before labeling, as its own judgment, so that no single branch decides an Adopt (`.claude/plans/exit-rule-replay.md` § "Verdict criteria").
 - The holdout was not labeled, because the engineer chose Decline after the development set.
@@ -89,8 +93,9 @@ Which way each counting choice leaned (`.claude/plans/exit-rule-replay.md` § "R
 - Only their prompts kept the labelers to their batch files.
 - The known-answer check tested the labelers on invented rows, not on corpus rows.
 - The escape behind the Decline comes from the engineer's own reading of findings that the labelers put in class `other`, outside the ADDRESS classes. No label set produced it.
-- The engineer's hand check was added during the run, on rows the session picked, not a random sample. On other rows it checked, the engineer's reading also differed from the labelers' classes.
-- No escape-source reading ran, and the criteria were evaluated by hand, not by command.
+- On other rows the hand check covered, the engineer's reading also differed from the labelers' classes.
+- No escape-source reading ran. It would have found the earlier fix behind each escape and dropped an escape whose fix the rule would not have made, so the escape behind the Decline was never tested against that filter.
+- The criteria were evaluated by hand, not by command.
 
 ## Verdict
 
