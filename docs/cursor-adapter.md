@@ -54,7 +54,7 @@ Every command is `python3 ~/.claude/scripts/cursor-adapter/cursor-adapter.py SUB
 
 When `generate` fails, for example on a registration the checkout no longer translates, the comparison says so first and ends that finding with the sentence that restores the checkout. It still reports the checks that need no generated entries: a changed `tool-map.json`, a stale contract version, a record the shim refuses, the top-level members, and each foreign or duplicated entry.
 
-Quit Cursor and end every Cursor CLI session before `install` and `uninstall`, and relaunch afterwards, because a change to `hooks.json` while Cursor runs is untested.
+Quit Cursor and end every Cursor CLI session before `install` and `uninstall`, and relaunch afterwards, because a change to `hooks.json` while Cursor runs is untested. Once Cursor has quit, end any `cursor-agent` worker still running, because such workers have outlived the app, and whether one runs hooks is pending an unrecorded probe.
 
 After a `git pull`, run `check`: it compares the installed entries with what `generate` emits now and reports a changed `tool-map.json`. A changed registration or contract version needs a quit, an `install` and a relaunch, which each finding says.
 
@@ -65,13 +65,28 @@ After a `git pull`, run `check`: it compares the installed entries with what `ge
   - Cursor's approval prompt, its allowlist matcher and Auto-review read the prefixed text.
   - An entry of your own on `beforeShellExecution` whose matcher is anchored at the start of the command, or whose script tests its first word, stops matching with no error. Such an entry is not supported beside the adapter.
   - A shell's error line numbers count the prefix's line.
+- **Every Shell call runs under the routed config dir.** The rewrite's first line unsets `CLAUDECODE`, exports the routed `CLAUDE_CONFIG_DIR` and the call's session id, and exports or unsets the host process id the hooks resolved, all ahead of the agent's command. The call therefore runs under the routed `CLAUDE_CONFIG_DIR`, replacing a value the Shell's environment holds, such as a per-project one from direnv. A `claude` the agent starts in that call uses the routed account's context, not the project's. `marker.sh` and the other scripts an agent runs resolve the state the hooks read for the same reason.
 - **The import's copies keep running.** Cursor's Claude Code import runs its own untranslated copies of the hooks beside the adapter's entries, so a hook can fire twice. A deny from either source wins.
+
+## Cursor CLI beside the adapter
+
+The adapter targets the local IDE, and the Cursor CLI (`agent`) reads the same user-level `~/.cursor/hooks.json`, so a CLI session meets the adapter's entries too. Nothing stands down for it: a CLI conversation is gated as an IDE conversation is, and the adapter keeps no CLI-only state, flag or log field. A claim marked "pending an unrecorded probe" has no acceptance probe result recorded for it.
+
+- **Identity.** A CLI conversation resolves its own identity, and its session id is its conversation id. Where a hook's walk up its process ancestry meets no `Cursor` main process, it takes the nearest process named exactly `agent` or `cursor-agent` as the host. A CLI started in Cursor's integrated terminal, or under an IDE agent's Shell call with no `claude` between, anchors on `Cursor` as an IDE conversation does.
+- **Markers and locks.** A CLI conversation's markers and worktree locks are its own, keyed on its session id. A lock another conversation holds, IDE or CLI, denies its write with the live-holder text that names the lock's process id, as a lock between two IDE conversations does. Agents on both launchers can therefore work at once in separate worktrees, and the collision guard keeps each out of the other's. Whether the process id that a conversation's Shell calls share is the one its hook events and its subagents' calls see is pending an unrecorded probe.
+- **Lifetime.** A CLI conversation's state lives while its CLI process lives, so the lock of an `agent -p` run reads dead once the run exits. A CLI that runs under a running Cursor anchors on `Cursor` and lives while Cursor runs.
+- **Clearing a marker-gated deny.** The review skill, run in the CLI conversation, writes the marker through `marker.sh` under the rewrite's exports, as in an IDE conversation. That the CLI runs a review skill end to end, subagent dispatches included, and that `marker.sh` can resolve its identity and write the routed config dir there, is pending an unrecorded probe, as is the same under a CLI sandbox mode. Recovery's CLI entry gives the way out for each gate class.
+- **The directory pin.** The CLI applied a `preToolUse` `updated_input` rewrite when observed. Whether its `beforeShellExecution` entry receives the rewritten command, so `pin-check` passes, is pending an unrecorded probe.
 
 ## Parity with Claude Code
 
 Under the adapter, Cursor behaves as Claude Code does wherever the vendor allows. This doc and `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` together list each known difference. The file holds each harness registration, permission deny, adapter gate or Cursor tool that the adapter does not carry, with its reason. This doc notes any other difference, including a newly found one.
 
 A gate or deny that cannot reach parity under Cursor is raised to the engineer as an open decision before it ships, and an entry in the file that drops a gate or deny falls under this.
+
+A direct `marker.sh write` in an unprompted mode matches Claude Code's main session, and the Limitations entry "Marker-gated gates" covers it.
+
+A write that newly takes a worktree lock prints no "run `git worktree unlock <path>` if this was unintended" note under Cursor, where Claude Code prints one, because Cursor's `preToolUse` has no channel for additional context. That is a vendor limit, and the lock and the collision guard still work.
 
 ## Prerequisites
 
@@ -83,7 +98,7 @@ A gate or deny that cannot reach parity under Cursor is raised to the engineer a
   - A tool in python3's directory shadows the recorded one for the hooks. In practice that needs python3 to share a system or package-manager `bin` directory with other tools.
 - **GNU coreutils `timeout` or `gtimeout`:** stricter than the `timeout` bullet in `README.md` § "Requirements". `install` records the first of `timeout` and `gtimeout` whose `--version` first line names GNU coreutils, because BusyBox returns a TERM-trapping hook's own status, as the `_lib_capped_for` header in `claude/.claude/hooks/_lib.sh` states, and a timed-out hook could then read as an allow. On macOS, `brew install coreutils` provides `gtimeout`. Otherwise put GNU's directory first on `PATH`, then re-run `install`.
 - **bash and the other tools:** bash 5.2 or later, `jq`, `git`, `ps`, `sha256sum`, and `gh` when present, found on `PATH` as absolute paths with no `..` component and none holding `:` or a newline.
-- **Shells:** the launch guard around each hook call is POSIX `sh` text, tested under `/bin/sh`, bash and zsh.
+- **Shells:** the launch guard around each hook call is POSIX `sh` text, tested under `/bin/sh`, bash and zsh. CI installs a pinned zsh and fails where none is on `PATH`, and a machine with no zsh runs the rows under the shells it has.
 - **Run mode:** no source gives the adapter Cursor's run mode, so every report prints `run mode not readable; the run-mode precondition in docs/cursor-adapter.md is unchecked`. The precondition is your own attestation: Allowlist mode with the sandbox off and an empty allowlist, so that every Shell call prompts. Only the empty allowlist was observed, so a non-empty one is an unobserved case. The directory pin's prefix (see "What changes in Cursor") changes what an allowlist entry matches. Cursor's permissions reference calls its allowlist and auto-run settings "Not a security boundary".
 
 ## Where the state lives
@@ -91,6 +106,9 @@ A gate or deny that cannot reach parity under Cursor is raised to the engineer a
 - `~/.cursor/hooks.json`: the merged entries.
 - `~/.cursor/cursor-adapter/`: `install.json` (the routed config dir, the recorded tool paths, the contract version and the tool map), `hooks.json.pre-install` (or `hooks.json.pre-install.none` when you had no file) and `manifest.json`.
 - `<routed config dir>/cursor-adapter-state/`: the shim's log `shim.log` and its one rotated file, the first-call marks, and the rotation lock. The directory is mode 0700 and gitignored.
+- `~/.cursor/sandbox.json`: the sandbox grant, which lists the routed config dir's marker and active-bypass directories under `additionalReadwritePaths`, so an agent Shell call under a sandboxed mode can write a marker. The adapter builds the grant, but `install` does not write it yet. `install` writes it once `gate-settings-permissions.sh` is no longer listed in `parity-exceptions.json`, because that gate denies a `marker.sh` shape your permissions do not allow in a mode that gives no prompt.
+  - Until then, marker-gated work uses Allowlist with the sandbox off, and `status` prints `sandbox grant: pending.` with that reason.
+  - Once `install` writes it, `install` keeps each grant directory your own file already lists and prints how many it found listed. `uninstall` removes only the paths `install` added.
 
 The session-start entry rotates the log past 16 MiB and removes first-call marks older than 7 days. It prints its findings through `additional_context`, which reaches you only if the agent repeats them, so plain `check` prints the same tamper comparison and tool findings to the terminal. It adds the Claude Code and locale environment names of the hook it runs in, which a terminal run cannot know, and `install` prints neither.
 
@@ -205,7 +223,15 @@ Each is the shim or a hook meeting input it does not translate, or a hook killed
 
 ### A deny in a Cursor CLI session beside the installed adapter
 
-Expected: the adapter supports the IDE only, and a CLI session meets its denies. Run `uninstall` before using the CLI.
+A CLI session meets the adapter's gates as an IDE conversation does (see "Cursor CLI beside the adapter"), and the way out depends on the deny's class. Each way out that needs the CLI to run a skill, or to apply the directory pin's rewrite, is pending an unrecorded probe.
+
+- A completion gate's deny, from `require-code-review`, `require-plan-review` or `require-ready-for-review`, has three routes. After the first or second, the CLI retries the gated operation.
+  1. Run the review skill in that CLI conversation.
+  2. Where the CLI cannot run the skill, end the CLI session and wait until its lock reads dead, then run the same review in an IDE conversation on the same tree and state. These gates match a marker's content under every session suffix (`docs/hooks.md` § "Marker keying and gate-release authority"). While the CLI session is open, its worktree denies the IDE conversation's first write of findings with the live-holder text that names the lock's process id.
+  3. While the CLI session is open, make the gated operation from your own terminal.
+- An active-bypass gate's deny, from `require-respond-pr` or `require-memory-skill`: run the skill in that CLI conversation. Where the CLI cannot run it, make the gated operation from your own terminal, where no hook runs, or have an IDE conversation make it under its own bypass. Another conversation's skill run releases nothing for the CLI, because a bypass is keyed on its own conversation's session id.
+- In no case write a marker for the CLI conversation's session id from anywhere else.
+- A deny no IDE call would get, such as `pin-check` or `dir-input-refused` on every CLI call: run `uninstall` and report the finding, at least until a probe records whether the CLI's `beforeShellExecution` receives the rewritten command.
 
 ### CLAUDECODE set in Cursor's hook environment
 
@@ -236,7 +262,23 @@ A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. T
   - A SIGKILL to the `timeout` wrapper itself from outside, or a stop of it that is never resumed, leaves the hook unbounded.
   - The hook runs on under the wrapper's timer until it ends, after an output-cap deny or after a timeout at the shim's bound. A wrapper that started late gives the second.
 - **Your own hooks:** a hook you add to `hooks.json` after install shows in reports as a non-owned entry, counted by event. Note the count in `status` after adding one, because a planted entry under the same event differs from yours only by that count. A "foreign" entry in a report is a different thing: an entry that holds an adapter path without being the adapter's own.
-- **Marker-gated gates:** the paragraph before `## Commands` says why they can deny, `docs/hooks.md` describes each gate, and the Recovery section holds the way out.
+- **Marker-gated gates:** the paragraph before `## Commands` says why they can deny, `docs/hooks.md` describes each gate, and the Recovery section holds the way out. Three residuals follow:
+  - A direct `marker.sh write` releases a completion gate with no review in a mode that gives no prompt and needs no grant, `agent -p --force` and the IDE's Run Everything (Unsandboxed), and no adapter entry denies it. For the main agent that stands, as it does in Claude Code's main session. A restricted subagent's write also runs wherever it is unprompted, an allowlisted shape included, until a later gate covers it.
+  - Under Auto-Review (with Sandbox), an agent's `marker.sh` write fails while the sandbox grant is dormant, so a marker-gated commit denies in that mode. "Where the state lives" says which mode to use meanwhile.
+  - Under Auto-Review (with Sandbox), an agent's `marker.sh status` may delete the conversation's own live active-bypass file, because `_lib_active_bypass_marker_live` removes a file whose recorded process id fails `kill -0`. Whether that sandbox lets a Shell call signal-probe the exported host process id is pending an unrecorded probe.
+- **Cursor CLI beside the adapter:** these residuals follow from the rule in "Cursor CLI beside the adapter".
+  - A CLI run that a Claude Code session starts takes that session's identity, because the resolver takes a live registered ancestor first. It reads that session's markers and shares its locks. Its calls carry no Claude Code `agent_id`, so a CLI that a Claude Code subagent starts sits outside Claude Code's agent-keyed bars, as the header of `enforce-marker-script-shape.sh` states for a nested `claude -p`.
+  - A process named exactly `agent` or `cursor-agent` becomes the host where the walk meets no `Cursor` main. The adapter's entry-command processes between a hook and the CLI carry neither name, so the match passes over them.
+  - A `cursor-agent` worker that outlives the app anchors a hook it runs after Cursor quits on itself, and a lock it holds outlives the quit. Whether such a worker runs hooks is pending an unrecorded probe.
+  - A lock holder's liveness is a bare `kill -0` on its recorded process id. A short-lived `agent -p` run's id, once reused, makes its lock read as live, a rare deny that clears once the id is free.
+  - The entries that rest on `stop`, `beforeSubmitPrompt`, `subagentStart` or `subagentStop` get no event under `agent -p`, which fired none when observed. That is a gap, not a deny.
+  - A hook `ask`, such as a `permissions.ask` twin's, may run unprompted under `agent -p --force`, which Cursor documents as "Force allow commands unless explicitly denied". Whether an `ask` prompts there or interactively is pending an unrecorded probe.
+  - A call with no `parent_agent_id` meets no attribution deny, and a CLI main agent's calls are such calls if they carry none, as the IDE's never do. Whether a CLI subagent's calls carry `parent_agent_id`, and whether an interactive CLI fires `subagentStart`, is pending an unrecorded probe. A later release's unattributed-subagent deny would meet a CLI subagent call that carries `parent_agent_id` when no `subagentStart` arrives.
+  - The CLI's file-tool target forms, which the main-checkout deny's repo resolution rests on, and whether the CLI runs the import's copies of `~/.claude/settings.json`'s hooks, are pending an unrecorded probe. On Linux the CLI's process name may read `node`, which resolves no host and meets the denies Recovery's CLI entry covers. That case has not been run.
+- **`sessions/` registrations:** no adapter CLI or IDE process registers in `sessions/` where the walk finds a host, because the session hooks decline an untranslated Cursor payload there.
+  - A copy whose walk fails, with any nonzero status, still writes its entry. The entry clears once the registered process exits, because the start-time check then rejects it, and no runtime check flags it in between.
+  - Nothing prunes `sessions/`, so an older entry that an import copy wrote for its host process stays. The relaunch after `install` covers Cursor processes only, so a CLI process that outlives the install keeps its old entry resolving until it exits.
+- **`nudge-handoff-near-context-cap.sh --check`:** it reads `sessions/<pid>` through a walk of its own and finds no entry for a Cursor or CLI process, so under the adapter it prints `cannot-resolve`. That is a gap, not a deny.
 - **Credential redaction:** `redact-credential-values.sh` runs but redacts no tool output under Cursor, MCP output included. Cursor accepts a replacement tool output for `MCP:` tools only, and the hook's matcher selects no `MCP:` tool.
 - **Protections that do not run:** an entry that `claude/.claude/scripts/cursor-adapter/parity-exceptions.json` lists as `pending-phase`, `unsupported` or `declined` is not carried through the adapter. That holds for a registration, a `permissions.deny` entry and an adapter gate. `gate-settings-permissions.sh` carries the `settings.json` `permissions.deny` Bash and Read entries, and Cursor does not enforce them until the phase the file names. `gate-agent-tools.sh` and `gate-credential-exposure.sh` are pending the same way. The Limitations list of the `cursor-adapter/` entry in `docs/scripts.md` § "Script reference" names the shim's own limits, among them the subagent bars and the `stop` and `subagentStop` deny.
 - **What the reports cannot see:**
