@@ -1,5 +1,7 @@
 import argparse
+import importlib
 import os
+import pkgutil
 import subprocess
 import sys
 
@@ -372,6 +374,51 @@ class TestBuildParser:
             if not refused:
                 not_refused.append(name)
         assert not not_refused, f"accepted both flags or exited for another reason: {not_refused}"
+
+    def test_every_subcommand_binds_its_own_modules_cmd_handler(self):
+        """Each subcommand's registrar lives outside cli.py and binds the cmd_<name> handler its own
+        module defines, checked by name and module rather than by a token the handler prints.
+        The registrars the package defines must also equal the subcommands build_parser() walks, so a
+        registrar that is defined but never wired fails here instead of shrinking the walk."""
+        walked_snake_names = set()
+        wrongly_bound = {}
+        for name, subparser in _subparsers_by_name(cli.build_parser()).items():
+            snake_name = name.replace("-", "_")
+            walked_snake_names.add(snake_name)
+            registrar = getattr(cli, f"_add_{snake_name}_subparser", None)
+            registrar_module = getattr(registrar, "__module__", None)
+            if registrar is None:
+                wrongly_bound[name] = f"cli has no attribute _add_{snake_name}_subparser"
+                continue
+            if registrar_module == cli.__name__:
+                wrongly_bound[name] = f"registrar is defined in {cli.__name__}, expected another module"
+                continue
+            handler = subparser.get_default("func")
+            handler_name = getattr(handler, "__name__", None)
+            handler_module = getattr(handler, "__module__", None)
+            if handler_name != f"cmd_{snake_name}" or handler_module != registrar_module:
+                handler_label = f"{handler_module}.{handler_name}" if handler_name else repr(handler)
+                wrongly_bound[name] = f"func is {handler_label}, registrar is in {registrar_module}"
+        assert walked_snake_names
+        defined_snake_names = set()
+        package_name = cli.__name__.rpartition(".")[0]
+        for module_info in pkgutil.iter_modules(sys.modules[package_name].__path__):
+            if module_info.name == "__main__":
+                continue
+            package_module = importlib.import_module(f"{package_name}.{module_info.name}")
+            for attribute_name, attribute in vars(package_module).items():
+                if (
+                    attribute_name.startswith("_add_")
+                    and attribute_name.endswith("_subparser")
+                    and callable(attribute)
+                    and getattr(attribute, "__module__", None) == package_module.__name__
+                ):
+                    defined_snake_names.add(attribute_name[len("_add_"):-len("_subparser")])
+        assert not wrongly_bound and defined_snake_names == walked_snake_names, (
+            f"subcommands not bound to their own module's cmd_ handler: {wrongly_bound}; "
+            f"registrars defined but not walked: {sorted(defined_snake_names - walked_snake_names)}; "
+            f"subcommands walked with no defined registrar: {sorted(walked_snake_names - defined_snake_names)}"
+        )
 
     def test_this_repo_alone_parses_without_error(self):
         parser = cli.build_parser()
