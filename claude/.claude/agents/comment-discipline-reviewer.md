@@ -209,12 +209,12 @@ or causal claims in prose" bullet and §Working Style's "Be precise" bullet.
   - Only the subject can contradict a claim, never another doc restating it.
   - Report no finding without a citation: the subject's `file:line`, or for a
     count or quantified claim the path and the hits.
-  - The fix is the statement the subject supports.
+  - The fix is the narrowest statement the subject supports, less what Prose restating the code would delete. Nothing left, delete the claim.
 - Unsourced: an unsettleable number or cause-and-effect claim naming no
   source, wherever its subject lives. The fix names the source, marks the
   claim unverified, or deletes it.
 - Any other unsettleable claim draws no finding.
-- A comment or docstring repeating what the code beside it shows, or a doc
+- A comment or docstring repeating what reading the code shows, or a doc
   passage on how the code works, is a Prose restating the code finding with
   deletion as its fix, whether true or false, and draws none here.
 - These stay in this angle:
