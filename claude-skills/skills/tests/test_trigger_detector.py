@@ -100,6 +100,32 @@ BLOCKED_PROMPT_STDOUT = (
 )
 
 
+FakeClaudeInstaller = Callable[[Callable[[str], str]], list[list[str]]]
+
+
+@pytest.fixture
+def install_fake_claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaudeInstaller:
+    """Returns an installer that replaces subprocess.run with a fake claude.
+
+    The fake exits 0 with the stdout `reply_for_prompt` returns for the prompt (the
+    argument after `-p`), and fails any call that does not start `claude -p`.
+    """
+
+    def install(reply_for_prompt: Callable[[str], str]) -> list[list[str]]:
+        commands: list[list[str]] = []
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            assert command[:2] == ["claude", "-p"], f"unexpected subprocess call: {command[:2]}"
+            commands.append(command)
+            reply = reply_for_prompt(command[2])
+            return subprocess.CompletedProcess(command, 0, stdout=reply if kwargs.get("text") else reply.encode())
+
+        monkeypatch.setattr(run_skill_evals.subprocess, "run", fake_run)
+        return commands
+
+    return install
+
+
 def _read_frontmatter(text: str) -> dict:
     return parse_frontmatter_block(split_frontmatter(text)[0])
 
@@ -1266,21 +1292,9 @@ class TestPlainTextCallsRaiseOnBlockedPrompt:
     """Each plain-text claude -p call raises instead of scoring a blocked run."""
 
     @pytest.fixture
-    def claude_commands(self, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-        """Replaces subprocess.run with a fake claude that exits 0 on the block stdout.
-
-        Records each command and fails any call that does not start `claude -p`.
-        """
-        commands: list[list[str]] = []
-
-        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-            assert command[:2] == ["claude", "-p"], f"unexpected subprocess call: {command[:2]}"
-            commands.append(command)
-            stdout = BLOCKED_PROMPT_STDOUT if kwargs.get("text") else BLOCKED_PROMPT_STDOUT.encode()
-            return subprocess.CompletedProcess(command, 0, stdout=stdout)
-
-        monkeypatch.setattr(run_skill_evals.subprocess, "run", fake_run)
-        return commands
+    def claude_commands(self, install_fake_claude: FakeClaudeInstaller) -> list[list[str]]:
+        """A fake claude that exits 0 on the block stdout; records each command."""
+        return install_fake_claude(lambda prompt: BLOCKED_PROMPT_STDOUT)
 
     def test_description_fidelity_sample_raises(self, tmp_path: Path, claude_commands: list[list[str]]) -> None:
         sample_args = ("a query", "code-review", [], tmp_path, "skill listing", VALID_NAMES, "model-x")
@@ -1311,43 +1325,21 @@ class TestPlainTextCallsRaiseOnBlockedPrompt:
 class TestPlainTextCallsPassOrdinaryAnswers:
     """Each plain-text claude -p call still returns its normal value when no hook blocked."""
 
-    @pytest.fixture
-    def install_fake_claude(self, monkeypatch: pytest.MonkeyPatch) -> Callable[[Callable[[str], str]], list[list[str]]]:
-        """Returns an installer that replaces subprocess.run with a fake claude.
-
-        The fake exits 0 with the stdout `reply_for_prompt` returns for the prompt (the
-        argument after `-p`), and fails any call that does not start `claude -p`.
-        """
-
-        def install(reply_for_prompt: Callable[[str], str]) -> list[list[str]]:
-            commands: list[list[str]] = []
-
-            def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-                assert command[:2] == ["claude", "-p"], f"unexpected subprocess call: {command[:2]}"
-                commands.append(command)
-                reply = reply_for_prompt(command[2])
-                return subprocess.CompletedProcess(command, 0, stdout=reply if kwargs.get("text") else reply.encode())
-
-            monkeypatch.setattr(run_skill_evals.subprocess, "run", fake_run)
-            return commands
-
-        return install
-
     def test_description_fidelity_sample_scores_an_ordinary_answer(
-        self, tmp_path: Path, install_fake_claude: Callable[[Callable[[str], str]], list[list[str]]]
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
     ) -> None:
         install_fake_claude(lambda prompt: "code-review\n")
         sample_args = ("a query", "code-review", ["plan-it"], tmp_path, "skill listing", VALID_NAMES, "model-x")
         assert run_description_fidelity_sample(sample_args) == ("code-review", [])
 
     def test_judge_disposition_returns_the_label_of_an_ordinary_answer(
-        self, tmp_path: Path, install_fake_claude: Callable[[Callable[[str], str]], list[list[str]]]
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
     ) -> None:
         install_fake_claude(lambda prompt: "PERMISSIVE\n")
         assert judge_disposition("a review", "a rubric", "model-x", tmp_path) == "PERMISSIVE"
 
     def test_prime_dispatch_session_returns_the_session_id_it_assigned(
-        self, tmp_path: Path, install_fake_claude: Callable[[Callable[[str], str]], list[list[str]]]
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
     ) -> None:
         commands = install_fake_claude(lambda prompt: "primed\n")
         session_id = prime_dispatch_session(tmp_path, "a priming prompt", "model-x")
@@ -1366,7 +1358,7 @@ class TestPlainTextCallsPassOrdinaryAnswers:
         assert "priming invocation timed out" in capsys.readouterr().err
 
     def test_disposition_sample_labels_each_arm_from_its_own_review(
-        self, tmp_path: Path, install_fake_claude: Callable[[Callable[[str], str]], list[list[str]]]
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
     ) -> None:
         def reply_for_prompt(prompt: str) -> str:
             if prompt.startswith("You are classifying"):

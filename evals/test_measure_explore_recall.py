@@ -1324,8 +1324,9 @@ class TestExecuteOneSampleAttempt:
         )
 
     def test_a_blocked_prompt_raises_and_still_cleans_up_its_launch_path(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "config"))
         case = m.RecallCase(id="c1", stratum=m.STRATUM_A, question="Where is X?", key=frozenset({"a.py"}))
         seen_cwd: list[Path] = []
 

@@ -91,7 +91,8 @@ TRIGGER_TOOL_NAMES = frozenset(("Skill",))
 # live claude -p stream: the model calls Agent even when instructed to use Task.
 DISPATCH_TOOL_NAMES = frozenset(("Agent", "Task"))
 
-# Plain-text output carries no structured block field, so a prompt-blocking hook in this repo opens its reason with this line.
+# Plain-text output carries no structured block field, so a prompt-blocking hook
+# must open its reason with this line to be recognized there.
 PROMPT_BLOCK_PREFIX = "main-session-rules: prompt blocked"
 
 

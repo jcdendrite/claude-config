@@ -548,8 +548,9 @@ class TestExecuteMatrixCell:
         )
 
     def test_a_blocked_prompt_raises_and_still_cleans_up_its_launch_path(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "config"))
         seen_cwd: list[Path] = []
 
         def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
