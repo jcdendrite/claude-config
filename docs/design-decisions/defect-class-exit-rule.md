@@ -71,6 +71,23 @@ Which way each counting choice leaned (`.claude/plans/exit-rule-replay.md` § "R
 - A condition that puts a branch in the development set shrinks the holdout and leans against Adopt.
 - The label-sensitivity rule leans against any outcome but Undecided.
 
+## What the hand check found
+
+The engineer answered findings from the original development set that the session picked. The findings are described by kind only. The quoted answers are a selection, in the engineer's own words.
+
+Findings the labelers did not put in an ADDRESS class, on which the engineer's answers favored a fix:
+
+- Prose findings from review rounds after the exit pass of the branch they came from. The engineer chose to count a finding of this kind as an escape. The engineer's answers included:
+  - "yes the split is good because that sentence is not readable otherwise".
+  - "yes I think the FYI edit is better".
+  - "yes that needs to be fixed because it could cause drift".
+- Test-tightening findings that the labelers called optional. The engineer's answer was "address, vacuous tests must always be fixed or dropped".
+
+Findings on which the engineer's answers were to defer or drop:
+
+- Findings the engineer called gold plating. The engineer's answers included "that's a defer, gold plating" and "drop, gold plating".
+- Findings the labelers put in class `false-statement`. The engineer's answer was "drop, the finding is wrong".
+
 ## Limits
 
 - The corpus holds only branches whose worktree still existed with that branch checked out.
@@ -87,7 +104,7 @@ Which way each counting choice leaned (`.claude/plans/exit-rule-replay.md` § "R
 - Only their prompts kept the labelers to their batch files.
 - The known-answer check tested the labelers on invented rows, not on corpus rows.
 - The escape behind the Decline comes from the engineer's own reading of findings that the labelers put in class `other`, outside the ADDRESS classes. No label set produced it.
-- On other rows the hand check covered, the engineer's reading also differed from the labelers' classes.
+- The hand-check section names kinds of findings, which the plan's closed set of publishable statements did not list. It states no count, no finding text and no branch. The number of quotes under a kind sets a lower bound on that kind's answers.
 - No escape-source reading ran. It would have found the earlier fix behind each escape and dropped an escape whose fix the rule would not have made, so the escape behind the Decline was never tested against that filter.
 - The criteria were evaluated by hand, not by command.
 
