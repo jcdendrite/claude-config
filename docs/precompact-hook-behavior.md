@@ -247,7 +247,7 @@ Run on claude 2.1.323, 2026-11-13, in a scratch repository on a branch named `pr
 
 ## Steering probe — does `PreCompact` stdout steer the summary?
 
-Result: yes, in the runs below, all on one build. A `PreCompact` hook's stdout on exit 0 steered the summary on both the manual and automatic triggers. Compaction also proceeded when the hook timed out or exited 1. The exit-1 automatic run ended in a thrashing stop that the probe did not attribute to the hook.
+Result: yes, in the runs below, all on one build. A `PreCompact` hook's stdout on exit 0 steered the summary on both the manual and automatic triggers. Compaction also proceeded when the hook timed out or exited 1.
 
 - **Build:** `claude --version` **2.1.326**. Probe date 2026-11-16 (UTC). Re-verify by 2027-02-16, the three-month interval `docs/handoff-nudge.md` uses for vendor behavior. Nothing raises this date when it lapses.
 - **Scope:** shapes, counts and booleans only. The sentinels are synthetic strings planted for the probe.
@@ -268,14 +268,10 @@ Result: yes, in the runs below, all on one build. A `PreCompact` hook's stdout o
 ### Results
 
 - **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others.
-- **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. Only the first compaction is independent evidence, because later ones summarize a context that already holds the earlier steered summary.
+- **Automatic, one run:** it compacted more than once and every compaction passed every check, the exact reversed control included. Only the first compaction is independent evidence, because later ones summarize a context that already holds the earlier steered summary.
 - **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar.
-- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel.
-- **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run compacted six times, none steered, and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The steered automatic run compacted eight times without that stop. The probe did not isolate the cause, so this run neither shows nor rules out that a failing hook causes thrashing.
-- **Where the hook's stdout appears:**
-  - Manual: a user record whose content opens `<local-command-stdout>Compacted (ctrl+o to see full summary)` and then a `PreCompact [<hook path>]` line holding the hook's stdout. It carries a `repeatsCompactSummary` key.
-  - Automatic: no such record. The stdout appears in `api-request-blob` records, one per compaction.
-  - Both: the `isCompactSummary` record holds the steered summary.
+- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. No summary held the sentinel.
+- **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run steered nothing and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The probe did not isolate the cause, so this run neither shows nor rules out that a failing hook causes thrashing.
 
 ### Implications for a `PreCompact` hook
 
