@@ -1255,8 +1255,12 @@ class TestSharedGitTimeoutDefault:
         assert run_git_timeouts == extract_timeouts == snapshot_timeouts == {fixture_repo._LOCAL_GIT_TIMEOUT_S}
 
 
+def _trace_events(trace_path: Path) -> list[dict]:
+    return [json.loads(line) for line in trace_path.read_text().splitlines()]
+
+
 def _maintenance_child_argvs(trace_path: Path) -> list[list[str]]:
-    trace_events = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    trace_events = _trace_events(trace_path)
     child_argvs = [event["argv"] for event in trace_events if event["event"] == "child_start"]
     return [argv for argv in child_argvs if "maintenance" in argv]
 
@@ -1274,8 +1278,9 @@ class TestCommitSnapshotAutoMaintenance:
         _git(control_dir, "init", "-q")
         control_trace_path = tmp_path / "control-trace2-events.json"
         subprocess.run(
-            ["git", "commit", "-q", "--allow-empty", "-m", "control"], cwd=control_dir, check=True,
-            capture_output=True,
+            ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+             "commit", "-q", "--allow-empty", "-m", "control"], cwd=control_dir, check=True,
+            timeout=fixture_repo._LOCAL_GIT_TIMEOUT_S, capture_output=True,
             env={**local_git.isolated_git_environment(), **fixture_repo._git_commit_env(),
                  "GIT_TRACE2_EVENT": str(control_trace_path)},
         )
@@ -1297,6 +1302,9 @@ class TestCommitSnapshotAutoMaintenance:
 
         fixture_repo._commit_snapshot(extracted, "snapshot")
 
+        assert any(
+            event["event"] == "cmd_name" and event.get("name") == "commit" for event in _trace_events(trace_path)
+        ), "the fixture commit was not traced, so the absence asserted below would be vacuous"
         assert not _maintenance_child_argvs(trace_path)
 
 
