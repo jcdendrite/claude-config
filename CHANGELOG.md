@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`check-skill-length.sh` gives `subagent-delegation/SKILL.md` a line cap of 218, above the 200-line default.** Splitting the skill's run-on `review-orchestrator` protocol lines into lists needed more lines than the default cap left, and the protocol could not move out of the skill. Other skills' caps are unchanged. The change is live on `git pull`.
 - **The evals harness reads SKILL.md and agent frontmatter with PyYAML, and the documented evals commands now run through `scripts/venv-run.sh python3`.** Plugin bumped: `skill-management` 5.1.0 → 5.1.1.
   - A quoted `description` no longer keeps its quotes in the description-fidelity listing.
   - `measure_subagent_model_resolution.py` reads a quoted `model:` value and one followed by a comment.
