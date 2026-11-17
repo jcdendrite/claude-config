@@ -217,8 +217,7 @@ def split_agent_frontmatter(text: str) -> tuple[str, str]:
 
     Raises ValueError when the closer does not start a line, since nothing documents whether Claude Code's
     agent loader closes the block mid-line.
-    The leading byte-order-mark rule rests on the skill loader's behavior, and review_bench.arms.render_arm_agent
-    drops that mark from the arm it renders.
+    The leading U+FEFF rule rests on the skill loader's behavior, not a documented agent-loader rule.
     """
     block, rest = split_frontmatter(text)
     if not block.endswith("\n"):
@@ -257,25 +256,28 @@ def declared_tool_names(tools_value: object) -> frozenset[str] | None:
     return names or None
 
 
+def as_listing_line(text: str) -> str:
+    """Collapse every whitespace run, line breaks included, to one space, since the listing gives each skill one line."""
+    return " ".join(text.split())
+
+
 def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
     """Return (name, description) for the description-fidelity skill listing.
 
     Falls back to (directory name, "") when the frontmatter cannot be read as a mapping.
-    An absent, blank or non-string name reads as the directory name, and an absent or non-string description
-    as an empty string.
-    The description is collapsed to one line, since the listing gives each skill one line.
     """
     text = skill_md_path.read_text(encoding="utf-8")
-    fallback_name = skill_md_path.parent.name
+    fallback_name = as_listing_line(skill_md_path.parent.name)
     try:
         frontmatter = parse_frontmatter_block(split_frontmatter(text)[0])
     except ValueError:
         return fallback_name, ""
 
     declared_name = frontmatter.get("name")
-    name = declared_name.strip() if isinstance(declared_name, str) and declared_name.strip() else fallback_name
+    name = as_listing_line(declared_name) if isinstance(declared_name, str) else ""
+    name = name or fallback_name
     declared_description = frontmatter.get("description")
-    description = " ".join(declared_description.split()) if isinstance(declared_description, str) else ""
+    description = as_listing_line(declared_description) if isinstance(declared_description, str) else ""
     return name, description
 
 

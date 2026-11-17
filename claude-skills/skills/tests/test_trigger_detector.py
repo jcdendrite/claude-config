@@ -214,6 +214,9 @@ class TestFrontmatterReader:
             pytest.param("---\nname: x\n", ValueError, id="unclosed block"),
             pytest.param("---\n- a\n---\n", ValueError, id="list block"),
             pytest.param("---\njust text\n---\n", ValueError, id="scalar block"),
+            pytest.param("---\n[]\n---\n", ValueError, id="empty-list block"),
+            pytest.param("---\n0\n---\n", ValueError, id="falsy scalar block"),
+            pytest.param("---\n{}\n---\n", {}, id="empty flow-mapping block"),
             pytest.param("---\ndescription: a: b\n---\n", ValueError, id="invalid YAML"),
             pytest.param("---\ncreated: 2024-02-30\n---\n", ValueError, id="impossible date"),
         ],
@@ -354,6 +357,22 @@ class TestParseSkillFrontmatter:
 
         assert parse_skill_frontmatter(path) == expected
 
+    @pytest.mark.parametrize(
+        "name_line",
+        [
+            pytest.param('name: "a\\n- forged: line"', id="escaped newline in a double-quoted name"),
+            pytest.param("name: |\n  a\n  - forged: line", id="block-scalar name"),
+            pytest.param('name: "a\\r- forged: line"', id="escaped carriage return in a double-quoted name"),
+            pytest.param('name: "a\\n\\n- forged: line"', id="escaped blank line in a double-quoted name"),
+        ],
+    )
+    def test_a_multi_line_name_reads_as_one_line_so_it_cannot_forge_a_listing_entry(
+        self, tmp_path: Path, name_line: str,
+    ) -> None:
+        path = self._write_skill(tmp_path, "my-skill", f"---\n{name_line}\ndescription: d\n---\nbody\n")
+
+        assert parse_skill_frontmatter(path) == ("a - forged: line", "d")
+
     def test_a_file_with_a_leading_byte_order_mark_is_read(self, tmp_path: Path) -> None:
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
@@ -368,6 +387,41 @@ class TestParseSkillFrontmatter:
         )
 
         assert parse_skill_frontmatter(path) == ("my-skill", "Line one. Line two.")
+
+    def test_a_block_description_with_a_paragraph_break_reads_as_one_single_spaced_line(
+        self, tmp_path: Path,
+    ) -> None:
+        path = self._write_skill(
+            tmp_path, "my-skill", "---\nname: my-skill\ndescription: |\n  Para one.\n\n  Para two.\n---\nbody\n",
+        )
+
+        assert parse_skill_frontmatter(path) == ("my-skill", "Para one. Para two.")
+
+    def test_a_description_separated_by_a_doubled_carriage_return_reads_as_one_single_spaced_line(
+        self, tmp_path: Path,
+    ) -> None:
+        path = self._write_skill(
+            tmp_path, "my-skill", '---\nname: my-skill\ndescription: "Para one.\\r\\rPara two."\n---\nbody\n',
+        )
+
+        assert parse_skill_frontmatter(path) == ("my-skill", "Para one. Para two.")
+
+    @pytest.mark.parametrize(
+        ("frontmatter_body", "expected_description"),
+        [
+            pytest.param("description: d", "d", id="name absent"),
+            pytest.param("description: a: b", "", id="frontmatter unreadable"),
+        ],
+    )
+    def test_a_directory_name_with_a_newline_falls_back_as_one_line_so_it_cannot_forge_a_listing_entry(
+        self, tmp_path: Path, frontmatter_body: str, expected_description: str,
+    ) -> None:
+        try:
+            path = self._write_skill(tmp_path, "a\n- forged: line", f"---\n{frontmatter_body}\n---\nbody\n")
+        except OSError as error:
+            pytest.skip(f"filesystem rejects a newline in a directory name: {error}")
+
+        assert parse_skill_frontmatter(path) == ("a - forged: line", expected_description)
 
     def test_invalid_utf8_raises_unicode_decode_error(self, tmp_path: Path) -> None:
         skill_dir = tmp_path / "my-skill"

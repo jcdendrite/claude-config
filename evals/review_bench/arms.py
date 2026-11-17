@@ -56,16 +56,23 @@ FUNCTION_CONTEXT_CLAUSE = (
 
 
 class ArmSnapshotError(ValueError):
-    """Raised when a production lens file fails one of snapshot_arm's
-    loud-failure checks: a file that is not valid UTF-8, frontmatter that cannot be
-    split or parsed, a missing ARM_TOOLS entry, a rendered frontmatter that does not
-    read back as the arm's name, model and tools, or (for the function-context arm) a
-    read clause that doesn't match exactly once. Every message is prefixed with the lens."""
+    """Raised when a production lens file fails one of snapshot_arm's loud-failure checks.
+
+    The checks are:
+    - The file is not valid UTF-8.
+    - The frontmatter cannot be split or parsed.
+    - The production `tools:` lacks an ARM_TOOLS entry.
+    - The rendered frontmatter does not read back as the arm's name, model and tools.
+    - For the function-context arm, the lens's read clause does not match exactly once.
+
+    Every message is prefixed with the lens.
+    """
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
     """Return (frontmatter_block, body); frontmatter_block excludes the
-    delimiting '---' lines. Raises ValueError when text has no closed
+    delimiting '---' lines. A leading U+FEFF is dropped, so the rendered arm starts with ---.
+    Raises ValueError when text has no closed
     leading frontmatter block, or its closer does not start a line."""
     block, body = run_skill_evals.split_agent_frontmatter(text)
     return block.strip("\n"), body
@@ -126,11 +133,7 @@ def render_arm_agent(arm: str, lens: str, *, agents_dir: Path = AGENTS_DIR) -> s
     """Render one lens's `bench-<lens>.md` text for `arm` from its
     production agent file under `agents_dir`.
 
-    Fails loudly (ArmSnapshotError) unless production's file decodes as UTF-8,
-    unless production's frontmatter splits and parses, unless production's
-    `tools:` holds every ARM_TOOLS entry, unless the rendered frontmatter reads
-    back as the arm's name, model and tools, and, for ARM_FUNCTION_CONTEXT,
-    unless the lens's read clause matches exactly once in the production body.
+    Raises ArmSnapshotError for the failures that class lists.
     """
     if arm not in KNOWN_ARMS:
         raise ValueError(f"unknown arm {arm!r}, expected one of {sorted(KNOWN_ARMS)}")

@@ -314,7 +314,7 @@ def agent_frontmatter_model(agent_file_text: str) -> str | None:
     if frontmatter is None:
         return None
     model = frontmatter.get("model")
-    return model if isinstance(model, str) and model else None
+    return (model.strip() or None) if isinstance(model, str) else None
 
 
 def agent_frontmatter_tools(agent_file_text: str) -> frozenset[str] | None:

@@ -1391,7 +1391,7 @@ class TestAgentFrontmatterParsing:
         assert msmr.agent_frontmatter_model(text) is None
         assert msmr.agent_frontmatter_tools(text) is None
 
-    @pytest.mark.parametrize("model_line", ['model: "sonnet"', "model: sonnet  # pinned"])
+    @pytest.mark.parametrize("model_line", ['model: "sonnet"', "model: sonnet  # pinned", 'model: " sonnet "'])
     def test_model_is_read_as_yaml(self, model_line: str) -> None:
         assert msmr.agent_frontmatter_model(f"---\n{model_line}\n---\nbody\n") == "sonnet"
 
@@ -1401,6 +1401,7 @@ class TestAgentFrontmatterParsing:
             pytest.param("name: a", id="no model line"),
             pytest.param("model:", id="null"),
             pytest.param('model: ""', id="empty"),
+            pytest.param('model: " "', id="whitespace only"),
             pytest.param("model: 3", id="number"),
             pytest.param("model: [a]", id="list"),
         ],

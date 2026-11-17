@@ -1477,6 +1477,13 @@ class TestRenderArmAgent:
                 f"read back as the arm's name, model and tools: name read back as 'other', expected 'bench-{_LENS}'$",
                 id="repeated name key",
             ),
+            # Renders `tools: Read, Grep, Glob` then the second `tools: Read, Grep, Glob, Bash, Write`, which wins.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob, Bash, Write\ntools: Read, Grep, Glob, Bash, Write\n",
+                "read back as the arm's name, model and tools: tools read back as "
+                "'Read, Grep, Glob, Bash, Write', expected 'Read, Grep, Glob'$",
+                id="repeated tools key",
+            ),
             # Renders `tools: Read, Grep, Glob` with `  Bash, Write` left as its continuation line.
             pytest.param(
                 f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob,\n  Bash, Write\n",
