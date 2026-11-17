@@ -397,7 +397,8 @@ class TestBuildParser:
             handler_name = getattr(handler, "__name__", None)
             handler_module = getattr(handler, "__module__", None)
             if handler_name != f"cmd_{snake_name}" or handler_module != registrar_module:
-                wrongly_bound[name] = f"func is {handler_module}.{handler_name}, registrar is in {registrar_module}"
+                handler_label = f"{handler_module}.{handler_name}" if handler_name else repr(handler)
+                wrongly_bound[name] = f"func is {handler_label}, registrar is in {registrar_module}"
         assert walked_snake_names
         defined_snake_names = set()
         package_name = cli.__name__.rpartition(".")[0]
