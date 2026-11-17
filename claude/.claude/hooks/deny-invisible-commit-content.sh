@@ -141,8 +141,8 @@
 #    as the subcommand.
 #  - Program-running global flags (`-c core.fsmonitor=...`, `--git-dir=`,
 #    `--exec-path=`) are admitted before an allowlisted subcommand.
-#    GH-1295 covers only the reviewer gate's Bash arm, and no tracker covers
-#    this gate. The cooperative tier accepts both gaps.
+#    GH-1295 covers only the reviewer gate's Bash arm. The cooperative tier
+#    accepts both gaps.
 #
 # Subprocess footprint:
 #  - The quote-strip (sed+tr) that produces COMMAND_UNQUOTED, and the

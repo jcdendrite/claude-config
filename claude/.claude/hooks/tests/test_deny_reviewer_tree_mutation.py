@@ -375,10 +375,6 @@ class TestBashGitWrites:
 
 
 class TestBashGitBareOrVersion:
-    """Only `git`, `git --version` and `git -v` allow, because they write nothing. An
-    empty extracted subcommand alone is not the test: `$SUB` and `$(...)`
-    words extract to empty too, and they can name any subcommand."""
-
     @pytest.mark.parametrize(
         "command",
         [

@@ -233,7 +233,8 @@
 #     `git -v`, alone or followed by a separator, is allowed (`git ''`,
 #     `git ';add'`).
 #     After bare `git`, git sees an unknown command word, which a
-#     `help.autocorrect` setting can rewrite to a real subcommand.
+#     `help.autocorrect` setting can rewrite to a real subcommand
+#     (git-config(1)).
 #     The cooperative tier accepts this, because a cooperative agent does not
 #     emit that shape.
 #   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
