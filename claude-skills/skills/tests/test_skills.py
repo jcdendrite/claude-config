@@ -678,7 +678,7 @@ class TestFrontmatterReaders:
         """A temporary skills tree that discovery reads in place of the repo's.
 
         Discovery reads the module-level SKILLS_DIR and _PLUGINS_DIR, so both are patched
-        here and in _skill_md_helpers, whose _skill_file and _all_skill_md_paths read their own copies.
+        here and in _skill_md_helpers, whose functions read their own copies.
         """
         skills_dir = tmp_path / "skills"
         _write_skill_md_fixture(
@@ -2864,10 +2864,10 @@ _EXPECTED_DISPOSITION_RULE_ANCHORS = {
 
 # --- Trigger A regression: a $(...)-assigned variable referenced later in the
 # same fenced block. See docs/worktree-bash-guard.md for the full trigger
-# taxonomy this guards one shape of. Fence detection reuses the module-level
-# _FENCE_OPEN_RE (defined in _skill_md_helpers.py, keyed on the fence delimiter itself,
-# not a bash/sh language tag) so an untagged ``` fence is scanned the same as
-# a tagged ```bash one.
+# taxonomy this guards one shape of. Fence detection comes from
+# _fenced_code_blocks in _skill_md_helpers.py, which keys _FENCE_OPEN_RE on the
+# fence delimiter itself, not a bash/sh language tag, so an untagged ``` fence
+# is scanned the same as a tagged ```bash one.
 
 # Matches an assignment at the start of a statement -- line start, or after a
 # statement separator (;, &&, ||) -- optionally preceded by local/export/
