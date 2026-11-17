@@ -61,6 +61,28 @@ HOST_NAME_LOOKALIKES = (
     "node",
 )
 
+# What a stand-in `ps` answers when it shows a `Cursor` host above every caller: any pid but the host's has `bash` as its name
+# and the host as its parent, and the host's parent is pid 1, which ends a walk that goes past the host. It serves a walk that
+# another process starts, which the pid-keyed tree stub below cannot.
+HOST_PROCESS_ID = "424242"
+HOST_SHOWING_PS_BODY = (
+    'case "$2" in\n'
+    f'  comm=) if [ "$4" = {HOST_PROCESS_ID} ]; then echo {MACOS_CURSOR_MAIN_PATH}; else echo bash; fi ;;\n'
+    f'  ppid=) if [ "$4" = {HOST_PROCESS_ID} ]; then echo 1; else echo {HOST_PROCESS_ID}; fi ;;\n'
+    "esac\n"
+)
+
+
+def write_stub_tool_directory(base: Path, directory_name: str, tool_name: str, body: str) -> Path:
+    """A new `base/directory_name` holding an executable POSIX `sh` stand-in named `tool_name`. Returns the directory."""
+    directory = base / directory_name
+    directory.mkdir()
+    stand_in = directory / tool_name
+    stand_in.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    stand_in.chmod(0o755)
+    return directory
+
+
 # Request kinds the stub knows, in `ps -o <kind>=` form.
 PS_REQUEST_KINDS = ("comm", "ppid", "lstart")
 
@@ -91,12 +113,6 @@ class FakeProcessTree:
     def pid_at_depth(self, depth: int) -> int:
         """The PID `depth` hops above the nearest ancestor, which sits at depth 0."""
         return self.processes[depth].pid
-
-    def depth_of(self, pid: int | str) -> int:
-        for depth, process in enumerate(self.processes):
-            if str(process.pid) == str(pid):
-                return depth
-        raise AssertionError(f"pid {pid} is not in the fake tree {[p.pid for p in self.processes]}")
 
 
 def build_fake_process_tree(

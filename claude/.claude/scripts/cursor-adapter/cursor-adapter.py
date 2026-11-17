@@ -2,7 +2,7 @@
 """Generates, installs, checks and removes the Cursor adapter's user-level hook entries.
 
 Usage: cursor-adapter.py generate [--print-entry REGISTRATION --shim PATH] [--python PATH]
-       cursor-adapter.py install --config-dir DIR --acceptance-only
+       cursor-adapter.py install --config-dir DIR [--acceptance-only]
        cursor-adapter.py uninstall
        cursor-adapter.py check [--hook-env]
        cursor-adapter.py status
@@ -43,6 +43,9 @@ BASH_FLOOR = (5, 2)
 PROBE_BOUND_SECONDS = 2
 # A project choice, equal to the timeout of the SessionStart check-python-floor.sh registration in claude/.claude/settings.json.
 CHECK_ENTRY_TIMEOUT_SECONDS = 10
+# A project choice: how long the sessionStart entry's host walk may run.
+# With the stdin read and the three probes at their bound, it keeps the entry inside CHECK_ENTRY_TIMEOUT_SECONDS.
+HOST_WALK_BOUND_SECONDS = 1
 # A project choice: a log past this size is renamed to the one older file kept.
 LOG_ROTATE_BYTES = 16 * 1024 * 1024
 # A project choice: the age past which the sessionStart check removes a conversation's first-call mark.
@@ -77,7 +80,47 @@ ROTATED_LOG_FILE_NAME = "shim.log.1"
 ROTATE_LOCK_NAME = "rotate.lock"
 TEMP_FILE_PREFIX = ".adapter-tmp-"
 FIRST_CALL_DIR_NAME = "first-call"
+CURSOR_VERSIONS_DIR_NAME = "cursor-versions"
 GENERATED_FILE_DIRECTORIES = ("agents", "rules")
+SANDBOX_JSON_NAME = "sandbox.json"
+SANDBOX_PATHS_KEY = "additionalReadwritePaths"
+SANDBOX_PRE_IMAGE_NAME = "sandbox.json.pre-install"
+SANDBOX_PRE_IMAGE_NONE_NAME = "sandbox.json.pre-install.none"
+SANDBOX_PENDING_NAME = "sandbox.pending.json"
+# The grant waits while this parity entry is listed in the parity exceptions, whatever its reason, because that gate is what
+# denies a `marker.sh` shape the engineer's permissions do not allow in a mode that gives no prompt.
+SANDBOX_GRANT_PREREQUISITE = ("adapter-gate", "gate-settings-permissions.sh")
+SANDBOX_KEPT_SENTENCE = "Its saved pre-install file and the record stay, so a later `uninstall` can finish."
+SANDBOX_GRANT_PENDING_LINE = (
+    "sandbox grant: pending. `install` writes no sandbox.json until the permissions gate (gate-settings-permissions.sh) is "
+    "delivered, so an agent Shell call under a sandboxed mode cannot write a marker."
+)
+SANDBOX_GRANT_PREREQUISITE_PENDING_TEXT = "while its prerequisite (gate-settings-permissions.sh) is pending"
+SANDBOX_GRANT_MARKER_WRITE_CLAUSE = "so an agent Shell call under a sandboxed mode can write a marker that no gate denies"
+# The routed config dir's directories that the agent-run identity consumers write: marker.sh, pr-diff-against-base.sh, the
+# review-pr scripts and review-ledger.sh. The routed config dir itself is never listed.
+# `.handoff-nudge.log`, which handoff-record-conversion.sh appends to directly in that dir, is left out by name.
+SANDBOX_WRITABLE_DIRECTORIES = (
+    "code-review-markers",
+    "code-review-diff-markers",
+    "skill-review-markers",
+    "plan-review-markers",
+    "ready-for-review-markers",
+    "cumulative-review-markers",
+    "cumulative-review-subject-markers",
+    "cumulative-review-diff-markers",
+    "review-pr-markers",
+    "verification-markers",
+    ".plan-review-active.d",
+    ".ready-for-review-active.d",
+    ".respond-pr-active.d",
+    ".memory-skill-active.d",
+    ".handoff-active.d",
+    ".plan-review-routing-read.d",
+    ".plan-review-pending-read.d",
+    ".review-pr-active.d",
+    "review-narrative-ledger",
+)
 # What a log-derived or hooks.json-derived value prints as when it is not a known label.
 OTHER_LABEL = "other"
 
@@ -162,6 +205,28 @@ MARKER_GATES_CLAUSE = (
 )
 MARKER_GATES_WARNING = f"{MARKER_GATES_CLAUSE} Engineer: run `uninstall` from a terminal to back out."
 ACCEPTANCE_ONLY_LINE = f"acceptance-only install: {MARKER_GATES_WARNING}"
+
+# The host walk's results, as the sessionStart entry's `hostwalk` log field and its report hold them.
+HOST_WALK_FOUND = "found"
+HOST_WALK_NOT_FOUND = "not-found"
+HOST_WALK_CLAUDE_FIRST = "claude-first"
+# The exit status `_lib_cursor_host_pid` gives when its walk stops at `claude` with no CLI process remembered.
+HOST_WALK_STATUS_CLAUDE_FIRST = 3
+# The token a `cursor_version` is recorded and reported by when it is empty, is dots only, is too long, or holds a character
+# outside the grammar. Every such value shares this one record, so after the first, a change to another of them reports nothing.
+CURSOR_VERSION_OTHER = "other"
+CURSOR_VERSION_PATTERN = re.compile(r"[0-9A-Za-z.+-]{1,64}", re.ASCII)
+CURSOR_VERSION_CHANGED_LINE = (
+    "Cursor version changed to {version}. The Cursor-update regression checklist in docs/cursor-adapter.md applies. "
+    "The engineer, not the agent, runs it."
+)
+HOST_WALK_NOT_FOUND_LINE = (
+    "The host walk found no Cursor or CLI process above this hook, so the adapter's identity has no anchor in this conversation. "
+    "The engineer follows the Recovery section of docs/cursor-adapter.md."
+)
+HOST_WALK_CLAUDE_FIRST_LINE = (
+    "The host walk reached a Claude Code process before any Cursor or CLI process, so identity resolves through Claude Code."
+)
 
 # The names of `self-check`'s checks: the shim's own four and the subcommand's load check.
 SELF_CHECK_NAMES = ("field-table", "parity-exceptions", "translation", "hook-run", "shim-load")
@@ -1830,11 +1895,6 @@ def load_shim_or_refuse(command_name, fix_sentence=SELF_CHECK_FIX_SENTENCE):
 
 def run_install(arguments):
     shim = load_shim_or_refuse("install")
-    if not arguments.acceptance_only:
-        raise AdapterError(
-            "`install` refuses without --acceptance-only: this build supports only the acceptance run, so add "
-            f"--acceptance-only to run it. {MARKER_GATES_CLAUSE} Nothing was written."
-        )
     routed = validate_config_directory(arguments.config_dir)
     directory = record_directory()
     existing = record_or_none()
@@ -1877,8 +1937,16 @@ def run_install(arguments):
     pre_state, pre_bytes = pre_image_state(directory)
     pre_hooks = pre_image_hooks_of(pre_bytes)
     replacing_pre_image = not owned_present and pre_state is not None
+    sandbox_plan = plan_sandbox_grant(routed, directory)
     for line in print_set(report, live_hooks, pre_hooks, replacing_pre_image=replacing_pre_image, comparable=True):
         print(line)
+    if sandbox_plan is not None:
+        engineers_listed = engineer_listed_sandbox_directories(sandbox_plan, routed)
+        if engineers_listed:
+            print(
+                f"{len(engineers_listed)} of the sandbox grant's directories are already listed in {sandbox_plan.path}, "
+                "and are kept as they are."
+            )
     # Writes, in order. A crash between two leaves a state the next `uninstall` completes.
     unconfirmed = Unconfirmed()
     progress = ["none"]
@@ -1901,6 +1969,9 @@ def run_install(arguments):
             else:
                 unconfirmed.run(durable_write, os.path.join(directory, PRE_IMAGE_NAME), raw)
         reach("after-pre-image")
+        if sandbox_plan is not None:
+            write_sandbox_records(sandbox_plan, directory, unconfirmed)
+            reach("after-sandbox-records")
         unconfirmed.run(durable_write, os.path.join(directory, INSTALL_RECORD_NAME), json_bytes(record))
         make_private_directory(state_dir)
         reach("after-install-record")
@@ -1915,7 +1986,17 @@ def run_install(arguments):
         mode = stat.S_IMODE(os.stat(hooks_path).st_mode) if raw is not None else 0o600
         unconfirmed.run(durable_write, hooks_path, json_bytes(merged), mode)
         reach("after-hooks-json")
-        unconfirmed.run(durable_write, os.path.join(directory, MANIFEST_NAME), json_bytes({"files": manifest_files}))
+        manifest = {"files": manifest_files}
+        if sandbox_plan is not None:
+            write_sandbox_file(sandbox_plan, routed, unconfirmed)
+            reach("after-sandbox-file")
+        # A build that writes no grant carries an earlier install's record forward, so `uninstall` still removes those paths.
+        owned_paths = sandbox_plan.owned if sandbox_plan is not None else recorded_sandbox_paths(directory)
+        if owned_paths:
+            manifest["sandbox_paths"] = owned_paths
+        unconfirmed.run(durable_write, os.path.join(directory, MANIFEST_NAME), json_bytes(manifest))
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(os.path.join(directory, SANDBOX_PENDING_NAME))
         reach("after-manifest")
     except PartialWriteError:
         raise
@@ -1964,6 +2045,296 @@ def run_mode_lines(record):
 
 def run_mode_label(record):
     return RUN_MODE_ACCEPTANCE_LABEL if record.get("acceptance_only") is True else RUN_MODE_LABEL
+
+
+# --- the sandbox grant ---
+#
+# The user-level ~/.cursor/sandbox.json lets an agent Shell call under a sandboxed mode write the state the gates read. The
+# grant is the listed directories of the routed config dir, added to the engineer's own `additionalReadwritePaths`.
+
+
+def grant_exceptions_path():
+    return os.path.join(adapter_directory(), PARITY_EXCEPTIONS_FILE_NAME)
+
+
+def grant_pending():
+    """True unless the parity file affirmatively shows the permissions gate, the grant's prerequisite, is delivered.
+
+    Delivered means the file is an object whose `entries` is a list of objects and none of them is an exception for the
+    gate, whatever its reason. A file that is unreadable or has any other shape counts as pending, so no grant is written
+    on a build that cannot say."""
+    try:
+        entries = read_json_object(grant_exceptions_path()).get("entries")
+    except AdapterError:
+        return True
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        return True
+    return any(
+        entry.get("kind") == SANDBOX_GRANT_PREREQUISITE[0] and entry.get("key") == SANDBOX_GRANT_PREREQUISITE[1]
+        for entry in entries
+    )
+
+
+def sandbox_directories(routed_config_dir):
+    return [os.path.join(routed_config_dir, name) for name in SANDBOX_WRITABLE_DIRECTORIES]
+
+
+def refuse_unsafe_sandbox_directories(routed_config_dir):
+    """Refuses, naming the path, a listed directory that is a symlink or exists as something other than a directory."""
+    for path in sandbox_directories(routed_config_dir):
+        if os.path.islink(path):
+            raise AdapterError(f"{path} is a symlink, and the sandbox grant lists real directories only. Remove it, then re-run.")
+        if os.path.lexists(path) and not os.path.isdir(path):
+            raise AdapterError(f"{path} exists and is not a directory, so the sandbox grant cannot list it. Remove it.")
+
+
+def sandbox_json_path():
+    return os.path.join(cursor_directory(), SANDBOX_JSON_NAME)
+
+
+def sandbox_paths_of(document):
+    paths = document.get(SANDBOX_PATHS_KEY, []) if isinstance(document, dict) else None
+    return paths if isinstance(paths, list) and all(isinstance(item, str) for item in paths) else None
+
+
+def read_live_sandbox(path, refused_outcome="the sandbox grant was not written"):
+    """(the file's bytes, its document), or (None, None) when it is absent. Raises AdapterError, naming the file and ending
+    its reason in `refused_outcome`, for one that does not parse, is not an object, or whose `additionalReadwritePaths` is
+    not a list of strings."""
+    raw = read_bytes_or_refuse(path)
+    if raw is None:
+        return None, None
+    try:
+        document = parse_json_bytes(raw)
+    except ValueError as error:
+        raise AdapterError(
+            f"{path} does not parse as JSON, so {refused_outcome}. Fix or remove it, then re-run."
+        ) from error
+    if not isinstance(document, dict) or sandbox_paths_of(document) is None:
+        raise AdapterError(
+            f"{path} is not an object whose {SANDBOX_PATHS_KEY} is a list of strings, so {refused_outcome}. "
+            "Fix or remove it, then re-run."
+        )
+    return raw, document
+
+
+def ordered_union(first, second):
+    return list(dict.fromkeys([*first, *second]))
+
+
+def pending_sandbox_record(directory):
+    """The paths an interrupted install recorded as its additions, or [] when there is no usable pending record."""
+    try:
+        paths = read_json_object(os.path.join(directory, SANDBOX_PENDING_NAME)).get("added")
+    except AdapterError:
+        return []
+    return paths if isinstance(paths, list) and all(isinstance(item, str) for item in paths) else []
+
+
+def promoted_sandbox_record(directory):
+    manifest = read_manifest(directory)
+    paths = manifest.get("sandbox_paths") if manifest is not None else None
+    return paths if isinstance(paths, list) and all(isinstance(item, str) for item in paths) else []
+
+
+def recorded_sandbox_paths(directory):
+    """Every path an earlier install recorded as its own addition, promoted or still pending."""
+    return ordered_union(promoted_sandbox_record(directory), pending_sandbox_record(directory))
+
+
+class SandboxPlan:
+    """What an install does to sandbox.json: the live file, the paths it adds, and every path it then owns."""
+
+    def __init__(self, path, raw, document, to_add, owned, first_grant):
+        self.path = path
+        self.raw = raw
+        self.document = document
+        self.to_add = to_add
+        self.owned = owned
+        self.first_grant = first_grant
+
+
+def plan_sandbox_grant(routed_config_dir, directory):
+    """What the install would do to sandbox.json, or None while the grant is pending. Reads and refuses; writes nothing."""
+    if grant_pending():
+        return None
+    refuse_unsafe_sandbox_directories(routed_config_dir)
+    path = sandbox_json_path()
+    refuse_unsafe_targets(path)
+    raw, document = read_live_sandbox(path)
+    live_paths = sandbox_paths_of(document) if document is not None else []
+    previous = recorded_sandbox_paths(directory)
+    to_add = [item for item in sandbox_directories(routed_config_dir) if item not in live_paths]
+    pre_image_names = (SANDBOX_PRE_IMAGE_NAME, SANDBOX_PRE_IMAGE_NONE_NAME)
+    pre_image_kept = any(os.path.lexists(os.path.join(directory, name)) for name in pre_image_names)
+    first_grant = not previous and not pre_image_kept
+    return SandboxPlan(path, raw, document, to_add, ordered_union(previous, to_add), first_grant)
+
+
+def merge_sandbox(document, to_add):
+    merged = dict(document) if document is not None else {}
+    merged[SANDBOX_PATHS_KEY] = [*merged.get(SANDBOX_PATHS_KEY, []), *to_add]
+    return merged
+
+
+def engineer_listed_sandbox_directories(plan, routed_config_dir):
+    """The grant's directories the live file lists that the install does not own, so `uninstall` keeps them."""
+    live_paths = sandbox_paths_of(plan.document) if plan.document is not None else []
+    return [item for item in sandbox_directories(routed_config_dir) if item in live_paths and item not in plan.owned]
+
+
+def write_sandbox_records(plan, directory, unconfirmed):
+    """Install step 1's sandbox part: the pre-image, then the pending record of the paths about to be added, each durable.
+
+    A re-run that finds either keeps it, because the live file may already be widened."""
+    if not plan.owned:
+        return
+    if plan.first_grant:
+        if plan.raw is None:
+            unconfirmed.run(durable_write, os.path.join(directory, SANDBOX_PRE_IMAGE_NONE_NAME), b"")
+        else:
+            unconfirmed.run(durable_write, os.path.join(directory, SANDBOX_PRE_IMAGE_NAME), plan.raw)
+        checkpoint("after-sandbox-pre-image")
+    if plan.owned != promoted_sandbox_record(directory):
+        unconfirmed.run(durable_write, os.path.join(directory, SANDBOX_PENDING_NAME), json_bytes({"added": plan.owned}))
+
+
+def write_sandbox_file(plan, routed_config_dir, unconfirmed):
+    """Install's sandbox part after hooks.json: creates the listed directories, then writes the merged file by the same
+    re-read and atomic rename as hooks.json."""
+    for path in sandbox_directories(routed_config_dir):
+        make_private_directory(path)
+    checkpoint("after-sandbox-dirs")
+    if not plan.to_add:
+        return
+    if read_bytes_or_none(plan.path) != plan.raw:
+        raise PartialWriteError(
+            f"{plan.path} changed while `install` ran, so it was left as it is. The adapter's files may be partly written. "
+            "Run `uninstall`, then re-run `install`."
+        )
+    mode = stat.S_IMODE(os.stat(plan.path).st_mode) if plan.raw is not None else 0o600
+    unconfirmed.run(durable_write, plan.path, json_bytes(merge_sandbox(plan.document, plan.to_add)), mode)
+
+
+def sandbox_restore_plan(directory):
+    """(the action, bytes or None, a line to print, the live bytes the action was planned from) for `uninstall`'s sandbox
+    step.
+
+    The action is `nothing`, `blocked`, `restore`, `delete` or `rewrite`. Any failure to read or plan the file is `blocked`,
+    which keeps the record and leaves every other step to run."""
+    recorded = recorded_sandbox_paths(directory)
+    if not recorded:
+        return "nothing", None, "", None
+    path = sandbox_json_path()
+    try:
+        refuse_unsafe_targets(path)
+        raw, document = read_live_sandbox(path, refused_outcome="`uninstall` did not remove the sandbox grant")
+        if document is None:
+            return "nothing", None, "", None
+        rest = dict(document)
+        rest[SANDBOX_PATHS_KEY] = [item for item in sandbox_paths_of(document) if item not in recorded]
+        pre_bytes = read_bytes_or_refuse(os.path.join(directory, SANDBOX_PRE_IMAGE_NAME))
+        if pre_bytes is not None:
+            with contextlib.suppress(ValueError, RecursionError):
+                pre_document = parse_json_bytes(pre_bytes)
+                comparable = dict(rest)
+                # The merge adds the paths key to a file that lacked it, so an empty list there is the file as it was.
+                if isinstance(pre_document, dict) and SANDBOX_PATHS_KEY not in pre_document and rest[SANDBOX_PATHS_KEY] == []:
+                    del comparable[SANDBOX_PATHS_KEY]
+                if pre_document == comparable:
+                    return "restore", pre_bytes, "", raw
+        elif os.path.lexists(os.path.join(directory, SANDBOX_PRE_IMAGE_NONE_NAME)) and rest == {SANDBOX_PATHS_KEY: []}:
+            return "delete", None, "", raw
+        if rest == document:
+            return "nothing", None, "", None
+        return "rewrite", json_bytes_or_refusal(rest, path), "", raw
+    except AdapterError as error:
+        return "blocked", None, f"{error} {SANDBOX_KEPT_SENTENCE}", None
+
+
+def apply_sandbox_action(action, data, planned_from, unconfirmed):
+    """`uninstall`'s sandbox write. None when it was written, else a line saying why it was left as it is.
+
+    The live file is re-read first, as hooks.json is, so an edit made since the plan is never overwritten."""
+    path = sandbox_json_path()
+    try:
+        if read_bytes_or_none(path) != planned_from:
+            return f"{path} changed while `uninstall` ran, so it was left as it is. {SANDBOX_KEPT_SENTENCE}"
+        if action == "delete":
+            os.unlink(path)
+            unconfirmed.run(sync_directory_noting, cursor_directory())
+        else:
+            unconfirmed.run(durable_write, path, data, stat.S_IMODE(os.stat(path).st_mode))
+    except OSError as error:
+        return f"{path} could not be changed ({load_error_name(error)}), so it was left as it is. {SANDBOX_KEPT_SENTENCE}"
+    return None
+
+
+def live_recorded_sandbox_count(recorded):
+    """How many of the recorded paths the live sandbox.json lists: 0 when it is absent, None when it is unusable."""
+    try:
+        _, document = read_live_sandbox(sandbox_json_path())
+    except AdapterError:
+        return None
+    live_paths = sandbox_paths_of(document) if document is not None else []
+    return sum(1 for item in recorded if item in live_paths)
+
+
+def recorded_while_pending_text(recorded):
+    """(text, live): what a recorded grant whose prerequisite is pending again says. `live` is the count of recorded paths
+    the file lists now, None when the file is unusable. Only a count above zero says a Shell call can write a marker."""
+    live = live_recorded_sandbox_count(recorded)
+    lead = f"{len(recorded)} path(s) are recorded as the sandbox grant, and "
+    if live is None:
+        lead += f"{SANDBOX_JSON_NAME} is unusable, so how many are listed now is unknown"
+    else:
+        lead += f"{live} of them are listed in {SANDBOX_JSON_NAME} now"
+    text = f"{lead}, {SANDBOX_GRANT_PREREQUISITE_PENDING_TEXT}"
+    return (f"{text}, {SANDBOX_GRANT_MARKER_WRITE_CLAUSE}." if live else f"{text}."), live
+
+
+def sandbox_comparison_lines(directory):
+    """(findings, notes) comparing the live sandbox.json with what the recorded install wrote.
+
+    Counts and fixed labels only, so no key or path text of the file reaches a report."""
+    recorded = promoted_sandbox_record(directory)
+    if not recorded:
+        return [], []
+    findings = []
+    if grant_pending():
+        pending_text, live = recorded_while_pending_text(recorded)
+        findings.append(f"{pending_text} `uninstall` removes the grant." if live else pending_text)
+    try:
+        _, document = read_live_sandbox(sandbox_json_path())
+    except AdapterError:
+        unusable = f"{SANDBOX_JSON_NAME} does not parse or has the wrong shape, so the sandbox grant cannot be compared."
+        return [*findings, unusable], []
+    if document is None:
+        return [*findings, f"{SANDBOX_JSON_NAME} is missing, so the sandbox grant is gone."], []
+    live_paths = sandbox_paths_of(document)
+    try:
+        pre_bytes = read_bytes_or_none(os.path.join(directory, SANDBOX_PRE_IMAGE_NAME))
+    except OSError as error:
+        unreadable = (
+            f"{SANDBOX_PRE_IMAGE_NAME} cannot be read ({load_error_name(error)}), so the sandbox grant cannot be compared."
+        )
+        return [*findings, unreadable], []
+    pre_document = {}
+    if pre_bytes is not None:
+        with contextlib.suppress(ValueError):
+            parsed = parse_json_bytes(pre_bytes)
+            pre_document = parsed if isinstance(parsed, dict) else {}
+    expected_paths = ordered_union(sandbox_paths_of(pre_document) or [], recorded)
+    removed = [item for item in expected_paths if item not in live_paths]
+    added = [item for item in live_paths if item not in expected_paths]
+    other_keys = {*document, *pre_document} - {SANDBOX_PATHS_KEY}
+    changed_keys = [key for key in other_keys if document.get(key) != pre_document.get(key)]
+    if removed:
+        findings.append(f"{SANDBOX_JSON_NAME} no longer lists {len(removed)} path(s) the install added or the engineer had.")
+    if changed_keys:
+        findings.append(f"{SANDBOX_JSON_NAME} has {len(changed_keys)} key(s) that differ from the saved pre-install file.")
+    notes = [f"{len(added)} path(s) in {SANDBOX_JSON_NAME} were added since install"] if added else []
+    return findings, notes
 
 
 # --- uninstall ---
@@ -2099,7 +2470,12 @@ def run_uninstall(arguments):
     pre_state, pre_bytes = pre_image_state(directory)
     pre_document = pre_image_document_of(pre_bytes) if pre_state == "present" else None
     record_file_present = os.path.lexists(os.path.join(directory, INSTALL_RECORD_NAME))
-    leftovers_present = pre_state is not None or os.path.lexists(os.path.join(directory, MANIFEST_NAME))
+    leftovers_present = (
+        pre_state is not None
+        or os.path.lexists(os.path.join(directory, MANIFEST_NAME))
+        or os.path.lexists(os.path.join(directory, SANDBOX_PENDING_NAME))
+    )
+    sandbox_action, sandbox_bytes, sandbox_line, sandbox_planned_from = sandbox_restore_plan(directory)
     emitted, comparison_failure = entries_for_uninstall()
     report = classify_hooks(emitted, live_hooks, tolerant=True) if emitted is not None else None
     owned_count = sum(1 for items in live_hooks.values() for item in items if ownership(item) == "owned")
@@ -2163,6 +2539,16 @@ def run_uninstall(arguments):
         checkpoint(name)
 
     try:
+        sandbox_writes = sandbox_action in ("restore", "rewrite", "delete")
+        if sandbox_writes:
+            sandbox_line = apply_sandbox_action(sandbox_action, sandbox_bytes, sandbox_planned_from, unconfirmed)
+            if sandbox_line is not None:
+                sandbox_action = "blocked"
+        if sandbox_line:
+            print(sandbox_line)
+            remaining.append(f"the sandbox grant in {SANDBOX_JSON_NAME}")
+        if sandbox_writes and sandbox_action != "blocked":
+            reach("after-sandbox")
         if document is not None and (owned_count or restore is not None):
             if read_bytes_or_none(hooks_path) != raw:
                 raise AdapterError(f"{hooks_path} changed while `uninstall` ran, so it was left as it is. Re-run `uninstall`.")
@@ -2205,7 +2591,9 @@ def run_uninstall(arguments):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(os.path.join(directory, INSTALL_RECORD_NAME))
         reach("after-record")
-        for name in (PRE_IMAGE_NAME, PRE_IMAGE_NONE_NAME, MANIFEST_NAME):
+        # A sandbox.json that could not be handled keeps its record, so a later `uninstall` can finish it.
+        sandbox_names = (SANDBOX_PRE_IMAGE_NAME, SANDBOX_PRE_IMAGE_NONE_NAME, SANDBOX_PENDING_NAME, MANIFEST_NAME)
+        for name in (PRE_IMAGE_NAME, PRE_IMAGE_NONE_NAME, *([] if sandbox_action == "blocked" else sandbox_names)):
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(os.path.join(directory, name))
         sweep_temp_debris(cursor_directory())
@@ -2228,12 +2616,7 @@ def run_uninstall(arguments):
                 f"{failing_file_text(error)} failed ({load_error_name(error)}) before `uninstall` wrote anything, so nothing "
                 "changed. Fix the cause, then re-run `uninstall`."
             ) from error
-        raise post_write_failure(
-            error,
-            progress[0],
-            "hooks.json is already handled, so do not restore it by hand, and leave the saved pre-install file in place. "
-            "Fix the cause (permissions or ownership of the file named first). Re-run `uninstall`.",
-        ) from error
+        raise post_write_failure(error, progress[0], uninstall_failure_instruction(progress[0])) from error
     for line in unconfirmed.lines():
         print(line)
     remaining_text = f"{', '.join(remaining)} {'remains' if len(remaining) == 1 else 'remain'}"
@@ -2252,6 +2635,21 @@ def run_uninstall(arguments):
     else:
         print(f"Nothing was installed: no {INSTALLED_THINGS_TEXT} was found.")
     return 0
+
+
+def uninstall_failure_instruction(reached):
+    """What the engineer does after `uninstall` failed, naming only what the step reached has handled."""
+    if reached == "after-sandbox":
+        return (
+            f"Only the sandbox grant in {SANDBOX_JSON_NAME} is handled so far, and hooks.json is not. Leave the saved "
+            "pre-install file in place. Fix the cause: the permissions or ownership of the file named first, or, when no file is "
+            "named, a change to hooks.json while `uninstall` ran. Re-run `uninstall`. "
+            "If `cursor-adapter.py` cannot run, restore hooks.json by hand as docs/cursor-adapter.md's Recovery section says."
+        )
+    return (
+        "hooks.json is already handled, so do not restore it by hand, and leave the saved pre-install file in place. "
+        "Fix the cause (permissions or ownership of the file named first). Re-run `uninstall`."
+    )
 
 
 def read_manifest(directory):
@@ -2454,9 +2852,11 @@ def compare_install(record, hooks_path, generation_failure_fix=RESTORE_CHECKOUT_
         _, document, live_hooks = read_live_hooks(hooks_path)
     except AdapterError as error:
         comparison.findings.append(str(error))
+        add_sandbox_comparison(comparison)
         return comparison
     if document is None:
         comparison.findings.append(f"{hooks_path} does not exist. {TAMPER_FIX_SENTENCE}")
+        add_sandbox_comparison(comparison)
         return comparison
     try:
         comparison.emitted = expected_entries_for(record)
@@ -2495,7 +2895,15 @@ def compare_install(record, hooks_path, generation_failure_fix=RESTORE_CHECKOUT_
             )
     except LOAD_FAILURES as error:
         note_comparison_failure(comparison, error)
+    add_sandbox_comparison(comparison)
     return comparison
+
+
+def add_sandbox_comparison(comparison):
+    """The sandbox grant's comparison, which no state of hooks.json skips."""
+    sandbox_findings, sandbox_notes = sandbox_comparison_lines(record_directory())
+    comparison.findings += sandbox_findings
+    comparison.notes += sandbox_notes
 
 
 def shim_refuses_record():
@@ -2622,13 +3030,78 @@ def run_check(arguments):
     return 1 if findings else 0
 
 
-def hook_env_conversation_id(shim):
-    """The session id of the sessionStart payload on stdin, or None when it is absent, invalid or not read in time."""
+def hook_env_payload(shim):
+    """The sessionStart payload object on stdin, or None when it is absent, not an object or not read in time."""
     try:
         payload = shim.parse_strict_json(shim.read_payload(time.monotonic() + shim.MIN_DEADLINE_SECONDS))
-        return shim.session_id_of(payload) if isinstance(payload, dict) else None
     except shim.Refusal, ValueError, OSError:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def hook_env_conversation_id(shim, payload):
+    """The session id of the sessionStart payload, or None when there is none or it is invalid."""
+    if payload is None:
+        return None
+    try:
+        return shim.session_id_of(payload)
+    except shim.Refusal:
+        return None
+
+
+def host_walk_result(record, shim):
+    """One of the HOST_WALK_* tokens, from the same walk the shim's `pin` mode runs. Any failure to run it is `not-found`."""
+    bash = record["tool_paths"].get("bash")
+    if bash is None:
+        return HOST_WALK_NOT_FOUND
+    try:
+        completed = subprocess.run(
+            [bash, "-c", shim.HOST_WALK_PROGRAM, "walk", stow_hook_path("_lib.sh")],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=probe_directory(),
+            env=record_environment(record),
+            timeout=HOST_WALK_BOUND_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return HOST_WALK_NOT_FOUND
+    if completed.returncode == 0:
+        return HOST_WALK_FOUND
+    return HOST_WALK_CLAUDE_FIRST if completed.returncode == HOST_WALK_STATUS_CLAUDE_FIRST else HOST_WALK_NOT_FOUND
+
+
+def cursor_version_token(version):
+    """The version as the record file name and the log field hold it: itself when it fits the grammar, else `other`."""
+    if CURSOR_VERSION_PATTERN.fullmatch(version) and version.strip(".") != "":
+        return version
+    return CURSOR_VERSION_OTHER
+
+
+def cursor_version_changed(shim, state_dir, token):
+    """True when `token` is a version to report: one the state dir's record did not hold, after it held another.
+
+    The record is one file per seen version, made by an exclusive create, so of two conversations that see the change
+    only the one whose create wins reports it. A first sight records and stays quiet. A record that cannot be read or
+    written reports a change, which sends the engineer to the checklist."""
+    directory = os.path.join(state_dir, CURSOR_VERSIONS_DIR_NAME)
+    try:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(directory, 0o700)
+        if not shim.usable_state_dir(directory):
+            return True
+        held_a_version = bool(os.listdir(directory))
+        descriptor = os.open(
+            os.path.join(directory, token), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+    except FileExistsError:
+        return False
+    except (OSError, ValueError):
+        return True
+    with contextlib.suppress(OSError):
+        os.close(descriptor)
+    return held_a_version
 
 
 def run_hook_env_check():
@@ -2688,10 +3161,27 @@ def hook_env_check_body():
             rotate_log(state_dir)
         if first_call_usable:
             sweep_first_call_marks(state_dir, time.time())
+        payload = hook_env_payload(shim) if shim is not None else None
+        host_walk = host_walk_result(record, shim) if shim is not None else ""
+        host_walk_lines = {
+            HOST_WALK_NOT_FOUND: HOST_WALK_NOT_FOUND_LINE,
+            HOST_WALK_CLAUDE_FIRST: HOST_WALK_CLAUDE_FIRST_LINE,
+        }
+        if host_walk:
+            lines.append(f"Host walk: {host_walk}.")
+            if host_walk in host_walk_lines:
+                lines.append(host_walk_lines[host_walk])
+        reported_version = ""
+        payload_version = payload.get("cursor_version") if payload is not None else None
+        if state_usable and isinstance(payload_version, str):
+            token = cursor_version_token(payload_version)
+            if cursor_version_changed(shim, state_dir, token):
+                reported_version = token
+                lines.append(CURSOR_VERSION_CHANGED_LINE.format(version=token))
         comparison = compare_install(record, os.path.join(cursor_directory(), HOOKS_JSON_NAME), AGENT_RESTORE_SENTENCE)
         findings += comparison.findings
         notes += comparison.notes
-        conversation = hook_env_conversation_id(shim) if shim is not None else None
+        conversation = hook_env_conversation_id(shim, payload) if shim is not None else None
         fields = {
             "ts": int(time.time()),
             "reg": "check-hook-env",
@@ -2700,6 +3190,8 @@ def hook_env_check_body():
             "ms": int((time.monotonic() - started) * 1000),
             "ver": record.get("contract_version", ""),
             "runmode": run_mode_label(record),
+            "hostwalk": host_walk,
+            "cursorver": reported_version,
         }
         log_line_written = False
         if state_usable:
@@ -2770,6 +3262,13 @@ def run_status(arguments):
         print(f"hooks' python3: unavailable ({type(error).__name__})")
     for line in run_mode_lines(record):
         print(line)
+    if grant_pending():
+        recorded_paths = promoted_sandbox_record(record_directory())
+        if recorded_paths:
+            pending_text, live = recorded_while_pending_text(recorded_paths)
+            print(f"sandbox grant: pending{', and still in force' if live else ''}. {pending_text}")
+        else:
+            print(SANDBOX_GRANT_PENDING_LINE)
     if log.cut:
         print(f"note: the log is larger than `status` reads, so these counts cover its last {LOG_STATUS_MAX_LINES} lines at most")
     fire_counts = {}
@@ -2789,6 +3288,12 @@ def run_status(arguments):
                 f"flag: the Shell-selecting registration {label} has not fired in the lines read, though other Shell calls "
                 "logged. Run `check` to compare the entries with what the checkout generates."
             )
+    not_found_walks = sum(1 for fields in lines if fields.get("hostwalk") == HOST_WALK_NOT_FOUND)
+    if not_found_walks:
+        print(
+            f"flag: the sessionStart entry's host walk found no Cursor or CLI host in {not_found_walks} conversation(s). "
+            "The engineer follows the Recovery section of docs/cursor-adapter.md."
+        )
     for outcome, name in (("pin-check", "pin-check denies"), ("stale-install", "stale-install calls"), ("usage", "usage faults")):
         count = sum(1 for fields in lines if fields.get("out") == outcome)
         if count:

@@ -60,7 +60,7 @@ CLAUDE_PROCESS_ENV_NAMES = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID"
 
 # The highest phase of `.claude/plans/cursor-adapter.md` that this tree delivers.
 # A `pending-phase` parity entry must name a later one.
-DELIVERED_PHASE_NUMBER = 3
+DELIVERED_PHASE_NUMBER = 4
 
 
 def registration_key(event: str, matcher: str, script: str) -> str:
