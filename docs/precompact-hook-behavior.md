@@ -75,8 +75,8 @@ Deferred; no data collected.
 
 `PostCompact`'s input carries the full `compact_summary` Claude Code just generated during compaction. A `PostCompact` hook can't feed anything back to Claude (per the `additionalContext` refutation above), but it can **archive** that summary to disk — a cheap, no-synthesis-required complement to an incremental review-narrative ledger, useful as a raw safety net for whatever the ledger didn't anticipate capturing.
 
-Combined with the `additionalContext` refutation above, a `PostCompact` hook is needed only for archival, because it cannot remind Claude of anything. With no event-driven injection path found in this spike, the reminder to check the ledger had to be a static, always-loaded CLAUDE.md instruction. Two later sections each record a channel this spike did not test:
-- a `SessionStart` hook with matcher `compact`, whose `additionalContext` reaches the resumed agent ("What survives compaction");
+With no event-driven injection path found in this spike, the reminder to check the ledger had to be a static, always-loaded CLAUDE.md instruction. Two later sections each record a channel this spike did not test:
+- a `SessionStart` hook with matcher `compact`, whose `additionalContext` reaches the resumed agent ("Post-compact hook end-to-end findings");
 - a `PreCompact` hook's plain stdout on exit 0, which steers the summary as model behavior rather than a guarantee ("Steering probe").
 
 ## What survives compaction — survival probe findings
@@ -277,12 +277,11 @@ Result: yes, in the runs below, all on one build. A `PreCompact` hook's stdout o
   - Automatic: no such record. The stdout appears in `api-request-blob` records, one per compaction.
   - Both: the `isCompactSummary` record holds the steered summary.
 
-### Routing outcome
+### Implications for a `PreCompact` hook
 
-Plain stdout on exit 0 steers the summary on both triggers, while the `additionalContext` JSON shape was refuted above on build 2.1.233 and not re-tested on 2.1.326. Designing a `PreCompact` hook that prints summary instructions is worth pursuing. Its design is not part of these findings.
+Designing a `PreCompact` hook that prints summary instructions as plain stdout is worth pursuing. The `additionalContext` JSON shape was refuted above on build 2.1.233 and not re-tested on 2.1.326.
 
 Constraints any such hook inherits from these results:
 
 - A hook must not rely on steering to carry a constraint, because steering is model behavior, not a guarantee.
 - The stdout is followed as instructions and re-summarized into later compactions, so it must never be built from prompt, transcript or other untrusted text.
-- Only exit 0 and exit 1 were probed here.
