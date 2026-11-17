@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import functools
 import os
 import shlex
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -23,6 +23,8 @@ from helpers import (
 
 COLD_BODY = "exit 0\n"
 MODE_WITHOUT_READ_BITS = 0o111
+# Bounds a check that returns at once, so only a blocked open can reach it; long enough that a loaded host does not trip it.
+FIFO_CHECK_WATCHDOG_SECONDS = 5
 
 
 def _make_marker_directory(entry: Path) -> Path:
@@ -144,6 +146,45 @@ def test_directory_holding_only_the_shim_the_real_writer_wrote_passes(tmp_path: 
     check_scaled_path_stubs_warm(_path_env(bin_dir), None, tmp_path)
 
 
+@pytest.fixture
+def bin_dir_with_shim_over_stand_in_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A bin directory holding the shim the real writer wrote over a stand-in `timeout`, so no host binary is needed."""
+    stand_in_directory = tmp_path / "stand-in-bin"
+    stand_in_directory.mkdir()
+    stand_in_timeout = stand_in_directory / "timeout"
+    stand_in_timeout.write_text("#!/bin/sh\nexit 0\n")
+    stand_in_timeout.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stand_in_directory))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    assert write_scaled_timeout_shim(bin_dir)
+    return bin_dir
+
+
+def test_marker_directory_lands_beside_a_shim_written_over_a_stand_in_timeout(
+    tmp_path: Path, bin_dir_with_shim_over_stand_in_timeout: Path
+) -> None:
+    bin_dir = bin_dir_with_shim_over_stand_in_timeout
+
+    assert (bin_dir / "timeout").is_file()
+    assert os.access(bin_dir / "timeout", os.X_OK)
+    assert (bin_dir / helpers._SCALED_TIMEOUT_MARKER_DIRNAME).is_dir()
+    check_scaled_path_stubs_warm(_path_env(bin_dir), None, tmp_path)
+
+
+def test_cold_stub_beside_a_shim_written_over_a_stand_in_timeout_raises_naming_only_the_cold_stub(
+    tmp_path: Path, bin_dir_with_shim_over_stand_in_timeout: Path
+) -> None:
+    bin_dir = bin_dir_with_shim_over_stand_in_timeout
+    cold_stub = _write_cold_stub(bin_dir / "cold-stub")
+
+    with pytest.raises(UnwarmedStubError) as raised:
+        check_scaled_path_stubs_warm(_path_env(bin_dir), None, tmp_path)
+
+    assert str(cold_stub) in str(raised.value)
+    assert str(bin_dir / "timeout") not in str(raised.value)
+
+
 def test_entry_holding_a_warm_and_a_cold_stub_raises_naming_only_the_cold_stub(tmp_path: Path, marker_bin: Path) -> None:
     warm_stub = _warm_stub(marker_bin / "warm-stub")
     cold_stub = _write_cold_stub(marker_bin / "cold-stub")
@@ -153,6 +194,35 @@ def test_entry_holding_a_warm_and_a_cold_stub_raises_naming_only_the_cold_stub(t
 
     assert str(cold_stub) in str(raised.value)
     assert str(warm_stub) not in str(raised.value)
+
+
+def test_marker_entry_listed_twice_on_path_lists_its_cold_stub_once(tmp_path: Path, marker_bin: Path) -> None:
+    cold_stub = _write_cold_stub(marker_bin / "cold-stub")
+
+    with pytest.raises(UnwarmedStubError) as raised_for_listed_once:
+        check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
+    with pytest.raises(UnwarmedStubError) as raised_for_listed_twice:
+        check_scaled_path_stubs_warm(_path_env(marker_bin, marker_bin), None, tmp_path)
+
+    assert str(raised_for_listed_twice.value).count(str(cold_stub)) == 1
+    assert str(raised_for_listed_twice.value) == str(raised_for_listed_once.value)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(0o654, id="group-execute-bit-only"),
+        pytest.param(0o645, id="other-execute-bit-only"),
+    ],
+)
+def test_cold_stub_with_only_a_group_or_other_execute_bit_is_flagged(mode: int, tmp_path: Path, marker_bin: Path) -> None:
+    cold_stub = _write_cold_stub(marker_bin / "cold-stub")
+    cold_stub.chmod(mode)
+
+    with pytest.raises(UnwarmedStubError) as raised:
+        check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
+
+    assert str(cold_stub) in str(raised.value)
 
 
 def test_message_gives_both_remedies(tmp_path: Path, marker_bin: Path) -> None:
@@ -174,27 +244,37 @@ def test_message_names_the_entry_holding_the_marker_directory(tmp_path: Path, ma
     assert f"marker directory in {marker_bin}" in str(raised.value)
 
 
-def test_subdirectory_of_a_scanned_entry_is_never_opened_or_descended_into(
-    tmp_path: Path, marker_bin: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    warm_stub = _warm_stub(marker_bin / "warm-stub")
+def test_cold_stub_inside_a_subdirectory_of_a_scanned_entry_is_not_flagged(tmp_path: Path, marker_bin: Path) -> None:
     _write_cold_stub(marker_bin / "subdirectory" / "cold-stub")
-    opened_paths: list[str] = []
-
-    def recording_open(file, *args, **kwargs):
-        opened_paths.append(os.fspath(file))
-        return builtins.open(file, *args, **kwargs)
-
-    # A module global named `open` shadows the builtin for helpers only.
-    # An open() of a directory raises OSError, which the check swallows.
-    # Only a spy can therefore see whether the regular-file filter held.
-    # The spy sees only calls through the builtin name `open`, so a move to `Path.open` or `os.open` in helpers
-    # would empty its list without a behavior change.
-    monkeypatch.setattr(helpers, "open", recording_open, raising=False)
 
     check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
 
-    assert opened_paths == [str(warm_stub)]
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is unavailable on this platform")
+def test_executable_fifo_in_a_scanned_entry_is_skipped_without_blocking(tmp_path: Path, marker_bin: Path) -> None:
+    fifo_path = marker_bin / "executable-fifo"
+    os.mkfifo(fifo_path)
+    fifo_path.chmod(0o755)
+    raised_errors: list[Exception] = []
+
+    def run_check() -> None:
+        try:
+            check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
+        except Exception as error:
+            raised_errors.append(error)
+
+    check_thread = threading.Thread(target=run_check, daemon=True)
+    check_thread.start()
+    try:
+        check_thread.join(FIFO_CHECK_WATCHDOG_SECONDS)
+        finished_in_time = not check_thread.is_alive()
+    finally:
+        # A writer end releases a reader stuck in open(); closing it again gives that reader EOF.
+        os.close(os.open(fifo_path, os.O_RDWR | os.O_NONBLOCK))
+        check_thread.join(FIFO_CHECK_WATCHDOG_SECONDS)
+
+    assert finished_in_time
+    assert raised_errors == []
 
 
 def test_cold_stub_passes_when_no_path_entry_holds_a_marker(tmp_path: Path) -> None:
