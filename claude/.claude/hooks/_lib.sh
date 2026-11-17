@@ -2085,26 +2085,14 @@ _lib_extract_git_subcmd_args() {
   printf '%s\n' "${argv#*$'\n'}"
 }
 
-# Exit 0 when FRAGMENT, trimmed of surrounding whitespace, is exactly `git`, `git --version`
-# or `git -v`, and 1 otherwise.
-# COMMAND is the raw tool-input command, never a masked or quote-stripped form.
-# A derived form can lose the `$` or backtick (`_lib_strip_shell_quotes` deletes a `$` before a quote).
-# `--help` and `-h` are deliberately not accepted, keeping the allow set minimal.
-# Exits 1 when COMMAND holds `$` or a backtick, because an expansion can supply a subcommand
-# word that fragment-splitting hides (`git "$(echo checkout)"` splits into the fragments
-# `git ` and `echo checkout`).
-# The quote strip turns `git '' --version` into `git  --version`, which the exact match refuses.
-# Not the same test as an empty _lib_extract_git_subcmd result, which a
-# non-alphanumeric subcommand word such as `$SUB` also yields.
-_lib_git_fragment_is_bare_or_version() {
-  local fragment="$1" command="$2"
-  [[ "$command" == *'$'* || "$command" == *'`'* ]] && return 1
-  fragment="${fragment#"${fragment%%[![:space:]]*}"}"
-  fragment="${fragment%"${fragment##*[![:space:]]}"}"
-  case "$fragment" in
-    "git" | "git --version" | "git -v") return 0 ;;
-  esac
-  return 1
+# $1 is a quote-stripped or masked fragment. A literal match, so no word inside it can hide another subcommand.
+# $2 is the raw tool-input command. A backtick in it can supply a command word in front of the fragment, so any backtick refuses.
+_lib_fragment_is_git_version_query() {
+  local version_query_re='^ *git --version *$'
+  if [[ "$2" == *'`'* ]]; then
+    return 1
+  fi
+  [[ "$1" =~ $version_query_re ]]
 }
 
 # Exit 0 when WORD holds a quote character, `$`, a backtick, `<`, `>`, `\`,

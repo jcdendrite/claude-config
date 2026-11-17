@@ -375,7 +375,7 @@ while IFS= read -r masked_fragment; do
     continue
   fi
   if [ "$COMMIT_FRAGMENT_COUNT" -eq 0 ] && ! [[ "$masked_subcmd" =~ ^($ALLOWED_RE)$ ]] \
-    && ! _lib_git_fragment_is_bare_or_version "$masked_fragment" "$COMMAND"; then
+    && ! _lib_fragment_is_git_version_query "$masked_fragment" "$COMMAND"; then
     trimmed_masked_fragment=$(_trim_fragment "$masked_fragment")
     emit_deny "'${trimmed_masked_fragment}' runs 'git ${masked_subcmd:-<subcommand>}' before this call's first real ${MASKED_CONCLUDING_LABEL} and can change what ends up staged. Every commit gate reads \`git diff --cached\` before this Bash call executes, so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates — even when a quote-embedded decoy commit earlier in the command hides this fragment from a quote-stripped scan. Staging must run as its own Bash tool call, with the ${MASKED_CONCLUDING_LABEL} as a second, separate call."
     exit 0
@@ -432,7 +432,7 @@ while IFS= read -r fragment; do
     exit 0
   fi
   if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]] \
-    && ! _lib_git_fragment_is_bare_or_version "$fragment" "$COMMAND"; then
+    && ! _lib_fragment_is_git_version_query "$fragment" "$COMMAND"; then
     trimmed_fragment=$(_trim_fragment "$fragment")
     emit_deny "'${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's ${CONCLUDING_FRAGMENT_LABEL} and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with the ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."
     exit 0

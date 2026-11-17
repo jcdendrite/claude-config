@@ -229,14 +229,6 @@
 #   - Program-running global flags (`-c core.fsmonitor=...`, `--git-dir=`,
 #     `--exec-path=`) are admitted before an allowlisted subcommand.
 #     GH-1295 tracks this gap and the `--shallow-file` gap above.
-#   - Quoted text that quote-stripping reduces to `git`, `git --version` or
-#     `git -v`, alone or followed by a separator, is allowed (`git ''`,
-#     `git ';add'`).
-#     After bare `git`, git sees an unknown command word, which a
-#     `help.autocorrect` setting can rewrite to a real subcommand
-#     (git-config(1)).
-#     The cooperative tier accepts this, because a cooperative agent does not
-#     emit that shape.
 #   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
 #     exit status is checked and denies with an explicit message rather than
 #     falling through to this hook's normal "no gated fragment matched"
@@ -560,6 +552,7 @@ case "$TOOL_NAME" in
       exit 0
     fi
     while IFS= read -r fragment; do
+      fragment_before_wrapper_strip="$fragment"
       if _fragment_launches_venv_run_wrapper "$fragment"; then
         _strip_venv_run_wrapper_word fragment
       fi
@@ -571,7 +564,7 @@ case "$TOOL_NAME" in
         # a reviewer never has a legitimate git-write target anywhere, so
         # any non-read-only subcommand denies regardless of where it runs.
         if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]] \
-          && ! _lib_git_fragment_is_bare_or_version "$fragment" "$COMMAND"; then
+          && ! _lib_fragment_is_git_version_query "$fragment_before_wrapper_strip" "$COMMAND"; then
           emit_deny "'git $subcmd' is not a read-only git subcommand for a review-only agent, and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
           exit 0
         fi

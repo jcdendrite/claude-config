@@ -374,58 +374,94 @@ class TestBashGitWrites:
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="code-writer")) == "allow"
 
 
-class TestBashGitBareOrVersion:
+class TestBashGitVersionQuery:
+    """Only a fragment that is exactly `git --version` is allowed without a read-only subcommand."""
+
     @pytest.mark.parametrize(
         "command",
         [
             "git --version",
-            "git -v",
-            "git",
             "git --version | head -1",
             "git --version && git status",
+            # The quote strip reduces this to the literal; the commit gate's masked walk denies it.
             "git --version ''",
         ],
         ids=[
             "version",
-            "short-version",
-            "bare",
             "version-piped-to-head",
             "version-then-status",
-            "trailing-empty-quote-cooperative-waiver",
+            "version-then-empty-argument-after-quote-strip",
         ],
     )
-    def test_reviewer_bare_or_version_git_allowed(self, command):
+    def test_reviewer_git_version_query_allowed(self, command):
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
-    # The exact-match verdicts are covered by test_lib_fragment_matchers.py. These
-    # cases need the hook's own fragment splitter or quote strip: a `;`/`&&`
-    # chain, a `$(...)` split, the strip that deletes an empty quote pair, and a
-    # backslash-newline continuation. The unquoted `$(...)` row fails if the hook
-    # passes the fragment instead of the whole command to the helper: the
-    # fragment `git ` alone is accepted, and only the whole command shows the
-    # substitution.
+    # An id ending in `accepted-over-deny` marks a shape that writes nothing if
+    # run: the gate denies it because the fragment is not exactly `git --version`.
     @pytest.mark.parametrize(
         "command",
         [
-            "git '' --version",
-            "git --version; git checkout -- x",
-            "git --version && git init",
-            'git "$(echo checkout)" -- x',
+            "git",
+            "git ''",
+            "git ';add'",
+            'git "$(echo checkout)"',
             "git $(echo checkout) -- x",
             "git `echo checkout` -- x",
             "git \\\ncheckout -- x",
+            "git --version; git checkout -- x",
+            "git --version && git init",
+            "git -C --version checkout",
+            "git '' --version",
+            "git --version & git checkout -- x",
+            "git --shallow-file --version checkout -- x",
+            "git -c 'a.b=c --version' checkout -- x",
+            "env 'A= git --version' git push",
+            "git -c 'core.sshCommand=ssh -v' fetch",
+            "git -v",
+            "git -c k=v --version",
+            "/tmp/x/git --version",
+            "GIT_DIR=x git --version",
+            "PATH=/tmp/x git --version",
+            "git --version $(git add f)",
+            "git --version `git add f`",
+            "git --version 2>&1 | head -1",
+            "`echo env` git --version",
+            # The wrapper strip rejoins words with single spaces, which would collapse this
+            # shape to the literal; the row pins that the predicate reads the pre-strip fragment.
+            "scripts/venv-run.sh git '' --version",
+            "scripts/venv-run.sh git --version",
         ],
         ids=[
-            "empty-quote-pair-before-version",
-            "version-then-write-semicolon",
-            "version-then-write-and",
+            "bare-git-accepted-over-deny",
+            "empty-quote-pair-accepted-over-deny",
+            "quoted-separator-subcommand",
             "command-substitution-subcommand",
             "unquoted-command-substitution-subcommand",
             "unquoted-backtick-substitution-subcommand",
             "backslash-newline-continuation-subcommand",
+            "version-then-write-semicolon",
+            "version-then-write-and",
+            "value-flag-consumes-version-as-its-value",
+            "empty-quote-before-version-flag",
+            "version-then-write-background",
+            "shallow-file-value-then-write",
+            "quoted-config-value-holding-version-flag",
+            "wrapper-quoted-version-then-push",
+            "quoted-config-value-holding-short-version-flag",
+            "short-version-accepted-over-deny",
+            "config-flag-then-version-accepted-over-deny",
+            "path-qualified-git-word",
+            "env-assignment-prefix",
+            "path-env-assignment-prefix",
+            "version-then-command-substitution-write",
+            "version-then-backtick-write",
+            "version-then-redirect-accepted-over-deny",
+            "backtick-supplies-command-word",
+            "venv-run-wrapper-empty-quote-before-version-flag",
+            "venv-run-wrapper-version-accepted-over-deny",
         ],
     )
-    def test_reviewer_bare_or_version_lookalike_denied(self, command):
+    def test_reviewer_git_non_version_query_shape_denied(self, command):
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
 
 
