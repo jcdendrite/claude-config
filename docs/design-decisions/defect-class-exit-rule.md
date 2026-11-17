@@ -48,7 +48,6 @@ The issue's only evidence is one branch, and it asks for a replay over past ledg
 - Two read-only labelers labeled the original development branches' recorded-pass rows, and the remaining rows of a branch that cut.
 - The exit pass was found first, as a branch's first recorded cumulative pass with no ADDRESS-class row.
 - A SETTLED row never blocked a pass.
-- A recorded round counted only when the snapshot held a row for it.
 - A branch cut when the snapshot held a round after its exit pass.
 - An escape is a row, in a round after its branch's exit pass, that a reading puts in an ADDRESS class.
 - The two labelers' label sets agreed on the outcome, so it was not label-sensitive. An outcome the two label sets disagreed on would have been Undecided.
