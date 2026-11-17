@@ -2,7 +2,7 @@
 
 *2026-11-16.*
 
-A replay over this repository's recorded review history tested parts 1, 2 and 4 of the exit rule that issue 1428 proposes. `claude-skills/skills/code-review/SKILL.md` § "Finding disposition" is unchanged.
+A replay over this repository's recorded review history tested parts 1, 2 and 4 of the exit rule that issue 1428 proposes.
 
 ## What was evaluated
 
@@ -17,12 +17,8 @@ The issue's only evidence is one branch, and it asks for a replay over past ledg
 
 ## Why part 3 was not evaluated
 
-- The ledger records no fix shape, and a row's rationale states the chosen fix only in words.
-- Part 3 sends a fix to a design question.
-- A design question changes what later rounds review.
-- Recorded history holds only the rounds that ran.
-- An Adopt would therefore have covered parts 1, 2 and 4.
-- Part 3 needs its own evaluation.
+- Part 3 needs its own evaluation, and an Adopt would therefore have covered parts 1, 2 and 4.
+- The reason: part 3 sends a fix to a design question, and a design question changes what later rounds review. Recorded history holds only the rounds that ran. The ledger records no fix shape, and a row's rationale states the chosen fix only in words.
 - Part 3 overlaps the heavier-mechanism rule in `claude-skills/skills/code-review/SKILL.md` § "Finding disposition".
 
 ## Method
