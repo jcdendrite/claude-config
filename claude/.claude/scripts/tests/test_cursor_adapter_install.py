@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import types
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +28,7 @@ import pytest
 from helpers import CLAUDE_DIR, ambient_umask
 
 sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests._cursor_identity_fixtures import build_fake_process_tree, install_ps_stub  # noqa: E402
 from hooks.tests._cursor_payloads import (  # noqa: E402 (the import needs the sys.path entry above)
     ADAPTER_DIR,
     ADAPTER_SOURCE,
@@ -1264,10 +1265,17 @@ class TestProbeBound:
         shim = world.adapter.load_shim()
         # A project choice: what the tamper comparison and the interpreter start may take beyond the stdin read and the probes.
         headroom_seconds = 1
+        walk_calls = [call for call in calls if shim.HOST_WALK_PROGRAM in call["argv"]]
+        probe_calls = [call for call in calls if call not in walk_calls]
 
-        worst_case = shim.MIN_DEADLINE_SECONDS + len(calls) * world.adapter.PROBE_BOUND_SECONDS
+        worst_case = (
+            shim.MIN_DEADLINE_SECONDS
+            + len(probe_calls) * world.adapter.PROBE_BOUND_SECONDS
+            + sum(call["timeout"] for call in walk_calls)
+        )
 
-        assert calls, "the sessionStart check ran no probe, so the count below would pass vacuously"
+        assert probe_calls, "the sessionStart check ran no probe, so the count below would pass vacuously"
+        assert [call["timeout"] for call in walk_calls] == [world.adapter.HOST_WALK_BOUND_SECONDS]
         assert entry.entry["timeout"] == world.adapter.CHECK_ENTRY_TIMEOUT_SECONDS
         assert worst_case + headroom_seconds <= world.adapter.CHECK_ENTRY_TIMEOUT_SECONDS
 
@@ -1330,6 +1338,14 @@ class TestProbeBound:
 
         run_surface(world, surface)
 
+        walk_program = world.adapter.load_shim().HOST_WALK_PROGRAM
+        walk_calls = [call for call in calls if walk_program in call["argv"]]
+        assert len(walk_calls) == (1 if surface == HOOK_ENV_SURFACE else 0), surface
+        for call in walk_calls:
+            assert call["stdin"] == subprocess.DEVNULL
+            assert call["timeout"] == world.adapter.HOST_WALK_BOUND_SECONDS
+            assert call["cwd"] == str(world.cursor_dir)
+        calls = [call for call in calls if call not in walk_calls]
         probed = {(os.path.basename(call["argv"][0]), call["argv"][-1]) for call in calls}
         expected = (
             set()
@@ -1441,23 +1457,28 @@ RUN_MODE_FILES = {
 
 
 class TestRunModeWarning:
-    def test_install_refuses_without_acceptance_only_and_every_tree_stays_byte_identical(self, fast_world: World) -> None:
-        world = fast_world
-        before = world.snapshot()
-
-        result = world.run("install", "--config-dir", str(world.config_dir))
-
-        assert result.status == 1
-        assert "--acceptance-only" in result.err
-        assert world.adapter.MARKER_GATES_CLAUSE in result.err
-        assert "add --acceptance-only to run it" in result.err
-        assert world.adapter.MARKER_GATES_WARNING not in result.err
-        assert world.snapshot() == before
-        assert not world.state_dir.exists()
-
     def test_install_with_the_flag_records_the_acceptance_only_key(self, fast_world: World) -> None:
         assert fast_world.install().status == 0
         assert fast_world.install_record()["acceptance_only"] is True
+
+    def test_install_over_an_acceptance_only_record_writes_a_record_without_the_key_and_no_channel_prints_the_warning(
+        self, fast_world: World
+    ) -> None:
+        world = fast_world
+        world.install()
+        assert world.install_record()["acceptance_only"] is True
+
+        installed = world.run("install", "--config-dir", str(world.config_dir))
+        checked = world.run("check")
+        status = world.run("status")
+        context = json.loads(world.run("check", "--hook-env").out)["additional_context"]
+
+        assert installed.status == 0
+        assert "acceptance_only" not in world.install_record()
+        for text in (installed.out, checked.out, status.out, context):
+            assert world.adapter.RUN_MODE_LINE in text
+            assert "acceptance-only" not in text
+        assert world.adapter.read_log(str(world.state_dir)).lines[-1]["runmode"] == "unreadable"
 
     @pytest.mark.parametrize("permissions_file", list(RUN_MODE_FILES))
     def test_each_channel_prints_the_run_mode_line_and_the_acceptance_line_whatever_the_permissions_file_holds(
@@ -1518,6 +1539,43 @@ class TestLogFieldTable:
         assert len(fields["runmode"]) <= dict(shim.LOG_FIELDS)["runmode"]
         assert max(len(line) + 1 for line in raw.split(b"\n") if line) < shim.LOG_LINE_MAX_BYTES
 
+    @pytest.mark.parametrize("case", ["cursor-main", "no-host", "claude-nearer-than-cli"])
+    def test_the_host_walk_field_holds_each_token_within_its_maximum_and_the_line_stays_under_the_cap(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch, case: str
+    ) -> None:
+        world = fast_world
+        tree_names, token = HOST_WALK_CASES[case]
+        put_fake_process_tree_behind_ps(world, tree_names, monkeypatch)
+        world.install()
+
+        run_surface(world, HOOK_ENV_SURFACE)
+
+        shim = world.adapter.load_shim()
+        fields = world.adapter.read_log(str(world.state_dir)).lines[-1]
+        assert fields["hostwalk"] == token
+        assert len(fields["hostwalk"]) <= dict(shim.LOG_FIELDS)["hostwalk"]
+        assert all(len(line) + 1 < shim.LOG_LINE_MAX_BYTES for line in (world.state_dir / "shim.log").read_bytes().split(b"\n"))
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [("v" * 64, "v" * 64), ("not a version", "other")],
+        ids=["64-characters", "other"],
+    )
+    def test_the_cursor_version_field_holds_a_reported_change_within_its_maximum_and_the_line_stays_under_the_cap(
+        self, fast_world: World, version: str, expected: str
+    ) -> None:
+        world = fast_world
+        world.install()
+        for sent in ("1.0.0", version):
+            payload = {"hook_event_name": "sessionStart", "conversation_id": CONVERSATION_ID, "cursor_version": sent}
+            run_hook_env_process(world, payload)
+
+        shim = world.adapter.load_shim()
+        fields = world.adapter.read_log(str(world.state_dir)).lines[-1]
+        assert fields["cursorver"] == expected
+        assert len(fields["cursorver"]) <= dict(shim.LOG_FIELDS)["cursorver"]
+        assert all(len(line) + 1 < shim.LOG_LINE_MAX_BYTES for line in (world.state_dir / "shim.log").read_bytes().split(b"\n"))
+
     def test_the_overflow_token_holds_only_characters_the_log_grammar_allows(self, world: World) -> None:
         import re
 
@@ -1539,6 +1597,245 @@ class TestLogFieldTable:
         maximum = dict(shim.LOG_FIELDS)["runmode"]
         assert len(world.adapter.RUN_MODE_LABEL) <= maximum
         assert len(world.adapter.RUN_MODE_ACCEPTANCE_LABEL) <= maximum
+
+
+# --- the sessionStart entry's host-walk and cursor_version reports ---
+
+SESSION_START_DECLINE_FRAGMENT = "untranslated Cursor payload declined"
+# Fake ancestors, outermost first, and the token each gives. The nearest one is the process that starts the walk's bash.
+HOST_WALK_CASES = {
+    "cursor-main": (("Cursor", "shell"), "found"),
+    "cli-host-alone": (("agent", "shell"), "found"),
+    "cli-nearer-than-claude": (("claude", "agent"), "found"),
+    "claude-nearer-than-cli": (("agent", "claude"), "claude-first"),
+    "no-host": (("shell",), "not-found"),
+}
+
+
+# A project choice: long enough that a loaded parallel run still finishes a walk through bash-script `ps` stubs.
+STUBBED_WALK_BOUND_SECONDS = 30
+
+
+def put_fake_process_tree_behind_ps(world: World, tree_names: tuple[str, ...], monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Replaces the world's `ps` with a stub that answers from a fake tree whose nearest ancestor is this process.
+
+    Returns the stub's directory, which a hook run by hand puts first on its PATH."""
+    monkeypatch.setattr(world.adapter, "HOST_WALK_BOUND_SECONDS", STUBBED_WALK_BOUND_SECONDS)
+    stub = install_ps_stub(world.tmp_path, build_fake_process_tree(tree_names))
+    stub_directory = stub.log_path.parent
+    replace_tool(world, "ps", f"exec '{stub_directory / 'ps'}' \"$@\"\n")
+    return stub_directory
+
+
+def run_capture_session_id_under_fake_tree(
+    world: World, stub_directory: Path, *, claudecode: bool = False
+) -> subprocess.CompletedProcess:
+    payload = {"hook_event_name": "SessionStart", "session_id": CONVERSATION_ID, "workspace_roots": [str(world.tmp_path)]}
+    return subprocess.run(
+        ["bash", str(CLAUDE_DIR / "hooks" / "capture-session-id.sh")],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        env={
+            "HOME": str(world.home),
+            "PATH": f"{stub_directory}:{world.bin_dir}:/usr/bin:/bin",
+            "CLAUDE_CONFIG_DIR": str(world.config_dir),
+            **({"CLAUDECODE": "1"} if claudecode else {}),
+        },
+        check=False,
+        timeout=60,
+    )
+
+
+def last_log_fields(world: World) -> dict:
+    return world.adapter.read_log(str(world.state_dir)).lines[-1]
+
+
+class TestSessionStartReports:
+    @pytest.mark.parametrize("case", list(HOST_WALK_CASES))
+    def test_the_real_walk_reports_the_expected_token_and_the_session_hooks_decline_by_claudecode_and_the_walk(
+        self, fast_world: World, case: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = fast_world
+        tree_names, token = HOST_WALK_CASES[case]
+        stub_directory = put_fake_process_tree_behind_ps(world, tree_names, monkeypatch)
+        world.install()
+
+        sessions_directory = world.config_dir / "sessions"
+
+        context = run_surface(world, HOOK_ENV_SURFACE).out
+        declined_without_claudecode = (
+            SESSION_START_DECLINE_FRAGMENT in run_capture_session_id_under_fake_tree(world, stub_directory).stderr.decode()
+        )
+        entries_after_unset_run = list(sessions_directory.glob("*"))
+        declined_with_claudecode = (
+            SESSION_START_DECLINE_FRAGMENT
+            in run_capture_session_id_under_fake_tree(world, stub_directory, claudecode=True).stderr.decode()
+        )
+        entries_after_set_run = list(sessions_directory.glob("*"))
+
+        assert last_log_fields(world)["hostwalk"] == token
+        assert f"Host walk: {token}." in context
+        assert declined_without_claudecode
+        assert entries_after_unset_run == []
+        assert declined_with_claudecode is (token == "found")
+        assert bool(entries_after_set_run) is (token != "found")
+
+    @pytest.mark.parametrize("case", list(HOST_WALK_CASES))
+    def test_status_flags_only_a_not_found_walk(self, fast_world: World, case: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = fast_world
+        tree_names, token = HOST_WALK_CASES[case]
+        put_fake_process_tree_behind_ps(world, tree_names, monkeypatch)
+        world.install()
+        run_surface(world, HOOK_ENV_SURFACE)
+
+        status = world.run("status").out
+
+        assert ("host walk found no Cursor or CLI host" in status) is (token == "not-found")
+        assert ('"A host walk that found no host" entry' in status) is (token == "not-found")
+
+    def test_a_walk_whose_ps_fails_at_its_first_read_reports_not_found(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = fast_world
+        monkeypatch.setattr(world.adapter, "HOST_WALK_BOUND_SECONDS", STUBBED_WALK_BOUND_SECONDS)
+        replace_tool(world, "ps", "exit 1\n")
+        world.install()
+
+        run_surface(world, HOOK_ENV_SURFACE)
+
+        assert last_log_fields(world)["hostwalk"] == "not-found"
+
+    def test_a_walk_that_outlasts_its_bound_reports_not_found(self, fast_world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = fast_world
+        world.install()
+        real_run = subprocess.run
+        shim = world.adapter.load_shim()
+
+        def stalled_walk(argv, **keywords):
+            if shim.HOST_WALK_PROGRAM in argv:
+                raise subprocess.TimeoutExpired(argv, keywords["timeout"])
+            return real_run(argv, **keywords)
+
+        monkeypatch.setattr(world.adapter.subprocess, "run", stalled_walk)
+
+        run_surface(world, HOOK_ENV_SURFACE)
+
+        assert last_log_fields(world)["hostwalk"] == "not-found"
+
+    def _report(self, world: World, version: str | None) -> str:
+        payload = {"hook_event_name": "sessionStart", "conversation_id": CONVERSATION_ID}
+        if version is not None:
+            payload["cursor_version"] = version
+        return run_hook_env_process(world, payload)["additional_context"]
+
+    def test_the_first_sight_of_a_version_records_it_and_stays_quiet_and_an_unchanged_one_stays_quiet(
+        self, fast_world: World
+    ) -> None:
+        world = fast_world
+        world.install()
+
+        first = self._report(world, "1.2.3")
+        unchanged = self._report(world, "1.2.3")
+
+        for context in (first, unchanged):
+            assert "Cursor version changed" not in context
+        assert all("cursorver" not in fields for fields in world.adapter.read_log(str(world.state_dir)).lines)
+        assert os.listdir(world.state_dir / "cursor-versions") == ["1.2.3"]
+
+    def test_a_change_reports_once_and_then_stays_quiet(self, fast_world: World) -> None:
+        world = fast_world
+        world.install()
+        self._report(world, "1.2.3")
+
+        changed = self._report(world, "1.2.4")
+        again = self._report(world, "1.2.4")
+
+        assert "Cursor version changed to 1.2.4." in changed
+        assert "Cursor version changed" not in again
+        reported = [fields.get("cursorver") for fields in world.adapter.read_log(str(world.state_dir)).lines]
+        assert reported == [None, "1.2.4", None]
+
+    @pytest.mark.parametrize("seam", ["listdir", "create"])
+    def test_two_conversations_that_both_read_the_record_before_either_creates_report_the_change_once(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch, seam: str
+    ) -> None:
+        world = fast_world
+        world.install()
+        self._report(world, "1.2.3")
+        shim = world.adapter.load_shim()
+        state_dir = str(world.state_dir)
+        claimed_token = "2.0.0"
+        real_listdir = os.listdir
+        real_open = os.open
+        outcomes: dict[str, bool] = {}
+        racing: list[str] = []
+
+        def the_other_claimant_runs_whole(path):
+            # The first claimant has read the record and not yet created its file.
+            racing.append(path)
+            outcomes["other"] = world.adapter.cursor_version_changed(shim, state_dir, claimed_token)
+
+        def listdir_then_the_other_claimant_runs(path):
+            names = real_listdir(path)
+            if seam == "listdir" and not racing:
+                the_other_claimant_runs_whole(path)
+            return names
+
+        def the_other_claimant_runs_before_the_create(path, *arguments, **keywords):
+            if seam == "create" and not racing and isinstance(path, str) and os.path.basename(path) == claimed_token:
+                the_other_claimant_runs_whole(path)
+            return real_open(path, *arguments, **keywords)
+
+        monkeypatch.setattr(world.adapter.os, "listdir", listdir_then_the_other_claimant_runs)
+        monkeypatch.setattr(world.adapter.os, "open", the_other_claimant_runs_before_the_create)
+
+        outcomes["first"] = world.adapter.cursor_version_changed(shim, state_dir, claimed_token)
+
+        assert racing, "the first claimant never reached the seam"
+        # The loser's create finds the winner's file, which is the only path that returns False.
+        assert outcomes == {"other": True, "first": False}
+
+    def test_a_record_that_cannot_be_read_reports_a_change(self, fast_world: World) -> None:
+        world = fast_world
+        world.install()
+        (world.state_dir / "cursor-versions").write_text("not a directory")
+
+        context = self._report(world, "1.2.3")
+
+        assert "Cursor version changed to 1.2.3." in context
+
+    @pytest.mark.parametrize(
+        "version",
+        ["bad\nversion", "1.2.3\n", "x" * 65, "x" * 64 * 1024, "has space", "", ".", ".."],
+        ids=["newline", "trailing-newline", "65-characters", "64-KiB", "space", "empty", "dot", "dotdot"],
+    )
+    def test_a_version_outside_the_grammar_reaches_no_report_and_is_stored_as_other(
+        self, fast_world: World, version: str
+    ) -> None:
+        world = fast_world
+        world.install()
+        self._report(world, "1.2.3")
+
+        context = self._report(world, version)
+
+        assert "Cursor version changed to other." in context
+        assert len(version) < 3 or version not in context
+        assert sorted(os.listdir(world.state_dir / "cursor-versions")) == ["1.2.3", "other"]
+        assert last_log_fields(world)["cursorver"] == "other"
+
+    def test_a_payload_with_no_version_or_a_non_string_one_reports_no_version_change(self, fast_world: World) -> None:
+        world = fast_world
+        world.install()
+        self._report(world, "1.2.3")
+
+        absent = self._report(world, None)
+        numeric = run_hook_env_process(
+            world, {"hook_event_name": "sessionStart", "conversation_id": CONVERSATION_ID, "cursor_version": 7}
+        )["additional_context"]
+
+        for context in (absent, numeric):
+            assert "Cursor version changed" not in context
+        assert os.listdir(world.state_dir / "cursor-versions") == ["1.2.3"]
 
 
 # --- rotation and the sweep ---
@@ -3162,7 +3459,7 @@ class TestFirstCallMark:
         def killed_before_the_mark(state_dir, session_id):
             raise EntryKilled
 
-        monkeypatch.setattr(world.adapter, "hook_env_conversation_id", lambda shim_module: CONVERSATION_ID)
+        monkeypatch.setattr(world.adapter, "hook_env_conversation_id", lambda shim_module, payload: CONVERSATION_ID)
         monkeypatch.setattr(shim, "claim_first_call", killed_before_the_mark)
 
         with contextlib.redirect_stdout(io.StringIO()), pytest.raises(EntryKilled):
@@ -3435,7 +3732,7 @@ class TestFailureAfterTheFirstWrite:
         assert world.hooks_path.read_bytes() == ORIGINAL_HOOKS
 
     def test_a_refusal_before_any_write_keeps_exit_status_one(self, fast_world: World) -> None:
-        result = fast_world.run("install", "--config-dir", str(fast_world.config_dir))
+        result = fast_world.run("install", "--config-dir", "relative/config")
 
         assert result.status == 1
         assert "refused:" in result.err
@@ -4860,6 +5157,7 @@ LITERAL_SHELL_SELECTING_LABELS = (
     "require-ready-for-review",
     "require-respond-pr",
     "require-stow-reminder",
+    "require-worktree-for-git-writes",
 )
 
 
@@ -5023,6 +5321,8 @@ class TestSessionStartReportShape:
             or line == world.adapter.AGENT_RESTRAINT_SENTENCE
             or "run mode" in line
             or "acceptance-only" in line
+            or line.startswith("Host walk: ")
+            or line in (world.adapter.HOST_WALK_NOT_FOUND_LINE, world.adapter.HOST_WALK_CLAUDE_FIRST_LINE)
             for line in informational
         ), informational
 
@@ -5201,3 +5501,1006 @@ class TestHookEnvPayloadHeldOpen:
         _, _, elapsed = run_hook_env_with_stdin_held_open(world)
 
         assert elapsed < world.adapter.CHECK_ENTRY_TIMEOUT_SECONDS
+
+
+# --- the user-level sandbox.json grant ---
+
+ENGINEER_SANDBOX = b'{"additionalReadwritePaths": ["/mine"], "extra": {"keep": [1, 2]}}\n'
+SANDBOX_PATHS_KEY = "additionalReadwritePaths"
+GRANT_INSTALL_POINTS = [
+    "after-pre-image",
+    "after-sandbox-pre-image",
+    "after-sandbox-records",
+    "after-install-record",
+    "after-generated-files",
+    "after-hooks-json",
+    "after-sandbox-dirs",
+    "after-sandbox-file",
+    "after-manifest",
+]
+GRANT_UNINSTALL_POINTS = ["after-sandbox", "after-entries", "after-generated-files", "after-state", "after-record"]
+
+
+def grant_parity(world: World, monkeypatch: pytest.MonkeyPatch, *, pending: bool) -> None:
+    """Points the adapter at a parity file of the test's own, so a flip of the repository's file never changes a row."""
+    document = load_json(ADAPTER_DIR / "parity-exceptions.json")
+    gate = ("adapter-gate", "gate-settings-permissions.sh")
+    document["entries"] = [entry for entry in document["entries"] if (entry["kind"], entry["key"]) != gate]
+    if pending:
+        document["entries"].append({"kind": gate[0], "key": gate[1], "reason": "pending-phase", "phase": "5a", "detail": "x"})
+    path = world.tmp_path / "grant-parity.json"
+    path.write_text(json.dumps(document))
+    monkeypatch.setattr(world.adapter, "grant_exceptions_path", lambda: str(path))
+
+
+def sandbox_file(world: World) -> Path:
+    return world.cursor_dir / "sandbox.json"
+
+
+def live_sandbox_bytes(world: World) -> bytes | None:
+    return sandbox_file(world).read_bytes() if sandbox_file(world).exists() else None
+
+
+def listed_directories(world: World) -> list[str]:
+    return [str(world.config_dir / name) for name in world.adapter.SANDBOX_WRITABLE_DIRECTORIES]
+
+
+class TestSandboxFile:
+    @pytest.fixture
+    def grant_world(self, fast_world: World, monkeypatch: pytest.MonkeyPatch) -> World:
+        grant_parity(fast_world, monkeypatch, pending=False)
+        return fast_world
+
+    @pytest.mark.parametrize("original", [None, ENGINEER_SANDBOX], ids=["absent", "engineers-own"])
+    def test_install_writes_the_listed_paths_and_uninstall_leaves_the_original_bytes_or_no_file(
+        self, grant_world: World, original: bytes | None
+    ) -> None:
+        world = grant_world
+        if original is not None:
+            sandbox_file(world).write_bytes(original)
+
+        assert world.install().status == 0
+        installed = json.loads(live_sandbox_bytes(world))
+        assert set(listed_directories(world)) <= set(installed[SANDBOX_PATHS_KEY])
+        if original is not None:
+            assert installed["extra"] == {"keep": [1, 2]}
+            assert "/mine" in installed[SANDBOX_PATHS_KEY]
+        assert all((world.config_dir / name).is_dir() for name in world.adapter.SANDBOX_WRITABLE_DIRECTORIES)
+
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == original
+        assert not world.record_dir.exists()
+
+    @pytest.mark.parametrize("original", [None, ENGINEER_SANDBOX], ids=["absent", "engineers-own"])
+    @pytest.mark.parametrize("point", GRANT_INSTALL_POINTS)
+    def test_a_crash_at_each_install_point_then_uninstall_leaves_the_same(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch, point: str, original: bytes | None
+    ) -> None:
+        world = grant_world
+        if original is not None:
+            sandbox_file(world).write_bytes(original)
+        crash_at(world, monkeypatch, point)
+        with pytest.raises(Crash):
+            world.install()
+        stop_crashing(world, monkeypatch)
+
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == original
+        assert not world.record_dir.exists()
+
+    @pytest.mark.parametrize("original", [None, ENGINEER_SANDBOX], ids=["absent", "engineers-own"])
+    @pytest.mark.parametrize("point", GRANT_UNINSTALL_POINTS)
+    def test_a_crash_at_each_uninstall_point_then_install_and_uninstall_leaves_the_same(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch, point: str, original: bytes | None
+    ) -> None:
+        world = grant_world
+        if original is not None:
+            sandbox_file(world).write_bytes(original)
+        world.install()
+        crash_at(world, monkeypatch, point)
+        with pytest.raises(Crash):
+            world.run("uninstall")
+        stop_crashing(world, monkeypatch)
+
+        assert world.install().status == 0
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == original
+
+    @pytest.mark.parametrize("original", [None, ENGINEER_SANDBOX], ids=["absent", "engineers-own"])
+    def test_a_kill_after_the_sandbox_rename_and_before_the_manifest_then_install_keeps_the_first_pre_image(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch, original: bytes | None
+    ) -> None:
+        world = grant_world
+        if original is not None:
+            sandbox_file(world).write_bytes(original)
+        crash_at(world, monkeypatch, "after-sandbox-file")
+        with pytest.raises(Crash):
+            world.install()
+        stop_crashing(world, monkeypatch)
+        pre_image = {
+            name: (world.record_dir / name).read_bytes()
+            for name in ("sandbox.json.pre-install", "sandbox.json.pre-install.none")
+            if (world.record_dir / name).exists()
+        }
+
+        assert world.install().status == 0
+        assert pre_image == {
+            name: (world.record_dir / name).read_bytes() for name in pre_image if (world.record_dir / name).exists()
+        }
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == original
+
+    def test_an_install_with_the_grant_pending_writes_neither_file_nor_record_and_a_later_grant_keeps_the_engineers_edit(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = fast_world
+        grant_parity(world, monkeypatch, pending=True)
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+
+        assert world.install().status == 0
+
+        assert live_sandbox_bytes(world) == ENGINEER_SANDBOX
+        assert sorted(path.name for path in world.record_dir.iterdir() if "sandbox" in path.name) == []
+        assert not any((world.config_dir / name).exists() for name in world.adapter.SANDBOX_WRITABLE_DIRECTORIES)
+        edited = b'{"additionalReadwritePaths": ["/mine", "/edited"], "extra": {"keep": [1, 2]}}\n'
+        sandbox_file(world).write_bytes(edited)
+        grant_parity(world, monkeypatch, pending=False)
+        assert world.install().status == 0
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == edited
+
+    def test_status_lists_the_grant_pending_while_its_prerequisite_is_listed_and_not_after(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = fast_world
+        grant_parity(world, monkeypatch, pending=True)
+        world.install()
+        assert world.adapter.SANDBOX_GRANT_PENDING_LINE in world.run("status").out
+        grant_parity(world, monkeypatch, pending=False)
+        world.install()
+        assert world.adapter.SANDBOX_GRANT_PENDING_LINE not in world.run("status").out
+
+    def test_an_engineers_edit_after_install_survives_uninstall_with_only_the_recorded_paths_removed(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        document = json.loads(live_sandbox_bytes(world))
+        document[SANDBOX_PATHS_KEY].append("/later")
+        document["added-key"] = True
+        sandbox_file(world).write_text(json.dumps(document))
+
+        assert world.run("uninstall").status == 0
+
+        assert json.loads(live_sandbox_bytes(world)) == {
+            SANDBOX_PATHS_KEY: ["/mine", "/later"],
+            "extra": {"keep": [1, 2]},
+            "added-key": True,
+        }
+
+    @pytest.mark.parametrize(
+        "content",
+        [b"{not json", b"[]", b'{"additionalReadwritePaths": "x"}', b'{"additionalReadwritePaths": ["a", 3]}'],
+        ids=["unparseable", "non-object", "non-list-paths", "non-string-path"],
+    )
+    def test_a_file_that_does_not_parse_or_has_the_wrong_shape_makes_install_refuse_naming_it_with_no_write(
+        self, grant_world: World, content: bytes
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(content)
+        before = world.snapshot()
+
+        result = world.install()
+
+        assert result.status == 1
+        assert str(sandbox_file(world)) in result.err
+        assert world.snapshot() == before
+
+    @pytest.mark.parametrize("how_many", ["one", "all"])
+    def test_an_engineers_file_that_already_lists_some_or_all_of_the_paths_keeps_them_through_install_and_uninstall(
+        self, grant_world: World, how_many: str
+    ) -> None:
+        world = grant_world
+        listed = listed_directories(world)
+        own = listed[:1] if how_many == "one" else listed
+        original = json.dumps({SANDBOX_PATHS_KEY: own}).encode()
+        sandbox_file(world).write_bytes(original)
+
+        assert world.install().status == 0
+        if how_many == "all":
+            assert live_sandbox_bytes(world) == original
+        assert world.run("uninstall").status == 0
+
+        assert live_sandbox_bytes(world) == original
+
+    def test_install_names_the_directories_the_engineer_already_listed_and_no_others(self, grant_world: World) -> None:
+        world = grant_world
+        already_listed_line = "of the sandbox grant's directories are already listed in"
+        sandbox_file(world).write_bytes(json.dumps({SANDBOX_PATHS_KEY: listed_directories(world)[:1]}).encode())
+
+        over_engineers_file = world.install()
+        reinstalled_over_engineers_file = world.install()
+
+        assert f"1 {already_listed_line}" in over_engineers_file.out
+        assert f"1 {already_listed_line}" in reinstalled_over_engineers_file.out
+        assert world.run("uninstall").status == 0
+        sandbox_file(world).unlink()
+
+        over_absent_file = world.install()
+        reinstalled_over_absent_file = world.install()
+
+        assert already_listed_line not in over_absent_file.out
+        assert already_listed_line not in reinstalled_over_absent_file.out
+
+    def test_install_twice_then_uninstall_leaves_the_original_bytes(self, grant_world: World) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        once = live_sandbox_bytes(world)
+
+        assert world.install().status == 0
+        assert live_sandbox_bytes(world) == once
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == ENGINEER_SANDBOX
+
+    def test_a_later_list_and_a_build_that_writes_no_grant_leave_nothing_of_an_earlier_list_after_uninstall(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        first_list = world.adapter.SANDBOX_WRITABLE_DIRECTORIES
+        assert world.install().status == 0
+        monkeypatch.setattr(world.adapter, "SANDBOX_WRITABLE_DIRECTORIES", (*first_list[1:], "a-new-directory"))
+        assert world.install().status == 0
+        after_second_list = json.loads(live_sandbox_bytes(world))[SANDBOX_PATHS_KEY]
+        assert {str(world.config_dir / "a-new-directory"), str(world.config_dir / first_list[0])} <= set(after_second_list)
+        grant_parity(world, monkeypatch, pending=True)
+        assert world.install().status == 0
+
+        assert world.run("uninstall").status == 0
+
+        assert live_sandbox_bytes(world) == ENGINEER_SANDBOX
+
+    def test_a_populated_listed_directory_survives_uninstall_and_an_absent_one_is_created_by_install(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        populated = world.config_dir / world.adapter.SANDBOX_WRITABLE_DIRECTORIES[0]
+        populated.mkdir()
+        (populated / "marker").write_text("kept")
+        absent = world.config_dir / world.adapter.SANDBOX_WRITABLE_DIRECTORIES[1]
+        assert not absent.exists()
+
+        world.install()
+        assert absent.is_dir()
+        world.run("uninstall")
+
+        assert (populated / "marker").read_text() == "kept"
+        assert absent.is_dir()
+
+    def test_a_listed_directory_that_is_a_symlink_is_refused_with_no_write(self, grant_world: World) -> None:
+        world = grant_world
+        target = world.tmp_path / "elsewhere"
+        target.mkdir()
+        (world.config_dir / world.adapter.SANDBOX_WRITABLE_DIRECTORIES[0]).symlink_to(target)
+        before = world.snapshot()
+
+        result = world.install()
+
+        assert result.status == 1
+        assert "symlink" in result.err
+        assert world.snapshot() == before
+
+    def test_the_comparison_names_removed_paths_and_changed_keys_by_count_shows_later_paths_as_a_count_and_echoes_nothing(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        for surface in ("status", "check"):
+            assert "sandbox.json" not in "\n".join(
+                line for line in world.run(surface).out.splitlines() if line.startswith(("finding:", "note:"))
+            )
+        document = json.loads(live_sandbox_bytes(world))
+        document[SANDBOX_PATHS_KEY] = [item for item in document[SANDBOX_PATHS_KEY] if item != "/mine"]
+        document[SANDBOX_PATHS_KEY].append("/NONCE-path")
+        document["NONCE-key"] = 1
+        sandbox_file(world).write_text(json.dumps(document))
+
+        for surface in ("status", "check"):
+            out = world.run(surface).out
+            assert "no longer lists 1 path(s)" in out
+            assert "has 1 key(s) that differ" in out
+            assert "1 path(s) in sandbox.json were added since install" in out
+            assert "NONCE" not in out
+
+    def test_an_absent_paths_key_in_the_engineers_file_is_restored_to_the_engineers_own_bytes(self, grant_world: World) -> None:
+        world = grant_world
+        original = b'{"networkPolicy": {"allow": ["example.invalid"]}}\n'
+        sandbox_file(world).write_bytes(original)
+        world.install()
+        assert SANDBOX_PATHS_KEY in json.loads(live_sandbox_bytes(world))
+
+        assert world.run("uninstall").status == 0
+
+        assert live_sandbox_bytes(world) == original
+
+    def _assert_only_the_grant_was_blocked(self, world: World, result: Result, live: bytes) -> None:
+        """The sandbox file is as it was, its record and pre-image stay, and the hooks.json step still ran."""
+        assert result.status == 0, result.err
+        assert live_sandbox_bytes(world) == live
+        assert "the sandbox grant in sandbox.json remains" in result.out
+        assert not world.hooks_path.exists()
+        assert (world.record_dir / "manifest.json").exists()
+
+    def test_a_pre_image_that_cannot_be_read_blocks_only_the_grant_and_uninstall_still_removes_the_hooks_entries(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        installed = live_sandbox_bytes(world)
+        (world.record_dir / "sandbox.json.pre-install").unlink()
+        (world.record_dir / "sandbox.json.pre-install").mkdir()
+
+        result = world.run("uninstall")
+
+        self._assert_only_the_grant_was_blocked(world, result, installed)
+
+    def test_a_document_json_cannot_write_back_blocks_only_the_grant_and_uninstall_still_removes_the_hooks_entries(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        with_nan = json.dumps(json.loads(live_sandbox_bytes(world)))[:-1].encode() + b', "member": NaN}'
+        sandbox_file(world).write_bytes(with_nan)
+
+        def shim_that_does_not_load(path=None):
+            raise RuntimeError("shim unavailable")
+
+        monkeypatch.setattr(world.adapter, "load_shim", shim_that_does_not_load)
+
+        result = world.run("uninstall")
+
+        self._assert_only_the_grant_was_blocked(world, result, with_nan)
+        assert "cannot write back" in result.out
+
+    def test_a_failed_sandbox_write_blocks_only_the_grant_and_uninstall_still_removes_the_hooks_entries(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        installed = live_sandbox_bytes(world)
+        real_write = world.adapter.durable_write
+
+        def sandbox_write_that_fails(path, data, mode=0o600):
+            if os.path.basename(path) == "sandbox.json":
+                raise OSError(errno.EROFS, "read-only file system", path)
+            real_write(path, data, mode)
+
+        monkeypatch.setattr(world.adapter, "durable_write", sandbox_write_that_fails)
+
+        result = world.run("uninstall")
+
+        self._assert_only_the_grant_was_blocked(world, result, installed)
+        assert "could not be changed" in result.out
+        monkeypatch.setattr(world.adapter, "durable_write", real_write)
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == ENGINEER_SANDBOX
+
+    def test_a_failed_sandbox_delete_blocks_only_the_grant_and_uninstall_still_removes_the_hooks_entries(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        world.install()
+        installed = live_sandbox_bytes(world)
+        real_unlink = os.unlink
+
+        def sandbox_unlink_that_fails(path, *arguments, **keywords):
+            if os.path.basename(path) == "sandbox.json":
+                raise OSError(errno.EPERM, "operation not permitted", path)
+            return real_unlink(path, *arguments, **keywords)
+
+        monkeypatch.setattr(world.adapter.os, "unlink", sandbox_unlink_that_fails)
+
+        result = world.run("uninstall")
+
+        self._assert_only_the_grant_was_blocked(world, result, installed)
+        assert "could not be changed" in result.out
+
+    def test_a_blocked_sandbox_step_finishes_on_a_later_uninstall_once_the_file_is_fixed(self, grant_world: World) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        installed = live_sandbox_bytes(world)
+        sandbox_file(world).write_bytes(b"{not json")
+
+        blocked = world.run("uninstall")
+
+        self._assert_only_the_grant_was_blocked(world, blocked, b"{not json")
+        assert str(sandbox_file(world)) in blocked.out
+        assert "`uninstall` did not remove the sandbox grant" in blocked.out
+        assert "was not written" not in blocked.out
+        assert (world.record_dir / "sandbox.json.pre-install").exists()
+        sandbox_file(world).write_bytes(installed)
+
+        assert world.run("uninstall").status == 0
+
+        assert live_sandbox_bytes(world) == ENGINEER_SANDBOX
+        assert not world.record_dir.exists()
+
+    def test_a_hooks_json_edit_after_the_sandbox_step_tells_the_engineer_the_failure_may_name_no_file(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        world.install()
+        real_apply = world.adapter.apply_sandbox_action
+
+        def apply_then_a_hooks_json_edit(*arguments):
+            outcome = real_apply(*arguments)
+            world.hooks_path.write_text(json.dumps({"version": 1, "hooks": {"stop": [{"command": "edited"}]}}))
+            return outcome
+
+        monkeypatch.setattr(world.adapter, "apply_sandbox_action", apply_then_a_hooks_json_edit)
+
+        result = world.run("uninstall")
+
+        assert result.status == world.adapter.PARTIAL_WRITE_EXIT_STATUS
+        assert "after the step after-sandbox" in result.err
+        assert "when no file is named, a change to hooks.json while `uninstall` ran" in result.err
+
+    def test_an_edit_between_the_uninstall_plan_and_its_write_is_kept_and_the_record_stays(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        real_entries = world.adapter.entries_for_uninstall
+
+        def entries_then_an_engineer_edit(*arguments):
+            result = real_entries(*arguments)
+            document = json.loads(live_sandbox_bytes(world))
+            document[SANDBOX_PATHS_KEY].append("/edited-meanwhile")
+            sandbox_file(world).write_text(json.dumps(document))
+            return result
+
+        monkeypatch.setattr(world.adapter, "entries_for_uninstall", entries_then_an_engineer_edit)
+
+        result = world.run("uninstall")
+
+        assert result.status == 0, result.err
+        assert "changed while `uninstall` ran" in result.out
+        kept_paths = json.loads(live_sandbox_bytes(world))[SANDBOX_PATHS_KEY]
+        assert "/edited-meanwhile" in kept_paths
+        assert set(listed_directories(world)) <= set(kept_paths)
+        assert (world.record_dir / "sandbox.json.pre-install").exists()
+        monkeypatch.setattr(world.adapter, "entries_for_uninstall", real_entries)
+
+        assert world.run("uninstall").status == 0
+
+        assert json.loads(live_sandbox_bytes(world)) == {
+            SANDBOX_PATHS_KEY: ["/mine", "/edited-meanwhile"],
+            "extra": {"keep": [1, 2]},
+        }
+
+    def test_a_failure_after_the_sandbox_step_does_not_call_hooks_json_handled(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        real_write = world.adapter.durable_write
+
+        def hooks_write_that_fails(path, data, mode=0o600):
+            if os.path.basename(path) == "hooks.json":
+                raise OSError(errno.EROFS, "read-only file system", path)
+            real_write(path, data, mode)
+
+        world.hooks_path.write_bytes(ORIGINAL_HOOKS)
+        world.install()
+        monkeypatch.setattr(world.adapter, "durable_write", hooks_write_that_fails)
+
+        result = world.run("uninstall")
+
+        assert result.status == world.adapter.PARTIAL_WRITE_EXIT_STATUS
+        assert "after-sandbox" in result.err
+        assert "hooks.json is already handled" not in result.err
+        assert "and hooks.json is not" in result.err
+        assert "restore hooks.json by hand" in result.err
+
+    def test_a_sandbox_json_that_is_a_symlink_makes_install_refuse_naming_it_with_no_write(self, grant_world: World) -> None:
+        world = grant_world
+        real_file = world.tmp_path / "real-sandbox.json"
+        real_file.write_bytes(ENGINEER_SANDBOX)
+        sandbox_file(world).symlink_to(real_file)
+        before = world.snapshot()
+
+        result = world.install()
+
+        assert result.status == 1
+        assert str(sandbox_file(world)) in result.err
+        assert "symlink" in result.err
+        assert world.snapshot() == before
+        assert real_file.read_bytes() == ENGINEER_SANDBOX
+
+    def test_a_sandbox_json_owned_by_someone_else_makes_install_refuse_naming_it_with_no_write(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        before = world.snapshot()
+        real_plan = world.adapter.plan_sandbox_grant
+        other_uid = os.getuid() + 1
+
+        def plan_as_another_user(*arguments):
+            with monkeypatch.context() as patched:
+                patched.setattr(world.adapter.os, "getuid", lambda: other_uid)
+                return real_plan(*arguments)
+
+        monkeypatch.setattr(world.adapter, "plan_sandbox_grant", plan_as_another_user)
+
+        result = world.install()
+
+        assert result.status == 1
+        assert str(sandbox_file(world)) in result.err
+        assert "owned by you" in result.err
+        assert world.snapshot() == before
+
+    @pytest.mark.parametrize("mode", [0o664, 0o666, 0o646])
+    def test_a_sandbox_json_writable_by_group_or_others_makes_install_refuse_naming_it_with_no_write(
+        self, grant_world: World, mode: int
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        sandbox_file(world).chmod(mode)
+        before = world.snapshot()
+
+        result = world.install()
+
+        assert result.status == 1
+        assert str(sandbox_file(world)) in result.err
+        assert "not writable by group or others" in result.err
+        assert world.snapshot() == before
+
+    def test_a_sandbox_json_that_group_and_others_cannot_write_is_accepted(self, grant_world: World) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        sandbox_file(world).chmod(0o644)
+
+        assert world.install().status == 0
+
+    def test_a_listed_path_that_exists_as_a_regular_file_makes_install_refuse_naming_it_with_no_write(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        blocking_file = world.config_dir / world.adapter.SANDBOX_WRITABLE_DIRECTORIES[0]
+        blocking_file.write_text("not a directory")
+        before = world.snapshot()
+
+        result = world.install()
+
+        assert result.status == 1
+        assert str(blocking_file) in result.err
+        assert "is not a directory" in result.err
+        assert world.snapshot() == before
+
+    def test_a_sandbox_json_that_changes_between_the_plan_and_the_rename_is_left_alone_with_the_partial_write_status(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = grant_world
+        changed = b'{"additionalReadwritePaths": ["/changed-meanwhile"]}\n'
+        real_generated_files = world.adapter.write_generated_files
+
+        def generated_files_then_an_engineer_edit():
+            result = real_generated_files()
+            sandbox_file(world).write_bytes(changed)
+            return result
+
+        monkeypatch.setattr(world.adapter, "write_generated_files", generated_files_then_an_engineer_edit)
+
+        result = world.install()
+
+        assert result.status == world.adapter.PARTIAL_WRITE_EXIT_STATUS
+        assert "changed while `install` ran" in result.err
+        assert live_sandbox_bytes(world) == changed
+        monkeypatch.setattr(world.adapter, "write_generated_files", real_generated_files)
+        assert world.run("uninstall").status == 0
+        assert live_sandbox_bytes(world) == changed
+
+    def test_check_and_status_report_a_deleted_or_a_corrupted_sandbox_json_without_echoing_its_text(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        world.install()
+        sandbox_file(world).unlink()
+        for surface in ("status", "check"):
+            assert "sandbox.json is missing, so the sandbox grant is gone" in world.run(surface).out
+
+        sandbox_file(world).write_text("NONCE-not-json")
+
+        for surface in ("status", "check"):
+            out = world.run(surface).out
+            assert "sandbox.json does not parse or has the wrong shape" in out
+            assert "NONCE" not in out
+
+    @pytest.mark.parametrize("surface", ["status", "check"])
+    def test_a_recorded_grant_whose_prerequisite_is_pending_again_is_reported_by_count_and_not_called_unwritten(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch, surface: str
+    ) -> None:
+        world = grant_world
+        world.install()
+        grant_parity(world, monkeypatch, pending=True)
+        listed = len(world.adapter.SANDBOX_WRITABLE_DIRECTORIES)
+
+        out = world.run(surface).out
+
+        assert world.adapter.SANDBOX_GRANT_PENDING_LINE not in out
+        assert f"{listed} path(s) are recorded as the sandbox grant, and {listed} of them are listed in sandbox.json now" in out
+        assert any(line.startswith("finding:") and "recorded as the sandbox grant" in line for line in out.splitlines())
+
+    @pytest.mark.parametrize("surface", ["status", "check"])
+    def test_a_recorded_grant_whose_prerequisite_is_pending_again_says_a_marker_can_be_written_only_while_a_path_is_listed(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch, surface: str
+    ) -> None:
+        world = grant_world
+        world.install()
+        grant_parity(world, monkeypatch, pending=True)
+        marker_write_clause = world.adapter.SANDBOX_GRANT_MARKER_WRITE_CLAUSE
+
+        listed = world.run(surface).out
+        sandbox_file(world).write_text(json.dumps({SANDBOX_PATHS_KEY: ["/mine"]}))
+        none_listed = world.run(surface).out
+        sandbox_file(world).write_text("NONCE-not-json")
+        unusable = world.run(surface).out
+
+        assert marker_write_clause in listed
+        assert ("pending, and still in force" in listed) is (surface == "status")
+        assert "recorded as the sandbox grant, and 0 of them are listed" in none_listed
+        assert "how many are listed now is unknown" in unusable
+        for out in (none_listed, unusable):
+            assert marker_write_clause not in out
+            assert "still in force" not in out
+            assert "`uninstall` removes the grant" not in out
+        assert "NONCE" not in unusable
+
+    @pytest.mark.parametrize("hooks_state", ["absent", "unparseable"])
+    @pytest.mark.parametrize("surface", ["status", "check"])
+    def test_the_sandbox_comparison_runs_whatever_the_state_of_hooks_json(
+        self, grant_world: World, monkeypatch: pytest.MonkeyPatch, surface: str, hooks_state: str
+    ) -> None:
+        world = grant_world
+        world.install()
+        grant_parity(world, monkeypatch, pending=True)
+        sandbox_file(world).unlink()
+        if hooks_state == "absent":
+            world.hooks_path.unlink()
+        else:
+            world.hooks_path.write_text("{not json")
+
+        out = world.run(surface).out
+
+        assert "sandbox.json is missing, so the sandbox grant is gone" in out
+        assert "recorded as the sandbox grant" in out
+
+    @pytest.mark.skipif(IS_ROOT, reason="absent: root reads through mode bits")
+    def test_an_unreadable_saved_pre_install_sandbox_file_is_a_finding_that_names_it_and_check_still_finishes(
+        self, grant_world: World
+    ) -> None:
+        world = grant_world
+        sandbox_file(world).write_bytes(ENGINEER_SANDBOX)
+        world.install()
+        pre_image = world.record_dir / "sandbox.json.pre-install"
+        pre_image.chmod(0)
+        try:
+            result = world.run("check")
+        finally:
+            pre_image.chmod(0o600)
+
+        assert "sandbox.json.pre-install cannot be read (EACCES)" in result.out
+        assert "failed on an unexpected" not in result.err
+
+    def test_a_pending_prerequisite_with_no_recorded_grant_reports_no_recorded_grant_finding(
+        self, fast_world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world = fast_world
+        grant_parity(world, monkeypatch, pending=True)
+        world.install()
+
+        for surface in ("status", "check"):
+            assert "recorded as the sandbox grant" not in world.run(surface).out
+
+    def test_the_repositorys_own_parity_file_keeps_the_grant_pending_so_install_writes_no_sandbox_file_record_or_directory(
+        self, fast_world: World
+    ) -> None:
+        # The one unseamed row: the repository's own parity file still lists the permissions gate, so this row changes when
+        # that entry is removed. Every other row injects its own parity file.
+        world = fast_world
+
+        assert world.install().status == 0
+
+        assert not sandbox_file(world).exists()
+        assert [path.name for path in world.record_dir.iterdir() if "sandbox" in path.name] == []
+        assert not any((world.config_dir / name).exists() for name in world.adapter.SANDBOX_WRITABLE_DIRECTORIES)
+        assert world.adapter.SANDBOX_GRANT_PENDING_LINE in world.run("status").out
+
+
+class TestGrantPending:
+    """`grant_pending` calls the grant delivered only on a well-formed parity file with no exception entry for the gate."""
+
+    GATE_ENTRY = '{"kind": "adapter-gate", "key": "gate-settings-permissions.sh"%s}'
+
+    def _parity(self, world: World, monkeypatch: pytest.MonkeyPatch, content: str | None) -> None:
+        path = world.tmp_path / "grant-parity.json"
+        if content is not None:
+            path.write_text(content)
+        monkeypatch.setattr(world.adapter, "grant_exceptions_path", lambda: str(path))
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            None,
+            "{not json",
+            "[]",
+            "{}",
+            '{"entries": null}',
+            '{"entries": {"kind": "adapter-gate"}}',
+            '{"entries": "none"}',
+            '{"entries": [{"kind": "registration", "key": "x"}, "text"]}',
+            '{"entries": [1]}',
+            '{"entries": [%s]}' % (GATE_ENTRY % ', "reason": "pending-phase"'),
+            '{"entries": [%s]}' % (GATE_ENTRY % ', "reason": "withheld-premise"'),
+            '{"entries": [%s]}' % (GATE_ENTRY % ', "reason": "declined"'),
+            '{"entries": [%s]}' % (GATE_ENTRY % ', "reason": "pending-phsae"'),
+            '{"entries": [%s]}' % (GATE_ENTRY % ""),
+        ],
+        ids=[
+            "unreadable-absent-file",
+            "unparseable",
+            "document-is-a-list",
+            "entries-missing",
+            "entries-null",
+            "entries-an-object",
+            "entries-a-string",
+            "an-entry-is-a-string",
+            "an-entry-is-a-number",
+            "reason-pending-phase",
+            "reason-withheld-premise",
+            "reason-declined",
+            "reason-typo",
+            "reason-absent",
+        ],
+    )
+    def test_the_grant_stays_pending_for_an_unreadable_or_malformed_file_and_for_any_exception_entry_of_the_gate(
+        self, world: World, monkeypatch: pytest.MonkeyPatch, content: str | None
+    ) -> None:
+        self._parity(world, monkeypatch, content)
+
+        assert world.adapter.grant_pending() is True
+
+    @pytest.mark.parametrize(
+        "content",
+        ['{"entries": []}', '{"entries": [{"kind": "adapter-gate", "key": "gate-agent-tools.sh", "reason": "pending-phase"}]}'],
+        ids=["no-entries", "only-other-gates"],
+    )
+    def test_the_grant_is_delivered_on_a_well_formed_file_with_no_exception_for_the_permissions_gate(
+        self, world: World, monkeypatch: pytest.MonkeyPatch, content: str
+    ) -> None:
+        self._parity(world, monkeypatch, content)
+
+        assert world.adapter.grant_pending() is False
+
+
+# --- the directories the grant lists, written by each identity consumer ---
+
+# marker.sh's kinds that need more than a repository with one staged change, and the consumers no row drives. The meta row
+# below fails a kind that is in neither a row nor this table.
+WRITABLE_DIRS_NOT_DRIVEN = {
+    "cumulative-review": "needs a subject recorded by pr-diff-against-base.sh --record against a base ref",
+    "review-pr": "needs the provenance file review-pr-acquire.sh writes after a gh lookup",
+    "pr-diff-against-base.sh": "needs a base ref and a recorded subject",
+    "review-ledger.sh": "needs a ledger fixture",
+    "review-pr-acquire.sh": "needs a gh lookup",
+    "handoff-record-conversion.sh": "its .handoff-nudge.log append is the one write the grant leaves out",
+}
+DRIVEN_DIRECTORIES_BY_ROW = {
+    "code-review": "code-review-markers",
+    "skill-review": "skill-review-markers",
+    "plan-review": "plan-review-markers",
+    "ready-for-review": "ready-for-review-markers",
+    "verification": "verification-markers",
+}
+ACTIVATE_DIRECTORIES = {
+    "plan-review": ".plan-review-active.d",
+    "ready-for-review": ".ready-for-review-active.d",
+    "respond-pr": ".respond-pr-active.d",
+    "memory-skill": ".memory-skill-active.d",
+    "handoff": ".handoff-active.d",
+}
+# The two directories one `activate plan-review` row covers: the hook log-routing-read.sh writes the first, which the row
+# seeds, and marker.sh backfills the second from it.
+PLAN_REVIEW_READ_DIRECTORIES = (".plan-review-pending-read.d", ".plan-review-routing-read.d")
+# The listed directories no row drives, each with why. The meta row below fails a listed directory that is in neither a row
+# nor this table.
+DIRECTORIES_NOT_DRIVEN = {
+    "code-review-diff-markers": "pr-diff-against-base.sh --staged --diff-file writes it, and no row runs that script",
+    "cumulative-review-markers": "needs a subject recorded by pr-diff-against-base.sh --record against a base ref",
+    "cumulative-review-subject-markers": "pr-diff-against-base.sh --record writes it and needs a base ref",
+    "cumulative-review-diff-markers": "pr-diff-against-base.sh --diff-file writes it and needs a base ref",
+    "review-pr-markers": "needs the provenance file review-pr-acquire.sh writes after a gh lookup",
+    ".review-pr-active.d": "review-pr-acquire.sh writes it after a gh lookup",
+    "review-narrative-ledger": "review-ledger.sh needs a ledger fixture",
+}
+WRITABLE_DIRS_SESSION_ID = "sandbox-dirs-session"
+
+
+def writable_directories_without_a_row_or_a_reason(listed: Iterable[str]) -> set[str]:
+    accounted = {
+        *DRIVEN_DIRECTORIES_BY_ROW.values(),
+        *ACTIVATE_DIRECTORIES.values(),
+        *PLAN_REVIEW_READ_DIRECTORIES,
+        *DIRECTORIES_NOT_DRIVEN,
+    }
+    return set(listed) - accounted
+
+
+def marker_script_array(name: str) -> list[str]:
+    text = (CLAUDE_DIR / "scripts" / "marker.sh").read_text()
+    match = re.search(rf"^{name}=\(([^)]*)\)", text, re.MULTILINE)
+    assert match, name
+    return match.group(1).split()
+
+
+class TestSandboxWritableDirs:
+    """Runs the identity consumers' write paths against a config dir that is writable only in the listed directories."""
+
+    @pytest.fixture
+    def scene(self, world: World) -> types.SimpleNamespace:
+        if IS_ROOT:
+            pytest.skip("absent: root writes through mode bits")
+        config = world.tmp_path / "restricted-config"
+        config.mkdir()
+        for name in world.adapter.SANDBOX_WRITABLE_DIRECTORIES:
+            (config / name).mkdir(mode=0o700)
+        (config / "settings.json").write_text("{}")
+        (config / "settings.json").chmod(0o400)
+        config.chmod(0o500)
+        stub_bin = world.tmp_path / "failing-ps-bin"
+        stub_bin.mkdir()
+        write_sh_script(stub_bin / "ps", "exit 1\n")
+        repo = world.tmp_path / "repo"
+        repo.mkdir()
+        for command in (
+            ["git", "init", "-q", "-b", "main", "."],
+            ["git", "config", "user.email", "a@b"],
+            ["git", "config", "user.name", "n"],
+        ):
+            subprocess.run(command, cwd=repo, check=True, capture_output=True)
+        (repo / "f").write_text("a\n")
+        (repo / "skills" / "example").mkdir(parents=True)
+        (repo / "skills" / "example" / "SKILL.md").write_text("a\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True, capture_output=True)
+        yield types.SimpleNamespace(world=world, config=config, stub_bin=stub_bin, repo=repo)
+        config.chmod(0o700)
+
+    def run_marker(
+        self, scene: types.SimpleNamespace, *argv: str, host_pid: str = "424242"
+    ) -> subprocess.CompletedProcess:
+        """Runs marker.sh as a sandboxed agent Shell call does: the pin's exports and a `ps` that fails."""
+        environment = {
+            "HOME": str(scene.world.home),
+            "PATH": f"{scene.stub_bin}:{scene.world.bin_dir}:/usr/bin:/bin",
+            "CLAUDE_CONFIG_DIR": str(scene.config),
+            "CLAUDE_CONFIG_ADAPTER_SESSION_ID": WRITABLE_DIRS_SESSION_ID,
+            "CLAUDE_CONFIG_ADAPTER_HOST_PID": host_pid,
+        }
+        return subprocess.run(
+            ["bash", str(CLAUDE_DIR / "scripts" / "marker.sh"), *argv],
+            cwd=scene.repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
+    def stage_change(self, scene: types.SimpleNamespace, path: str) -> None:
+        (scene.repo / path).write_text("a\nb\n")
+        subprocess.run(["git", "add", path], cwd=scene.repo, check=True, capture_output=True)
+
+    def written(self, scene: types.SimpleNamespace, directory: str) -> list[str]:
+        return sorted(os.listdir(scene.config / directory))
+
+    @pytest.mark.parametrize("kind", ["code-review", "plan-review", "ready-for-review", "skill-review"])
+    def test_a_completion_marker_write_lands_in_its_listed_directory_and_nowhere_else(
+        self, scene: types.SimpleNamespace, kind: str
+    ) -> None:
+        self.stage_change(scene, "skills/example/SKILL.md" if kind == "skill-review" else "f")
+
+        result = self.run_marker(scene, "write", kind)
+
+        assert result.returncode == 0, result.stderr
+        assert len(self.written(scene, DRIVEN_DIRECTORIES_BY_ROW[kind])) == 1
+        assert sorted(os.listdir(scene.config)) == sorted(["settings.json", *scene.world.adapter.SANDBOX_WRITABLE_DIRECTORIES])
+
+    def test_a_verification_marker_write_over_a_clean_tree_lands_in_its_directory(self, scene: types.SimpleNamespace) -> None:
+        result = self.run_marker(scene, "write", "verification")
+
+        assert result.returncode == 0, result.stderr
+        assert len(self.written(scene, "verification-markers")) == 1
+
+    @pytest.mark.parametrize("skill", list(ACTIVATE_DIRECTORIES))
+    def test_an_activation_lands_in_its_active_bypass_directory_and_a_deactivation_removes_it(
+        self, scene: types.SimpleNamespace, skill: str
+    ) -> None:
+        activated = self.run_marker(scene, "activate", skill)
+
+        assert activated.returncode == 0, activated.stderr
+        assert self.written(scene, ACTIVATE_DIRECTORIES[skill]) == [WRITABLE_DIRS_SESSION_ID]
+        assert self.run_marker(scene, "deactivate", skill).returncode == 0
+        assert self.written(scene, ACTIVATE_DIRECTORIES[skill]) == []
+
+    def test_a_plan_review_activation_over_a_recent_pending_routing_read_backfills_the_routing_read_record(
+        self, scene: types.SimpleNamespace
+    ) -> None:
+        pending_directory, routing_directory = PLAN_REVIEW_READ_DIRECTORIES
+        (scene.config / pending_directory / WRITABLE_DIRS_SESSION_ID).write_text("")
+
+        activated = self.run_marker(scene, "activate", "plan-review")
+
+        assert activated.returncode == 0, activated.stderr
+        assert self.written(scene, routing_directory) == [WRITABLE_DIRS_SESSION_ID]
+        assert self.run_marker(scene, "deactivate", "plan-review").returncode == 0
+        assert self.written(scene, routing_directory) == []
+        assert self.written(scene, pending_directory) == []
+
+    def test_clear_stale_evicts_the_marker_of_a_dead_host_in_the_restricted_dir(self, scene: types.SimpleNamespace) -> None:
+        reaped = subprocess.Popen([sys.executable, "-c", "pass"])
+        reaped.wait()
+        with pytest.raises(ProcessLookupError):
+            os.kill(reaped.pid, 0)
+        dead_pid = str(reaped.pid)
+        activated = self.run_marker(scene, "activate", "handoff", host_pid=dead_pid)
+        assert activated.returncode == 0, activated.stderr
+        assert self.written(scene, ".handoff-active.d") == [WRITABLE_DIRS_SESSION_ID]
+
+        result = self.run_marker(scene, "clear-stale", host_pid=dead_pid)
+
+        assert result.returncode == 0, result.stderr
+        assert self.written(scene, ".handoff-active.d") == []
+
+    def test_a_write_to_a_directory_the_list_omits_fails_which_shows_the_restriction_bites(
+        self, scene: types.SimpleNamespace
+    ) -> None:
+        scene.config.chmod(0o700)
+        (scene.config / "code-review-markers").rmdir()
+        scene.config.chmod(0o500)
+        self.stage_change(scene, "f")
+
+        result = self.run_marker(scene, "write", "code-review")
+
+        assert result.returncode != 0
+        assert not (scene.config / "code-review-markers").exists()
+
+    def test_every_marker_kind_and_listed_directory_has_a_row_or_a_stated_reason_it_has_none(self, world: World) -> None:
+        write_kinds = set(marker_script_array("WRITE_SKILLS"))
+        bypass_kinds = set(marker_script_array("ACTIVE_BYPASS_SKILLS"))
+        assert write_kinds - set(DRIVEN_DIRECTORIES_BY_ROW) - set(WRITABLE_DIRS_NOT_DRIVEN) == set()
+        assert bypass_kinds == set(ACTIVATE_DIRECTORIES)
+        listed = world.adapter.SANDBOX_WRITABLE_DIRECTORIES
+        assert writable_directories_without_a_row_or_a_reason(listed) == set()
+        assert writable_directories_without_a_row_or_a_reason([*listed, "unlisted-markers"]) == {"unlisted-markers"}
+        assert set(DIRECTORIES_NOT_DRIVEN) <= set(listed), "a not-driven directory is no longer listed"
+        driven = {*DRIVEN_DIRECTORIES_BY_ROW.values(), *ACTIVATE_DIRECTORIES.values(), *PLAN_REVIEW_READ_DIRECTORIES}
+        assert not driven & set(DIRECTORIES_NOT_DRIVEN), "a directory is both driven and in the not-driven table"
+        assert all(WRITABLE_DIRS_NOT_DRIVEN.values())
+        assert all(DIRECTORIES_NOT_DRIVEN.values())
+
+    def test_every_listed_directory_is_a_single_plain_component_under_the_routed_config_dir(self, world: World) -> None:
+        names = world.adapter.SANDBOX_WRITABLE_DIRECTORIES
+        assert len(set(names)) == len(names)
+        for name in names:
+            assert name == os.path.basename(name) and name not in ("", ".", "..")

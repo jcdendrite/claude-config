@@ -289,6 +289,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/conftest.py",
     "claude/.claude/hooks/tests/_lib_sh_helpers.py",
     "claude/.claude/hooks/tests/_cursor_payloads.py",
+    "claude/.claude/hooks/tests/_cursor_identity_fixtures.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
     "claude/.claude/hooks/tests/test_review_ledger_script.py",
 })
@@ -340,6 +341,7 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_generate.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_install.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_shim.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_translate.py",
     "claude/.claude/scripts/tests/test_diff_size_ack.py",
@@ -959,6 +961,8 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == COMPACTION_CONTEXT_TEST_HELPERS, (RESTORE_SESSION_STATE_ON_COMPACT_TEST_PATH,)),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
+    # claude/.claude/scripts/tests/conftest.py imports this module, so a break in it fails every scripts test.
+    (lambda p: p == "claude/.claude/hooks/tests/_cursor_identity_fixtures.py", (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, CURSOR_ADAPTER_DIR), CURSOR_ADAPTER_READING_TESTS),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),

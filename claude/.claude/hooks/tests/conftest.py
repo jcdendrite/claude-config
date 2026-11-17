@@ -30,6 +30,8 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from ._cursor_identity_fixtures import clear_adapter_environment
+
 # Shim sleep duration for the git/gh-timeout regression tests below: long
 # enough that a broken (uncapped) call site never returns before the
 # test's own timeout.
@@ -470,6 +472,18 @@ def _clear_claude_pid_env(monkeypatch):
     isolated_home precedent below for a var that may not be set.
     """
     monkeypatch.delenv("CLAUDE_PID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_adapter_env(monkeypatch):
+    """_lib_adapter_session_pair reads CLAUDE_CONFIG_ADAPTER_SESSION_ID and
+    CLAUDE_CONFIG_ADAPTER_HOST_PID from its own environment. A suite run from a
+    Cursor agent's Shell call inherits both, and the test runners below copy
+    the parent environment wholesale, so a real value would resolve an identity
+    the test never set. test_cursor_adapter_hooks_env_scrub.py runs this
+    fixture's own test.
+    """
+    clear_adapter_environment(monkeypatch)
 
 
 @pytest.fixture
