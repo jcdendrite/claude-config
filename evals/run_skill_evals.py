@@ -265,12 +265,14 @@ def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
     """Return (name, description) for the description-fidelity skill listing.
 
     Falls back to (directory name, "") when the frontmatter cannot be read as a mapping.
+    That fallback prints the file path and reason to stderr.
     """
     text = skill_md_path.read_text(encoding="utf-8")
     fallback_name = as_listing_line(skill_md_path.parent.name)
     try:
         frontmatter = parse_frontmatter_block(split_frontmatter(text)[0])
-    except ValueError:
+    except ValueError as error:
+        print(f"WARNING: {skill_md_path}: frontmatter unreadable, listing it without a description: {error}", file=sys.stderr)
         return fallback_name, ""
 
     declared_name = frontmatter.get("name")

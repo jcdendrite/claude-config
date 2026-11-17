@@ -329,6 +329,30 @@ class TestParseSkillFrontmatter:
 
         assert parse_skill_frontmatter(path) == ("my-skill", "")
 
+    def test_unreadable_frontmatter_names_the_file_on_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = self._write_skill(tmp_path, "my-skill", "---\ndescription: a: b\n---\nbody\n")
+
+        result = parse_skill_frontmatter(path)
+
+        assert result == ("my-skill", "")
+        assert str(path) in capsys.readouterr().err
+
+    def test_readable_frontmatter_prints_nothing_to_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = self._write_skill(tmp_path, "my-skill", "---\nname: my-skill\ndescription: d\n---\nbody\n")
+
+        parse_skill_frontmatter(path)
+
+        assert capsys.readouterr().err == ""
+
+    def test_a_mid_line_triple_dash_closes_the_block_at_the_first_marker(self, tmp_path: Path) -> None:
+        path = self._write_skill(tmp_path, "my-skill", "---\nname: my-skill\ndescription: a---b\n---\nbody\n")
+
+        assert parse_skill_frontmatter(path) == ("my-skill", "a")
+
     def test_quoted_values_and_trailing_comments_are_read_as_yaml(self, tmp_path: Path) -> None:
         path = self._write_skill(
             tmp_path, "my-skill",
