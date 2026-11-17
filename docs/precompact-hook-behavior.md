@@ -75,7 +75,9 @@ Deferred; no data collected.
 
 `PostCompact`'s input carries the full `compact_summary` Claude Code just generated during compaction. A `PostCompact` hook can't feed anything back to Claude (per the `additionalContext` refutation above), but it can **archive** that summary to disk — a cheap, no-synthesis-required complement to an incremental review-narrative ledger, useful as a raw safety net for whatever the ledger didn't anticipate capturing.
 
-Combined with the `additionalContext` refutation above, the next implementation phase no longer needs a `PreCompact` hook for injecting context (the "Steering probe" section below shows plain stdout on exit 0 does steer the summary, which `additionalContext` JSON does not), and needs a `PostCompact` hook only for archival (not for reminding Claude of anything — it structurally cannot). The reminder-to-check-the-ledger piece has to be a static, always-loaded CLAUDE.md instruction, not an event-driven injection.
+Combined with the `additionalContext` refutation above, a `PostCompact` hook is needed only for archival, because it cannot remind Claude of anything. With no event-driven injection path found in this spike, the reminder to check the ledger had to be a static, always-loaded CLAUDE.md instruction. Two later sections each record a channel this spike did not test:
+- a `SessionStart` hook with matcher `compact`, whose `additionalContext` reaches the resumed agent ("What survives compaction");
+- a `PreCompact` hook's plain stdout on exit 0, which steers the summary as model behavior rather than a guarantee ("Steering probe").
 
 ## What survives compaction — survival probe findings
 
@@ -245,7 +247,7 @@ Run on claude 2.1.323, 2026-11-13, in a scratch repository on a branch named `pr
 
 ## Steering probe — does `PreCompact` stdout steer the summary?
 
-Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the compaction summary on the manual and automatic triggers, and compaction proceeded in both failure modes below. The exit-1 automatic run ended in a thrashing stop that the probe did not attribute to the hook.
+Result: yes. A `PreCompact` hook's stdout on exit 0 steered the summary on both the manual and automatic triggers. Compaction also proceeded when the hook timed out or exited 1. The exit-1 automatic run ended in a thrashing stop that the probe did not attribute to the hook.
 
 - **Build:** `claude --version` **2.1.326**. Probe date 2026-11-16 (UTC). Re-verify by 2027-02-16, the three-month interval `docs/handoff-nudge.md` uses for vendor behavior. Nothing raises this date when it lapses.
 - **Scope:** booleans and counts only. The sentinels are synthetic strings planted for the probe.
@@ -258,7 +260,7 @@ Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the
   - write `CONTROL-<token>` backwards on its own line, which an echo of the hook's stdout cannot produce because the echo carries only the forward form;
   - under a "Continuity" heading, name the skill's current step number and quote the decision sentence the prompt typed, which held `DECISION-SENTINEL`.
 - A `PostCompact` hook archived stdin, whose `compact_summary` field holds the summary.
-- `<token>` is 8 random uppercase letters with no repeats. A first feasibility run used 8 hex digits and mis-reversed the token by dropping one of two adjacent equal digits. That run is not scored, and hex was dropped.
+- `<token>` is 8 random uppercase letters with no repeats. A first feasibility run used 8 hex digits and mis-reversed the token by dropping one of two adjacent equal digits. That run is not scored.
 - Each item is scored only against the text outside the `<analysis>` block of `compact_summary`. The `isCompactSummary` transcript record the next model sees holds no `<analysis>` block.
 - A run steers when its scored text holds the reversed control exactly and passes the Continuity check. The exact bar stays even though a model can mis-reverse a token.
 - Manual runs ran as `claude -p` turns, then `claude -p "/compact" --continue`. `/compact` works in `-p` mode and fires both hooks. Automatic runs used `--autocompact 100k` and a prompt that read ten large files.
@@ -267,7 +269,7 @@ Result: yes, on both triggers. A `PreCompact` hook's stdout, exit 0, steered the
 
 - **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others. Two of three steer, so manual steers.
 - **Automatic, one run:** it compacted eight times and every compaction passed every check, the exact reversed control included. The first compaction passed every check, so automatic steers. No further automatic run was needed. Compactions after the first summarize a context that already holds the earlier steered summary, so only the first is independent evidence.
-- **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar. Of the five manual-trigger runs, the unscored feasibility run included, three mis-reversed the token.
+- **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar. Of the five manual-trigger runs whose hook exited 0, the unscored feasibility run included, three mis-reversed the token.
 - **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. The automatic run compacted nine times. No summary held the sentinel.
 - **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run compacted six times, none steered, and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The steered automatic run compacted eight times without that stop, so this run does not show that a failing hook causes thrashing.
 - **Where the hook's stdout appears:**
@@ -281,5 +283,5 @@ Plain stdout on exit 0 steers the summary on both triggers, while the `additiona
 
 Constraints any such hook inherits from these results:
 - Steering is model behavior, not a guarantee, so a hook must not rely on it to carry a constraint.
-- The stdout is followed as instructions and re-summarized into later compactions, so it must be static or sanitized, never built from prompt, transcript or other untrusted text.
+- The stdout is followed as instructions and re-summarized into later compactions, so it must never be built from prompt, transcript or other untrusted text.
 - Only exit 0 and exit 1 were probed here. Exit 2 blocks compaction, as the earlier sections record.
