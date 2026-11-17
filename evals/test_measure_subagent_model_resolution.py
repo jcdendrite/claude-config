@@ -1346,7 +1346,7 @@ class TestAgentFrontmatterParsing:
             {"Read", "Grep", "Glob"}
         )
 
-    def test_frontmatter_model_regex_ignores_prose_mentions(self) -> None:
+    def test_frontmatter_model_ignores_prose_mentions(self) -> None:
         text = "---\nmodel: sonnet\n---\n\nThis body mentions model: opus in prose.\n"
         assert msmr.agent_frontmatter_model(text) == "sonnet"
 
@@ -1354,9 +1354,60 @@ class TestAgentFrontmatterParsing:
         text = "---\ntools: Read, Grep, Glob\n---\n\nbody\n"
         assert msmr.agent_frontmatter_tools(text) == frozenset({"Read", "Grep", "Glob"})
 
+    @pytest.mark.parametrize(
+        ("tools_lines", "expected"),
+        [
+            pytest.param("tools:\n  - Read\n  - Grep", frozenset({"Read", "Grep"}), id="block-list form"),
+            pytest.param("tools: [Read, Grep]", frozenset({"Read", "Grep"}), id="flow-list form"),
+            pytest.param('tools: ""', None, id="blank string"),
+            pytest.param('tools: ","', None, id="only a comma"),
+            pytest.param("tools:", None, id="null"),
+            pytest.param("tools: []", None, id="empty list"),
+            pytest.param("name: a", None, id="no tools line"),
+        ],
+    )
+    def test_frontmatter_tools_reads_list_forms_and_reads_blank_values_as_absent(
+        self, tools_lines: str, expected: frozenset[str] | None,
+    ) -> None:
+        assert msmr.agent_frontmatter_tools(f"---\n{tools_lines}\n---\nbody\n") == expected
+
+    def test_an_agent_text_with_a_leading_byte_order_mark_returns_its_model(self) -> None:
+        assert msmr.agent_frontmatter_model("\ufeff---\nmodel: sonnet\n---\nbody\n") == "sonnet"
+
     def test_no_frontmatter_block_returns_none(self) -> None:
         assert msmr.agent_frontmatter_model("no frontmatter here") is None
         assert msmr.agent_frontmatter_tools("no frontmatter here") is None
+
+    @pytest.mark.parametrize(
+        "unreadable_field",
+        [
+            pytest.param("description: a: b", id="invalid YAML"),
+            pytest.param("description: a---b", id="closer that does not start a line"),
+        ],
+    )
+    def test_unreadable_frontmatter_reads_as_no_model_and_no_tools(self, unreadable_field: str) -> None:
+        text = f"---\nmodel: sonnet\ntools: Read\n{unreadable_field}\n---\nbody\n"
+
+        assert msmr.agent_frontmatter_model(text) is None
+        assert msmr.agent_frontmatter_tools(text) is None
+
+    @pytest.mark.parametrize("model_line", ['model: "sonnet"', "model: sonnet  # pinned", 'model: " sonnet "'])
+    def test_model_is_read_as_yaml(self, model_line: str) -> None:
+        assert msmr.agent_frontmatter_model(f"---\n{model_line}\n---\nbody\n") == "sonnet"
+
+    @pytest.mark.parametrize(
+        "frontmatter_lines",
+        [
+            pytest.param("name: a", id="no model line"),
+            pytest.param("model:", id="null"),
+            pytest.param('model: ""', id="empty"),
+            pytest.param('model: " "', id="whitespace only"),
+            pytest.param("model: 3", id="number"),
+            pytest.param("model: [a]", id="list"),
+        ],
+    )
+    def test_absent_null_empty_or_non_string_model_reads_as_none(self, frontmatter_lines: str) -> None:
+        assert msmr.agent_frontmatter_model(f"---\n{frontmatter_lines}\n---\nbody\n") is None
 
 
 class TestBudgetCap:
