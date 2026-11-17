@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT
+from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT, init_git_repo_with_commit
 
 SETTINGS_JSON = CLAUDE_DIR / "settings.json"
 ADAPTER_DIR = REPO_ROOT / "claude" / ".claude" / "scripts" / "cursor-adapter"
@@ -444,6 +444,7 @@ def _build_subagent_start(root: Path) -> PayloadSpec:
     cursor = _cursor_base(
         "subagentStart",
         root,
+        session_id=SESSION_ID_FIELD,
         subagent_id=SUBAGENT_ID,
         subagent_type="placeholder-agent",
         subagent_model="placeholder-model",
@@ -638,6 +639,13 @@ def copy_adapter(destination: Path, *, field_table: dict | None = None, parity: 
     return adapter_copy / SHIM.name
 
 
+# The shim ends a host walk at the entry deadline less its GRACE_PERIOD_SECONDS (2) and DRAIN_BOUND_SECONDS (1), so the walk
+# budget is 7 seconds at `hook_args`'s default deadline of 10 and 37 at this value. The slowest rows that run a walk through
+# bash-script `ps` stubs (TestSessionIdentityAcrossTheShim) took about 1.1 seconds unloaded. 40 is a project choice that leaves
+# a load margin of over 30x on that, inside the shim's deadline bounds of 2 to 60.
+STUBBED_WALK_DEADLINE_SECONDS = 40
+
+
 def hook_args(
     claude_event: str,
     *,
@@ -672,6 +680,45 @@ def hook_args(
 def without_git_environment(environment: dict) -> dict:
     """The environment minus every GIT_* name, so an inherited GIT_DIR cannot make an outside arm an inside one."""
     return {k: v for k, v in environment.items() if not k.startswith("GIT_")}
+
+
+def make_linked_worktree(tmp_path: Path, *, opted_in: bool = False) -> tuple[Path, str]:
+    """A linked worktree of a fresh repo, and the repo's absolute git common dir.
+
+    `opted_in` commits `.claude/worktree-required`, which switches worktree enforcement on for the repo.
+    The main checkout is the common dir's parent.
+    """
+    sentinel = {"file_name": ".claude/worktree-required", "content": "# sentinel\n"} if opted_in else {}
+    repo = init_git_repo_with_commit(tmp_path / "repo", branch="main", **sentinel)
+    worktree = tmp_path / "linked-tree"
+    environment = without_git_environment(os.environ)
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "feature", str(worktree)],
+        check=True,
+        capture_output=True,
+        env=environment,
+    )
+    common_dir = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    ).stdout.strip()
+    return worktree, common_dir
+
+
+def worktree_lock_text(worktree: Path) -> str:
+    """The lock reason recorded for `worktree`, or an empty string when it is not locked."""
+    git_dir = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=without_git_environment(os.environ),
+    ).stdout.strip()
+    lock_file = Path(git_dir, "locked")
+    return lock_file.read_text().strip() if lock_file.exists() else ""
 
 
 def assert_outside_any_repository(directory: Path, environment: dict) -> None:

@@ -43,6 +43,7 @@ from hooks.tests._cursor_payloads import (  # noqa: E402
     PARITY_EXCEPTIONS_JSON,
     SHIM,
     SHIM_INTERPRETER_FLAGS,
+    STUBBED_WALK_DEADLINE_SECONDS,
     TEXT_RULE_CORPUS,
     TOOL_MAP_JSON,
     ShimEnv,
@@ -550,6 +551,7 @@ NON_FAILURE_OUTCOME_TOKENS = frozenset(
         "classified",
         "not-shell",
         "pin",
+        "pin-no-host",
         "pin-unchanged",
         "pin-check-ok",
     }
@@ -2088,7 +2090,7 @@ class TestPinModeLeavesNonShellCallsAlone:
         root = _workspace(tmp_path)
         output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), env=_walkless_env(tmp_path), mode="pin")
         assert output["updated_input"]["command"] == _pin_prefix(env, root) + "ls"
-        assert read_log_lines(env)[-1]["out"] == "pin"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
 
 
 class TestModesThatNeedNoWrapper:
@@ -2110,7 +2112,7 @@ class TestModesThatNeedNoWrapper:
         root = _workspace(tmp_path)
         output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), env=self._wrapperless_env(tmp_path), mode="pin")
         assert output["updated_input"]["command"] == _pin_prefix(env, root) + "ls"
-        assert read_log_lines(env)[-1]["out"] == "pin"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
 
     def test_pin_check_passes_a_pinned_command_on_a_record_with_no_wrapper(self, tmp_path: Path) -> None:
         root = _workspace(tmp_path)
@@ -3389,7 +3391,7 @@ def _stand_in_bash_env(tmp_path: Path, body: str) -> ShimEnv:
 
 
 def _pin(env: ShimEnv, payload: dict, tmp_path: Path, *, fail_closed: bool = True) -> dict:
-    args = hook_args("PreToolUse", mode="pin", fail_closed=fail_closed)
+    args = hook_args("PreToolUse", mode="pin", fail_closed=fail_closed, deadline=STUBBED_WALK_DEADLINE_SECONDS)
     result = run_shim(env, payload, args, cwd=_scratch(tmp_path))
     assert result.returncode == 0, result.stderr
     return shim_json(result)
@@ -4052,7 +4054,7 @@ class TestDirectoryPin:
         command = _prefixed(env, tmp_path, root, "make")
         assert command == _pin_prefix(env, root) + "make"
         assert "CLAUDE_CONFIG_ADAPTER_HOST_PID=" not in command
-        assert read_log_lines(env)[-1]["out"] == "pin"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
 
     def test_a_walk_whose_time_is_already_spent_unsets_the_variable(self, tmp_path: Path) -> None:
         root = _workspace(tmp_path)
@@ -4087,7 +4089,7 @@ class TestDirectoryPin:
         )
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["updated_input"]["command"] == _pin_prefix(env, root) + "make"
-        assert read_log_lines(env)[-1]["out"] == "pin"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
 
     def test_a_second_fire_over_a_prefixed_command_runs_no_walk(self, tmp_path: Path) -> None:
         env = self._recording_walk_env(tmp_path)
@@ -4108,6 +4110,7 @@ class TestDirectoryPin:
         env = self._ps_stub_env(tmp_path, HOST_SHOWING_PS_BODY)
         root = _workspace(tmp_path)
         assert _prefixed(env, tmp_path, root, "make") == _pin_prefix(env, root, HOST_PROCESS_ID) + "make"
+        assert read_log_lines(env)[-1]["out"] == "pin"
 
     @pytest.mark.timing
     def test_a_ps_that_stalls_past_the_walks_time_still_pins_with_the_unset_form_and_returns_before_the_deadline(
@@ -4132,7 +4135,7 @@ class TestDirectoryPin:
         assert elapsed < deadline
         assert shim_json(result)["updated_input"]["command"] == _pin_prefix(env, root) + "make"
         line = read_log_lines(env)[-1]
-        assert line["out"] == "pin"
+        assert line["out"] == "pin-no-host"
         assert int(line["ms"]) >= (walk_time_left - 0.5) * 1000
 
     def _stripped_command(self, tmp_path: Path, env: ShimEnv, root: Path, command: str) -> str:

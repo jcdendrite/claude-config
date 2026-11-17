@@ -480,8 +480,8 @@ def _clear_adapter_env(monkeypatch):
     CLAUDE_CONFIG_ADAPTER_HOST_PID from its own environment. A suite run from a
     Cursor agent's Shell call inherits both, and the test runners below copy
     the parent environment wholesale, so a real value would resolve an identity
-    the test never set. Absent elsewhere. test_cursor_adapter_hooks_env_scrub.py
-    runs this fixture's own test.
+    the test never set. test_cursor_adapter_hooks_env_scrub.py runs this
+    fixture's own test.
     """
     clear_adapter_environment(monkeypatch)
 

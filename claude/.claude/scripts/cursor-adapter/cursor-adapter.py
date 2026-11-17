@@ -220,9 +220,11 @@ CURSOR_VERSION_CHANGED_LINE = (
     "Cursor version changed to {version}. The Cursor-update regression checklist in docs/cursor-adapter.md applies. "
     "The engineer, not the agent, runs it."
 )
+# The heading of the Recovery entry in docs/cursor-adapter.md that both not-found messages name.
+HOST_WALK_NOT_FOUND_ENTRY = "A host walk that found no host"
 HOST_WALK_NOT_FOUND_LINE = (
     "The host walk found no Cursor or CLI process above this hook, so the adapter's identity has no anchor in this conversation. "
-    "The engineer follows the Recovery section of docs/cursor-adapter.md."
+    f"The engineer follows the Recovery section's \"{HOST_WALK_NOT_FOUND_ENTRY}\" entry in docs/cursor-adapter.md."
 )
 HOST_WALK_CLAUDE_FIRST_LINE = (
     "The host walk reached a Claude Code process before any Cursor or CLI process, so identity resolves through Claude Code."
@@ -2097,7 +2099,7 @@ def sandbox_paths_of(document):
     return paths if isinstance(paths, list) and all(isinstance(item, str) for item in paths) else None
 
 
-def read_live_sandbox(path, refused_outcome="the sandbox grant was not written"):
+def read_live_sandbox(path, refused_outcome="nothing was installed"):
     """(the file's bytes, its document), or (None, None) when it is absent. Raises AdapterError, naming the file and ending
     its reason in `refused_outcome`, for one that does not parse, is not an object, or whose `additionalReadwritePaths` is
     not a list of strings."""
@@ -2184,7 +2186,8 @@ def engineer_listed_sandbox_directories(plan, routed_config_dir):
 
 
 def write_sandbox_records(plan, directory, unconfirmed):
-    """Install step 1's sandbox part: the pre-image, then the pending record of the paths about to be added, each durable.
+    """The sandbox part of `install`'s writes between the hooks.json pre-image and the install record: the sandbox.json
+    pre-image, then the pending record of the paths about to be added, each durable.
 
     A re-run that finds either keeps it, because the live file may already be widened."""
     if not plan.owned:
@@ -3292,7 +3295,7 @@ def run_status(arguments):
     if not_found_walks:
         print(
             f"flag: the sessionStart entry's host walk found no Cursor or CLI host in {not_found_walks} conversation(s). "
-            "The engineer follows the Recovery section of docs/cursor-adapter.md."
+            f"The engineer follows the Recovery section's \"{HOST_WALK_NOT_FOUND_ENTRY}\" entry in docs/cursor-adapter.md."
         )
     for outcome, name in (("pin-check", "pin-check denies"), ("stale-install", "stale-install calls"), ("usage", "usage faults")):
         count = sum(1 for fields in lines if fields.get("out") == outcome)

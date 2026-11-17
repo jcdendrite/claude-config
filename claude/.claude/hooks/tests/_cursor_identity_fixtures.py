@@ -244,6 +244,10 @@ class PsStub:
         unknown = [request for request in self.requests() if request[0] == "unknown"]
         assert not unknown, f"the ps stub saw request forms it does not know: {unknown}"
 
+    def clear_rules(self) -> None:
+        """Makes every later request answer from the tree. The stubs read their rules file on each request."""
+        (self.log_path.parent / "rules.txt").write_text("")
+
 
 def install_ps_stub(
     directory: Path,

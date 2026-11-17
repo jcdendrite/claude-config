@@ -454,10 +454,10 @@ _lib_emit_deny() {
 # note is not the fail-closed case _lib_emit_deny protects against.
 # permissionDecision is the exact lowercase literal "allow" -- the harness
 # is case-sensitive here the same way it is for _lib_emit_deny's "deny".
-# Prints nothing when $INPUT is an untranslated Cursor payload and
-# _lib_cursor_host_pid finds a host, because the Cursor adapter emits no
-# explicit allow. A failed host walk keeps the allow, as with no adapter
-# installed, and so does a caller with no $INPUT.
+# Prints nothing when _lib_declines_untranslated_cursor_payload holds for
+# $INPUT, because the Cursor adapter emits no explicit allow. A caller with no
+# $INPUT keeps the allow, and so does a process that keeps CLAUDECODE when its
+# host walk finds no host.
 # Caller contract matches _lib_emit_deny's. This function prints the JSON
 # envelope (or nothing, on the degrade path) and returns. The caller still
 # issues its own `exit 0` afterward, exactly as every _lib_emit_deny call
@@ -465,7 +465,7 @@ _lib_emit_deny() {
 _lib_emit_allow_with_context() {
   local context="$1"
   local context_json
-  if _lib_payload_is_untranslated_cursor "${INPUT:-}" && _lib_cursor_host_pid >/dev/null 2>&1; then
+  if _lib_declines_untranslated_cursor_payload "${INPUT:-}"; then
     return 0
   fi
   context_json=$(printf '%s' "$context" | _lib_jq -Rs . 2>/dev/null)
@@ -3719,7 +3719,7 @@ _lib_registered_live_sid() {
 # record does. Tested by presence, not value.
 # Returns 1 for an empty PAYLOAD, without running jq.
 # For a non-empty PAYLOAD, a missing jq, a jq error or a cap kill returns 0, so
-# the callers' host walk decides.
+# _lib_declines_untranslated_cursor_payload's CLAUDECODE test or host walk decides.
 # PAYLOAD reaches jq on stdin, never as an argument. Prints nothing and sets
 # nothing.
 _lib_payload_is_untranslated_cursor() {
@@ -3749,6 +3749,10 @@ _lib_payload_is_untranslated_cursor() {
 # A name is the whole `comm` line, trailing whitespace trimmed, after its last
 # `/`, with one leading `-` dropped. The line is never split on whitespace,
 # because a macOS helper's path holds a `Cursor` component followed by a space.
+# The names `Cursor`, `agent` and `cursor-agent` were observed on macOS, where
+# `ps -o comm=` prints an executable's path. On Linux, `comm` is the
+# executable's basename cut to 15 characters, and the Cursor main process's
+# name there is unrecorded, so a different name returns 2.
 # Only each read is capped, and the walk has no hop cap, as with
 # _lib_resolve_claude_pid's own walk. Its worst case is the chain's depth times
 # two reads times 7 seconds (_lib_capped_for's 5-second cap plus its 2-second
@@ -3804,24 +3808,51 @@ _lib_cursor_host_pid() {
   return 2
 }
 
+# _lib_declines_untranslated_cursor_payload PAYLOAD
+# Returns 0 when PAYLOAD is an untranslated Cursor payload
+# (_lib_payload_is_untranslated_cursor) and the caller is not a Claude Code
+# process, so a hook that would register, record or allow for Claude Code
+# declines instead. That holds when CLAUDECODE is unset, or when it is set and
+# _lib_cursor_host_pid returns 0. Returns 1 otherwise, including for an empty
+# PAYLOAD.
+# The host walk does not run when CLAUDECODE is unset, so a failed walk cannot
+# let a Cursor payload through. The walk decides only for a process that keeps
+# CLAUDECODE, which is declined only when it sits under a Cursor host.
+# A failed or cap-killed jq check counts as a match for a non-empty PAYLOAD, so
+# with CLAUDECODE unset it declines.
+# Costs one jq for a non-empty PAYLOAD. Prints nothing.
+_lib_declines_untranslated_cursor_payload() {
+  _lib_payload_is_untranslated_cursor "${1:-}" || return 1
+  [ -z "${CLAUDECODE:-}" ] && return 0
+  _lib_cursor_host_pid >/dev/null 2>&1 || return 1
+}
+
 # _lib_adapter_session_pair [PAYLOAD]
 # Prints "<session_id> <host_pid>" and returns 0 for a process that runs under
 # the Cursor adapter. Returns 2, printing nothing, otherwise.
-# - Returns 2 when CLAUDECODE is set, which every Claude Code hook carries and
-#   the adapter's shim and Shell rewrite remove.
-# - The host PID is _lib_cursor_host_pid's. On that walk's status 4 alone, it is
-#   CLAUDE_CONFIG_ADAPTER_HOST_PID instead, when no PAYLOAD is given and the
-#   value is 1 to 10 digits with no leading zero and above 1. No ancestor check
-#   ties that variable to the caller.
-# - The session id comes from PAYLOAD when PAYLOAD is given and
-#   _lib_payload_is_untranslated_cursor matches it: its `parent_agent_id` when
-#   it carries one, otherwise its `conversation_id`. A subagent therefore shares
-#   its parent's id. An absent, null or empty `parent_agent_id` is not carried;
-#   any other value that is not a string passing
-#   _lib_valid_session_id_component returns 2 rather than falling back.
-#   Otherwise it is CLAUDE_CONFIG_ADAPTER_SESSION_ID.
-# - The id must pass _lib_valid_session_id_component, and is checked before the
-#   host walk, so a caller with no valid id returns 2 with no `ps` read.
+# Returns 2 when CLAUDECODE is set. Claude Code's hook processes have been
+# observed to carry it, from a plain terminal and from Cursor's integrated
+# terminal, and no documented contract promises it. The adapter's shim and
+# Shell rewrite remove it. _lib_declines_untranslated_cursor_payload reads it
+# too, so a Claude Code process that lacks it declines a payload carrying a
+# Cursor key.
+# The session id comes from one of two sources:
+# - A PAYLOAD that _lib_payload_is_untranslated_cursor matches gives its
+#   `parent_agent_id` when it carries one, otherwise its `conversation_id`.
+#   - A subagent therefore shares its parent's id.
+#   - An absent, null or empty `parent_agent_id` is not carried.
+#   - Any other `parent_agent_id` that is not a string passing
+#     _lib_valid_session_id_component returns 2 rather than falling back.
+# - No PAYLOAD, or one that does not match, gives
+#   CLAUDE_CONFIG_ADAPTER_SESSION_ID.
+# The id must pass _lib_valid_session_id_component, and is checked before the
+# host walk, so a caller with no valid id returns 2 with no `ps` read.
+# The host PID is _lib_cursor_host_pid's. On that walk's status 4 alone it is
+# CLAUDE_CONFIG_ADAPTER_HOST_PID instead, when all of these hold:
+# - no PAYLOAD is given;
+# - the value is 1 to 10 digits with no leading zero;
+# - the value is above 1.
+# No ancestor check ties that variable to the caller.
 _lib_adapter_session_pair() {
   local payload="${1:-}"
   local host_pid session_id id_output host_status=0

@@ -802,7 +802,7 @@ def recognize_pin_prefix(command, roots, record, session_id):
     """Returns (the agent's command, whether `command` started with exactly the pin prefix its own remainder would get).
 
     The prefix is the environment line, compared by exact text apart from its host PID, then the pin line.
-    A prefix of any other shape, a Phase 3 prefix with no environment line included, is agent text."""
+    A prefix with no environment line, or of any other shape, is agent text."""
     line_end = command.find("\n")
     if line_end < 0 or not is_environment_line(command[:line_end], record["routed_config_dir"], session_id):
         return command, False
@@ -1591,9 +1591,13 @@ def run_pin(call, facts, roots, payload, record, deadline_at):
     if recognized:
         call.outcome = "pin-unchanged"
         return {}
-    call.outcome = "pin"
     updated = dict(payload["tool_input"])
     host_pid = host_walk_pid(record, directory, deadline_at)
+    # `pin-no-host` is the pin whose host walk found none, so it wrote the unset form of the host variable.
+    if host_pid is None:
+        call.outcome = "pin-no-host"
+    else:
+        call.outcome = "pin"
     environment = environment_line(record["routed_config_dir"], facts.session_id, host_pid)
     updated["command"] = environment + "\n" + pin_line(directory) + "\n" + original
     return {"updated_input": updated}

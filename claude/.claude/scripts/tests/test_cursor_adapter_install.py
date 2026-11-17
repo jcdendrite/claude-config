@@ -1601,7 +1601,7 @@ class TestLogFieldTable:
 
 # --- the sessionStart entry's host-walk and cursor_version reports ---
 
-SESSION_START_DECLINE_FRAGMENT = "untranslated Cursor payload under a Cursor host"
+SESSION_START_DECLINE_FRAGMENT = "untranslated Cursor payload declined"
 # Fake ancestors, outermost first, and the token each gives. The nearest one is the process that starts the walk's bash.
 HOST_WALK_CASES = {
     "cursor-main": (("Cursor", "shell"), "found"),
@@ -1627,7 +1627,9 @@ def put_fake_process_tree_behind_ps(world: World, tree_names: tuple[str, ...], m
     return stub_directory
 
 
-def run_capture_session_id_under_fake_tree(world: World, stub_directory: Path) -> subprocess.CompletedProcess:
+def run_capture_session_id_under_fake_tree(
+    world: World, stub_directory: Path, *, claudecode: bool = False
+) -> subprocess.CompletedProcess:
     payload = {"hook_event_name": "SessionStart", "session_id": CONVERSATION_ID, "workspace_roots": [str(world.tmp_path)]}
     return subprocess.run(
         ["bash", str(CLAUDE_DIR / "hooks" / "capture-session-id.sh")],
@@ -1637,6 +1639,7 @@ def run_capture_session_id_under_fake_tree(world: World, stub_directory: Path) -
             "HOME": str(world.home),
             "PATH": f"{stub_directory}:{world.bin_dir}:/usr/bin:/bin",
             "CLAUDE_CONFIG_DIR": str(world.config_dir),
+            **({"CLAUDECODE": "1"} if claudecode else {}),
         },
         check=False,
         timeout=60,
@@ -1649,7 +1652,7 @@ def last_log_fields(world: World) -> dict:
 
 class TestSessionStartReports:
     @pytest.mark.parametrize("case", list(HOST_WALK_CASES))
-    def test_the_real_entry_over_the_real_walk_reports_the_expected_token_and_the_session_hooks_decline_exactly_on_found(
+    def test_the_real_walk_reports_the_expected_token_and_the_session_hooks_decline_by_claudecode_and_the_walk(
         self, fast_world: World, case: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         world = fast_world
@@ -1657,12 +1660,25 @@ class TestSessionStartReports:
         stub_directory = put_fake_process_tree_behind_ps(world, tree_names, monkeypatch)
         world.install()
 
+        sessions_directory = world.config_dir / "sessions"
+
         context = run_surface(world, HOOK_ENV_SURFACE).out
-        declined = SESSION_START_DECLINE_FRAGMENT in run_capture_session_id_under_fake_tree(world, stub_directory).stderr.decode()
+        declined_without_claudecode = (
+            SESSION_START_DECLINE_FRAGMENT in run_capture_session_id_under_fake_tree(world, stub_directory).stderr.decode()
+        )
+        entries_after_unset_run = list(sessions_directory.glob("*"))
+        declined_with_claudecode = (
+            SESSION_START_DECLINE_FRAGMENT
+            in run_capture_session_id_under_fake_tree(world, stub_directory, claudecode=True).stderr.decode()
+        )
+        entries_after_set_run = list(sessions_directory.glob("*"))
 
         assert last_log_fields(world)["hostwalk"] == token
         assert f"Host walk: {token}." in context
-        assert declined is (token == "found")
+        assert declined_without_claudecode
+        assert entries_after_unset_run == []
+        assert declined_with_claudecode is (token == "found")
+        assert bool(entries_after_set_run) is (token != "found")
 
     @pytest.mark.parametrize("case", list(HOST_WALK_CASES))
     def test_status_flags_only_a_not_found_walk(self, fast_world: World, case: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1675,13 +1691,13 @@ class TestSessionStartReports:
         status = world.run("status").out
 
         assert ("host walk found no Cursor or CLI host" in status) is (token == "not-found")
+        assert ('"A host walk that found no host" entry' in status) is (token == "not-found")
 
     def test_a_walk_whose_ps_fails_at_its_first_read_reports_not_found(
         self, fast_world: World, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         world = fast_world
         monkeypatch.setattr(world.adapter, "HOST_WALK_BOUND_SECONDS", STUBBED_WALK_BOUND_SECONDS)
-        monkeypatch.setenv(world.adapter.load_shim().HOST_PID_VARIABLE, str(os.getpid()))
         replace_tool(world, "ps", "exit 1\n")
         world.install()
 

@@ -1,10 +1,11 @@
 """Tests for the Cursor adapter's host-neutral identity in _lib.sh and the two session hooks.
 
-TestClaudePathSnapshot holds a literal snapshot of the touched functions' results over a fixed corpus. It pins
-that every process which keeps CLAUDECODE behaves as it did before the adapter. To check that a snapshot came
-from the pre-adapter file, run the class against a merge-base checkout's hooks directory:
+TestClaudePathSnapshot holds a literal snapshot of the touched functions' results over a fixed corpus. Its
+`claude-` cases pin Claude Code behavior, so each runs with CLAUDECODE set. Their entries come from the hooks
+directory at commit 59c409a0, which holds no adapter code. To check them, run the class against a checkout of
+that commit:
 
-    IDENTITY_SNAPSHOT_HOOKS_DIR=<merge-base checkout>/claude/.claude/hooks pytest -k TestClaudePathSnapshot
+    IDENTITY_SNAPSHOT_HOOKS_DIR=<checkout of 59c409a0>/claude/.claude/hooks pytest -k TestClaudePathSnapshot
 
 Every `claude-` case must pass there, and exactly the `cursor-` cases in EXPECTED_DIFFERENT_CASE_IDS must fail.
 
@@ -54,15 +55,19 @@ from ._cursor_identity_fixtures import (
     build_fake_process_tree,
     install_ps_stub,
 )
+from ._cursor_payloads import (
+    CHILD_CONVERSATION_ID,
+    CONVERSATION_ID,
+    PARENT_CONVERSATION_ID,
+    make_linked_worktree,
+    worktree_lock_text,
+)
 from .conftest import _dead_pid, _seed_session
 from .test_lib_worktree_collision_guard import (
     _FIXED_START_TIME,
     _OTHER_CALLER_PID,
-    _add_worktree,
-    _git_common_dir,
     _git_dir,
     _install_failing_ps,
-    _locked_file_bytes,
     _run_lock_is_mine,
 )
 from .test_review_ledger_script import _append_args
@@ -76,8 +81,6 @@ REGISTERED_SESSION_ID = "registered-session"
 VALID_HOST_PID = "4242"
 ADAPTER_VARIABLES = {SESSION_VARIABLE: ADAPTER_SESSION_ID, HOST_VARIABLE: VALID_HOST_PID}
 
-CONVERSATION_ID = "conv-0000-4000-8000-01"
-PARENT_CONVERSATION_ID = "conv-0000-4000-8000-04"
 CLAUDE_CODE_PAYLOAD = {
     "session_id": "claude-code-session",
     "tool_name": "Write",
@@ -104,7 +107,8 @@ CLAUDE_AS_PARENT = ("claude",)
 UNDER_CURSOR = ("Cursor", "shell")
 UNDER_CLI = ("agent", "shell")
 
-SESSION_HOOK_DECLINE_FRAGMENT = "untranslated Cursor payload under a Cursor host"
+SESSION_HOOK_DECLINE_FRAGMENT = "untranslated Cursor payload declined"
+NO_HOST_ABOVE_PYTEST_REASON = "this test process has a host ancestor, which the walk could print in place of the CLI stand-in"
 SESSION_HOOKS = {
     "capture-session-id.sh": ("sessions", "lookup file not written"),
     "record-session-end.sh": ("session-end-records", "no SessionEnd record written"),
@@ -240,23 +244,6 @@ def make_scene(
 
 def payload_text(payload: dict) -> str:
     return json.dumps(payload)
-
-
-def make_linked_worktree(tmp_path: Path, *, opted_in: bool = False) -> tuple[Path, str]:
-    """A linked worktree of a fresh repo, and the repo's absolute git common dir.
-
-    `opted_in` commits `.claude/worktree-required`, which switches worktree enforcement on for the repo.
-    """
-    sentinel = {"file_name": ".claude/worktree-required", "content": "# sentinel\n"} if opted_in else {}
-    repo = init_git_repo_with_commit(tmp_path / "repo", branch="main", **sentinel)
-    worktree = tmp_path / "linked-tree"
-    _add_worktree(repo, worktree, "feature")
-    return worktree, _git_common_dir(repo)
-
-
-def worktree_lock_text(worktree: Path) -> str:
-    lock_file = Path(_git_dir(worktree), "locked")
-    return _locked_file_bytes(worktree).decode().strip() if lock_file.exists() else ""
 
 
 GUARD_SCRIPT = '_lib_worktree_collision_guard "$1" "$2"'
@@ -540,8 +527,8 @@ def _run_guard_case(
         return f"{scene.outcome(result, holder)} lock={scene.normalize(worktree_lock_text(worktree), holder)!r}"
 
 
-# Generated from claude/.claude/hooks/_lib.sh and the two session hooks at the commit the PR body records,
-# for every `claude-` case. The `cursor-` cases hold the adapter's results.
+# The `claude-` entries come from claude/.claude/hooks/_lib.sh and the two session hooks at commit 59c409a0.
+# The `cursor-` entries hold the adapter's results.
 SNAPSHOT: dict[str, str] = {
     'claude-no-adapter-variables-and-no-registered-ancestor':
         "rc=2 stdout='' stderr=''",
@@ -607,13 +594,13 @@ SNAPSHOT: dict[str, str] = {
         "rc=0 stdout='rule=1' stderr=''",
     'cursor-capture-session-id-declines-untranslated-payload-under-cursor-host':
         (
-            "rc=0 stdout='' stderr='[capture-session-id] untranslated Cursor payload under a "
-            "Cursor host; lookup file not written\\n' state=[]"
+            "rc=0 stdout='' stderr='[capture-session-id] untranslated Cursor payload declined; "
+            "lookup file not written\\n' state=[]"
         ),
     'cursor-record-session-end-declines-untranslated-payload-under-cursor-host':
         (
-            "rc=0 stdout='' stderr='[record-session-end] untranslated Cursor payload under a "
-            "Cursor host; no SessionEnd record written\\n' state=[]"
+            "rc=0 stdout='' stderr='[record-session-end] untranslated Cursor payload declined; "
+            "no SessionEnd record written\\n' state=[]"
         ),
 }
 
@@ -685,6 +672,12 @@ class TestClaudePathSnapshot:
 PAIR_SCRIPT = '_lib_adapter_session_pair "${PAYLOAD_UNDER_TEST:-}"'
 WALK_SCRIPT = "_lib_cursor_host_pid"
 FAIL_EVERY_READ = (PsRequestRule("*", "*", "fail"),)
+# Each way the host walk finds no host: (tree names, ps rules, the walk's status).
+UNRESOLVED_HOST_ROWS = {
+    "status-2-host-name-not-recognised": (("shell",), (), 2),
+    "status-3-walk-stops-at-claude": (CLAUDE_AS_PARENT, (), 3),
+    "status-4-a-name-read-fails": (("Cursor",), (PsRequestRule("comm", "*", "fail"),), 4),
+}
 INVALID_85_CHARACTER_ID = "x" * 84 + "/"
 
 
@@ -913,32 +906,22 @@ class TestAdapterIdentity:
         )
         assert worktree_lock_text(worktree) == ""
 
-    def test_the_allow_emitter_prints_its_allow_when_ps_fails_and_the_host_variable_is_valid(self, tmp_path):
+    def test_the_allow_emitter_prints_no_allow_when_ps_fails_and_the_host_variable_is_valid(self, tmp_path):
         scene = make_scene(tmp_path, UNDER_CURSOR, rules=FAIL_EVERY_READ)
         result = scene.run(
             '_lib_emit_allow_with_context "note"', env={**ADAPTER_VARIABLES, "INPUT": payload_text(CURSOR_PAYLOAD)}
         )
-        assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert (result.returncode, result.stdout) == (0, "")
 
-    def test_capture_session_id_takes_its_no_host_path_when_ps_fails_and_the_host_variable_is_valid(self, tmp_path):
+    @pytest.mark.parametrize("hook_name", SESSION_HOOKS)
+    def test_a_session_hook_declines_when_ps_fails_and_the_host_variable_is_valid(self, tmp_path, hook_name):
         scene = make_scene(tmp_path, ("Cursor",), rules=FAIL_EVERY_READ)
+        directory_name, _ = SESSION_HOOKS[hook_name]
         result = scene.run_command(
-            ["bash", str(HOOKS_DIR / "capture-session-id.sh")],
-            env=ADAPTER_VARIABLES,
-            stdin=payload_text(CURSOR_PAYLOAD),
+            ["bash", str(HOOKS_DIR / hook_name)], env=ADAPTER_VARIABLES, stdin=payload_text(CURSOR_PAYLOAD)
         )
-        assert SESSION_HOOK_DECLINE_FRAGMENT not in result.stderr
-        assert "could not resolve start time" in result.stderr
-
-    def test_record_session_end_takes_its_no_host_path_when_ps_fails_and_the_host_variable_is_valid(self, tmp_path):
-        scene = make_scene(tmp_path, ("Cursor",), rules=FAIL_EVERY_READ)
-        result = scene.run_command(
-            ["bash", str(HOOKS_DIR / "record-session-end.sh")],
-            env=ADAPTER_VARIABLES,
-            stdin=payload_text(CURSOR_PAYLOAD),
-        )
-        assert SESSION_HOOK_DECLINE_FRAGMENT not in result.stderr
-        assert [name for name, _ in scene.state_files("session-end-records")] == ["@0"]
+        assert SESSION_HOOK_DECLINE_FRAGMENT in result.stderr
+        assert scene.state_files(directory_name) == []
 
     @pytest.mark.parametrize("failing_walk", [False, True], ids=["healthy-walk", "failing-first-read"])
     def test_handoff_record_conversion_resolves_the_session_variable_under_its_own_errexit(self, tmp_path, failing_walk):
@@ -1305,7 +1288,6 @@ class TestSessionKeyedLockRule:
 
 
 GUARD_LOCK_HOLDER_SESSION = "other-session"
-CHILD_CONVERSATION_ID = "conv-0000-4000-8000-05"
 NESTED_CONVERSATION_ID = "conv-0000-4000-8000-06"
 
 
@@ -1405,6 +1387,41 @@ class TestSessionKeyedGuard:
         assert denied.returncode == 1
         _assert_live_holder_deny_text(denied.stdout, scene.tree.nearest_pid, CONVERSATION_ID)
         assert first_again.returncode == 0
+
+    def test_a_dead_holder_under_the_same_conversation_is_the_callers_own_lock_and_is_left_as_it_is(self, tmp_path):
+        """A Cursor quit and relaunch: the resumed conversation's lock names the exited host."""
+        scene = make_scene(tmp_path, ("Cursor",))
+        worktree, common_dir = make_linked_worktree(tmp_path)
+        dead_pid = _dead_pid()
+        _hold_lock(worktree, dead_pid, CONVERSATION_ID)
+
+        result = _guard(scene, worktree, common_dir, _cursor_payload(CONVERSATION_ID))
+
+        assert (result.returncode, result.stdout) == (0, "")
+        assert worktree_lock_text(worktree) == f"claude-code pid {dead_pid} session {CONVERSATION_ID}"
+
+    def test_a_dead_holder_under_another_conversation_is_reclaimed_for_the_caller(self, tmp_path):
+        scene = make_scene(tmp_path, ("Cursor",))
+        worktree, common_dir = make_linked_worktree(tmp_path)
+        _hold_lock(worktree, _dead_pid(), PARENT_CONVERSATION_ID)
+
+        result = _guard(scene, worktree, common_dir, _cursor_payload(CONVERSATION_ID))
+
+        assert (result.returncode, result.stdout) == (0, "")
+        assert worktree_lock_text(worktree) == f"claude-code pid {scene.tree.nearest_pid} session {CONVERSATION_ID}"
+
+    def test_a_dead_holder_whose_eviction_claim_is_already_spent_is_denied_with_its_pid_named(self, tmp_path):
+        scene = make_scene(tmp_path, ("Cursor",))
+        worktree, common_dir = make_linked_worktree(tmp_path)
+        dead_pid = _dead_pid()
+        _hold_lock(worktree, dead_pid, PARENT_CONVERSATION_ID)
+        Path(_git_dir(worktree), f"claude-evicted-lock-{dead_pid}-{PARENT_CONVERSATION_ID}").write_text("spent\n")
+
+        result = _guard(scene, worktree, common_dir, _cursor_payload(CONVERSATION_ID))
+
+        assert result.returncode == 1
+        assert f"locked by pid {dead_pid}, which is no longer running" in result.stdout
+        assert worktree_lock_text(worktree) == f"claude-code pid {dead_pid} session {PARENT_CONVERSATION_ID}"
 
     def test_a_live_old_format_holder_is_named_by_its_pid_alone(self, tmp_path):
         scene = make_scene(tmp_path, ("Cursor",))
@@ -1515,12 +1532,29 @@ def emitted_an_allow(result: subprocess.CompletedProcess) -> bool:
     return json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
+def write_jq_failing_on_the_predicate_call(directory: Path) -> Path:
+    """A `jq` that exits 2 for a call passing `-e`, as the Cursor-payload predicate's call does, and runs the real `jq`
+    for every other call. Returns `directory`."""
+    real_jq = shutil.which("jq")
+    assert real_jq
+    directory.mkdir()
+    stub = directory / "jq"
+    stub.write_text(
+        f'#!/bin/bash\nfor argument in "$@"; do [ "$argument" = "-e" ] && exit 2; done\nexec {shlex.quote(real_jq)} "$@"\n'
+    )
+    stub.chmod(0o755)
+    return directory
+
+
 class TestCopyAllowSuppressed:
+    @pytest.mark.parametrize("claudecode", [False, True], ids=["claudecode-unset", "claudecode-set"])
     @pytest.mark.parametrize("tree_names", [UNDER_CURSOR, UNDER_CLI], ids=["cursor-host", "cli-host"])
     @pytest.mark.parametrize("keys", PREDICATE_KEY_SETS, ids=["workspace-roots", "cursor-version", "both-keys"])
-    def test_an_untranslated_payload_under_a_host_gets_no_allow(self, tmp_path, tree_names, keys):
+    def test_an_untranslated_payload_under_a_host_gets_no_allow(self, tmp_path, claudecode, tree_names, keys):
         scene = make_scene(tmp_path, tree_names)
-        result = scene.run(EMIT_ALLOW_FROM_STDIN, stdin=payload_text({**CLAUDE_CODE_PAYLOAD, **keys}))
+        result = scene.run(
+            EMIT_ALLOW_FROM_STDIN, claudecode=claudecode, stdin=payload_text({**CLAUDE_CODE_PAYLOAD, **keys})
+        )
         assert (result.returncode, result.stdout) == (0, "")
 
     @pytest.mark.parametrize(
@@ -1529,25 +1563,55 @@ class TestCopyAllowSuppressed:
             pytest.param(UNDER_CURSOR, CLAUDE_CODE_PAYLOAD, id="payload-without-predicate-key-under-cursor-host"),
             pytest.param(("shell",), CLAUDE_PAYLOAD_WITH_PREDICATE_KEY, id="predicate-key-payload-with-no-host"),
             pytest.param(
-                ("Cursor", "shell", "claude"), CLAUDE_PAYLOAD_WITH_PREDICATE_KEY, id="predicate-key-payload-under-cc2-chain"
+                ("Cursor", "shell", "claude"),
+                CLAUDE_PAYLOAD_WITH_PREDICATE_KEY,
+                id="predicate-key-payload-under-a-claude-below-cursor-chain",
             ),
             pytest.param(
                 ("agent", "shell", "claude"), CLAUDE_PAYLOAD_WITH_PREDICATE_KEY, id="predicate-key-under-claude-under-cli"
             ),
         ],
     )
-    def test_the_allow_stays_where_the_payload_or_the_host_walk_does_not_say_cursor(self, tmp_path, tree_names, payload):
+    def test_a_claudecode_process_keeps_its_allow_where_the_payload_or_the_host_walk_does_not_say_cursor(
+        self, tmp_path, tree_names, payload
+    ):
         scene = make_scene(tmp_path, tree_names)
-        result = scene.run(EMIT_ALLOW_FROM_STDIN, stdin=payload_text(payload))
+        result = scene.run(EMIT_ALLOW_FROM_STDIN, claudecode=True, stdin=payload_text(payload))
         assert emitted_an_allow(result)
 
-    def test_the_allow_is_printed_when_the_host_walk_fails_under_a_matching_predicate(self, tmp_path):
-        """The residual: a walk that fails lets a copy's fresh-lock allow through, as with no adapter installed."""
-        scene = make_scene(tmp_path, UNDER_CURSOR, rules=FAIL_EVERY_READ)
+    def test_a_payload_without_predicate_keys_keeps_its_allow_with_claudecode_unset(self, tmp_path):
+        scene = make_scene(tmp_path, UNDER_CURSOR)
+        result = scene.run(EMIT_ALLOW_FROM_STDIN, stdin=payload_text(CLAUDE_CODE_PAYLOAD))
+        assert emitted_an_allow(result)
+
+    @pytest.mark.parametrize(
+        ("tree_names", "rules", "walk_status"), UNRESOLVED_HOST_ROWS.values(), ids=list(UNRESOLVED_HOST_ROWS)
+    )
+    def test_an_untranslated_payload_gets_no_allow_with_claudecode_unset_whatever_the_host_walk_returns(
+        self, tmp_path, tree_names, rules, walk_status
+    ):
+        scene = make_scene(tmp_path, tree_names, rules=rules)
         result = scene.run(EMIT_ALLOW_FROM_STDIN, stdin=payload_text(CURSOR_PAYLOAD))
+        assert (result.returncode, result.stdout) == (0, "")
+        assert_no_walk_ran_and_the_scene_walk_returns(scene, walk_status)
+
+    @pytest.mark.parametrize(
+        ("tree_names", "rules", "walk_status"), UNRESOLVED_HOST_ROWS.values(), ids=list(UNRESOLVED_HOST_ROWS)
+    )
+    def test_a_claudecode_process_keeps_its_allow_for_an_untranslated_payload_when_the_host_walk_finds_no_host(
+        self, tmp_path, tree_names, rules, walk_status
+    ):
+        scene = make_scene(tmp_path, tree_names, rules=rules)
+        result = scene.run(EMIT_ALLOW_FROM_STDIN, claudecode=True, stdin=payload_text(CURSOR_PAYLOAD))
         assert emitted_an_allow(result)
 
-    def test_a_jq_cap_kill_counts_as_a_match_so_a_cursor_host_gets_no_allow(self, tmp_path):
+    def test_an_untranslated_payload_gets_no_allow_from_a_claudecode_process_under_a_cursor_host(self, tmp_path):
+        scene = make_scene(tmp_path, UNDER_CURSOR)
+        result = scene.run(EMIT_ALLOW_FROM_STDIN, claudecode=True, stdin=payload_text(CURSOR_PAYLOAD))
+        assert (result.returncode, result.stdout) == (0, "")
+
+    def test_a_jq_cap_kill_counts_as_a_match_so_an_unset_claudecode_gets_no_allow_with_no_host_walk(self, tmp_path):
+        """Pins the unset-CLAUDECODE arm: the fake host plays no part, because the helper returns before any walk."""
         scene = make_scene(tmp_path, UNDER_CURSOR)
         hung_jq_dir = tmp_path / "hung-jq"
         hung_jq_dir.mkdir()
@@ -1563,6 +1627,32 @@ class TestCopyAllowSuppressed:
             )
 
         assert (result.returncode, result.stdout) == (0, "predicate=0|")
+
+    @pytest.mark.parametrize(
+        ("claudecode", "tree_names", "allows"),
+        [
+            pytest.param(False, UNDER_CURSOR, False, id="claudecode-unset-under-a-cursor-host"),
+            pytest.param(False, ("shell",), False, id="claudecode-unset-with-no-host"),
+            pytest.param(True, UNDER_CURSOR, False, id="claudecode-set-under-a-cursor-host"),
+            pytest.param(True, ("shell",), True, id="claudecode-set-with-no-host"),
+        ],
+    )
+    def test_a_jq_that_fails_only_on_the_predicate_call_leaves_the_allow_to_claudecode_and_the_host_walk(
+        self, tmp_path, claudecode, tree_names, allows
+    ):
+        scene = make_scene(tmp_path, tree_names)
+        failing_jq_dir = write_jq_failing_on_the_predicate_call(tmp_path / "predicate-failing-jq")
+
+        result = scene.run(
+            EMIT_ALLOW_FROM_STDIN,
+            claudecode=claudecode,
+            stdin=payload_text(CLAUDE_CODE_PAYLOAD),
+            extra_path=failing_jq_dir,
+        )
+
+        assert emitted_an_allow(result) is allows
+        if not claudecode:
+            assert scene.stub.requests() == []
 
     def test_the_allow_emitter_runs_no_host_walk_for_an_empty_input(self, tmp_path):
         scene = make_scene(tmp_path, UNDER_CURSOR)
@@ -1585,6 +1675,18 @@ def walk_outcome(scene: Scene, result: subprocess.CompletedProcess) -> tuple[int
     """(status, normalized printed PID) of a `run_walk` result."""
     printed, _, status = result.stdout.rpartition("|walk=")
     return int(status), scene.normalize(printed)
+
+
+def assert_no_walk_ran_and_the_scene_walk_returns(scene: Scene, walk_status: int) -> None:
+    """For a row run with CLAUDECODE unset: no `ps` read was issued, and the scene's own walk, run afterwards, returns
+    `walk_status`. A decline that ignored the walk would otherwise pass whatever the scene returned."""
+    assert scene.stub.requests() == []
+    assert walk_outcome(scene, run_walk(scene))[0] == walk_status
+
+
+def session_hook_decline_line(hook_name: str) -> str:
+    _, written_nothing_text = SESSION_HOOKS[hook_name]
+    return f"[{hook_name.removesuffix('.sh')}] {SESSION_HOOK_DECLINE_FRAGMENT}; {written_nothing_text}\n"
 
 
 def run_session_hook(scene: Scene, hook_name: str, payload: dict, *, claudecode: bool = False):
@@ -1675,14 +1777,6 @@ FAILED_READ_ROWS = {
 }
 
 
-SESSION_HOOK_NO_HOST_FRAGMENT = "untranslated Cursor payload with no Cursor host found"
-UNRESOLVED_HOST_ROWS = {
-    "status-2-host-name-not-recognised": (("shell",), (), 2),
-    "status-3-walk-stops-at-claude": (CLAUDE_AS_PARENT, (), 3),
-    "status-4-a-name-read-fails": (("Cursor",), (PsRequestRule("comm", "*", "fail"),), 4),
-}
-
-
 def predicate_status(scene: Scene, payload_json: str) -> str:
     """`_lib_payload_is_untranslated_cursor`'s status for `payload_json`, as text."""
     result = scene.run('INPUT=$(cat); _lib_payload_is_untranslated_cursor "$INPUT"; printf "%s" $?', stdin=payload_json)
@@ -1699,12 +1793,15 @@ class TestCursorPayloadDecline:
         scene.stub.assert_no_unknown_requests()
 
     @pytest.mark.parametrize("hook_name", SESSION_HOOKS)
+    @pytest.mark.parametrize("claudecode", [False, True], ids=["claudecode-unset", "claudecode-set"])
     @pytest.mark.parametrize("tree_names", [("Cursor",), ("agent",), ("cursor-agent",)], ids=["cursor", "agent", "cursor-agent"])
     @pytest.mark.parametrize("keys", PREDICATE_KEY_SETS, ids=["workspace-roots", "cursor-version", "both-keys"])
-    def test_a_session_hook_declines_a_cursor_shaped_payload_under_a_host(self, tmp_path, hook_name, tree_names, keys):
+    def test_a_session_hook_declines_a_cursor_shaped_payload_under_a_host(
+        self, tmp_path, hook_name, claudecode, tree_names, keys
+    ):
         scene = make_scene(tmp_path, tree_names)
         directory_name, _ = SESSION_HOOKS[hook_name]
-        result = run_session_hook(scene, hook_name, {"session_id": CONVERSATION_ID, **keys})
+        result = run_session_hook(scene, hook_name, {"session_id": CONVERSATION_ID, **keys}, claudecode=claudecode)
         assert result.returncode == 0
         assert SESSION_HOOK_DECLINE_FRAGMENT in result.stderr
         assert scene.state_files(directory_name) == []
@@ -1715,7 +1812,9 @@ class TestCursorPayloadDecline:
         [
             pytest.param(CLAUDE_AS_PARENT, CLAUDE_PAYLOAD_WITH_PREDICATE_KEY, id="predicate-key-under-claude-parent"),
             pytest.param(
-                ("Cursor", "shell", "claude"), CLAUDE_PAYLOAD_WITH_PREDICATE_KEY, id="predicate-key-under-cc2-chain"
+                ("Cursor", "shell", "claude"),
+                CLAUDE_PAYLOAD_WITH_PREDICATE_KEY,
+                id="predicate-key-under-a-claude-below-cursor-chain",
             ),
             pytest.param(
                 ("agent", "shell", "claude"), CLAUDE_PAYLOAD_WITH_PREDICATE_KEY, id="predicate-key-under-claude-under-cli"
@@ -1724,12 +1823,12 @@ class TestCursorPayloadDecline:
             pytest.param(UNDER_CURSOR, CLAUDE_CODE_PAYLOAD, id="no-predicate-key-under-a-cursor-host"),
         ],
     )
-    def test_a_session_hook_still_writes_where_the_predicate_and_the_host_walk_do_not_both_say_cursor(
+    def test_a_claudecode_session_hook_still_writes_where_the_predicate_and_the_host_walk_do_not_both_say_cursor(
         self, tmp_path, hook_name, tree_names, payload
     ):
         scene = make_scene(tmp_path, tree_names)
         directory_name, _ = SESSION_HOOKS[hook_name]
-        result = run_session_hook(scene, hook_name, payload)
+        result = run_session_hook(scene, hook_name, payload, claudecode=True)
         assert result.returncode == 0
         assert SESSION_HOOK_DECLINE_FRAGMENT not in result.stderr
         assert [name for name, _ in scene.state_files(directory_name)] == ["@0"]
@@ -1738,29 +1837,42 @@ class TestCursorPayloadDecline:
     @pytest.mark.parametrize(
         ("tree_names", "rules", "walk_status"), UNRESOLVED_HOST_ROWS.values(), ids=list(UNRESOLVED_HOST_ROWS)
     )
-    def test_a_session_hook_names_the_walk_status_and_still_writes_when_a_cursor_payload_finds_no_host(
+    def test_a_session_hook_declines_a_cursor_payload_with_claudecode_unset_whatever_the_host_walk_returns(
         self, tmp_path, hook_name, tree_names, rules, walk_status
     ):
         scene = make_scene(tmp_path, tree_names, rules=rules)
         directory_name, _ = SESSION_HOOKS[hook_name]
         result = run_session_hook(scene, hook_name, CURSOR_PAYLOAD)
-        expected_line = (
-            f"[{hook_name.removesuffix('.sh')}] {SESSION_HOOK_NO_HOST_FRAGMENT} (host walk status {walk_status}); continuing"
-        )
         assert result.returncode == 0
-        assert expected_line in result.stderr.splitlines()
+        assert result.stderr == session_hook_decline_line(hook_name)
+        assert scene.state_files(directory_name) == []
+        assert_no_walk_ran_and_the_scene_walk_returns(scene, walk_status)
+
+    @pytest.mark.parametrize("hook_name", SESSION_HOOKS)
+    def test_a_session_hook_writes_for_a_payload_without_a_predicate_key_with_claudecode_unset(
+        self, tmp_path, hook_name
+    ):
+        """The unset-CLAUDECODE decline needs the predicate to match first, so a payload with no Cursor key still
+        registers under a Cursor host."""
+        scene = make_scene(tmp_path, UNDER_CURSOR)
+        directory_name, _ = SESSION_HOOKS[hook_name]
+        result = run_session_hook(scene, hook_name, CLAUDE_CODE_PAYLOAD)
+        assert result.returncode == 0
         assert SESSION_HOOK_DECLINE_FRAGMENT not in result.stderr
         assert [name for name, _ in scene.state_files(directory_name)] == ["@0"]
 
     @pytest.mark.parametrize("hook_name", SESSION_HOOKS)
-    def test_a_session_hook_under_claudecode_prints_no_host_walk_note_for_a_cursor_shaped_payload(
-        self, tmp_path, hook_name
+    @pytest.mark.parametrize(
+        ("tree_names", "rules", "walk_status"), UNRESOLVED_HOST_ROWS.values(), ids=list(UNRESOLVED_HOST_ROWS)
+    )
+    def test_a_claudecode_session_hook_writes_for_a_cursor_shaped_payload_when_the_host_walk_finds_no_host(
+        self, tmp_path, hook_name, tree_names, rules, walk_status
     ):
-        scene = make_scene(tmp_path, ("shell",))
+        scene = make_scene(tmp_path, tree_names, rules=rules)
         directory_name, _ = SESSION_HOOKS[hook_name]
         result = run_session_hook(scene, hook_name, CURSOR_PAYLOAD, claudecode=True)
         assert result.returncode == 0
-        assert SESSION_HOOK_NO_HOST_FRAGMENT not in result.stderr
+        assert result.stderr == ""
         assert [name for name, _ in scene.state_files(directory_name)] == ["@0"]
 
     def test_the_ps_stub_left_pads_a_ppid_read_as_real_ps_does(self, tmp_path):
@@ -1809,12 +1921,71 @@ class TestCursorPayloadDecline:
         scene = make_scene(tmp_path, ("shell",))
         assert predicate_status(scene, payload_text(payload)) == "1"
 
+    @pytest.mark.parametrize(
+        ("claudecode", "tree_names", "declines"),
+        [
+            pytest.param(False, ("shell",), True, id="claudecode-unset-with-no-host"),
+            pytest.param(True, UNDER_CURSOR, True, id="claudecode-set-under-a-cursor-host"),
+            pytest.param(True, ("shell",), False, id="claudecode-set-with-no-host"),
+        ],
+    )
+    def test_a_jq_that_fails_only_on_the_predicate_call_makes_the_helper_decline_by_claudecode_then_the_host_walk(
+        self, tmp_path, claudecode, tree_names, declines
+    ):
+        """A failed predicate counts as a match, so the decline falls to the `CLAUDECODE` test and then the walk."""
+        scene = make_scene(tmp_path, tree_names)
+        failing_jq_dir = write_jq_failing_on_the_predicate_call(tmp_path / "predicate-failing-jq")
+
+        result = scene.run(
+            'INPUT=$(cat); _lib_declines_untranslated_cursor_payload "$INPUT"; printf "%s" $?',
+            claudecode=claudecode,
+            stdin=payload_text(CLAUDE_CODE_PAYLOAD),
+            extra_path=failing_jq_dir,
+        )
+
+        assert result.stdout == ("0" if declines else "1")
+        if not claudecode:
+            assert scene.stub.requests() == []
+
     def test_the_resolver_finds_no_registered_ancestor_after_an_import_copy_declined_under_a_cursor_host(self, tmp_path):
         scene = make_scene(tmp_path, ("Cursor",))
-        run_session_hook(scene, "capture-session-id.sh", CURSOR_PAYLOAD)
+        hook_result = run_session_hook(scene, "capture-session-id.sh", CURSOR_PAYLOAD, claudecode=True)
         result = scene.run("_lib_resolve_claude_pid", claudecode=True, env=ADAPTER_VARIABLES)
+        assert SESSION_HOOK_DECLINE_FRAGMENT in hook_result.stderr
         assert scene.state_files("sessions") == []
         assert (result.returncode, result.stdout) == (2, "")
+
+    @pytest.mark.parametrize("walk_heals_before_the_guards", [False, True], ids=["walk-keeps-failing", "walk-recovers"])
+    def test_two_conversations_under_one_runner_keep_distinct_identities_after_the_first_session_start_walk_failed(
+        self, tmp_path, walk_heals_before_the_guards
+    ):
+        """The comm read fails and the start-time read works, so an import copy that kept going would register the
+        runner's PID under the first conversation's id, and the second conversation would resolve to that id.
+        The hook leg runs with CLAUDECODE unset and declines before any walk, so the failing read is the guards'
+        condition, not the hook's."""
+        scene = make_scene(tmp_path, ("Cursor",), rules=(PsRequestRule("comm", "*", "fail"),))
+        worktree, common_dir = make_linked_worktree(tmp_path)
+        first = _cursor_payload(CONVERSATION_ID)
+        second = _cursor_payload(PARENT_CONVERSATION_ID)
+
+        run_session_hook(scene, "capture-session-id.sh", first)
+        if walk_heals_before_the_guards:
+            scene.stub.clear_rules()
+        first_guard = _guard(scene, worktree, common_dir, first)
+        second_guard = _guard(scene, worktree, common_dir, second)
+
+        assert scene.state_files("sessions") == []
+        if walk_heals_before_the_guards:
+            assert first_guard.returncode == 0, first_guard
+            assert worktree_lock_text(worktree) == f"claude-code pid {scene.tree.nearest_pid} session {CONVERSATION_ID}"
+            assert second_guard.returncode == 1
+            _assert_live_holder_deny_text(second_guard.stdout, scene.tree.nearest_pid, CONVERSATION_ID)
+        else:
+            no_identity_text = "could not resolve this session's own process identity to check the worktree lock"
+            assert [(first_guard.returncode, first_guard.stdout), (second_guard.returncode, second_guard.stdout)] == [
+                (1, no_identity_text)
+            ] * 2
+            assert worktree_lock_text(worktree) == ""
 
     def test_a_registry_entry_written_before_a_relaunch_fails_the_start_time_check_after_it(self, tmp_path):
         relaunched_start_time = "Wed Mar  3 04:05:06 2021"
@@ -1874,15 +2045,28 @@ class TestCursorPayloadDecline:
         assert scene.stub.requests() == [(kind, str(pid), answer) for kind, pid, answer in row.requests]
         scene.stub.assert_no_unknown_requests()
 
-    # Rows that run the walk under the real `ps`, on macOS only.
+    # Rows that run the walk under the real `ps`.
 
     @staticmethod
-    def _recorded_bash() -> str:
+    def _bash_copied_as(directory: Path, host_name: str) -> tuple[str, Path]:
+        """(the bash on PATH, a copy of it named `host_name` in `directory`). A copy that does not execute, by exit
+        status or by an `OSError` such as a `noexec` mount's `PermissionError`, skips locally, as a macOS system
+        binary's copy does, and fails under GITHUB_ACTIONS, as `require_zsh` does."""
         real_bash = shutil.which("bash")
         assert real_bash
-        if real_bash.startswith(("/bin/", "/usr/bin/")):
-            pytest.skip("the recorded bash is a system binary here, which cannot be copied under a host name")
-        return real_bash
+        directory.mkdir(parents=True)
+        host_copy = directory / host_name
+        shutil.copy2(real_bash, host_copy)
+        try:
+            copy_executes = subprocess.run([str(host_copy), "-c", ":"], capture_output=True, check=False).returncode == 0
+        except OSError:
+            copy_executes = False
+        if not copy_executes:
+            reason = "a copy of this bash does not execute here, so it cannot stand in for a host process"
+            if os.environ.get("GITHUB_ACTIONS"):
+                pytest.fail(reason)
+            pytest.skip(reason)
+        return real_bash, host_copy
 
     @staticmethod
     def _real_walk_environment(scene_home: Path) -> dict[str, str]:
@@ -1890,16 +2074,41 @@ class TestCursorPayloadDecline:
         environment["HOME"] = str(scene_home)
         return environment
 
-    @pytest.mark.skipif(sys.platform != "darwin", reason="reads macOS's `ps -o comm=` forms")
-    def test_the_walk_finds_a_copied_bash_named_cursor_under_a_path_holding_a_space_with_the_real_ps(self, tmp_path):
-        recorded_bash = self._recorded_bash()
-        directory = tmp_path / "directory with a space" / "Cursor.app" / "Contents" / "MacOS"
-        directory.mkdir(parents=True)
-        host_copy = directory / "Cursor"
-        shutil.copy2(recorded_bash, host_copy)
+    @staticmethod
+    def _walk_two_shells_below(real_bash: str) -> str:
+        """A command that runs the walk in a bash that has an intermediate bash above it, so the walk's first hop
+        reads that bash's PPID with the real `ps`. Each level ends in `:` so no bash `exec`s its last command."""
         walk = f". {shlex.quote(str(HOOKS_DIR / '_lib.sh'))}; _lib_cursor_host_pid"
+        inner = f"{shlex.quote(real_bash)} -c {shlex.quote(walk)}; :"
+        return f"{shlex.quote(real_bash)} -c {shlex.quote(inner)}; :"
+
+    @classmethod
+    def _real_walk_finds_a_host_above_this_process(cls, scene_home: Path) -> bool:
+        """Whether the walk, run from a child of this process under the real `ps`, finds a host among this process's
+        own ancestors."""
+        walk = f". {shlex.quote(str(HOOKS_DIR / '_lib.sh'))}; _lib_cursor_host_pid >/dev/null"
+        completed = subprocess.run(
+            ["bash", "-c", walk],
+            capture_output=True,
+            check=False,
+            env=cls._real_walk_environment(scene_home),
+            timeout=60,
+        )
+        return completed.returncode == 0
+
+    @pytest.mark.parametrize("host_name", ["Cursor", "agent", "cursor-agent"])
+    def test_the_walk_finds_a_copied_bash_named_as_a_host_under_a_path_holding_a_space_with_the_real_ps(
+        self, tmp_path, host_name
+    ):
+        # The walk keeps climbing past a CLI stand-in, so a `Cursor` ancestor of pytest would win over it.
+        if host_name != "Cursor" and self._real_walk_finds_a_host_above_this_process(tmp_path):
+            pytest.skip(NO_HOST_ABOVE_PYTEST_REASON)
+        directory = tmp_path / "directory with a space"
+        if host_name == "Cursor":
+            directory = directory / "Cursor.app" / "Contents" / "MacOS"
+        real_bash, host_copy = self._bash_copied_as(directory, host_name)
         host = subprocess.Popen(
-            [str(host_copy), "-c", f"{shlex.quote(recorded_bash)} -c {shlex.quote(walk)}; :"],
+            [str(host_copy), "-c", self._walk_two_shells_below(real_bash)],
             stdout=subprocess.PIPE,
             text=True,
             env=self._real_walk_environment(tmp_path),
@@ -1910,13 +2119,15 @@ class TestCursorPayloadDecline:
     @pytest.mark.skipif(sys.platform != "darwin", reason="reads macOS's `ps -o comm=` forms")
     def test_the_walk_finds_a_bash_exec_ed_under_an_agent_name_with_the_real_ps(self, tmp_path):
         """Assumes macOS reports an `exec -a` name for a bash stand-in as it did for the CLI's node [unverified]."""
-        recorded_bash = self._recorded_bash()
+        if self._real_walk_finds_a_host_above_this_process(tmp_path):
+            pytest.skip(NO_HOST_ABOVE_PYTEST_REASON)
+        real_bash = shutil.which("bash")
+        assert real_bash
         invoked_name = tmp_path / "directory with a space" / "agent"
-        walk = f". {shlex.quote(str(HOOKS_DIR / '_lib.sh'))}; _lib_cursor_host_pid"
-        inner = f"{shlex.quote(recorded_bash)} -c {shlex.quote(walk)}; :"
-        launcher = f"exec -a {shlex.quote(str(invoked_name))} {shlex.quote(recorded_bash)} -c {shlex.quote(inner)}"
+        walk_command = self._walk_two_shells_below(real_bash)
+        launcher = f"exec -a {shlex.quote(str(invoked_name))} {shlex.quote(real_bash)} -c {shlex.quote(walk_command)}"
         host = subprocess.Popen(
-            [recorded_bash, "-c", launcher],
+            [real_bash, "-c", launcher],
             stdout=subprocess.PIPE,
             text=True,
             env=self._real_walk_environment(tmp_path),

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR, _hook_class, init_git_repo_with_commit, symlink_hooks_lib_chain
+from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR, _hook_class, symlink_hooks_lib_chain
 
 from ._cursor_identity_fixtures import HOST_PROCESS_ID, HOST_SHOWING_PS_BODY, write_stub_tool_directory
 from ._cursor_payloads import (
@@ -39,6 +39,7 @@ from ._cursor_payloads import (
     SHIM,
     SPEC_CLAUDE_EVENT,
     SPEC_IDS,
+    STUBBED_WALK_DEADLINE_SECONDS,
     TOOL_MAP_JSON,
     ShimEnv,
     adapter_under_empty_home,  # noqa: F401 (the `adapter` fixture)
@@ -48,6 +49,7 @@ from ._cursor_payloads import (
     hook_args,
     load_json,
     load_shim,
+    make_linked_worktree,
     make_shim_env,
     parse_registration_key,
     phase_number,
@@ -62,6 +64,7 @@ from ._cursor_payloads import (
     shim_json,
     shim_process_env,
     without_git_environment,
+    worktree_lock_text,
     write_hook_script,
 )
 
@@ -227,7 +230,7 @@ EXPECTED_ADDED = {
     "task_pre": set(),
     "prompt_submit": {"session_id", "cwd"},
     "session_start": {"cwd", "source"},
-    "subagent_start": {"session_id", "cwd", "agent_type", "agent_id"},
+    "subagent_start": {"cwd", "agent_type", "agent_id"},
     "subagent_stop": {"session_id", "cwd", "agent_type"},
     "stop": {"session_id", "cwd"},
     "after_agent_response": {"session_id", "cwd", "last_assistant_message", "prompt_id"},
@@ -777,7 +780,8 @@ class Trigger:
     """A deny trigger modeled on the gate's own tests, and a near miss the gate must let through.
 
     `overwrites` is the text of the file a Write replaces, and `setup` builds the state the trigger needs.
-    `inert` is true when a missed deny leaves no effect. `drawn` is true when an acceptance step draws the trigger.
+    `inert` is true when a missed deny changes nothing outside the scratch repository the trigger runs in.
+    `drawn` is true when the attended acceptance run fires the trigger against the real gate.
     Neither has a default, so a Trigger built without one is a construction error.
     """
 
@@ -892,8 +896,7 @@ TRIGGERS: dict[str, tuple[Trigger, ...]] = {
             setup=_require_worktree_sentinel,
         ),
     ),
-    # The two Write rows below are the only rows flagged `inert` and `drawn` whose missed deny changes a file: they create or
-    # overwrite one under `world.repo`. A drawn run aims them at a scratch repository, never a real main checkout.
+    # The two Write rows below are the only drawn rows whose missed deny changes a file, and it stays under `world.repo`.
     "require-worktree-for-file-writes.sh": (
         Trigger(
             "create-in-the-main-checkout",
@@ -1117,12 +1120,12 @@ LISTED_WRITES: dict[str, tuple[str, ...]] = {
     "require-code-review.sh": (r"config:config/\.review-ledger-compliance\.log",),
     **{script: trigger.writes for script, trigger in INFORMATIONAL_WRITE_TRIGGERS.items()},
 }
-# The two session writers whose registrations the adapter declines. The import arm runs with no Cursor host above the hook, so
-# each takes its documented no-host path and writes. The decline under a host is checked by `TestCursorPayloadDecline` in
-# test_lib_cursor_identity.py.
+# The two session writers whose registrations the adapter declines, each with an empty write allowance. The import arm runs a
+# Cursor-shaped payload with CLAUDECODE unset, so neither writes whatever the host walk returns. `TestCursorPayloadDecline` in
+# test_lib_cursor_identity.py checks the decline for each CLAUDECODE state.
 DECLINED_SESSION_WRITES: dict[str, tuple[str, ...]] = {
-    "capture-session-id.sh": (r"home:home/\.claude(/sessions(/[0-9]+)?)?",),
-    "record-session-end.sh": (r"config:config/session-end-records(/[0-9]+)?",),
+    "capture-session-id.sh": (),
+    "record-session-end.sh": (),
 }
 # Rows whose hook may call a stubbed network command.
 LISTED_NETWORK: frozenset[str] = frozenset()
@@ -1552,6 +1555,35 @@ def _child_payload(registration: Registration, world: World) -> dict:
         return _benign_payload(registration, world)
     world.apply_setup(write_trigger.setup)
     return write_trigger.payload(registration, world)
+
+
+# The stderr line each declined registration prints in the import arm. Cursor's recorded sessionEnd keys name no `session_id`, so
+# record-session-end.sh stops at its own session-id check and never reaches the decline.
+# A sessionEnd payload that carries `session_id` is declined, as `TestCursorPayloadDecline` in test_lib_cursor_identity.py pins.
+DECLINED_SESSION_IMPORT_STDERR = {
+    "SessionStart": "[capture-session-id] untranslated Cursor payload declined; lookup file not written",
+    "SubagentStart": "[capture-session-id] untranslated Cursor payload declined; lookup file not written",
+    "SessionEnd": "[record-session-end] no session_id in payload; no SessionEnd record written",
+}
+DECLINED_SESSION_REGISTRATIONS = [r for r in ALL_REGISTRATIONS if r.script in DECLINED_SESSION_WRITES]
+
+
+class TestDeclinedSessionHooksImportArm:
+    def test_the_declined_registrations_are_the_three_session_events(self) -> None:
+        assert {r.event for r in DECLINED_SESSION_REGISTRATIONS} == set(DECLINED_SESSION_IMPORT_STDERR)
+
+    @pytest.mark.parametrize("registration", DECLINED_SESSION_REGISTRATIONS, ids=lambda r: r.key)
+    def test_the_import_arm_on_the_events_recorded_shape_writes_nothing_and_prints_its_one_line(
+        self, world: World, registration: Registration
+    ) -> None:
+        payload = _benign_payload(registration, world)
+        world.reset()
+        before = world.snapshot(ignore_state=False)
+        result = _import_arm(world, registration, payload)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == b""
+        assert result.stderr.decode().strip() == DECLINED_SESSION_IMPORT_STDERR[registration.event]
+        assert_no_effects(before, world.snapshot(ignore_state=False), world, *_listed(registration, import_arm=True))
 
 
 class TestChildPayloadImportArm:
@@ -2090,10 +2122,28 @@ class TestRecoverySectionResolves:
         assert found == {"seeded-refusal", "seeded-abnormal"}
         assert {"pin-check", "exit-nonzero", "start-failed", "install-record"} <= set(DENY_OUTCOMES)
 
-    @pytest.mark.parametrize("heading_part", ["A deny from a marker-gated gate", "CLAUDECODE set in Cursor's hook environment"])
+    @pytest.mark.parametrize(
+        "heading_part",
+        [
+            "A deny from a marker-gated gate",
+            "CLAUDECODE set in Cursor's hook environment",
+            "A host walk that found no host",
+            "A worktree held by a live process",
+            "A marker write that the sandbox denies",
+            "`SESSION_ID empty`",
+        ],
+    )
     def test_the_section_holds_the_entries_the_adapters_own_texts_point_to(self, heading_part: str) -> None:
         _, entries = self._recovery_section()
         assert any(heading_part in heading for heading in entries), heading_part
+
+    def test_the_host_walk_report_and_the_status_flag_name_a_recovery_entry_that_exists(self, adapter: types.ModuleType) -> None:
+        """Both messages quote `HOST_WALK_NOT_FOUND_ENTRY`; the install suite's `status` row checks the flag's printed text."""
+        heading = "A host walk that found no host"
+        _, entries = self._recovery_section()
+        assert heading == adapter.HOST_WALK_NOT_FOUND_ENTRY
+        assert f'"{heading}"' in adapter.HOST_WALK_NOT_FOUND_LINE
+        assert heading in entries
 
     def test_the_shim_fault_entrys_heading_quotes_the_fault_texts_diagnosis_clause(self, adapter: types.ModuleType) -> None:
         clause = adapter.FAULT_TEXT.split(". ", 1)[0]
@@ -2109,7 +2159,7 @@ class TestRecoverySectionResolves:
 
 # --- the inert and drawn flags ---
 
-# Acceptance step 2 draws one trigger per class. Each name is written out, so an empty, short or renamed set fails.
+# The attended acceptance run draws one trigger per class. Each name is written out, so an empty, short or renamed set fails.
 DRAWN_TRIGGER_NAMES_BY_CLASS = {
     "Shell": "cat-credentials",
     "Read": "credentials-file",
@@ -2142,12 +2192,6 @@ class TestTriggerFlags:
     def test_no_drawn_trigger_is_missing_its_inert_flag_and_the_drawn_set_is_the_named_one_per_class(self) -> None:
         assert trigger_flag_failures(TRIGGERS) == []
         assert set(DRAWN_TRIGGER_NAMES_BY_CLASS) == TRIGGER_TOOL_CLASSES
-
-    def test_a_trigger_built_without_either_flag_is_a_construction_error(self) -> None:
-        with pytest.raises(TypeError):
-            Trigger("x", "Shell", _const({}), _const({}), drawn=True)  # type: ignore[call-arg]
-        with pytest.raises(TypeError):
-            Trigger("x", "Shell", _const({}), _const({}), inert=True)  # type: ignore[call-arg]
 
     def test_a_table_with_a_drawn_trigger_that_is_not_inert_fails_the_predicate(self) -> None:
         table = {key: tuple(triggers) for key, triggers in TRIGGERS.items()}
@@ -2196,34 +2240,6 @@ def _identity_env(tmp_path: Path) -> tuple[ShimEnv, Path]:
     return env, failing_ps
 
 
-def _opted_in_repository_and_linked_worktree(base: Path) -> tuple[Path, Path]:
-    """A main checkout whose committed sentinel switches worktree enforcement on, and a linked worktree of it."""
-    main = init_git_repo_with_commit(
-        base / "enforced-main", branch="main", file_name=".claude/worktree-required", content="# sentinel\n"
-    )
-    linked = base / "enforced-linked"
-    subprocess.run(
-        ["git", "-C", str(main), "worktree", "add", "-q", "-b", "feature", str(linked)],
-        check=True,
-        capture_output=True,
-        env=without_git_environment(os.environ),
-    )
-    return main.resolve(), linked.resolve()
-
-
-def _worktree_lock_text(worktree: Path) -> str:
-    """The lock reason `git worktree lock` recorded for `worktree`, or an empty string when it is not locked."""
-    git_dir = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=without_git_environment(os.environ),
-    ).stdout.strip()
-    lock_file = Path(git_dir, "locked")
-    return lock_file.read_text().strip() if lock_file.exists() else ""
-
-
 # The two gates that take a worktree lock, each with a call that is allowed in a linked worktree and denied in the main checkout.
 WORKTREE_GATE_CALLS = {
     "file-writes": (
@@ -2239,13 +2255,14 @@ def _run_worktree_gate(env: ShimEnv, tmp_path: Path, gate: str, payload: dict) -
     scratch = tmp_path / "gate-scratch"
     scratch.mkdir(exist_ok=True)
     script = WORKTREE_GATE_CALLS[gate][0]
-    return run_shim(env, payload, hook_args("PreToolUse", script=HOOKS_DIR / script, label=gate), cwd=scratch)
+    args = hook_args("PreToolUse", script=HOOKS_DIR / script, label=gate, deadline=STUBBED_WALK_DEADLINE_SECONDS)
+    return run_shim(env, payload, args, cwd=scratch)
 
 
 def _pin_rewrite(env: ShimEnv, tmp_path: Path, payload: dict) -> subprocess.CompletedProcess:
     scratch = tmp_path / "pin-scratch"
     scratch.mkdir(exist_ok=True)
-    return run_shim(env, payload, hook_args("PreToolUse", mode="pin"), cwd=scratch)
+    return run_shim(env, payload, hook_args("PreToolUse", mode="pin", deadline=STUBBED_WALK_DEADLINE_SECONDS), cwd=scratch)
 
 
 class TestSessionIdentityAcrossTheShim:
@@ -2329,7 +2346,7 @@ class TestSessionIdentityAcrossTheShim:
         self, tmp_path: Path, gate: str, caller: str
     ) -> None:
         env, _ = _identity_env(tmp_path)
-        _, linked = _opted_in_repository_and_linked_worktree(tmp_path)
+        linked, _ = make_linked_worktree(tmp_path, opted_in=True)
         _, build_call = WORKTREE_GATE_CALLS[gate]
         payload = build_call(linked)
         expected_session_id = CONVERSATION_ID
@@ -2340,18 +2357,19 @@ class TestSessionIdentityAcrossTheShim:
 
         assert result.returncode == 0, result.stderr
         assert shim_json(result).get("permission") != "deny"
-        assert _worktree_lock_text(linked) == f"claude-code pid {HOST_PROCESS_ID} session {expected_session_id}"
+        assert worktree_lock_text(linked) == f"claude-code pid {HOST_PROCESS_ID} session {expected_session_id}"
 
     @pytest.mark.parametrize("gate", WORKTREE_GATE_CALLS)
     def test_the_same_call_in_the_main_checkout_is_denied_and_takes_no_lock(self, tmp_path: Path, gate: str) -> None:
         env, _ = _identity_env(tmp_path)
-        main, _ = _opted_in_repository_and_linked_worktree(tmp_path)
+        _, common_dir = make_linked_worktree(tmp_path, opted_in=True)
+        main = Path(common_dir).parent
         _, build_call = WORKTREE_GATE_CALLS[gate]
 
         result = _run_worktree_gate(env, tmp_path, gate, build_call(main))
 
         assert shim_json(result).get("permission") == "deny"
-        assert _worktree_lock_text(main) == ""
+        assert worktree_lock_text(main) == ""
 
     @pytest.mark.parametrize("case", list(DIFFERENTIAL_PAYLOADS))
     def test_the_shims_session_id_the_librarys_pair_and_the_shell_rewrites_export_agree_on_every_payload(

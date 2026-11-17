@@ -36,9 +36,10 @@
 # candidates are unusable, no lookup file is written at all.
 #
 # Cursor decline: the hook writes no lookup file when the payload carries a
-# top-level `workspace_roots` or `cursor_version` key and `_lib_cursor_host_pid`
-# returns 0. Both conditions must hold. Otherwise it proceeds as for Claude Code.
-# A failed or cap-killed jq check on a non-empty payload counts as carrying the key.
+# top-level `workspace_roots` or `cursor_version` key and either CLAUDECODE is
+# unset or `_lib_cursor_host_pid` returns 0. Otherwise it proceeds as for Claude
+# Code. A failed or cap-killed jq check on a non-empty payload counts as
+# carrying the key. _lib_declines_untranslated_cursor_payload states the rule.
 #
 # No self-sweep, unlike other retired-destructor replacements: this file is
 # rewritten at every SessionStart and SubagentStart under the resolved PID
@@ -72,18 +73,10 @@ if ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 0
 fi
 
-# A Cursor process must never become a registered live ancestor, so an import copy of this hook declines under a Cursor host.
-if _lib_payload_is_untranslated_cursor "$INPUT"; then
-  cursor_host_status=0
-  _lib_cursor_host_pid >/dev/null 2>&1 || cursor_host_status=$?
-  if [ "$cursor_host_status" -eq 0 ]; then
-    echo "[capture-session-id] untranslated Cursor payload under a Cursor host; lookup file not written" >&2
-    exit 0
-  fi
-  # A process that keeps CLAUDECODE is Claude Code, so it gets no note.
-  if [ -z "${CLAUDECODE:-}" ]; then
-    echo "[capture-session-id] untranslated Cursor payload with no Cursor host found (host walk status $cursor_host_status); continuing" >&2
-  fi
+# A Cursor process must never become a registered live ancestor, so an import copy of this hook declines.
+if _lib_declines_untranslated_cursor_payload "$INPUT"; then
+  echo "[capture-session-id] untranslated Cursor payload declined; lookup file not written" >&2
+  exit 0
 fi
 
 CONFIG_DIR=$(_lib_config_dir) || {
