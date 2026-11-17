@@ -258,8 +258,8 @@ def _commit_snapshot(dest_dir: Path, message: str, *, timeout_s: float = _LOCAL_
     # `.gitignore` or global excludes say: git archive emits only tracked
     # paths, and `add` never descends into `.git`.
     _run_git(["add", "-A", "--force"], cwd=dest_dir, timeout_s=timeout_s)
-    # `maintenance.auto=false`: auto-maintenance after a commit may run detached and hold
-    # `.git/objects/maintenance.lock`, so a later copy of `.git` can race it.
+    # `maintenance.auto=false` (git-config docs) stops post-commit auto-maintenance, which takes `objects/maintenance.lock`
+    # (builtin/gc.c). A `.git` copy hit ENOENT on that lock on git 2.56.0; not reproduced on 2.43.0.
     subprocess.run(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "maintenance.auto=false",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
