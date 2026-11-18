@@ -20,7 +20,10 @@ THIS_FILE = Path(__file__).resolve()
 
 UNCOVERED_FIX = (
     f"Call {GUARD_INSTALL_NAME}(monkeypatch, tmp_path_factory.getbasetemp()) from that tree's autouse fixture. "
-    "In a tree with no conftest.py, such as claude/.claude/tests/, call it from an autouse fixture in the file itself."
+    "In a collected test file in a tree with no conftest.py, such as claude/.claude/tests/, "
+    "call it from an autouse fixture in the file itself. "
+    "In an imported module such as a shared helper, call it inside the helper that references the shim, "
+    "taking monkeypatch and the base temp directory as parameters."
 )
 
 
@@ -195,6 +198,23 @@ class TestSeededControls:
 
         assert scan.uncovered_lines[seeded] == [1]
 
+    def test_imported_helper_in_a_conftest_less_directory_is_uncovered_until_it_calls_the_install(self, root: Path):
+        uncovered_helper = self._write(
+            root / "shared" / "uncovered_helper.py",
+            "def write_wrapper(bin_dir):\n    return write_scaled_timeout_shim(bin_dir)\n",
+        )
+        covered_helper = self._write(
+            root / "shared" / "covered_helper.py",
+            "def write_wrapper(bin_dir, monkeypatch, basetemp):\n"
+            f"    {GUARD_INSTALL_NAME}(monkeypatch, basetemp)\n"
+            "    return write_scaled_timeout_shim(bin_dir)\n",
+        )
+
+        scan = scan_shim_references([uncovered_helper, covered_helper], root)
+
+        assert scan.uncovered_lines == {uncovered_helper: [2]}
+        assert "shared helper" in UNCOVERED_FIX
+
     def test_referencing_file_is_covered_by_a_calling_conftest_beside_it(self, root: Path):
         seeded = self._write(root / "test_seeded.py", "write_scaled_timeout_shim(tmp_path)\n")
         self._write(root / "conftest.py", f"{GUARD_INSTALL_NAME}(monkeypatch, basetemp)\n")
@@ -262,6 +282,23 @@ class TestSeededControls:
     def test_conftest_that_mentions_the_install_without_calling_it_leaves_the_file_uncovered(self, root: Path):
         seeded = self._write(root / "test_seeded.py", "write_scaled_timeout_shim(tmp_path)\n")
         self._write(root / "conftest.py", f"guard_install = {GUARD_INSTALL_NAME}\n")
+
+        scan = scan_shim_references([seeded], root)
+
+        assert scan.uncovered_lines[seeded] == [1]
+
+    def test_calling_conftest_in_the_directory_of_a_file_outside_the_root_covers_it(self, root: Path):
+        seeded = self._write(root.parent / "outside" / "nested" / "test_seeded.py", "write_scaled_timeout_shim(tmp_path)\n")
+        self._write(seeded.parent / "conftest.py", f"{GUARD_INSTALL_NAME}(monkeypatch, basetemp)\n")
+
+        scan = scan_shim_references([seeded], root)
+
+        assert seeded in scan.reference_lines
+        assert seeded not in scan.uncovered_lines
+
+    def test_calling_conftest_above_a_file_outside_the_root_leaves_it_uncovered(self, root: Path):
+        seeded = self._write(root.parent / "outside" / "nested" / "test_seeded.py", "write_scaled_timeout_shim(tmp_path)\n")
+        self._write(seeded.parent.parent / "conftest.py", f"{GUARD_INSTALL_NAME}(monkeypatch, basetemp)\n")
 
         scan = scan_shim_references([seeded], root)
 

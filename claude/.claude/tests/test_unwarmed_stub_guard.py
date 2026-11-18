@@ -23,7 +23,8 @@ from helpers import (
 
 COLD_BODY = "exit 0\n"
 MODE_WITHOUT_READ_BITS = 0o111
-# Bounds a check that returns at once, so only a blocked open can reach it; long enough that a loaded host does not trip it.
+# Bounds a check that returns at once, so only a blocked open can reach it.
+# The value is long enough that a loaded host does not trip it.
 FIFO_CHECK_WATCHDOG_SECONDS = 5
 
 
@@ -211,11 +212,12 @@ def test_marker_entry_listed_twice_on_path_lists_its_cold_stub_once(tmp_path: Pa
 @pytest.mark.parametrize(
     "mode",
     [
+        pytest.param(0o744, id="owner-execute-bit-only"),
         pytest.param(0o654, id="group-execute-bit-only"),
         pytest.param(0o645, id="other-execute-bit-only"),
     ],
 )
-def test_cold_stub_with_only_a_group_or_other_execute_bit_is_flagged(mode: int, tmp_path: Path, marker_bin: Path) -> None:
+def test_cold_stub_with_only_one_execute_bit_is_flagged(mode: int, tmp_path: Path, marker_bin: Path) -> None:
     cold_stub = _write_cold_stub(marker_bin / "cold-stub")
     cold_stub.chmod(mode)
 
