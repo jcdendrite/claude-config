@@ -1489,7 +1489,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - PRs with a current row for this repository, and PRs reported. The two differ by the exclusions and by the PRs with no `code-review` round before merge.
 - One `PRs excluded, <reason>` line per exclusion above, zeros included.
 - PRs with no `code-review` round before merge: a kept PR whose `code-review` list is absent, empty, or held only after-merge rounds.
-- Code-review rounds removed as opened at or after merge. Other skills' after-merge rounds are removed too and are not counted here.
+- Code-review rounds removed as opened at or after merge, counted over the PRs that clear every exclusion above, including those with no `code-review` round before merge. Other skills' after-merge rounds are removed too and are not counted here.
 - Unpriced turns and dangling dispatches inside the reported rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both. Only the reported PRs' `code-review` rounds before merge add to them.
 - A `MALFORMED USAGE` line prints after the dangling-dispatches line, only when nonzero: `MALFORMED USAGE — <n> usage-bearing turns inside reported rounds had non-numeric or negative token fields and were excluded from this report's dollars`. Those turns are missing from the dollar figures too. The **Round detection caveats.** list under `review-round-cost` defines the exclusion.
 
@@ -1506,7 +1506,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - A row records no capture scope. The capture's review-round pass defaults to every project directory, and it joins a round to a PR by head-branch name alone, so a PR's rounds can include another repository's session on a same-named branch.
 - For the same reason, and because the writer has no fork guard, a fork PR whose head name equals a local branch name inherits that branch's rounds, paired with the PR's size.
 - A row's size is `additions + deletions` as the ledger holds it. A row with a negative sum, which only a hand-edited ledger can hold, is ranked and counted but falls in no size bucket.
-- Because the join is by head-branch name, a PR whose head branch is `main`, `master`, `develop`, a detached `HEAD` or a `worktree-agent-*` name carries every round the capture saw on that name, including other repositories' sessions, and the report does not exclude it. A row holds only an opaque per-run branch label, so the report cannot refuse such a row.
+- Because the join is by head-branch name, a PR whose head branch is `main`, `master`, `develop`, a detached `HEAD` or a `worktree-agent-*` name carries every round the capture saw on that name, including other repositories' sessions. A row holds only an opaque per-run branch label, so the report cannot refuse such a row.
 - Each account's ledger lives in its own config directory, which has these consequences:
   - A PR worked on two machines shows only the rounds this machine captured, an undercount no field marks.
   - If two machines with distinct machine identities write one ledger file, such a PR is excluded for carrying more than one cell-bearing row.

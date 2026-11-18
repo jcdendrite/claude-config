@@ -421,7 +421,8 @@ resolution, canonical parser and formatter, append-only upsert, crash-safe write
 `--record` lock. Imports `ledger_common` by module, for `_ledger_path_is_git_tracked` and the
 machine-identity primitives its own writers call before recording. Binds `config_dir` by name from
 `_config_dir`, the same pattern `ledger_common.py` uses, for its own `_pr_cost_ledger_path`.
-`pr_cost_ledger_path_overridden` is the one rule that a non-empty `PR_COST_LEDGER_PATH` counts as set,
+`pr_cost_ledger_path_overridden` is the predicate the commands outside `pr_cost_ledger.py` call.
+It delegates to `_ledger_path_override`, the one rule that a non-empty `PR_COST_LEDGER_PATH` counts as set.
 `_pr_cost_ledger_path_or_exit` is the one exit for a relative override, and
 `_collapse_pr_cost_rows_to_current` is the one current-row collapse.
 

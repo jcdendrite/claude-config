@@ -71,7 +71,7 @@ A later column follows the same shape: freeze the outgoing header and document t
   - A row with no cell prints `-` in all three columns. `0` means no rounds were counted, not that none ran, so it can also follow a capture that missed rounds (see "Absence" below). A skill the writer did not track also prints `0`.
   - The columns describe the row under any `rule` or `join_confidence`, so they are not the count a ledger view reports for that PR.
   - A PR refilled by `--record --force --pr N` shows both its older `-` row and its new counted row.
-  - The counts are `review_rounds`-derived figures under the publication rule in `docs/pr-cost.md` § "Redacted cross-account export".
+  - The counts are `review_rounds`-derived figures under the publication rule in the section "Redacted cross-account export" below.
 - **Shape.** `{"rule": int, "rounds": {skill: [round, ...]}}`, in the same canonical encoding as `model_breakdown`. `rounds` has one key per review skill the writer tracked (`code-review`, `plan-review`, `ready-for-review`), and each list holds that skill's rounds in round order.
 - **Absence.** An empty cell means not captured, which covers:
   - a row recorded before the column existed

@@ -72,8 +72,15 @@ _UNKNOWN_SKILL_SENTINEL = "zzunknownskillsentinel"
 _UNKNOWN_ROUND_KEY_SENTINEL = "zzunknownroundkeysentinel"
 _OVERRIDE_BASENAME = "zzoverridesentinel.tsv"
 _PROJECTS_SENTINEL = "zzprojectsglobsentinel*"
-# 100_000 input tokens on _REPRICED_ROUND_MODEL at its base input rate per million tokens.
-_DOLLARS_PER_100K_INPUT_TOKENS = pricing._MODEL_BASE_INPUT_RATES[_REPRICED_ROUND_MODEL] * 100_000 / 1_000_000
+# Held fixed so the expected dollar text rounds as the report's summed per-round floats do at any live rate.
+_PINNED_BASE_INPUT_RATE_PER_MTOK = 2.00
+# 100_000 input tokens on _REPRICED_ROUND_MODEL at the pinned rate.
+_DOLLARS_PER_100K_INPUT_TOKENS = _PINNED_BASE_INPUT_RATE_PER_MTOK * 100_000 / 1_000_000
+
+
+@pytest.fixture(autouse=True)
+def _pin_repriced_round_model_rate(monkeypatch):
+    monkeypatch.setitem(pricing._MODEL_BASE_INPUT_RATES, _REPRICED_ROUND_MODEL, _PINNED_BASE_INPUT_RATE_PER_MTOK)
 
 
 def _dollars_text(input_tokens_in_100k: float) -> str:
