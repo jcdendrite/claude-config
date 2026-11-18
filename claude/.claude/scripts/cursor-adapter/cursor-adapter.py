@@ -3124,14 +3124,6 @@ def hook_env_check_body():
     lines = []
     notes = []
     findings = []
-    claude_names = [name for name in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT") if name in os.environ]
-    lines.append("Claude Code environment names set in this hook: " + (", ".join(claude_names) or "none"))
-    if claude_names:
-        lines.append(
-            "A Cursor started from a Claude Code terminal passes these names on, and the import's copies of the hooks then "
-            "refuse the adapter's pair and deny in linked worktrees. The engineer follows the Recovery section's "
-            "CLAUDECODE entry of docs/cursor-adapter.md."
-        )
     locale_names = sorted(name for name in os.environ if name in ("LANG", "LC_ALL", "LC_CTYPE") or name.startswith("LC_"))
     lines.append("Locale names set in this hook: " + (", ".join(locale_names) or "none"))
     record = record_or_none()
