@@ -137,7 +137,6 @@ _PR_COST_LEDGER_PATH_ENV_VAR = "PR_COST_LEDGER_PATH"
 
 
 def _ledger_path_override() -> str | None:
-    """PR_COST_LEDGER_PATH's value, or None when it is unset or empty."""
     return os.environ.get(_PR_COST_LEDGER_PATH_ENV_VAR) or None
 
 

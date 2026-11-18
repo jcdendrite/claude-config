@@ -658,7 +658,6 @@ def _token_counts(usage: dict) -> dict[str, int]:
     }
 
 
-# The usage fields _pricing_variant reads for each _PRICING_VARIANTS label.
 _USAGE_FIELDS_BY_PRICING_VARIANT: dict[str, dict[str, str]] = {
     "standard": {},
     "fast": {"speed": "fast"},
