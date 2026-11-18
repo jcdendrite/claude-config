@@ -33,7 +33,7 @@ The issue's only evidence is one branch, and it asks for a replay over past ledg
 - Split condition: the earliest time in the file name of its captured disposition records is later than the issue's creation time, counting a record that was later dropped.
 - Split condition: the issue body names neither its branch name, its worktree directory name nor its branch slug.
 - Split condition: it is not the branch the planning session read, which its name marks.
-- Split condition: its session transcripts in this repository show no sign of informal use of the rule. A branch whose transcripts show such signs is a development branch.
+- Split condition: its session transcripts in this repository show no sign of informal use of the rule.
 - The plan did not list that condition. A search of this repository's own session transcripts dated after the issue was filed applied it after the original development rows were labeled. It moved branches from the holdout to the development set, and those branches were never labeled. The search was a read outside the snapshot selection. Only the session's prompt, not a tool restriction, kept it to this repository's transcripts.
 - The labelers gave each finding a `class`: `false-statement`, `wrong-behavior` or `untested-documented-behavior` (the ADDRESS classes), then `test-pinning-grain`, `other` or `unclear`. They also gave an `invariant` flag and a `security` flag.
 - The label definitions and the plan's verdict criteria were fixed before any row was labeled.
@@ -73,14 +73,14 @@ Which way each counting choice leaned (`.claude/plans/exit-rule-replay.md` § "R
 
 ## What the hand check found
 
-The engineer answered findings from the original development set that the session picked. Each finding below is its one-line summary from the review ledger, followed by the engineer's answer in their own words. The list holds every finding the engineer gave a final answer on, plus one they discussed without one.
+The engineer answered findings from the original development set that the session picked. Each finding below is its one-line summary from the review ledger, followed by the engineer's whole typed answer to that row, with the engineer's typing kept as typed. The engineer answered the session's description of each row, and for the prose findings the passage itself, not the one-line summary printed here. The list holds every finding the engineer gave a final answer on, plus one they discussed without one.
 
 Findings the labelers did not put in an ADDRESS class, on which the engineer's answers favored a fix:
 
 - Prose findings from review rounds after the exit pass of the branch they came from. For these findings in this sample, the engineer selected the session's option to record them as an escape.
   - "Record opening sentence chains three facts": "yes the split is good because that sentence is not readable otherwise".
-  - "Relative word current in dated measurement": "yes I think the FYI edit is better".
-  - "Record states two caveats twice (unexercised tripwire sites, bullet-alone sentence)": "yes that needs to be fixed because it could cause drift".
+  - "Relative word current in dated measurement": "yes I think the FYI edit is better beause otherwisei t's not clear what "the current bullet" refers to".
+  - "Record states two caveats twice (unexercised tripwire sites, bullet-alone sentence)": "yes that needs to be fixed because it could cause drift, as you say, and repeating it negatively affects readability as opposed to expalining things in context".
 - A test-tightening finding that the labelers called optional.
   - "Hook-level no-readable-version stubs are vacuous and duplicate the probe matrix": "address, vacuous tests must always be fixed or dropped".
 
@@ -91,11 +91,11 @@ Findings on which the engineer's answers were to defer or drop:
   - "ruff 0.17.4 digest-check result and same-origin trust acceptance not recorded": "defer, gold plating".
   - "ask-new-dependency-disclosure step 6 allows silently when python3 fails, which a repo pin file can cause": "drop, gold plating".
 - A finding the labelers put in class `false-statement`.
-  - "CHANGELOG and hook text say docs/hooks.md lists what each Python hook does but the section covers stowed hooks only": "drop, the finding is wrong".
+  - "CHANGELOG and hook text say docs/hooks.md lists what each Python hook does but the section covers stowed hooks only": "drop, the finding is wrong. It's intuitively understood by a human that "each hook" refers to hooks in this repo. I could be persuaded otherwise and I would accept a refinement of "in this repo" or "this toolkit's hook" or something like that".
 
 A finding the engineer discussed and did not answer finally:
 
-- "Unsourced item and final boundary item stack separate rules". No final answer was recorded.
+- "Unsourced item and final boundary item stack separate rules": "I am on the fence about Any other unsettleable clim being its own bullet. In fact, I think it means something very different if it's its own bullet. Then it applies as a caveat to categories beyond Unsourced. Which is the correct interpretation?". No final answer was recorded.
 
 ## Limits
 
