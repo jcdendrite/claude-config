@@ -105,8 +105,7 @@ def _load_top_level_scenario(tmp_path: Path, name: str, *, agent_name: str = JUD
     - Text that trails a tool call follows that call's tool-result record.
 
     No captured transcript is committed, so a Claude Code change to these
-    shapes shows only on the first live judge run, which fails closed. The
-    session ID is a placeholder."""
+    shapes shows only on the first live judge run, which fails closed."""
     dest = _load_scenario(tmp_path, name)
     subagent_dir = dest / "session-1" / "subagents"
     subagent_records = [json.loads(line) for line in (subagent_dir / "agent-1.jsonl").read_text().splitlines()]
@@ -583,8 +582,7 @@ def _append_records(session_jsonl: Path, records: list[dict]) -> None:
 
 
 def _append_blocking_stop_hook_continuation(session_jsonl: Path) -> None:
-    """Append what a Stop hook that blocks once adds after the final answer: the feedback record, its
-    summary, the forced turn, and the summary of the second Stop hook run."""
+    """Append what a Stop hook that blocks once adds after the final answer."""
     _append_records(session_jsonl, [
         _stop_hook_feedback_record(),
         _stop_hook_summary_record(blocked=True),
@@ -926,6 +924,33 @@ class TestJudgeRunValidity:
         assert result.ok is False
         assert result.failure_reason == expected_reason
         assert result.observed_model is None
+
+    @pytest.mark.parametrize(
+        "agent_records",
+        [[{"type": "agent-setting", "agentSetting": JUDGE_AGENT_NAME}], []],
+        ids=["matching-agent-record-reaches-the-model-check", "no-agent-record-reaches-the-agent-check"],
+    )
+    @pytest.mark.parametrize(
+        ("stream_kind", "expected_reason"),
+        [
+            ("budget-stop", runner.MISSING_REASON_BUDGET),
+            ("error-during-execution", runner.VALIDITY_FAIL_RESULT_ERROR),
+        ],
+        ids=["budget-result", "result-error"],
+    )
+    def test_a_failed_result_event_is_reported_ahead_of_a_model_or_agent_mismatch(
+        self, tmp_path: Path, agent_records: list[dict], stream_kind: str, expected_reason: str,
+    ) -> None:
+        if stream_kind == "budget-stop":
+            stream_lines = _stream_lines(FIXTURES_DIR / "budget-stop")
+        else:
+            stream_lines = [json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}).encode()]
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        session_jsonl = scenario / "session-1.jsonl"
+        session_jsonl.write_text("\n".join(json.dumps(record) for record in agent_records) + "\n")
+        result = _evaluate_judge(scenario, stream_lines=stream_lines)
+        assert result.ok is False
+        assert result.failure_reason == expected_reason
 
     def test_a_stream_with_no_result_event_fails(self, tmp_path: Path) -> None:
         scenario = _load_top_level_scenario(tmp_path, "normal-success")

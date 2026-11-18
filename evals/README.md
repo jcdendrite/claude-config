@@ -1371,12 +1371,11 @@ read or call, and it does not change what the judge is told. Beyond the
 refusals stated above, the fixture build checks only the top-level keys of
 `.claude/settings.json` and extracts the rest of the head tree as it is. A
 hostile tree can steer the judge's verdicts through the instruction channels.
-It can also widen what the judge may read or call through `permissions`. The
-launch passes no flag that limits setting sources, so the engineer's own user
-settings, hooks, and enabled plugins load as well, and their hooks run as the
-engineer. A tree's `enabledPlugins` can also enable an
-installed plugin whose hooks run as the engineer; whether the CLI honors a
-project-scope `enabledPlugins` in `-p` mode is unconfirmed. What Claude Code
+The launch passes no flag that limits setting sources, so the engineer's own
+user settings, hooks, and enabled plugins load as well, and their hooks run as
+the engineer. A tree's `enabledPlugins` can also enable an installed plugin
+whose hooks run as the engineer; whether the CLI honors a project-scope
+`enabledPlugins` in `-p` mode is unconfirmed. What Claude Code
 loads from a given file is its own behavior, and the harness does not verify
 it. Both judges' directories are fresh directories under the system temp
 directory (`tempfile.mkdtemp`), so a `CLAUDE.md` in an ancestor of that path
@@ -1385,13 +1384,12 @@ directory holds no tree.
 
 A judge session is launched with a read-only `--tools` allowlist, so it holds
 no Bash. `--tools` governs built-in tools only. The launch also passes
-`--strict-mcp-config`, and whether that drops account-level connectors and
+`--strict-mcp-config`. Whether that drops account-level connectors and
 plugin MCP servers is unconfirmed (see the self-check note under
 `--phase calibrate` in the "Main session rule adherence gate" section), so a
 judge session may hold connector tools the allowlist does not govern. The
-allowlist is passed on the command line and is not otherwise checked at run
-time. The judge run-validity check compares only the tools a run actually used
-against it, after the run. A Stop hook that forces the judge session to
+allowlist is checked only after the run, by comparing the tools the run used
+against it. A Stop hook that forces the judge session to
 continue fails the run, because the continuation's text would replace the
 judge's own answer.
 
@@ -1444,7 +1442,7 @@ restricted to 0700 at startup, and the command exits 2 if it cannot be.
   for a reviewer dispatch, not measured for a judge. Change the
   `RECALL_JUDGE_BUDGET_CAP_USD` and `PRECISION_JUDGE_BUDGET_CAP_USD` constants
   in `review_bench/runner.py` once a judge has its own measured values. The
-  harness passes `--effort` to each judge. In local probe runs, a top-level `--agent` session did not apply the agent file's `effort:`.
+  harness passes `--effort` to each judge.
 - **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
   each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
   K = 10, so 1,260 slots at 252 fixtures. Each minute of median run duration

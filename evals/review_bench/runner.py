@@ -440,10 +440,10 @@ def _flushed_file_sizes(session_jsonl: Path, *, requires_subagent_sidecar: bool)
 def wait_for_session_flush(
     projects_root: Path, session_id: str, *, timed_out: bool, requires_subagent_sidecar: bool = True,
 ) -> Path | None:
-    """The session transcript's path once it and, unless
-    requires_subagent_sidecar is False (a top-level judge session has none), a
-    subagent sidecar are on disk and no file's size changed across two
-    consecutive polls, polling up to SESSION_FLUSH_TIMEOUT_S. On timeout still
+    """The session transcript's path once it is on disk and no file's size
+    changed across two consecutive polls, polling up to SESSION_FLUSH_TIMEOUT_S.
+    A subagent sidecar must be on disk too unless requires_subagent_sidecar is
+    False, as for a top-level judge session, which has none. On timeout still
     returns the transcript (None if that is missing too) so the caller
     classifies what is actually there rather than assuming a cause. A
     timed-out run is never classified from its transcript, so it gets a single
