@@ -375,7 +375,6 @@ class TestReviewLedgerAppendHappyPath:
         assert reviewed_tree == _git_output(git_repo, "write-tree")
         # git_repo holds a staged change, so the index tree is not HEAD's tree.
         assert reviewed_tree != _git_output(git_repo, "rev-parse", "HEAD^{tree}")
-        # The pin is a ref named by the row's own month and tree, pointing at the tree.
         pin_ref = f"refs/review-ledger/{event_time[:7]}/{reviewed_tree}"
         assert _git_output(git_repo, "rev-parse", "--verify", pin_ref) == reviewed_tree
 
