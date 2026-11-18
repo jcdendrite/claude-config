@@ -122,6 +122,13 @@ def test_file_the_check_never_flags_passes(
     check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
 
 
+@pytest.mark.parametrize("shebang", sorted(helpers._PREWARM_SHEBANGS))
+def test_stub_written_by_write_prewarmed_stub_passes_under_every_shebang(shebang: str, tmp_path: Path, marker_bin: Path) -> None:
+    write_prewarmed_stub(marker_bin / "warm-stub", f"{shebang}\n{COLD_BODY}")
+
+    check_scaled_path_stubs_warm(_path_env(marker_bin), None, tmp_path)
+
+
 def _bin_dir_with_real_shim(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
