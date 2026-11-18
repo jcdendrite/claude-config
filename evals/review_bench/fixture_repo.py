@@ -258,8 +258,11 @@ def _commit_snapshot(dest_dir: Path, message: str, *, timeout_s: float = _LOCAL_
     # `.gitignore` or global excludes say: git archive emits only tracked
     # paths, and `add` never descends into `.git`.
     _run_git(["add", "-A", "--force"], cwd=dest_dir, timeout_s=timeout_s)
+    # `maintenance.auto=false` (git-config docs) stops post-commit auto-maintenance, which takes `objects/maintenance.lock`
+    # (builtin/gc.c `maintenance_run_tasks`). On git 2.56.0 the `.git` copy in replay_bench/tasks.py hit ENOENT on that lock
+    # (a shutil.Error). Not reproduced on 2.43.0.
     subprocess.run(
-        ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+        ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "maintenance.auto=false",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
         check=True, timeout=timeout_s, capture_output=True, encoding="utf-8", errors="replace",
         env={**isolated_git_environment(), **_git_commit_env()},
