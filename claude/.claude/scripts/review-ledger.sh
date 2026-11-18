@@ -35,8 +35,8 @@ _LEDGER_ROUND_MAX_DIGITS=4
 # In either case the append lock is the only other protection.
 # That lock fails open after _LIB_APPEND_LOCK_RETRIES failed acquisitions.
 _LEDGER_LINE_MAX_BYTES=4095
-# Ledger row schema version -- unread today, lets a future migration
-# distinguish row shapes without re-deriving them from optional-key presence.
+# Ledger row schema version. The reader rule in docs/scripts.md reads it to
+# take a round's state only from rows with schema_version 6 or more.
 _LEDGER_SCHEMA_VERSION=6
 
 usage() {
