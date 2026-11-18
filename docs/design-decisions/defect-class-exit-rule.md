@@ -73,20 +73,29 @@ Which way each counting choice leaned (`.claude/plans/exit-rule-replay.md` § "R
 
 ## What the hand check found
 
-The engineer answered findings from the original development set that the session picked. The findings are described by kind only. The quoted answers are a selection, in the engineer's own words.
+The engineer answered findings from the original development set that the session picked. Each finding below is its one-line summary from the review ledger, followed by the engineer's answer in their own words. The list holds every finding the engineer gave a final answer on, plus one they discussed without one.
 
 Findings the labelers did not put in an ADDRESS class, on which the engineer's answers favored a fix:
 
-- Prose findings from review rounds after the exit pass of the branch they came from. The engineer chose to count a finding of this kind as an escape. The engineer's answers included:
-  - "yes the split is good because that sentence is not readable otherwise".
-  - "yes I think the FYI edit is better".
-  - "yes that needs to be fixed because it could cause drift".
-- Test-tightening findings that the labelers called optional. The engineer's answer was "address, vacuous tests must always be fixed or dropped".
+- Prose findings from review rounds after the exit pass of the branch they came from. The engineer chose to count a finding of this kind as an escape.
+  - "Record opening sentence chains three facts": "yes the split is good because that sentence is not readable otherwise".
+  - "Relative word current in dated measurement": "yes I think the FYI edit is better".
+  - "Record states two caveats twice (unexercised tripwire sites, bullet-alone sentence)": "yes that needs to be fixed because it could cause drift".
+- A test-tightening finding that the labelers called optional.
+  - "Hook-level no-readable-version stubs are vacuous and duplicate the probe matrix": "address, vacuous tests must always be fixed or dropped".
 
 Findings on which the engineer's answers were to defer or drop:
 
-- Findings the engineer called gold plating. The engineer's answers included "that's a defer, gold plating" and "drop, gold plating".
-- Findings the labelers put in class `false-statement`. The engineer's answer was "drop, the finding is wrong".
+- Findings the engineer called gold plating.
+  - "Hook runs the cwd-resolved python3 at session start; exposure not recorded in docs": "that's a defer, gold plating".
+  - "ruff 0.17.4 digest-check result and same-origin trust acceptance not recorded": "defer, gold plating".
+  - "ask-new-dependency-disclosure step 6 allows silently when python3 fails, which a repo pin file can cause": "drop, gold plating".
+- A finding the labelers put in class `false-statement`.
+  - "CHANGELOG and hook text say docs/hooks.md lists what each Python hook does but the section covers stowed hooks only": "drop, the finding is wrong".
+
+A finding the engineer discussed and did not answer finally:
+
+- "Unsourced item and final boundary item stack separate rules". No final answer was recorded.
 
 ## Limits
 
@@ -104,7 +113,7 @@ Findings on which the engineer's answers were to defer or drop:
 - Only their prompts kept the labelers to their batch files.
 - The known-answer check tested the labelers on invented rows, not on corpus rows.
 - The escape behind the Decline comes from the engineer's own reading of findings that the labelers put in class `other`, outside the ADDRESS classes. No label set produced it.
-- The hand-check section names kinds of findings, which the plan's closed set of publishable statements did not list. It states no count, no finding text and no branch. The number of quotes under a kind sets a lower bound on that kind's answers.
+- The hand-check section gives the findings' ledger summaries and the engineer's answers, which the plan's closed set of publishable statements did not list. It names no branch, but a reader can match a summary to its branch by searching this repository's public history.
 - No escape-source reading ran. It would have found the earlier fix behind each escape and dropped an escape whose fix the rule would not have made, so the escape behind the Decline was never tested against that filter.
 - The criteria were evaluated by hand, not by command.
 
@@ -129,7 +138,7 @@ The fix-delta churn section of `docs/cost-levers-considered.md` and `docs/design
 
 - The replay's figures are not published, per `docs/private-project-redaction.md` § "Publishing a tooling measurement". The labels rest on agent judgment over local records that no command re-runs.
 - This record carries no figure.
-- It names no corpus branch, and no statement pairs a reading with a branch.
+- It names no corpus branch. The hand-check section's finding summaries are the only text taken from corpus rows.
 
 ## Revisit trigger
 
