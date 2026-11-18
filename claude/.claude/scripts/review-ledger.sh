@@ -216,7 +216,7 @@ EOF
 _resolve_session_id() {
   local out sid
   out=$(_lib_resolve_claude_pid) || {
-    printf 'review-ledger.sh: SESSION_ID empty — capture-session-id.sh SessionStart hook did not run. Abort without writing.\n' >&2
+    printf 'review-ledger.sh: SESSION_ID empty — no live session file found for this process or its ancestors (usual causes: the capture-session-id.sh SessionStart hook did not run, its file is stale, or ps could not read the process table). Abort without writing.\n' >&2
     return 2
   }
   sid="${out%% *}"

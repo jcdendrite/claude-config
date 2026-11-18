@@ -762,7 +762,7 @@ review_pr_checks_token_source() {
 review_pr_resolve_session_and_pid() {
   local script_name="$1" consequence="$2" abort_note="$3" session_and_pid
   session_and_pid=$(_lib_resolve_claude_pid) || {
-    echo "$script_name: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run)$consequence. $abort_note" >&2
+    echo "$script_name: could not resolve this session's id (no live session file found for this process or its ancestors; usual causes: the capture-session-id.sh SessionStart hook did not run, its file is stale, or ps could not read the process table)$consequence. $abort_note" >&2
     return 1
   }
   SESSION_ID="${session_and_pid%% *}"
