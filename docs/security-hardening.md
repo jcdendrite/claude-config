@@ -681,21 +681,25 @@ to hold PII/PHI or live credentials:
   own path token, in the command this hook actually sees) is not caught.
 - A dispatched subagent's own `Read` is checked by the data-file read hook
   when the guard file is armed. This is verified for a `general-purpose`
-  subagent on Claude Code 2.1.318 with one probe. Other versions and
-  subagent kinds rest on the vendor statement alone, so re-run the probe
-  after a Claude Code upgrade. The vendor statement, from the subagent
+  subagent on Claude Code 2.1.318 with one probe:
+  - Arm the gate with an empty guard file.
+  - Have a dispatched `general-purpose` subagent `Read` a throwaway `.csv`.
+  - Expect the data-file read gate's denial.
+
+  Re-run the probe after a Claude Code upgrade. On 2026-11-05 it gave the
+  denial on Claude Code 2.1.318. The vendor statement, from the subagent
   passage of the Claude Code hooks reference
   (https://code.claude.com/docs/en/hooks.md), is that a subagent's tool
   events "fire the same configured hooks as in the main conversation". The
   hook decides on the tool name and file path, never on `agent_id` or
   `agent_type`, so one extension-rule probe covers the hook's other rules.
-  Probe: arm the gate with an empty guard file, have a dispatched subagent
-  `Read` a throwaway `.csv`, and expect the data-file read gate's denial.
-  On 2026-11-05 that gave the denial. Only
-  the data-file gate was probed. Treat forks and nested `claude -p`
-  sessions as uncovered until verified. A nested `claude -p` is itself a
-  Bash-reachable read path, already listed as uncovered in the previous
-  bullet.
+  Treat these cases as uncovered until verified:
+  - Other versions and subagent kinds, which rest on the vendor statement
+    alone.
+  - The other two `Read` gates, since only the data-file gate was probed.
+  - Forks.
+  - Nested `claude -p` sessions, which are themselves a Bash-reachable read
+    path, already listed as uncovered in the previous bullet.
 - The commit hook scans `git commit` issued through Claude Code. A commit
   made in a plain terminal, an IDE git GUI, or any non-Claude session is
   not gated. Git-native `pre-commit` and server-side `pre-receive` hooks
