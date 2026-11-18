@@ -14,7 +14,7 @@ select = ["E", "F", "B", "I", "UP", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 "claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py" = ["E501"]
 # The cursor adapter's entry and parts share one namespace that per-file analysis cannot follow. test_cursor_adapter_parts.py
-# runs F821, F401 and F811 over the files as one source, so `ruff check` alone no longer proves that names resolve.
+# runs F821, F401 and F811 over the files as one source, so `ruff check` alone does not prove that names resolve.
 "claude/.claude/scripts/cursor-adapter/cursor-adapter*.py" = ["F401", "F821"]
 
 [tool.pytest.ini_options]
