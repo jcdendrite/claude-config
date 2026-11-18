@@ -288,14 +288,24 @@ class TestNamesPullRequestBranchOrCommit:
     def test_ignores_hex_looking_words_and_numbers_that_are_no_commit(self):
         assert not self._names("a decade ago, deadbee, 1234567 items", known_commits=set())
 
-    def test_does_not_probe_an_all_digit_or_all_letter_token(self):
+    def test_does_not_probe_an_all_digit_token(self):
         probed = []
 
         def record_probe(candidate):
             probed.append(candidate)
             return False
 
-        pool.names_pull_request_branch_or_commit("1234567 and decade", 40, REPOSITORY, None, record_probe)
+        pool.names_pull_request_branch_or_commit("1234567 items", 40, REPOSITORY, None, record_probe)
+        assert probed == []
+
+    def test_does_not_probe_a_letter_only_token_that_is_long_enough_to_look_like_a_commit(self):
+        probed = []
+
+        def record_probe(candidate):
+            probed.append(candidate)
+            return True
+
+        assert not pool.names_pull_request_branch_or_commit("fixed in defaced", 40, REPOSITORY, None, record_probe)
         assert probed == []
 
 
@@ -817,7 +827,7 @@ class TestComputeCeiling:
         commits = [_commit_record("c1", "GH-5 add the thing (#40)", [self.CODE])]
         sources = _FakeSources(revisions={5: _recovered()})
         ceiling = pool.compute_ceiling(commits, sources.build())
-        assert _counts(ceiling) == {"1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "8": 1}
+        assert _counts(ceiling) == {"1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "7": 1}
         assert ceiling.surviving_pull_requests == (40,)
         assert ceiling.ceiling == 1
 
@@ -838,8 +848,8 @@ class TestComputeCeiling:
         )
         ceiling = pool.compute_ceiling(commits, sources.build())
         counts = _counts(ceiling)
-        assert counts == {"1": 7, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "8": 1}
-        assert ceiling.ceiling == len(ceiling.surviving_pull_requests) == counts["8"]
+        assert counts == {"1": 7, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 1}
+        assert ceiling.ceiling == len(ceiling.surviving_pull_requests) == counts["7"]
         assert ceiling.ceiling != counts["6"]
 
     def test_stage_one_drops_merge_commits_root_commits_and_missing_suffixes(self):
@@ -1007,9 +1017,9 @@ class TestComputeCeiling:
             "stage_6_prompt_issue_outside_repository": 0,
             "stage_6_also_changes_a_test_file": 1,
         }
-        assert _counts(ceiling)["8"] == 2
+        assert _counts(ceiling)["7"] == 2
 
-    def test_stage_eight_separates_new_file_only_from_commentless_tasks_and_counts_unparsable_files(self):
+    def test_last_stage_separates_new_file_only_from_commentless_tasks_and_counts_unparsable_files(self):
         commits = [
             _commit_record("new-only", "GH-5 a (#40)", [self.CODE]),
             _commit_record("commentless", "GH-5 b (#41)", [self.CODE]),
@@ -1049,7 +1059,7 @@ class TestReport:
 
     def test_json_report_is_labeled_and_carries_the_comparison(self):
         ceiling = pool.PoolCeiling(
-            stages=(pool.StageResult("8", "last", 40),),
+            stages=(pool.StageResult("7", "last", 40),),
             informational={"stage_6_also_changes_a_test_file": 3},
             surviving_pull_requests=(1, 2),
         )
@@ -1061,7 +1071,7 @@ class TestReport:
 
     def test_json_report_below_the_threshold_does_not_meet_it(self):
         ceiling = pool.PoolCeiling(
-            stages=(pool.StageResult("8", "last", 34),),
+            stages=(pool.StageResult("7", "last", 34),),
             informational={"stage_6_also_changes_a_test_file": 0},
             surviving_pull_requests=(),
         )
@@ -1072,7 +1082,7 @@ class TestReport:
         ceiling = pool.PoolCeiling(
             stages=(
                 pool.StageResult("6", "first revision recovered", 50, {"names_pr_branch_or_commit": 2}),
-                pool.StageResult("8", "last", 30),
+                pool.StageResult("7", "last", 30),
             ),
             informational={"stage_6_first_revision_not_recovered": 4, "stage_6_also_changes_a_test_file": 3},
             surviving_pull_requests=(),
@@ -1087,7 +1097,7 @@ class TestReport:
             "stage  count  name",
             "6         50  first revision recovered",
             "                 names_pr_branch_or_commit: 2",
-            "8         30  last",
+            "7         30  last",
             "info       4  stage_6_first_revision_not_recovered (not a gate)",
             "info       3  stage_6_also_changes_a_test_file (not a gate)",
             "",
@@ -1813,11 +1823,16 @@ class TestGhTransport:
 
     @staticmethod
     def _stub_gh(monkeypatch, stdout, returncode=0, stderr=""):
-        """Replaces `subprocess.run` on the shared module, since `pool` reaches it as `subprocess.run`."""
+        """Replaces `subprocess.run` on the shared module, since `pool` reaches it as `subprocess.run`.
+        Like the real call, it raises on a non-zero exit under `check=True` and returns no output without `capture_output`."""
         calls = []
 
-        def run(argv, **kwargs):
+        def run(argv, *, check=False, capture_output=False, **kwargs):
             calls.append((list(argv), kwargs))
+            if check and returncode != 0:
+                raise subprocess.CalledProcessError(returncode, argv, stdout, stderr)
+            if not capture_output:
+                return subprocess.CompletedProcess(argv, returncode, None, None)
             return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
 
         monkeypatch.setattr(pool.subprocess, "run", run)
@@ -2026,7 +2041,7 @@ class TestMain:
         assert exit_code == 0
         _assert_every_query_targets(fake, pool.STUDY_REPOSITORY)
         counts = {stage["id"]: stage["count"] for stage in report["stages"]}
-        assert counts == {"1": 3, "2": 2, "3": 2, "4": 2, "5": 1, "6": 1, "8": 1}
+        assert counts == {"1": 3, "2": 2, "3": 2, "4": 2, "5": 1, "6": 1, "7": 1}
         assert report["surviving_pull_requests"] == [40]
         assert report["context"]["repository"].startswith(pool.STUDY_REPOSITORY)
         assert "history under --ref not verified" in report["context"]["repository"]
@@ -2041,7 +2056,7 @@ class TestMain:
         report = self._json_report(captured.out)
         assert exit_code == 0
         counts = {stage["id"]: stage["count"] for stage in report["stages"]}
-        assert counts == {"1": 2, "2": 2, "3": 2, "4": 2, "5": 2, "6": 2, "8": 2}
+        assert counts == {"1": 2, "2": 2, "3": 2, "4": 2, "5": 2, "6": 2, "7": 2}
         assert sorted(report["surviving_pull_requests"]) == [40, 42]
         assert report["context"]["first_study_artifact_commit"].startswith("none")
 

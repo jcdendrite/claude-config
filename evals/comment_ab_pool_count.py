@@ -4,9 +4,8 @@ The design page, docs/case-studies/comments-stripped-ab.md, defines the rules he
 "Eligible pull requests", "Prompt", "Filters" and "Margin and pre-count disclosure".
 The script reads git history and GitHub through `gh` and nothing else. It reads no test result
 and no outcome, writes nothing to GitHub, and calls no model. It skips the conditions in
-SKIPPED_CONDITIONS, and its why-comment test checks only that a comment is present, where the page's
-filter needs a rater to judge what the comment states. `judge_why_comment` holds the per-language rules
-and names the files it cannot judge, which keep their task.
+SKIPPED_CONDITIONS. Its why-comment test checks only that a comment is present.
+The page's filter needs a rater to judge what the comment states.
 Every count is therefore an upper bound, and the last stage's count is the ceiling.
 
 GraphQL answers are cached by default outside the repository, in the user's state directory, and may hold
@@ -43,8 +42,8 @@ TEST_MODULE_PREFIX = "test_"
 PYTHON_SUFFIX = ".py"
 SHELL_SUFFIX = ".sh"
 # The interpreters whose shebang marks a file as shell or Python whatever its name. The design page lists none.
-# The parser reads `env` with flags and `NAME=value` words only, so `env -u NAME bash` and an interpreter outside
-# these sets and `python*` read as not a script.
+# The parser skips only flags and `NAME=value` words after `env`, so `env -u NAME bash` reads as not a script.
+# An interpreter outside SHELL_INTERPRETERS and `python*` also reads as not a script.
 SHELL_INTERPRETERS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
 _PYTHON_INTERPRETER_RE = re.compile(r"python[0-9.]*")
 
@@ -302,6 +301,8 @@ def _extend_over_comments_above(first_line: int, standalone_comment_lines: Itera
 
 def python_regions(source: str) -> list[Region] | None:
     """One region per function, async function and method, nested ones included. None when `source` does not parse."""
+    # Boundary: a base file with bare-CR line endings numbers AST lines differently from git.
+    # None exists in the current tree, and history was not checked.
     try:
         tree = ast.parse(source)
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
@@ -332,7 +333,8 @@ def python_regions(source: str) -> list[Region] | None:
 
 
 def _git_lines(text: str) -> list[str]:
-    """Lines as git numbers them: only "\\n" ends one, where `str.splitlines` also splits on \\x0b, \\x0c, \\x85 and U+2028."""
+    """Lines as git numbers them: only "\\n" ends one.
+    `str.splitlines` also splits on characters git does not, such as \\x0b, \\x0c, \\x85 and U+2028."""
     lines = text.split("\n")
     if lines[-1] == "":
         lines.pop()
@@ -403,10 +405,12 @@ def judge_why_comment(
     wherever the diff lands.
 
     A task is also kept, and the file counted as unjudged, for each touched file that is:
-    - a `*.py` file whose base source does not parse, or any judged file whose base blob is missing,
-    - a modified `*.py` or `*.sh` file with no entry in `changed_base_lines`, as a mode-only change or a quoted path gives,
-    - a modified file with no `*.py` or `*.sh` suffix whose base blob is missing or whose base source starts with a
-      shell or Python shebang.
+    - a `*.py` file whose base source does not parse,
+    - any judged file whose base blob is missing,
+    - a `*.py` or `*.sh` file the commit modifies or deletes, with no entry in `changed_base_lines`, as a mode-only
+      change or a quoted path yields,
+    - a file the commit modifies or deletes, with no `*.py` or `*.sh` suffix, whose base blob is missing or whose base
+      source starts with a shell or Python shebang.
 
     The result does not depend on the order of `changed_base_lines`."""
     non_test_changes = [(status, path) for status, path in changes if is_shell_or_python_file(path) and not is_test_file(path)]
@@ -545,7 +549,7 @@ def compute_ceiling(commits: Sequence[CommitRecord], sources: PoolSources) -> Po
             {"names_pr_branch_or_commit": names_pr_or_commit},
         ),
         StageResult(
-            "8",
+            "7",
             "a touched region holds a comment or docstring (proxy for the why-comment filter)",
             len(surviving),
             {
@@ -808,8 +812,8 @@ def read_repository_identity(repo: Path) -> RepositoryIdentity:
 
 
 class GitHubCache:
-    """A JSON file, by default under the user's state directory. A pull request's closing references and title can change
-    on GitHub, and a cached row is served until `--refresh`, so two runs on one ref can differ.
+    """A pull request's closing references and title can change on GitHub, and a cached row that holds every field the
+    fetcher reads is served until `--refresh`, so two runs on one ref can differ.
     An issue's first revision never changes."""
 
     def __init__(self, path: Path, *, refresh: bool):
