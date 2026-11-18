@@ -5,13 +5,11 @@ The design page, docs/case-studies/comments-stripped-ab.md, defines the rules he
 The script reads git history and GitHub through `gh` and nothing else. It reads no test result
 and no outcome, writes nothing to GitHub, and calls no model. It skips the conditions in
 SKIPPED_CONDITIONS, and its why-comment test checks only that a comment is present, where the page's
-filter needs a rater to judge what the comment states. For a `*.py` file the test asks whether a
-touched function holds a comment or docstring. For a `*.sh` file it is file-level and conservative:
-a modified file counts as holding a comment when its base source has any comment other than the
-shebang, wherever the diff lands, so it can only over-keep.
+filter needs a rater to judge what the comment states. `judge_why_comment` holds the per-language rules
+and names the files it cannot judge, which keep their task.
 Every count is therefore an upper bound, and the last stage's count is the ceiling.
 
-GraphQL answers are cached outside the repository, in the user's state directory, and may hold
+GraphQL answers are cached by default outside the repository, in the user's state directory, and may hold
 issue text. Git and `gh` calls carry no timeout, since a person runs the script by hand and Ctrl-C ends
 a hung call.
 """
@@ -44,6 +42,11 @@ CONFTEST_FILE_NAME = "conftest.py"
 TEST_MODULE_PREFIX = "test_"
 PYTHON_SUFFIX = ".py"
 SHELL_SUFFIX = ".sh"
+# The interpreters whose shebang marks a file as shell or Python whatever its name. The design page lists none.
+# The parser reads `env` with flags and `NAME=value` words only, so `env -u NAME bash` and an interpreter outside
+# these sets and `python*` read as not a script.
+SHELL_INTERPRETERS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+_PYTHON_INTERPRETER_RE = re.compile(r"python[0-9.]*")
 
 # The page's "Margin and pre-count disclosure": below this many run tasks, a zero estimate cannot
 # give U < 0.15 at psi = 0.20 and the pessimistic end.
@@ -77,12 +80,17 @@ _GH_ISSUE_RE = re.compile(r"\bGH-(\d+)(?!\w)", re.IGNORECASE | re.ASCII)
 _CLOSING_KEYWORD_ISSUE_RE = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)(?!\w)", re.IGNORECASE | re.ASCII
 )
+# A branch name with none of these is a common word, such as `main`, that text can use without naming the branch.
+_BRANCH_NAME_SEPARATOR_OR_DIGIT_RE = re.compile(r"[/_0-9-]")
 _COMMIT_ABBREVIATION_RE = re.compile(r"(?<![\w-])[0-9a-f]{7,40}(?![\w-])")
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@")
 # A `#` at a line start or after whitespace or a shell control character. Quotes, heredocs and `${...}` are not
 # modeled, so this accepts a superset of real comments.
 _SHELL_COMMENT_CANDIDATE_RE = re.compile(r"(?:^|[\s;&|(])#")
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # SHA-1 or SHA-256
+_CAT_FILE_OBJECT_HEADER_RE = re.compile(rf"{_OBJECT_ID_RE.pattern} \w+ (\d+)")
+# `git cat-file --batch` reads one spec per line, so a line break or carriage return in a path would split or alter its spec.
+_LINE_BREAK_RE = re.compile(r"[\r\n]")
 _DOCSTRING_OWNER_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 # The repository name and host `gh repo view` must resolve from the checkout's remote, because a count may be
@@ -198,8 +206,23 @@ def is_test_file(path: str) -> bool:
 
 
 def is_shell_or_python_file(path: str) -> bool:
-    """Every file filter matches by suffix, so an extensionless script is outside it even when it has a shebang."""
+    """Eligibility and the region judgment match by suffix, so a script without one is outside this test even when
+    it has a shebang. `judge_why_comment` counts such a modified script as unjudged."""
     return path.endswith((PYTHON_SUFFIX, SHELL_SUFFIX))
+
+
+def has_shell_or_python_shebang(source: str) -> bool:
+    """Whether the first line is a shebang naming a shell or Python interpreter, directly or through `env`."""
+    first_line = source.split("\n", maxsplit=1)[0]
+    if not first_line.startswith("#!"):
+        return False
+    words = first_line[2:].split()
+    if words and PurePosixPath(words[0]).name == "env":
+        words = [word for word in words[1:] if not word.startswith("-") and "=" not in word]
+    if not words:
+        return False
+    interpreter = PurePosixPath(words[0]).name
+    return interpreter in SHELL_INTERPRETERS or _PYTHON_INTERPRETER_RE.fullmatch(interpreter) is not None
 
 
 def issues_named_in(text: str, pull_request_number: int) -> frozenset[int]:
@@ -227,14 +250,22 @@ def is_preserved_comment(comment_text: str, line_number: int) -> bool:
 
 
 def names_pull_request_branch_or_commit(
-    text: str, pull_request_number: int, head_ref: str | None, is_commit: Callable[[str], bool]
+    text: str, pull_request_number: int, repository: str, head_ref: str | None, is_commit: Callable[[str], bool]
 ) -> bool:
-    """A branch name that is a common word, such as `main`, matches any text using that word, so it can exclude a
-    task whose issue does not name the branch."""
-    pull_request_reference = re.compile(rf"(?<![\w/])#{pull_request_number}(?!\w)|/pull/{pull_request_number}(?!\d)")
+    """Whether `text` holds a reference that cannot be a coincidence. A bare common-word branch, such as `main`,
+    and a `/pull/<n>` link not qualified to this repository are ambiguous and never match, so they leave the task in."""
+    pull_request_reference = re.compile(
+        rf"(?<![\w/])#{pull_request_number}(?!\w)"
+        rf"|{re.escape(GITHUB_HOSTNAME)}/{re.escape(repository)}/pull/{pull_request_number}(?!\d)",
+        re.IGNORECASE,
+    )
     if pull_request_reference.search(text):
         return True
-    if head_ref and re.search(rf"(?<![\w/.-]){re.escape(head_ref)}(?![\w/-])", text):
+    if (
+        head_ref
+        and _BRANCH_NAME_SEPARATOR_OR_DIGIT_RE.search(head_ref)
+        and re.search(rf"(?<![\w/.-]){re.escape(head_ref)}(?![\w/-])", text)
+    ):
         return True
     for candidate in _COMMIT_ABBREVIATION_RE.findall(text):
         mixes_digits_and_letters = any(char.isdigit() for char in candidate) and any(char.isalpha() for char in candidate)
@@ -366,18 +397,31 @@ def judge_why_comment(
     changed_base_lines: Mapping[str, set[int]],
     base_sources: Mapping[str, str | None],
 ) -> WhyCommentResult:
-    """Applies the page's why-comment filter as a presence test: the task is kept when any touched region, in any
-    `*.py` file, test files included, holds a comment or docstring outside the preserve list. A modified `*.sh` file
-    holds one when its base source has any comment candidate besides the shebang, wherever the diff lands.
-    A touched base file that does not parse, or whose base blob is missing, cannot be judged, so a task with one is
-    kept and counted with the unparsable files. A modified `*.py` or `*.sh` file with no entry in
-    `changed_base_lines`, as a mode-only change or a quoted path gives, cannot be judged either, so it is kept and
-    counted the same way. Past the new-files-only return, every touched `*.py` or `*.sh` file is examined or
-    counted, so neither the verdict nor the unjudged count depends on the order of `changed_base_lines`."""
+    """Applies the page's why-comment filter as a presence test: the task is kept when a touched region holds a
+    comment or docstring outside the preserve list. A region is a function of a `*.py` file, test files included.
+    A modified `*.sh` file holds a comment when its base source has any comment candidate besides the shebang,
+    wherever the diff lands.
+
+    A task is also kept, and the file counted as unjudged, for each touched file that is:
+    - a `*.py` file whose base source does not parse, or any judged file whose base blob is missing,
+    - a modified `*.py` or `*.sh` file with no entry in `changed_base_lines`, as a mode-only change or a quoted path gives,
+    - a modified file with no `*.py` or `*.sh` suffix whose base blob is missing or whose base source starts with a
+      shell or Python shebang.
+
+    The result does not depend on the order of `changed_base_lines`."""
     non_test_changes = [(status, path) for status, path in changes if is_shell_or_python_file(path) and not is_test_file(path)]
-    if all(status == "A" for status, _ in non_test_changes):
+    # A script without a `*.py` or `*.sh` suffix can hold a commented region the suffix test cannot see, so it
+    # keeps the task even when every suffix file is new.
+    unjudged_scripts = sum(
+        1
+        for status, path in changes
+        if status != "A"
+        and not is_shell_or_python_file(path)
+        and ((source := base_sources.get(path)) is None or has_shell_or_python_shebang(source))
+    )
+    if unjudged_scripts == 0 and all(status == "A" for status, _ in non_test_changes):
         return WhyCommentResult(kept=False, new_files_only=True)
-    unparsable_files = sum(
+    unparsable_files = unjudged_scripts + sum(
         1
         for status, path in changes
         if status != "A" and is_shell_or_python_file(path) and path not in changed_base_lines
@@ -456,15 +500,18 @@ def compute_ceiling(commits: Sequence[CommitRecord], sources: PoolSources) -> Po
     first_revision_kept = []
     for entry in before_study:
         commit, number, (issue_repository, issue_number) = entry
+        # A task whose prompt issue's first revision the script cannot recover stays in, since the names filter cannot run on it.
         if issue_repository != sources.repository:
             outside_repository += 1
+            first_revision_kept.append(entry)
             continue
         revision = first_revisions.get(issue_number, FirstRevision(None, FIRST_REVISION_MISSING))
         if revision.reason not in _RECOVERED_REASONS or revision.text is None:
             unrecoverable += 1
+            first_revision_kept.append(entry)
             continue
         head_ref = pull_requests.get(number, PullRequestInfo(None, (), None)).head_ref
-        if names_pull_request_branch_or_commit(revision.text, number, head_ref, sources.is_commit):
+        if names_pull_request_branch_or_commit(revision.text, number, sources.repository, head_ref, sources.is_commit):
             names_pr_or_commit += 1
             continue
         first_revision_kept.append(entry)
@@ -484,7 +531,7 @@ def compute_ceiling(commits: Sequence[CommitRecord], sources: PoolSources) -> Po
         else:
             surviving.append(number)
 
-    # Stage ids are this script's own, not the page's, and id 7 is left unused.
+    # Stage ids are this script's own, not the page's.
     stages = (
         StageResult("1", "first-parent commits merged as one commit with a (#N) suffix", len(squash_merges)),
         StageResult("2", "PR title or closing reference names exactly one prompt issue", len(prompt_issued)),
@@ -493,13 +540,9 @@ def compute_ceiling(commits: Sequence[CommitRecord], sources: PoolSources) -> Po
         StageResult("5", "base predates the first study artifact", len(before_study)),
         StageResult(
             "6",
-            "prompt issue's first revision recovered and names no PR, branch or commit",
+            "prompt issue's first revision, where recovered, names no PR, branch or commit",
             len(first_revision_kept),
-            {
-                "first_revision_unrecoverable": unrecoverable,
-                "first_revision_outside_repository": outside_repository,
-                "names_pr_branch_or_commit": names_pr_or_commit,
-            },
+            {"names_pr_branch_or_commit": names_pr_or_commit},
         ),
         StageResult(
             "8",
@@ -514,7 +557,11 @@ def compute_ceiling(commits: Sequence[CommitRecord], sources: PoolSources) -> Po
     )
     return PoolCeiling(
         stages=stages,
-        informational={"stage_6_also_changes_a_test_file": also_changes_test_file},
+        informational={
+            "stage_6_first_revision_not_recovered": unrecoverable,
+            "stage_6_prompt_issue_outside_repository": outside_repository,
+            "stage_6_also_changes_a_test_file": also_changes_test_file,
+        },
         surviving_pull_requests=tuple(surviving),
     )
 
@@ -530,8 +577,7 @@ def format_report(ceiling: PoolCeiling, context: Mapping[str, str]) -> str:
     for stage in ceiling.stages:
         lines.append(f"{stage.id:<5}  {stage.count:>5}  {stage.name}")
         lines.extend(f"                 {key}: {value}" for key, value in stage.detail.items())
-    also_changes_test_file = ceiling.informational["stage_6_also_changes_a_test_file"]
-    lines.append(f"info   {also_changes_test_file:>5}  of stage 6, also change a test file (not a gate)")
+    lines.extend(f"info   {value:>5}  {key} (not a gate)" for key, value in ceiling.informational.items())
     lines.append("")
     lines.append(comparison_line(ceiling.ceiling))
     return "\n".join(lines)
@@ -607,6 +653,10 @@ def read_first_parent_commits(repo: Path, ref: str) -> list[CommitRecord]:
     return commits
 
 
+def is_shallow_repository(repo: Path) -> bool:
+    return _run_git(repo, ["rev-parse", "--is-shallow-repository"]).decode().strip() == "true"
+
+
 def find_study_start_commit(repo: Path, ref: str) -> str | None:
     """The earliest first-parent commit adding any study artifact, or None when `ref` holds none."""
     output = _run_git(
@@ -641,22 +691,32 @@ def git_names_commit(repo: Path) -> Callable[[str], bool]:
 
 
 def read_blobs(repo: Path, specs: Sequence[str]) -> dict[str, str | None]:
-    """Contents of each `<rev>:<path>` through one `git cat-file --batch`, None for a missing one."""
+    """Contents of each `<rev>:<path>` through one `git cat-file --batch`, None for a missing one.
+    A spec must hold no line break, since git answers one spec per line, and a response that misaligns raises."""
     if not specs:
         return {}
     output = _run_git(repo, ["cat-file", "--batch"], stdin="".join(f"{spec}\n" for spec in specs).encode())
     blobs: dict[str, str | None] = {}
     position = 0
     for spec in specs:
-        header_end = output.index(b"\n", position)
-        header = output[position:header_end].decode(errors="replace").split()
+        header_end = output.find(b"\n", position)
+        if header_end == -1:
+            raise GitError(f"git cat-file printed {len(blobs)} responses for {len(specs)} specs")
+        header = output[position:header_end].decode(errors="replace")
         position = header_end + 1
-        if header[-1] == "missing":
+        if header == f"{spec} missing":
             blobs[spec] = None
             continue
-        size = int(header[2])
-        blobs[spec] = output[position : position + size].decode(errors="replace")
-        position += size + 1
+        object_header = _CAT_FILE_OBJECT_HEADER_RE.fullmatch(header)
+        if object_header is None:
+            raise GitError(f"git cat-file printed {header[:80]!r} where an object header or a missing notice belongs")
+        blob_end = position + int(object_header.group(1))
+        if output[blob_end : blob_end + 1] != b"\n":
+            raise GitError(f"git cat-file printed a blob that does not match its header {header[:80]!r}")
+        blobs[spec] = output[position:blob_end].decode(errors="replace")
+        position = blob_end + 1
+    if position != len(output):
+        raise GitError(f"git cat-file printed more than {len(specs)} responses")
     return blobs
 
 
@@ -672,9 +732,14 @@ def git_why_comment_judge(repo: Path) -> Callable[[CommitRecord], WhyCommentResu
             ],
         ).decode(errors="replace")
         changed_base_lines = parse_changed_base_lines(diff_text)
-        specs = {path: f"{base}:{path}" for path in changed_base_lines}
+        # Each modified non-suffix blob is read whole to inspect one line, which suits a history whose largest is about 1 MB.
+        script_candidates = [path for status, path in commit.changes if status != "A" and not is_shell_or_python_file(path)]
+        paths = [*changed_base_lines, *script_candidates]
+        specs = {path: f"{base}:{path}" for path in paths if not _LINE_BREAK_RE.search(path)}
         blobs = read_blobs(repo, list(specs.values()))
-        return judge_why_comment(commit.changes, changed_base_lines, {path: blobs[spec] for path, spec in specs.items()})
+        # A path that cannot go on one `cat-file` line reads as an unreadable blob, which the judge keeps and counts.
+        base_sources = {path: blobs[specs[path]] if path in specs else None for path in paths}
+        return judge_why_comment(commit.changes, changed_base_lines, base_sources)
 
     return judge
 
@@ -694,7 +759,7 @@ def _graphql(repo: Path, query: str, variables: Mapping[str, str]) -> dict:
     argv = ["gh", "api", "graphql", "--hostname", GITHUB_HOSTNAME, "-f", f"query={query}"]
     for name, value in variables.items():
         argv += ["-f", f"{name}={value}"]
-    completed = subprocess.run(argv, cwd=repo, env=_gh_environment(), capture_output=True, text=True, check=False)
+    completed = subprocess.run(argv, cwd=repo, env=_gh_environment(), capture_output=True, encoding="utf-8", check=False)
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -705,9 +770,9 @@ def _graphql(repo: Path, query: str, variables: Mapping[str, str]) -> dict:
 
 
 def _confirmed_repository_data(payload: Mapping, aliases: frozenset[str]) -> Mapping:
-    """The `repository` data of a batch response. A null alias is absent only when the errors list holds a NOT_FOUND
-    error whose path names it, and any other error or unexplained null raises, since caching it would turn a
-    transient or forbidden answer into a permanent one."""
+    """The `repository` data of a batch response. A null alias counts as absent only when a NOT_FOUND error's path
+    names it. Any other error, or a null without that error, raises.
+    Caching such an answer would make a transient or forbidden one permanent."""
     absent_aliases = set()
     for error in payload.get("errors") or []:
         path = error.get("path") or []
@@ -728,7 +793,7 @@ def read_repository_identity(repo: Path) -> RepositoryIdentity:
     """`gh repo view` has no hostname flag, so `url` is the only field that names the host it resolved."""
     completed = subprocess.run(
         ["gh", "repo", "view", "--json", "nameWithOwner,url"],
-        cwd=repo, env=_gh_environment(), capture_output=True, text=True, check=False,
+        cwd=repo, env=_gh_environment(), capture_output=True, encoding="utf-8", check=False,
     )
     try:
         payload = json.loads(completed.stdout)
@@ -743,7 +808,7 @@ def read_repository_identity(repo: Path) -> RepositoryIdentity:
 
 
 class GitHubCache:
-    """A JSON file under the user's state directory. A pull request's closing references and title can change
+    """A JSON file, by default under the user's state directory. A pull request's closing references and title can change
     on GitHub, and a cached row is served until `--refresh`, so two runs on one ref can differ.
     An issue's first revision never changes."""
 
@@ -823,6 +888,7 @@ def github_first_revision_fetcher(
         f"userContentEdits(first: {GRAPHQL_PAGE_SIZE}%s) {{ nodes {{ editedAt diff }} pageInfo {{ hasNextPage endCursor }} }}"
     )
 
+    # Edit pagination is unbounded and a failing batch is retried at its full size, so this suits only a few hundred issues.
     def fetch_remaining_edits(number: int, cursor: str) -> list[Mapping]:
         edits: list[Mapping] = []
         while True:
@@ -891,14 +957,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     repo: Path = args.repo
     identity = read_repository_identity(repo)
     repository = identity.name_with_owner
-    # The pin checks the repository name and host `gh` resolves from the checkout's remote. It does not check that
-    # the history under `--ref` came from that repository, so the mined commits are whatever the checkout holds.
     if repository != STUDY_REPOSITORY or identity.url != STUDY_REPOSITORY_URL:
         print(
             f"refusing: the checkout's remote does not resolve to {STUDY_REPOSITORY_URL}. "
             "Only that repository name and host are checked, not the history under --ref.",
             file=sys.stderr,
         )
+        return 1
+    if is_shallow_repository(repo):
+        print("refusing: the checkout is a shallow clone, so its history is truncated.", file=sys.stderr)
         return 1
     cache = GitHubCache(args.cache_dir / f"{repository.replace('/', '__')}.json", refresh=args.refresh)
     commits = read_first_parent_commits(repo, args.ref)

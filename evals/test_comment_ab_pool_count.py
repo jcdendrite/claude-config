@@ -47,6 +47,16 @@ class TestIssuesNamedIn:
     def test_names_issues_by_prefix_or_closing_keyword(self, title, expected):
         assert pool.issues_named_in(title, pull_request_number=40) == expected
 
+    @pytest.mark.parametrize(
+        "keyword", ["close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved"]
+    )
+    def test_names_the_issue_after_each_closing_keyword_spelling(self, keyword):
+        assert pool.issues_named_in(f"{keyword} #7 in the parser", pull_request_number=40) == {7}
+
+    @pytest.mark.parametrize("title", ["fixing #7 in the parser", "prefixed #7 in the parser", "closure #7 in the parser"])
+    def test_does_not_name_an_issue_after_a_word_that_only_resembles_a_closing_keyword(self, title):
+        assert pool.issues_named_in(title, pull_request_number=40) == frozenset()
+
     def test_squash_suffix_with_a_non_ascii_digit_is_not_a_pull_request_number(self):
         commit = _commit_record("c1", "add thing (#\uff14\uff10)", ["tool.py"])
         assert pool.pull_request_number(commit) is None
@@ -186,35 +196,84 @@ class TestFirstRevision:
 class TestNamesPullRequestBranchOrCommit:
     @staticmethod
     def _names(text, head_ref=None, known_commits=frozenset()):
-        return pool.names_pull_request_branch_or_commit(text, 40, head_ref, lambda candidate: candidate in known_commits)
+        return pool.names_pull_request_branch_or_commit(
+            text, 40, REPOSITORY, head_ref, lambda candidate: candidate in known_commits
+        )
 
-    @pytest.mark.parametrize("text", ["see #40 for the fix", "https://example.test/o/r/pull/40", "PR (#40)"])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "see #40 for the fix",
+            f"https://github.com/{REPOSITORY}/pull/40",
+            f"https://github.com/{REPOSITORY}/pull/40/files",
+            f"https://GitHub.com/{REPOSITORY.upper()}/pull/40",
+            "PR (#40)",
+        ],
+    )
     def test_detects_the_pull_request(self, text):
         assert self._names(text)
 
-    def test_ignores_other_numbers(self):
-        assert not self._names("see #400 and #4 and pull/401")
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "see #400 and #4 and pull/401",
+            f"https://github.com/{REPOSITORY}/pull/401",
+            "https://github.com/other/repo/pull/40",
+            f"https://github.com/{REPOSITORY}sitory/pull/40",
+            "see /pull/40 for context",
+        ],
+        ids=["other-numbers", "longer-number", "other-repository", "longer-repository-name", "unqualified-link"],
+    )
+    def test_ignores_a_reference_that_is_not_this_repositorys_pull_request(self, text):
+        assert not self._names(text)
 
     def test_detects_the_branch_name_as_a_whole_token(self):
         assert self._names("work lives on GH-9/some-branch today", head_ref="GH-9/some-branch")
 
-    def test_ignores_a_branch_name_that_is_only_a_substring(self):
-        assert not self._names("the fixes-everything effort", head_ref="fixes")
+    @pytest.mark.parametrize("head_ref", ["feat-x", "feat_x", "x1", "area/x"])
+    def test_detects_a_branch_name_with_a_separator_or_digit(self, head_ref):
+        assert self._names(f"work lives on {head_ref} today", head_ref=head_ref)
+
+    @pytest.mark.parametrize("head_ref", ["main", "fix", "docs"])
+    def test_ignores_a_bare_common_word_branch_that_the_text_uses_as_a_word(self, head_ref):
+        assert not self._names(f"update the {head_ref} page for the {head_ref} case", head_ref=head_ref)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "the fix-items effort",
+            "the pre-fix-it effort",
+            "the fix-it/more effort",
+            "the fix-it-2 effort",
+            "the xfix-it effort",
+            "the other/fix-it effort",
+            "the v1.fix-it effort",
+        ],
+        ids=[
+            "word-after",
+            "hyphen-before",
+            "slash-after",
+            "hyphen-after",
+            "word-character-before",
+            "slash-before",
+            "dot-before",
+        ],
+    )
+    def test_ignores_a_branch_name_that_is_only_a_substring(self, text):
+        assert not self._names(text, head_ref="fix-it")
 
     @pytest.mark.parametrize(
         ("head_ref", "text", "expected"),
         [
-            ("feat(x)+y", "work lives on feat(x)+y today", True),
-            ("feat(x", "work lives on feat(x today", True),
-            ("(a+)+$", "aaaaaaaaaaaaaaaaaaaaaaaa!", False),
-            ("a.b", "keep a.b around", True),
-            ("a.b", "keep aXb around", False),
+            ("feat-(x)+y", "work lives on feat-(x)+y today", True),
+            ("feat-(x", "work lives on feat-(x today", True),
+            ("a.b-1", "keep a.b-1 around", True),
+            ("a.b-1", "keep aXb-1 around", False),
             ("fix[1]", "keep fix1 around", False),
         ],
         ids=[
             "parens-and-plus",
             "unbalanced-paren",
-            "backtracking-shape",
             "dot-literal",
             "dot-is-not-a-wildcard",
             "brackets-are-not-a-class",
@@ -236,7 +295,7 @@ class TestNamesPullRequestBranchOrCommit:
             probed.append(candidate)
             return False
 
-        pool.names_pull_request_branch_or_commit("1234567 and decade", 40, None, record_probe)
+        pool.names_pull_request_branch_or_commit("1234567 and decade", 40, REPOSITORY, None, record_probe)
         assert probed == []
 
 
@@ -429,6 +488,59 @@ class TestShellSourceHoldsComment:
         assert not pool.shell_source_holds_comment(source)
 
 
+class TestHasShellOrPythonShebang:
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "#!/bin/sh\nrun_it\n",
+            "#!/usr/bin/env bash\n",
+            "#!/usr/bin/env -S python3 -u\n",
+            "#!/usr/bin/env PYTHONPATH=. python3\n",
+            "#!/usr/bin/python3.12\n",
+            "#! /bin/zsh\n",
+            "#!/bin/bash\r\nrun_it\r\n",
+        ],
+        ids=["sh", "env-bash", "env-with-a-flag", "env-with-a-variable", "versioned-python", "space-after-the-marker", "crlf"],
+    )
+    def test_recognizes_a_shell_or_python_interpreter(self, source):
+        assert pool.has_shell_or_python_shebang(source)
+
+    # Literal names, not SHELL_INTERPRETERS, so dropping one from the set fails its own case.
+    @pytest.mark.parametrize("interpreter", ["sh", "bash", "dash", "zsh", "ksh"])
+    def test_recognizes_each_of_the_five_named_shells(self, interpreter):
+        assert pool.has_shell_or_python_shebang(f"#!/bin/{interpreter}\n")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "",
+            "x: int\n",
+            "#!/usr/bin/env node\n",
+            "#!/usr/bin/perl\n",
+            "#!\n",
+            "#!/usr/bin/env\n",
+            "run_it\n#!/bin/sh\n",
+            "# a comment\n",
+            "#!/usr/bin/python3-config\n",
+            "#!/usr/bin/bash-completion\n",
+        ],
+        ids=[
+            "empty",
+            "no-shebang",
+            "node",
+            "perl",
+            "bare-marker",
+            "bare-env",
+            "shebang-on-a-later-line",
+            "comment",
+            "name-only-starts-with-python",
+            "name-only-starts-with-a-shell",
+        ],
+    )
+    def test_rejects_any_other_first_line(self, source):
+        assert not pool.has_shell_or_python_shebang(source)
+
+
 class TestParseChangedBaseLines:
     def test_reads_modified_ranges_and_counts_insertions_at_both_neighbors(self):
         diff = _dedented(
@@ -500,6 +612,19 @@ class TestJudgeWhyComment:
         source = self.COMMENTED + "\n\ndef g():\n    return 2\n"
         result = pool.judge_why_comment([("M", "tool.py")], {"tool.py": {6}}, {"tool.py": source})
         assert not result.kept
+
+    @pytest.mark.parametrize(
+        "changed_line",
+        [1, 5, 11],
+        ids=["module-constant-above-every-region", "class-attribute-above-a-method", "class-attribute-between-methods"],
+    )
+    def test_drops_a_python_change_outside_every_function_even_when_a_commented_function_sits_nearby(self, changed_line):
+        source = (
+            "LIMIT = 3\n\n\nclass Holder:\n    limit = 4\n\n    def commented(self):\n        # why\n        return 1\n\n"
+            "    other = 5\n\n    def bare(self):\n        return 2\n"
+        )
+        result = pool.judge_why_comment([("M", "tool.py")], {"tool.py": {changed_line}}, {"tool.py": source})
+        assert result == pool.WhyCommentResult(kept=False, new_files_only=False)
 
     def test_reads_a_changed_test_file_region_too(self):
         changes = [("M", "tool.py"), ("M", "tests/test_tool.py")]
@@ -583,6 +708,53 @@ class TestJudgeWhyComment:
     def test_counts_a_hunkless_test_file_too(self):
         changes = [("M", "tool.py"), ("M", "tests/test_tool.py")]
         result = pool.judge_why_comment(changes, {"tool.py": {2}}, {"tool.py": self.BARE})
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    @pytest.mark.parametrize(
+        "source",
+        ["#!/usr/bin/env python3\ndef f():\n    return 1\n", "#!/bin/bash\nrun_it\n"],
+        ids=["python-shebang", "shell-shebang"],
+    )
+    def test_keeps_and_counts_a_modified_script_without_a_python_or_shell_suffix(self, source):
+        changes = [("M", "tool.py"), ("M", "bin/run-tool")]
+        result = pool.judge_why_comment(changes, {"tool.py": {2}}, {"tool.py": self.BARE, "bin/run-tool": source})
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    def test_a_modified_script_without_a_suffix_keeps_a_task_whose_suffix_files_are_all_new(self):
+        changes = [("A", "new.py"), ("M", "bin/run-tool")]
+        result = pool.judge_why_comment(changes, {}, {"bin/run-tool": "#!/bin/sh\nrun_it\n"})
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    def test_a_new_script_without_a_suffix_does_not_keep_a_task_whose_suffix_files_are_all_new(self):
+        changes = [("A", "new.py"), ("A", "bin/run-tool")]
+        result = pool.judge_why_comment(changes, {}, {"bin/run-tool": "#!/bin/sh\nrun_it\n"})
+        assert result == pool.WhyCommentResult(kept=False, new_files_only=True)
+
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("stubs/tool.pyi", "x: int\n"),
+            ("scripts/run.bash", "run_it\n"),
+            ("docs/page.md", "# Title\n"),
+            ("bin/data-file", "plain text\n"),
+            ("bin/node-tool", "#!/usr/bin/env node\n"),
+        ],
+        ids=["pyi", "bash-suffix", "markdown", "extensionless-text", "other-interpreter"],
+    )
+    def test_drops_a_task_whose_other_touched_files_are_no_shell_or_python_script(self, path, source):
+        changes = [("M", "tool.py"), ("M", path)]
+        result = pool.judge_why_comment(changes, {"tool.py": {2}}, {"tool.py": self.BARE, path: source})
+        assert result == pool.WhyCommentResult(kept=False, new_files_only=False)
+
+    def test_keeps_and_counts_a_modified_file_without_a_suffix_whose_base_blob_is_missing(self):
+        changes = [("M", "tool.py"), ("M", "bin/missing-blob")]
+        result = pool.judge_why_comment(changes, {"tool.py": {2}}, {"tool.py": self.BARE, "bin/missing-blob": None})
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    def test_keeps_and_counts_a_deleted_script_without_a_python_or_shell_suffix(self):
+        changes = [("M", "tool.py"), ("D", "bin/run-tool")]
+        base_sources = {"tool.py": self.BARE, "bin/run-tool": "#!/bin/sh\nrun_it\n"}
+        result = pool.judge_why_comment(changes, {"tool.py": {2}}, base_sources)
         assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
 
     @pytest.mark.parametrize("path", ["tool.py", "run.sh"])
@@ -725,6 +897,16 @@ class TestComputeCeiling:
         counts = _counts(pool.compute_ceiling(commits, _FakeSources(revisions={5: _recovered()}).build()))
         assert (counts["2"], counts["3"], counts["4"]) == (4, 2, 1)
 
+    @pytest.mark.parametrize(
+        "path",
+        ["claude/.local/bin/tool", "stubs/tool.pyi", "scripts/run.bash"],
+        ids=["extensionless-script", "pyi", "bash-suffix"],
+    )
+    def test_stage_three_matches_by_suffix_so_a_script_named_otherwise_is_no_code_change(self, path):
+        commits = [_commit_record("other-suffix", "GH-5 a (#40)", [path]), _commit_record("ok", "GH-5 b (#41)", [self.CODE])]
+        counts = _counts(pool.compute_ceiling(commits, _FakeSources(revisions={5: _recovered()}).build()))
+        assert (counts["2"], counts["3"]) == (2, 1)
+
     @pytest.mark.parametrize("environment_file", ["requirements-dev.txt", "pyproject.toml", ".github/workflows/tests.yml"])
     def test_stage_four_drops_a_change_to_each_environment_file_but_keeps_a_neighboring_workflow(self, environment_file):
         commits = [
@@ -743,7 +925,7 @@ class TestComputeCeiling:
         sources = _FakeSources(revisions={5: _recovered()}, commits_before_study={"old-base"})
         assert _counts(pool.compute_ceiling(commits, sources.build()))["5"] == 1
 
-    def test_stage_six_counts_each_exclusion_reason_separately(self):
+    def test_stage_six_drops_only_a_recovered_first_revision_that_names_a_reference_and_counts_the_unrecovered(self):
         commits = [
             _commit_record("unrecoverable", "GH-1 a (#40)", [self.CODE]),
             _commit_record("missing", "GH-2 b (#41)", [self.CODE]),
@@ -765,24 +947,43 @@ class TestComputeCeiling:
         )
         ceiling = pool.compute_ceiling(commits, sources.build())
         stage_six = ceiling.stages[5]
-        assert stage_six.count == 1
-        assert dict(stage_six.detail) == {
-            "first_revision_unrecoverable": 2,
-            "first_revision_outside_repository": 0,
-            "names_pr_branch_or_commit": 3,
-        }
+        assert stage_six.count == 3
+        assert dict(stage_six.detail) == {"names_pr_branch_or_commit": 3}
+        assert ceiling.informational["stage_6_first_revision_not_recovered"] == 2
+        assert ceiling.informational["stage_6_prompt_issue_outside_repository"] == 0
 
-    def test_stage_six_excludes_an_issue_outside_the_repository_without_fetching_it(self):
+    def test_stage_six_keeps_a_task_whose_issue_only_matches_ambiguously(self):
+        commits = [
+            _commit_record("common-word-branch", "GH-1 a (#40)", [self.CODE]),
+            _commit_record("other-repository-link", "GH-2 b (#41)", [self.CODE]),
+        ]
+        sources = _FakeSources(
+            pull_requests={40: pool.PullRequestInfo("main", (), "GH-1 a (#40)")},
+            revisions={
+                1: _recovered("update the main page"),
+                2: _recovered("see https://github.com/other/repo/pull/41"),
+            },
+        )
+        ceiling = pool.compute_ceiling(commits, sources.build())
+        assert _counts(ceiling)["6"] == 2
+        assert ceiling.stages[5].detail["names_pr_branch_or_commit"] == 0
+
+    def test_stage_six_drops_a_task_whose_issue_links_this_repositorys_pull_request(self):
+        commits = [_commit_record("links-pr", "GH-1 a (#40)", [self.CODE])]
+        sources = _FakeSources(revisions={1: _recovered(f"fixed in https://github.com/{REPOSITORY}/pull/40")})
+        ceiling = pool.compute_ceiling(commits, sources.build())
+        assert _counts(ceiling)["6"] == 0
+        assert ceiling.stages[5].detail["names_pr_branch_or_commit"] == 1
+
+    def test_stage_six_keeps_an_issue_outside_the_repository_without_fetching_it(self):
         commits = [_commit_record("foreign", "thing (#40)", [self.CODE])]
         sources = _FakeSources(pull_requests={40: pool.PullRequestInfo(None, (("other/repo", 5),), "thing (#40)")})
         ceiling = pool.compute_ceiling(commits, sources.build())
         assert _counts(ceiling)["2"] == 1
-        assert _counts(ceiling)["6"] == 0
-        assert dict(ceiling.stages[5].detail) == {
-            "first_revision_unrecoverable": 0,
-            "first_revision_outside_repository": 1,
-            "names_pr_branch_or_commit": 0,
-        }
+        assert _counts(ceiling)["6"] == 1
+        assert dict(ceiling.stages[5].detail) == {"names_pr_branch_or_commit": 0}
+        assert ceiling.informational["stage_6_prompt_issue_outside_repository"] == 1
+        assert ceiling.informational["stage_6_first_revision_not_recovered"] == 0
         assert sources.requested_issue_numbers == []
 
     def test_issue_fetch_requests_each_surviving_issue_number_once(self):
@@ -801,7 +1002,11 @@ class TestComputeCeiling:
             _commit_record("without-test", "GH-5 b (#41)", [self.CODE]),
         ]
         ceiling = pool.compute_ceiling(commits, _FakeSources(revisions={5: _recovered()}).build())
-        assert ceiling.informational == {"stage_6_also_changes_a_test_file": 1}
+        assert ceiling.informational == {
+            "stage_6_first_revision_not_recovered": 0,
+            "stage_6_prompt_issue_outside_repository": 0,
+            "stage_6_also_changes_a_test_file": 1,
+        }
         assert _counts(ceiling)["8"] == 2
 
     def test_stage_eight_separates_new_file_only_from_commentless_tasks_and_counts_unparsable_files(self):
@@ -833,7 +1038,7 @@ class TestComputeCeiling:
 
 
 class TestReport:
-    def test_comparison_line_labels_the_count_and_the_threshold(self):
+    def test_count_below_the_threshold_rules_the_study_out(self):
         assert pool.comparison_line(34) == "CEILING 34 is below the 34.1 threshold: no run count can reach it"
 
     def test_count_above_the_threshold_does_not_rule_the_study_out(self):
@@ -851,6 +1056,7 @@ class TestReport:
         report = json.loads(pool.report_json(ceiling, {"ref": "origin/main"}))
         assert report["label"] == "CEILING"
         assert (report["ceiling"], report["threshold"], report["ceiling_meets_threshold"]) == (40, 34.1, True)
+        assert report["informational"] == {"stage_6_also_changes_a_test_file": 3}
         assert report["surviving_pull_requests"] == [1, 2]
 
     def test_json_report_below_the_threshold_does_not_meet_it(self):
@@ -862,13 +1068,13 @@ class TestReport:
         report = json.loads(pool.report_json(ceiling, {"ref": "origin/main"}))
         assert (report["ceiling"], report["ceiling_meets_threshold"]) == (34, False)
 
-    def test_human_table_lists_each_stage_with_its_detail_and_ends_on_the_comparison(self):
+    def test_human_table_lists_each_stage_with_its_detail_every_info_entry_and_ends_on_the_comparison(self):
         ceiling = pool.PoolCeiling(
             stages=(
-                pool.StageResult("6", "first revision recovered", 50, {"first_revision_unrecoverable": 2}),
-                pool.StageResult("8", "last", 40),
+                pool.StageResult("6", "first revision recovered", 50, {"names_pr_branch_or_commit": 2}),
+                pool.StageResult("8", "last", 30),
             ),
-            informational={"stage_6_also_changes_a_test_file": 3},
+            informational={"stage_6_first_revision_not_recovered": 4, "stage_6_also_changes_a_test_file": 3},
             surviving_pull_requests=(),
         )
         lines = pool.format_report(ceiling, {"ref": "origin/main"}).splitlines()
@@ -880,11 +1086,12 @@ class TestReport:
             "",
             "stage  count  name",
             "6         50  first revision recovered",
-            "                 first_revision_unrecoverable: 2",
-            "8         40  last",
-            "info       3  of stage 6, also change a test file (not a gate)",
+            "                 names_pr_branch_or_commit: 2",
+            "8         30  last",
+            "info       4  stage_6_first_revision_not_recovered (not a gate)",
+            "info       3  stage_6_also_changes_a_test_file (not a gate)",
             "",
-            pool.comparison_line(40),
+            "CEILING 30 is below the 34.1 threshold: no run count can reach it",
         ]
 
 
@@ -1034,6 +1241,90 @@ class TestGitReading:
         commit = next(commit for commit in pool.read_first_parent_commits(repo, "HEAD") if commit.sha == change)
         result = pool.git_why_comment_judge(repo)(commit)
         assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    def test_keeps_and_counts_a_change_to_a_non_ascii_path_that_git_quotes(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "caf\u00e9.py", "def f():\n    return 1\n")
+        _commit(repo, "initial")
+        _write(repo, "caf\u00e9.py", "def f():\n    return 2\n")
+        change = _commit(repo, "GH-5 change f (#40)")
+        result = pool.git_why_comment_judge(repo)(self._change_commit(repo, change))
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    @pytest.mark.parametrize(
+        ("script_name", "shebang"),
+        [("run-tool", "#!/usr/bin/env python3"), ("run-tool.pyi", "#!/bin/sh")],
+        ids=["extensionless-python-script", "other-suffix-with-a-shell-shebang"],
+    )
+    def test_keeps_and_counts_a_modified_script_the_suffix_filter_skips(self, tmp_path, script_name, shebang):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "tool.py", "def f():\n    return 1\n")
+        _write(repo, script_name, f"{shebang}\n# why\nrun_it\n")
+        _commit(repo, "initial")
+        _write(repo, "tool.py", "def f():\n    return 2\n")
+        _write(repo, script_name, f"{shebang}\n# why\nrun_it_again\n")
+        change = _commit(repo, "GH-5 change both (#40)")
+        result = pool.git_why_comment_judge(repo)(self._change_commit(repo, change))
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=1)
+
+    def test_drops_a_change_beside_a_modified_text_file_that_has_no_shebang(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "tool.py", "def f():\n    return 1\n")
+        _write(repo, "notes", "# a heading\n")
+        _commit(repo, "initial")
+        _write(repo, "tool.py", "def f():\n    return 2\n")
+        _write(repo, "notes", "# another heading\n")
+        change = _commit(repo, "GH-5 change both (#40)")
+        result = pool.git_why_comment_judge(repo)(self._change_commit(repo, change))
+        assert result == pool.WhyCommentResult(kept=False, new_files_only=False)
+
+    @pytest.mark.parametrize("hostile_path", ["a\nb.md", "notes\r"], ids=["newline", "trailing-carriage-return"])
+    def test_keeps_and_counts_a_modified_path_with_a_line_break_without_shifting_the_next_script(
+        self, tmp_path, monkeypatch, hostile_path
+    ):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "tool.py", "def f():\n    return 1\n")
+        _write(repo, hostile_path, "plain text\n")
+        _write(repo, "run-tool", "#!/bin/sh\nrun_it\n")
+        _commit(repo, "initial")
+        _write(repo, "tool.py", "def f():\n    return 2\n")
+        _write(repo, hostile_path, "other text\n")
+        _write(repo, "run-tool", "#!/bin/sh\nrun_it_again\n")
+        change = _commit(repo, "GH-5 change all three (#40)")
+        sent_specs = []
+        read_blobs = pool.read_blobs
+
+        def record_specs(repo, specs):
+            sent_specs.extend(specs)
+            return read_blobs(repo, specs)
+
+        monkeypatch.setattr(pool, "read_blobs", record_specs)
+        result = pool.git_why_comment_judge(repo)(self._change_commit(repo, change))
+        assert result == pool.WhyCommentResult(kept=True, new_files_only=False, unparsable_files=2)
+        assert sent_specs
+        assert not any("\n" in spec or "\r" in spec for spec in sent_specs)
+
+    @pytest.mark.parametrize(
+        "response",
+        [b"abcd ambiguous\n", b"HEAD:other.py missing\n", b"", (b"0" * 40 + b" blob 3\nabc\n") * 2],
+        ids=["ambiguous", "missing-notice-for-another-spec", "no-response", "more-responses-than-specs"],
+    )
+    def test_read_blobs_fails_closed_on_a_response_that_does_not_match_the_specs(self, tmp_path, monkeypatch, response):
+        monkeypatch.setattr(pool, "_run_git", lambda *args, **kwargs: response)
+        with pytest.raises(pool.GitError):
+            pool.read_blobs(tmp_path, ["HEAD:tool.py"])
+
+    def test_read_blobs_fails_closed_on_a_blob_shorter_than_its_header_says(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pool, "_run_git", lambda *args, **kwargs: b"0" * 40 + b" blob 9\nabc\n")
+        with pytest.raises(pool.GitError):
+            pool.read_blobs(tmp_path, ["HEAD:tool.py"])
+
+    def test_is_shallow_repository_tells_a_shallow_clone_from_a_full_one(self, tmp_path):
+        repo, *_ = self._repo_with_history(tmp_path)
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", "-q", "--depth", "1", f"file://{repo}", str(clone))
+        assert not pool.is_shallow_repository(repo)
+        assert pool.is_shallow_repository(clone)
 
     def test_read_blobs_marks_a_missing_path_none(self, tmp_path):
         repo, base, _, _ = self._repo_with_history(tmp_path)
@@ -1231,8 +1522,7 @@ class _FakeGraphql:
     it answers only the three query shapes the fetchers build.
 
     An absent number comes back null beside a NOT_FOUND error. `alias_errors` replaces that error for an alias,
-    and a None value there leaves the alias null with no error. `extra_errors` and `page_errors` add errors
-    beside the batch data and the paged-edits data. `variables` holds each call's variables."""
+    and a None value there leaves the alias null with no error."""
 
     def __init__(self, pull_requests=None, issues=None, alias_errors=None, extra_errors=(), page_errors=()):
         self.pull_requests = pull_requests or {}
@@ -1556,6 +1846,13 @@ class TestGhTransport:
         assert "-F" not in argv
         assert argv[5:] == ["-f", "query=query", "-f", "owner=o", "-f", "cursor=@/some/file"]
 
+    def test_graphql_and_identity_lookup_pass_utf8_encoding_to_gh(self, tmp_path, monkeypatch):
+        graphql_calls = self._stub_gh(monkeypatch, '{"data": {"repository": {}}}')
+        pool._graphql(tmp_path, "query", {})
+        identity_calls = self._stub_gh(monkeypatch, json.dumps(self.IDENTITY_JSON))
+        pool.read_repository_identity(tmp_path)
+        assert graphql_calls[0][1]["encoding"] == identity_calls[0][1]["encoding"] == "utf-8"
+
     def test_graphql_targets_github_com_and_drops_ambient_repository_host_and_git_environment(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GH_REPO", "other/repo")
         monkeypatch.setenv("GH_HOST", "ghe.example.test")
@@ -1708,6 +2005,19 @@ class TestMain:
         assert pool.STUDY_REPOSITORY_URL in captured.err
         assert "ghe.example.test" not in captured.err
 
+    def test_refuses_a_shallow_checkout_before_any_graphql_call(self, tmp_path, monkeypatch, capsys):
+        repo, _ = self._history(tmp_path, with_study_page=True)
+        shallow_clone = tmp_path / "shallow-clone"
+        _git(tmp_path, "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow_clone))
+        fake = self._fake_github()
+        self._forbid_any_work_after_the_identity_lookup(monkeypatch)
+        exit_code, captured = self._run(tmp_path, monkeypatch, capsys, shallow_clone, fake, pool.STUDY_REPOSITORY)
+        assert exit_code == 1
+        assert fake.calls == []
+        assert captured.out == ""
+        assert len(captured.err.strip().splitlines()) == 1
+        assert "shallow" in captured.err
+
     def test_counts_the_study_repository_and_stops_stage_five_at_the_study_start(self, tmp_path, monkeypatch, capsys):
         repo, study = self._history(tmp_path, with_study_page=True)
         fake = self._fake_github()
@@ -1721,6 +2031,9 @@ class TestMain:
         assert report["context"]["repository"].startswith(pool.STUDY_REPOSITORY)
         assert "history under --ref not verified" in report["context"]["repository"]
         assert report["context"]["first_study_artifact_commit"] == study[:12]
+        human_report = captured.out[: captured.out.index('{\n  "label"')]
+        assert human_report.rstrip().splitlines()[-1] == pool.comparison_line(1)
+        assert any(line.startswith(f"repository: {pool.STUDY_REPOSITORY} ") for line in human_report.splitlines())
 
     def test_passes_every_base_at_stage_five_when_the_ref_holds_no_study_artifact(self, tmp_path, monkeypatch, capsys):
         repo, _ = self._history(tmp_path, with_study_page=False)
