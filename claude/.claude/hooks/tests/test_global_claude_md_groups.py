@@ -101,7 +101,34 @@ _PLACEMENTS = [
     # Main-session-only bullets: autonomy grants, dispatch rules, the output-preferences read, and clear-stale.
     (
         "autonomous-shipping",
-        "**Where autonomous shipping is active, a request to do work is the ask.**",
+        "**Autonomous shipping: a request to do work is the ask.**",
+        "main",
+    ),
+    (
+        "autonomous-shipping-review-recipe",
+        "Being asked to make the change is that ask: run `/code-review`, commit, run `/ready-for-review`, "
+        "and open the PR without pausing for permission.",
+        "main",
+    ),
+    (
+        "autonomous-shipping-push-scope",
+        "The ask covers only committing, a plain push of the current branch (never to the default branch), "
+        "and opening a PR.",
+        "main",
+    ),
+    (
+        "autonomous-shipping-no-irreversible-extension",
+        "The ask does not extend to force-pushing or any other irreversible action.",
+        "main",
+    ),
+    (
+        "autonomous-shipping-staging-limit",
+        "Stage only the paths this task changed, never the whole tree (`git add -A`, `git add --all`, `git add .`).",
+        "main",
+    ),
+    (
+        "autonomous-shipping-stated-hold-wins",
+        "A hold the engineer states in-session still wins.",
         "main",
     ),
     (

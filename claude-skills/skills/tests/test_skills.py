@@ -2062,38 +2062,31 @@ class TestContinuityFileBucketCrosscheck:
         """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
         assert "re-checked against the §6.5 categorization rule" in _skill_file("brief").read_text()
 
-    def test_handoff_section3_5_excepts_plain_ship_steps_when_shipping_is_active(self):
-        """handoff §3.5 must carve out commit, push and PR creation when the
-        resolver exits 0 and names the resumer's own resolver exit as the
-        filed step's precondition, so a handoff does not file them as pending
-        authorization on a machine where autonomous shipping is active."""
+    def test_handoff_section3_5_excepts_plain_ship_steps_with_no_hold(self):
+        """handoff §3.5 must carve out commit, push and PR creation unless the
+        engineer stated a hold, so a handoff does not file them as pending
+        authorization."""
         match = re.search(r"## §3\.5.*?(?=\n## §4)", _skill_file("handoff").read_text(), re.DOTALL)
         assert match, "handoff/SKILL.md §3.5 section not found — has it been renamed?"
         assert "Exception:" in match.group(0), "handoff/SKILL.md §3.5 'Exception:' clause not found — has it been renamed?"
         exception = match.group(0).split("Exception:", 1)[1]
-        assert "autonomous-shipping-active.sh" in exception
-        assert "exit 0" in exception
-        assert "only when" in exception, "the exception must be conditional, not unconditional"
-        assert "precondition" in exception, "the filed step must carry the exit as a precondition"
-        assert "resumer's own" in exception, "the resumer, not the writer, must evaluate the exit"
-        assert "no hold" in exception
+        assert "unless the engineer stated a hold" in exception, "the exception must be conditional, not unconditional"
         assert "never to the default branch" in exception
         assert "§3.5" in exception, "a stated hold must be filed under §3.5"
+        assert "a commit, a plain `git push`, and `gh pr create` belong in §3, not here" in exception
+        assert "never `--force`" in exception
 
-    def test_brief_section6_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+    def test_brief_section6_5_excepts_plain_ship_steps_with_no_hold(self):
         """brief §6.5 carries the same exception as handoff §3.5."""
         match = re.search(r"## §6\.5.*?(?=\n## §7 )", _skill_file("brief").read_text(), re.DOTALL)
         assert match, "brief/SKILL.md §6.5 section not found — has it been renamed?"
         assert "Exception:" in match.group(0), "brief/SKILL.md §6.5 'Exception:' clause not found — has it been renamed?"
         exception = match.group(0).split("Exception:", 1)[1]
-        assert "autonomous-shipping-active.sh" in exception
-        assert "exit 0" in exception
-        assert "only when" in exception, "the exception must be conditional, not unconditional"
-        assert "precondition" in exception, "the filed step must carry the exit as a precondition"
-        assert "resumer's own" in exception, "the resumer, not the writer, must evaluate the exit"
-        assert "no hold" in exception
+        assert "unless the engineer stated a hold" in exception, "the exception must be conditional, not unconditional"
         assert "never to the default branch" in exception
         assert "§6.5" in exception, "a stated hold must be filed under §6.5"
+        assert "a commit, a plain `git push`, and `gh pr create` belong in §6, not here" in exception
+        assert "never `--force`" in exception
 
     def test_handoff_prewrite_checklist_points_at_section3_5_for_the_principle(self):
         """The checklist must send the reader to §3.5 for the principle rather than restate it, so it
@@ -7428,11 +7421,10 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 # stowed path (agents/, hooks/, rules/, scripts/, skills/), which resolves
 # identically under every account; the directory alternation mirrors
 # enforce-marker-script-shape.sh's own _marker_shape_match glob pair.
-# worktree_required and autonomous_shipping are deliberately excluded —
-# those two config-keys.psv keys carry resolution: config-dir-or-home, a
-# union with the literal $HOME/.claude location rather than a fully
-# migrated-away path (see docs/config-file.md and README's "Worktree
-# enforcement").
+# worktree_required is deliberately excluded — that config-keys.psv key
+# carries resolution: config-dir-or-home, a union with the literal
+# $HOME/.claude location rather than a fully migrated-away path (see
+# docs/config-file.md and README's "Worktree enforcement").
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
     r"(handoffs/|briefs/|issue-triage/|plans/|projects/|sessions/"

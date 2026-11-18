@@ -7,6 +7,30 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **`check-skill-length.sh` gives `subagent-delegation/SKILL.md` a line cap of 218, above the 200-line default.** Splitting the skill's run-on `review-orchestrator` protocol lines into lists needed more lines than the default cap left, and the protocol could not move out of the skill. Other skills' caps are unchanged. The change is live on `git pull`.
+- **Autonomous shipping is now the only mode, for every stow consumer in every repository.** The agent commits, pushes the current feature branch and opens the PR without pausing, and still stops before merge.
+  - **Removed:** the machine-level `autonomous_shipping` config key and its `./install.sh` prompt, the per-repo `.claude/autonomous-shipping-optout` file, the `announce-autonomous-shipping.sh` SessionStart hook, and the `autonomous-shipping-active.sh` resolver script. The schema now has 21 keys.
+  - The Stop hook (`advance-past-commit-stall.sh`) now fires for every stow consumer with `commit_stall_block` on, in an eligible repo on a non-default branch. The compact hook restates the shipping statement for any eligible repo.
+  - The Stop hook's reason no longer restates the shipping statement or a commit recipe. It tells the agent not to ask permission to continue at a natural stopping point unless CLAUDE.md, the skill it follows or a hold the engineer stated requires the question.
+  - The reason no longer carries the fork limit, so a fork whose Stop payload lacks `agent_type` receives it with only Agent Core's rule to stop it. See [`docs/commit-stall-block.md`](docs/commit-stall-block.md).
+  - CLAUDE.md's Shipping bullet now says to stage only the paths the task changed, never the whole tree.
+  - A commit, push or PR step that a handoff or brief files with no stated hold is now pre-authorized for whoever resumes it.
+  - A leftover optout or sentinel file is ignored and may be deleted by hand. A leftover optout file no longer protects a repo.
+  - Disclosures, each detailed in [`docs/security-hardening.md`](docs/security-hardening.md) § "What unconditional autonomous shipping leaves unchecked":
+    - Server-side branch protection is a precondition, not optional hardening.
+    - The root guard checks the path's shape, not who owns the remote, and bounds only the Stop and compact hooks.
+    - The tracker-ID, structural and project-name scans run only in a gated repo, and the blocklist and PII scans wait on their files.
+    - Only the credential-value scan fires in every repo, and it covers commit-concluding commands only.
+    - A PR body can carry engineer quotes to whatever repository the PR is opened against.
+  - `commit_stall_block = false` applies to the config dir the session resolves (one per account) and is not honored while `config-keys.psv` is unreadable or lacks its row. Whether the reason moves a stalled agent forward, and whether an agent with a stated hold or a force-push question still asks, is not measured.
+  - **Migration:**
+    - Delete any leftover `autonomous_shipping` row from `claude-config.toml` in each config dir (one per account). Both config readers otherwise warn about it on stderr, and the warning may appear in session output. The installer's report phase alone prints the same warning about 42 times for one leftover row in one config file (two config reads for each of the 21 schema keys), more when the row is duplicated or also sits in `$HOME/.claude/claude-config.toml`. The repeat is expected, and the report phase is only one of the installer's config reads.
+    - `commit_stall_block = false` is the remaining switch, and it applies per config dir.
+    - Nothing turns off the CLAUDE.md rule. CLAUDE.md tells the agent that a hold the engineer states in-session wins, and the Stop reason carves a stated hold out. Whether the agent honors a hold under the Stop hook is not measured; see [`docs/commit-stall-block.md`](docs/commit-stall-block.md).
+    - A handoff or brief filed before this change may name the retired resolver as a step's precondition. Checking it now runs a missing script and gets a non-zero status, so the precondition is unmet, and the resumer is expected to ask before that step, which fails toward not shipping.
+    - The dangling `~/.claude/hooks/announce-autonomous-shipping.sh` and `~/.claude/scripts/autonomous-shipping-active.sh` links are expected to be inert and are removable by hand.
+    - Cursor-adapter users run `cursor-adapter.py check`, which is expected to report the stale announce entry, and follow its fix.
+    - A copied, not stowed, `settings.json` is expected to need its announce block removed.
+    - Restart open sessions.
 - **The evals harness reads SKILL.md and agent frontmatter with PyYAML, and the documented evals commands now run through `scripts/venv-run.sh python3`.** Plugin bumped: `skill-management` 5.1.0 → 5.1.1.
   - A quoted `description` no longer keeps its quotes in the description-fidelity listing.
   - `measure_subagent_model_resolution.py` reads a quoted `model:` value and one followed by a comment.
