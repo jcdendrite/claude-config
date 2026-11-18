@@ -569,3 +569,17 @@ def _all_doc_paths() -> list[Path]:
 
 _PLAN_ARCHITECT_PATH = _AGENTS_DIR / "plan-architect.md"
 _PLAN_ARCHITECT_CONSULT_HEADING = "## MODE=consult"
+
+
+_MALFORMED_YAML_SKILL = "---\ndescription: bad: colon: here\n---\nbody\n"
+_UNCLOSED_BLOCK_SKILL = "---\nname: unclosed\ndescription: never closed\n\nBody text.\n"
+_SCALAR_ONLY_SKILL = "---\njust a scalar\n---\nbody\n"
+_EMPTY_SEQUENCE_SKILL = "---\n[]\n---\nbody\n"
+_IMPOSSIBLE_DATE_SKILL = "---\nname: impossible-date\nversion: 2024-02-30\n---\nbody\n"
+
+
+def _write_skill_md_fixture(skills_dir: Path, skill_name: str, text: str) -> Path:
+    skill_file = skills_dir / skill_name / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(text)
+    return skill_file
