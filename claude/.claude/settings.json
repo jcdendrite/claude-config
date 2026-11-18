@@ -219,6 +219,17 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/steer-compaction-summary.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SubagentStart": [
       {
         "hooks": [

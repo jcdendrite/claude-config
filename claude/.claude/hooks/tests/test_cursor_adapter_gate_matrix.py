@@ -1129,7 +1129,7 @@ DECLINED_SESSION_WRITES: dict[str, tuple[str, ...]] = {
 LISTED_NETWORK: frozenset[str] = frozenset()
 
 
-# Events with no tool name. Cursor has no Notification or PostToolBatch event, so those two borrow the closest payload.
+# Events with no tool name. Cursor has no Notification, PostToolBatch or PreCompact event, so those borrow the closest payload.
 EVENT_SPEC_IDS = {
     "SessionStart": "session_start",
     "SubagentStart": "subagent_start",
@@ -1139,6 +1139,7 @@ EVENT_SPEC_IDS = {
     "SessionEnd": "after_agent_response",
     "Notification": "after_agent_response",
     "PostToolBatch": "after_agent_response",
+    "PreCompact": "after_agent_response",
 }
 
 
