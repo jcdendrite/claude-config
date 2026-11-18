@@ -1530,9 +1530,10 @@ class TestBlockedPromptThroughExecuteJudgeRun:
             "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
         }
 
+        result_event = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 0, "total_cost_usd": 0}
         record = adjudicate.execute_judge_run(
             _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path), session_id="s1",
-            launch=lambda cmd, cwd, timeout_s: ([json.dumps(blocked_event).encode()], False),
+            launch=lambda cmd, cwd, timeout_s: ([json.dumps(event).encode() for event in (blocked_event, result_event)], False),
         )
 
         assert record.status == runner.STATUS_MISSING

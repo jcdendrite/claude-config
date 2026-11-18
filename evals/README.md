@@ -100,7 +100,7 @@ summary: 2 skills, 7 cases | pass 5/7 | review the 2 FAIL cases above
   reads as "the classifier named this skill" / "named a different skill or
   none" — there is no live dispatch in that mode.
 - A completed run exits `0` — measurement, not a gate — unless a hook blocks a
-  `claude -p` prompt (see "A prompt blocked by a hook"); a usage error exits `1`.
+  `claude -p` prompt (see "A prompt blocked by a hook").
 
 **Noise floor.** Triggering is probabilistic, so the pass rate carries sampling
 noise. At `K=10` a case that genuinely triggers ~60% of the time still reads

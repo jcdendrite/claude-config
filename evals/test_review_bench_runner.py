@@ -751,6 +751,7 @@ class TestBlockedPromptThroughExecuteRun:
             "type": "system", "subtype": "informational",
             "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
         }
+        result_event = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 0, "total_cost_usd": 0}
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", agent_name=AGENT_NAME, model_id=MODEL_ID,
             agent_declared_tools=DECLARED_TOOLS, fixture_dir=tmp_path, live_checkout_roots=(),
@@ -760,7 +761,7 @@ class TestBlockedPromptThroughExecuteRun:
 
         record = runner.execute_run(
             ctx, arm="current-rule", run_index=0, session_id="blocked-session",
-            launch=lambda cmd, cwd, timeout_s: ([json.dumps(blocked_event).encode()], False),
+            launch=lambda cmd, cwd, timeout_s: ([json.dumps(event).encode() for event in (blocked_event, result_event)], False),
         )
 
         assert record.status == runner.STATUS_MISSING
