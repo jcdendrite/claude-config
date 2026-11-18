@@ -7,11 +7,9 @@ the review bench.
 module builds their per-defect input files, launches their runs, and parses
 their answers mechanically.
 
-Reuses runner.py's per-run primitives -- RunStore, RunRecord,
-build_judge_command, evaluate_judge_run_validity, read_environment_record, and
-session-store lookup by session ID. runner.execute_run/run_one_with_retry are
-hardwired to the reviewer's own REVIEW_PROMPT_TEMPLATE and thin dispatcher, so
-this module writes its own judge-run orchestration around those primitives.
+runner.execute_run/run_one_with_retry are hardwired to the reviewer's own
+REVIEW_PROMPT_TEMPLATE and thin dispatcher, so this module writes its own
+judge-run orchestration around runner.py's per-run primitives.
 """
 from __future__ import annotations
 

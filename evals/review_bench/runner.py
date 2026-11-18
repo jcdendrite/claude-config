@@ -9,7 +9,7 @@ adjudicate.py, and analysis.py own the judge-side scope -- this module only
 runs reviewer arms, but its per-run validity checks and RunRecord schema are
 written generically over "the run's own directories" so the judge runs reuse
 them. A judge is the top-level session, so it has its own launch command and
-validity entry point (build_judge_command, evaluate_judge_run_validity).
+validity entry point.
 
 Reuses from evals/measure_subagent_model_resolution.py (see that module's
 own docstring for the reuse record this file adds). Reuses
@@ -63,8 +63,8 @@ from _config_dir import config_dir  # noqa: E402
 # --- Frozen model IDs ------------------------------------------------------
 REVIEWER_MODEL_ID = "claude-sonnet-5"
 JUDGE_MODEL_ID = "claude-opus-5-5"
-# Passed as `--effort` because a top-level `--agent` session ignores the agent
-# file's `effort:` frontmatter.
+# Passed as `--effort`. In local probe runs, a top-level
+# `--agent` session did not apply the agent file's `effort:` frontmatter.
 JUDGE_EFFORT = "high"
 
 # --- Caps --------------------------------------------------------------------
@@ -649,8 +649,7 @@ def _read_like_target(tool_name: str, tool_input: dict) -> str | None:
 
 
 def _parse_transcript_record(raw: str) -> dict | None:
-    """The JSON object a transcript line holds, None for a line that is not
-    valid JSON or not an object."""
+    """None for a line that is not valid JSON or not a JSON object."""
     try:
         rec = json.loads(raw)
     except json.JSONDecodeError:
@@ -659,8 +658,7 @@ def _parse_transcript_record(raw: str) -> dict | None:
 
 
 def _content_blocks(rec: dict) -> list:
-    """The record's `message.content` blocks, [] when message or content has
-    any other shape."""
+    """[] unless `message` is an object and its `content` is a list."""
     message = rec.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     return content if isinstance(content, list) else []
@@ -1081,13 +1079,12 @@ def evaluate_judge_run_validity(
         observed_agent_names = extract_agent_settings(session_jsonl)
         observed_efforts = extract_assistant_efforts(session_jsonl)
         stop_hook_forced_continuation = has_stop_hook_feedback(session_jsonl)
+        observed_model_ids, observed_tools = msmr._scan_assistant_models_and_tools(session_jsonl)
     except (OSError, ValueError) as exc:  # ValueError includes UnicodeDecodeError from a text-mode read
         if result_failure is not None:
             return replace(result_failure, prompt_verbatim=None)
         detail = _os_error_detail(exc) if isinstance(exc, OSError) else f"{type(exc).__name__}: transcript is not readable"
         return _fail(VALIDITY_FAIL_TRANSCRIPT_UNREADABLE, prompt_verbatim=None, detail=detail)
-    # The scan reads any transcript's assistant records, not only a subagent's.
-    observed_model_ids, observed_tools = msmr._scan_subagent_jsonl(session_jsonl)
 
     verdict = result_failure
     if verdict is None:
@@ -1127,7 +1124,7 @@ def _check_judge_identity(
     sorted_observed_tools = tuple(sorted(observed_tools))
     if observed_agent_names != frozenset({expected_agent_name}):
         return _fail(
-            VALIDITY_FAIL_AGENT_MISMATCH, observed_model=next(iter(observed_model_ids), None),
+            VALIDITY_FAIL_AGENT_MISMATCH, observed_model=min(observed_model_ids, default=None),
             observed_tools=sorted_observed_tools, prompt_verbatim=True,
             detail=f"expected agent {expected_agent_name!r}, transcript records {sorted(observed_agent_names)!r}",
         )
@@ -1164,8 +1161,9 @@ def _check_model_and_tools(
 ) -> RunValidity | None:
     if observed_model_ids != frozenset({expected_model_id}):
         return _fail(
-            VALIDITY_FAIL_MODEL_MISMATCH, observed_model=next(iter(observed_model_ids), None),
+            VALIDITY_FAIL_MODEL_MISMATCH, observed_model=min(observed_model_ids, default=None),
             observed_tools=tuple(sorted(observed_tools)), prompt_verbatim=True,
+            detail=f"expected model {expected_model_id!r}, transcript records {sorted(observed_model_ids)!r}",
         )
     if observed_tools - agent_declared_tools:
         return _fail(
@@ -1178,8 +1176,7 @@ def _check_model_and_tools(
 def _out_of_session_read_paths(
     read_like_calls: list[ReadLikeCall], *, fixture_dir: Path, own_dirs: tuple[Path, ...],
 ) -> tuple[str, ...]:
-    """The path of each read-like call that resolves outside own_dirs. A path
-    the OS cannot represent is skipped."""
+    """A path the OS cannot represent is skipped."""
     out_of_session: list[str] = []
     for read_call in read_like_calls:
         try:

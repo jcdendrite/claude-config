@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
+import errno
 import json
 import locale
 import os
@@ -95,14 +96,17 @@ def _load_scenario(tmp_path: Path, name: str) -> Path:
 def _load_top_level_scenario(tmp_path: Path, name: str, *, agent_name: str = JUDGE_AGENT_NAME) -> Path:
     """A scenario reshaped as a judge session: the subagent's own transcript
     becomes the session transcript behind an agent record and a user prompt
-    record, with no dispatcher record and no sidecar. Record shapes model
-    top-level `--agent` sessions as observed in a local judge transcript: the
-    agent record is written again after a `last-prompt` record, each assistant
-    record holds one content block and carries `effort`, the first assistant
-    record holds only thinking, and text that trails a tool call follows that
-    call's tool-result record. No captured transcript is committed, so a Claude
-    Code change to these shapes shows only on the first live judge run, which
-    fails closed. The session ID is a placeholder."""
+    record, with no dispatcher record and no sidecar. The record shapes model
+    top-level `--agent` sessions as observed in a local judge transcript:
+
+    - The agent record is written again after a `last-prompt` record.
+    - Each assistant record holds one content block and carries `effort`.
+    - The first assistant record holds only thinking.
+    - Text that trails a tool call follows that call's tool-result record.
+
+    No captured transcript is committed, so a Claude Code change to these
+    shapes shows only on the first live judge run, which fails closed. The
+    session ID is a placeholder."""
     dest = _load_scenario(tmp_path, name)
     subagent_dir = dest / "session-1" / "subagents"
     subagent_records = [json.loads(line) for line in (subagent_dir / "agent-1.jsonl").read_text().splitlines()]
@@ -607,6 +611,12 @@ def _evaluate_judge(
     )
 
 
+def _assert_detail_names_expected_before_observed(detail: str | None, expected: str, observed: str) -> None:
+    """A mismatch message names the expected value first, so order tells the two roles apart."""
+    assert detail is not None
+    assert detail.index(expected) < detail.index(observed)
+
+
 class TestExtractAgentSettings:
     def test_non_object_lines_are_skipped(self, tmp_path: Path) -> None:
         session_jsonl = tmp_path / "session.jsonl"
@@ -708,8 +718,7 @@ class TestJudgeRunValidity:
         result = _evaluate_judge(scenario)
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_AGENT_MISMATCH
-        assert result.failure_detail is not None
-        assert "bench-judge-precision" in result.failure_detail
+        _assert_detail_names_expected_before_observed(result.failure_detail, JUDGE_AGENT_NAME, "bench-judge-precision")
         assert result.observed_model == MODEL_ID
         assert result.observed_tools == ("Read",)
         assert result.stats == runner.ReadStats.empty()  # a failed verdict carries no read statistics
@@ -746,14 +755,42 @@ class TestJudgeRunValidity:
         result = _evaluate_judge(scenario, expected_model_id=MODEL_ID)
         assert result.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
 
+    def test_a_mismatch_with_two_observed_models_records_the_smallest_model_id(self) -> None:
+        class LargerIdFirst(frozenset):
+            # Pins iteration order, so a first-iterated pick returns the larger ID under every hash seed.
+            def __iter__(self):
+                return iter(sorted(frozenset.__iter__(self), reverse=True))
+
+        smaller_model_id, larger_model_id = sorted((MODEL_ID, runner.JUDGE_MODEL_ID))
+        observed_model_ids = LargerIdFirst({smaller_model_id, larger_model_id})
+        assert next(iter(observed_model_ids)) == larger_model_id
+
+        agent_mismatch = runner._check_judge_identity(
+            frozenset({"bench-judge-precision"}), observed_model_ids, frozenset(), frozenset({runner.JUDGE_EFFORT}),
+            expected_agent_name=JUDGE_AGENT_NAME, expected_model_id=MODEL_ID, expected_effort=runner.JUDGE_EFFORT,
+            agent_declared_tools=JUDGE_DECLARED_TOOLS,
+        )
+        model_mismatch = runner._check_model_and_tools(
+            observed_model_ids, frozenset(), expected_model_id="claude-unobserved-model",
+            agent_declared_tools=JUDGE_DECLARED_TOOLS,
+        )
+
+        assert agent_mismatch is not None
+        assert model_mismatch is not None
+        assert agent_mismatch.failure_reason == runner.VALIDITY_FAIL_AGENT_MISMATCH
+        assert model_mismatch.failure_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+        assert agent_mismatch.observed_model == smaller_model_id
+        assert model_mismatch.observed_model == smaller_model_id
+        _assert_detail_names_expected_before_observed(
+            model_mismatch.failure_detail, "claude-unobserved-model", smaller_model_id,
+        )
+
     def test_a_recorded_effort_other_than_the_expected_one_fails_as_effort_mismatch(self, tmp_path: Path) -> None:
         scenario = _load_top_level_scenario(tmp_path, "normal-success")
         result = _evaluate_judge(scenario, expected_effort="low")
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_EFFORT_MISMATCH
-        assert result.failure_detail is not None
-        assert "low" in result.failure_detail
-        assert runner.JUDGE_EFFORT in result.failure_detail
+        _assert_detail_names_expected_before_observed(result.failure_detail, "low", runner.JUDGE_EFFORT)
 
     def test_an_assistant_record_with_no_effort_fails_as_effort_mismatch(self, tmp_path: Path) -> None:
         scenario = _load_top_level_scenario(tmp_path, "normal-success")
@@ -843,6 +880,53 @@ class TestJudgeRunValidity:
         assert result.failure_detail is not None
         assert str(scenario) not in result.failure_detail
 
+    def test_a_read_fault_during_the_model_scan_fails_as_transcript_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        iterate_assistant_records = runner.msmr._iter_assistant_records
+        pass_count = 0
+
+        def iterator_faulting_after_the_effort_pass(path: Path):
+            nonlocal pass_count
+            pass_count += 1
+            yield from iterate_assistant_records(path)
+            if pass_count > 1:
+                raise OSError(errno.EIO, "read fault after a successful open")
+
+        monkeypatch.setattr(runner.msmr, "_iter_assistant_records", iterator_faulting_after_the_effort_pass)
+        result = _evaluate_judge(scenario)
+        assert pass_count > 1
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+
+    @pytest.mark.parametrize(
+        "assistant_records",
+        [
+            [],
+            [{"type": "assistant", "message": {"model": msmr.SYNTHETIC_MODEL_ID, "content": []}}],
+        ],
+        ids=["no-assistant-records", "synthetic-only"],
+    )
+    @pytest.mark.parametrize(
+        ("agent_records", "expected_reason"),
+        [
+            ([{"type": "agent-setting", "agentSetting": JUDGE_AGENT_NAME}], runner.VALIDITY_FAIL_MODEL_MISMATCH),
+            ([], runner.VALIDITY_FAIL_AGENT_MISMATCH),
+        ],
+        ids=["matching-agent-record", "no-agent-record"],
+    )
+    def test_a_readable_transcript_with_no_real_assistant_record_records_no_observed_model(
+        self, tmp_path: Path, assistant_records: list[dict], agent_records: list[dict], expected_reason: str,
+    ) -> None:
+        scenario = _load_top_level_scenario(tmp_path, "normal-success")
+        session_jsonl = scenario / "session-1.jsonl"
+        records = (*agent_records, *assistant_records)
+        session_jsonl.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+        result = _evaluate_judge(scenario)
+        assert result.ok is False
+        assert result.failure_reason == expected_reason
+        assert result.observed_model is None
+
     def test_a_stream_with_no_result_event_fails(self, tmp_path: Path) -> None:
         scenario = _load_top_level_scenario(tmp_path, "normal-success")
         result = _evaluate_judge(scenario, stream_lines=[])
@@ -929,9 +1013,7 @@ class TestJudgeRunValidity:
         assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
 
     def test_a_transcript_with_the_modelled_top_level_record_shapes_is_ok(self, tmp_path: Path) -> None:
-        """Top-level sessions as `_load_top_level_scenario` models them repeat the agent record after the
-        `last-prompt` record, write one content block per assistant record (a thinking-only one included), put
-        `effort` on every assistant record, and write a tool call's tool result before the text that follows it."""
+        """The record shapes are those `_load_top_level_scenario` documents."""
         scenario = _load_top_level_scenario(tmp_path, "normal-success")
         records = [json.loads(line) for line in (scenario / "session-1.jsonl").read_text().splitlines()]
         record_types = [record["type"] for record in records]

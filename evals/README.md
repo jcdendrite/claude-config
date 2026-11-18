@@ -1369,9 +1369,9 @@ session can load the instruction channels the tree supplies, among them its
 capability channel, not an instruction channel. It can widen what the judge may
 read or call, and it does not change what the judge is told. Beyond the
 refusals stated above, the fixture build checks only the top-level keys of
-`.claude/settings.json` and extracts the rest of the head tree as it is, so a
-hostile tree can steer the judge's verdicts through the instruction channels
-and can widen what the judge may read or call through `permissions`. The
+`.claude/settings.json` and extracts the rest of the head tree as it is. A
+hostile tree can steer the judge's verdicts through the instruction channels.
+It can also widen what the judge may read or call through `permissions`. The
 launch passes no flag that limits setting sources, so the engineer's own user
 settings, hooks, and enabled plugins load as well, and their hooks run as the
 engineer. A tree's `enabledPlugins` can also enable an
@@ -1444,8 +1444,7 @@ restricted to 0700 at startup, and the command exits 2 if it cannot be.
   for a reviewer dispatch, not measured for a judge. Change the
   `RECALL_JUDGE_BUDGET_CAP_USD` and `PRECISION_JUDGE_BUDGET_CAP_USD` constants
   in `review_bench/runner.py` once a judge has its own measured values. The
-  harness passes `--effort` to each judge, because the agent file's `effort:` is
-  not applied to a top-level `--agent` session.
+  harness passes `--effort` to each judge. In local probe runs, a top-level `--agent` session did not apply the agent file's `effort:`.
 - **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
   each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
   K = 10, so 1,260 slots at 252 fixtures. Each minute of median run duration

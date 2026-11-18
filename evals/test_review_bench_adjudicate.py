@@ -1418,11 +1418,7 @@ VALID_PRECISION_ANSWER = '### Run r1\n1. VALID -- "some finding"\n'
 
 
 class TestExecuteJudgeRunValidityWiring:
-    """execute_judge_run forwards its context's leak-check inputs to the
-    validity check, scopes the persisted tool-result allowance to the run's
-    own session dir, and, when no transcript is found, records the cause as a
-    timeout, a failing result event (error or budget), or the session store
-    not being found."""
+    """execute_judge_run's wiring into the validity check."""
 
     @staticmethod
     def _judge_context_over_leaking_scenario(
@@ -1463,6 +1459,18 @@ class TestExecuteJudgeRunValidityWiring:
         )
 
         assert record.status == runner.STATUS_OK
+
+    def test_a_timed_out_run_with_a_complete_transcript_records_the_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._judge_context_over_leaking_scenario(tmp_path, monkeypatch, fix_commit_relpaths=())
+
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, True),
+        )
+
+        assert record.status == runner.STATUS_MISSING
+        assert record.missing_reason == runner.MISSING_REASON_TIMEOUT
 
     @pytest.mark.parametrize(("read_dir_name", "expected_status"), [
         pytest.param("session-1", runner.STATUS_OK, id="own-session-dir"),
@@ -1611,9 +1619,7 @@ class TestJudgeAgentFilesMatchTheHarnessConstants:
 
 
 class TestJudgeLaunchesTopLevel:
-    """A judge launches as the top-level `claude -p --agent` session. Pins the launch command's
-    `--agent`, `--model` and `--tools` flags with no dispatcher prompt, a sidecar-free wait,
-    and the two allowlist-violation verdicts."""
+    """A judge launches as the top-level `claude -p --agent` session."""
 
     @pytest.mark.parametrize(
         ("judge_kind", "expected_tools"),
