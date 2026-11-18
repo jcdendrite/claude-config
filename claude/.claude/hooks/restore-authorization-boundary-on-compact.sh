@@ -22,9 +22,8 @@
 # The boundary text shares the statement path's time budget: the hook's
 # settings.json timeout cancels the boundary text along with a stalled statement path.
 #
-# Kill switch: ~/.claude/.authorization-boundary-disabled (or under
-# $CLAUDE_CONFIG_DIR), mirroring .handoff-nudge-disabled /
-# .consume-durable-continuity-disabled. It silences only the boundary text.
+# Kill switch: the `authorization_boundary_restore` key; docs/hooks.md's entry
+# for this hook defines its semantics.
 # The statement depends only on the root guard, so a relative CLAUDE_CONFIG_DIR
 # skips the boundary text and keeps the statement.
 #

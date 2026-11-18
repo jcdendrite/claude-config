@@ -999,18 +999,13 @@ def session_start_matchers_registering(script_name: str) -> list[str]:
 AUTONOMOUS_SHIPPING_STATEMENT_LEAD = "Autonomous shipping is active for this repository"
 
 
-def run_autonomous_shipping_statement(home: Path, *args: str) -> subprocess.CompletedProcess:
-    """Runs `_lib_autonomous_shipping_statement` with HOME set to `home` and nothing else inherited but PATH.
-
-    The function takes no arguments, so any `args` reach it as extra positional parameters it ignores.
-    """
+def run_autonomous_shipping_statement(home: Path) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_statement` with HOME set to `home` and nothing else inherited but PATH."""
     return subprocess.run(
         [
             "bash",
             "-c",
-            f'. {_LIB_SH}; _lib_autonomous_shipping_statement "$@"',
-            "bash",
-            *args,
+            f". {_LIB_SH}; _lib_autonomous_shipping_statement",
         ],
         capture_output=True,
         text=True,

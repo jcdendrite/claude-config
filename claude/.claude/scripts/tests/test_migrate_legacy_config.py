@@ -972,6 +972,30 @@ class TestStateFileMalformedBeforeMigrationRuns:
 
 
 # ---------------------------------------------------------------------------
+# A retired key's leftover legacy file is outside the schema, so migration
+# ignores it rather than enumerating it.
+# ---------------------------------------------------------------------------
+
+
+class TestRetiredAutonomousShippingSentinelIgnored:
+    def test_leftover_required_file_writes_no_row_and_prints_no_hint(self, tmp_path: Path) -> None:
+        """`autonomous-shipping-required` belongs to no schema row any more, so
+        a home holding only that file must migrate with no `autonomous_shipping`
+        row, no hand-paste deferral hint and no mention of the retired key."""
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        (config_dir / "autonomous-shipping-required").touch()
+
+        result = _run(_env(home, config_dir=config_dir))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "autonomous_shipping" not in _read_state(config_dir)
+        assert "autonomous" not in (result.stdout + result.stderr).lower()
+        assert "add this line to claude-config.toml by hand" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # Schema-row validation: an out-of-subset legacy-import-locations value is
 # rejected loudly, not silently defaulted
 # ---------------------------------------------------------------------------

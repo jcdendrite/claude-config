@@ -219,6 +219,18 @@ CORPUS: list[tuple[str, bool]] = [
     ("Want me to commit this even though the build failed?", False),  # failed
     ("Want me to commit the fix for this error?", False),  # error
     ("Want me to push this while the release is blocked?", False),  # blocked
+    # Fire-side twin of each exclusion row above, in the same order: the same ask without the excluded token
+    # blocks, so an exclusion row cannot pass through a FIRE_RE non-match alone.
+    ("Want me to commit this and review it?", True),  # merge twin
+    ("Want me to push this?", True),  # --force twin
+    ("Want me to commit this and push it?", True),  # force-push twin
+    ("Want me to commit this after a rebase?", True),  # reset --hard twin
+    ("Want me to push this and review it?", True),  # close the PR twin
+    ("Want me to push this and keep the branch?", True),  # delete the branch twin
+    ("Want me to commit the fix for the passing test?", True),  # failing twin
+    ("Want me to commit this now that the build passed?", True),  # failed twin
+    ("Want me to commit the fix for this typo?", True),  # error twin
+    ("Want me to push this while the release is pending?", True),  # blocked twin
 ]
 
 
@@ -413,10 +425,14 @@ def test_config_dir_kill_switch_disables(isolated_home, dirty_repo, tmp_path):
     assert result is None
 
 
-def test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed(
+def test_known_gap_explicit_false_is_ignored_when_schema_unreadable_exit_3(
     isolated_home, dirty_repo, tmp_path
 ):
-    """Direct regression test for the case "$?" statement itself (advance-
+    """Known-gap characterization: an explicit `commit_stall_block = false` is not
+    honored on a degraded schema, a limitation docs/commit-stall-block.md lists.
+    Honoring it there is a deliberate behavior change that flips this test.
+
+    Direct regression test for the case "$?" statement itself (advance-
     past-commit-stall.sh step 2). Pins that commit_stall_block = false is
     not honored while config-keys.psv is unreadable: see
     config-schema-audit.md's commit_stall_block section for the fail-direction
@@ -447,10 +463,14 @@ def test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed(
     )
 
 
-def test_commit_stall_block_case_statement_treats_exit_4_as_stays_armed(
+def test_known_gap_explicit_false_is_ignored_when_schema_row_missing_exit_4(
     isolated_home, dirty_repo, tmp_path
 ):
-    """Direct regression test for the case "$?" statement itself
+    """Known-gap characterization: an explicit `commit_stall_block = false` is not
+    honored on a degraded schema, a limitation docs/commit-stall-block.md lists.
+    Honoring it there is a deliberate behavior change that flips this test.
+
+    Direct regression test for the case "$?" statement itself
     (the one after the commit_stall_block check in advance-past-commit-stall.sh), isolated the same way the exit-3
     test above is: config-keys.psv is readable and non-empty but missing
     commit_stall_block's own row (the interrupted stow-relink/git-pull
@@ -1102,10 +1122,13 @@ def test_reason_ends_the_turn_when_a_required_question_applies(isolated_home, di
     ],
     ids=["deploy", "push-to-main", "force-push-spelled-with-a-space", "force-push-spelled-with-dash-f"],
 )
-def test_question_targeting_an_action_outside_the_grant_still_fires_with_the_carve_out(
+def test_known_gap_question_targeting_an_action_outside_the_grant_still_fires_with_the_carve_out(
     isolated_home, dirty_repo, question
 ):
-    """The fire predicate does not read what the question targets or how it spells a force push
+    """Known-gap characterization: a fix that extends EXCLUDE_RE or reads the question's target
+    flips these cases on purpose (docs/commit-stall-block.md lists each as a limitation).
+
+    The fire predicate does not read what the question targets or how it spells a force push
     (EXCLUDE_RE holds `--force` and `force-push` only), so the reason's carve-out is its only
     instruction routing such a question back, and it defers to CLAUDE.md for the routing.
     Whether the agent follows it is not measured."""

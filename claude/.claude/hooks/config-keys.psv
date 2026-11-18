@@ -29,14 +29,12 @@
 #   `config-dir-or-home` (union: resolved config dir OR the literal
 #   $HOME/.claude, so a sentinel armed before CLAUDE_CONFIG_DIR adoption
 #   still activates — today only worktree_required).
-# legacy-probe-on-resolution-failure: `true` or `false`. Whether, when the
-#   resolved config dir itself cannot be determined (relative
-#   CLAUDE_CONFIG_DIR, or empty/unset $HOME with CLAUDE_CONFIG_DIR also
-#   unset), this key's legacy file is still probed at the literal
-#   $HOME/.claude location before falling through to `default`. `true` only
-#   for worktree_required, matching its pre-migration fail-closed probe of
-#   the literal $HOME/.claude legacy file on a config-dir resolution failure;
-#   `false` for every other key.
+# legacy-probe-on-resolution-failure: `true` or `false`. The probe applies
+#   only to a `config-dir-or-home` key: when the resolved config dir cannot be
+#   determined, `true` resolves the key from the literal $HOME/.claude.
+#   `_config_resolve` in _config.sh holds the resolution details.
+#   `true` also sets the fail-safe value for an internal read failure to `true`
+#   (see _config_resolve_fail_safe in _config.sh).
 # legacy-import-locations: `config-dir` or `config-dir-and-home`. Governs
 #   only the one-time migrate-legacy-config.sh recovery import, never
 #   ordinary reads: `config-dir-and-home` keys are checked at both

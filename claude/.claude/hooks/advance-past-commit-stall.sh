@@ -49,9 +49,7 @@
 # - The predicate does not read what the question targets, so from a feature
 #   branch a compound question or one naming the default branch fires; see
 #   docs/commit-stall-block.md.
-# - EXCLUDE_RE holds `--force` and `force-push` only, so a final sentence that
-#   spells a force push as `force push` or `-f` still fires from a feature branch
-#   with work pending.
+# - EXCLUDE_RE misses the `force push` and `-f` spellings; see docs/commit-stall-block.md.
 
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
@@ -81,7 +79,7 @@ esac
 # multi-field read. Pre-initialized so a failed read leaves empty strings, not
 # unbound variables.
 # last_assistant_message stays the last field and is read to EOF, because it can span lines.
-# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
+# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured. The rationale for `$(cat)` and the 2048-character window is in `docs/design-decisions/autonomous-shipping-state-in-hook-context.md` § "The decision".
 # A newline inside a field would shift the later fields of the line-oriented read.
 # A .cwd that is not a single-line string is blanked, which step 8 denies.
 # Any other header field that is not a single-line string empties every field, which gate 4 denies.
@@ -143,7 +141,7 @@ STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$PREVIOUSLY_FIRED_PROMPT_ID" = "$PROMPT_ID" ] && exit 0
 
-# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
+# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned. The window's rationale is cited at the `$(cat)` read above.
 # A last sentence longer than the window is judged on its final ASK_WINDOW_CHARS characters.
 ASK_WINDOW_CHARS=2048
 if [ "${#LAST_ASSISTANT_MESSAGE}" -gt "$ASK_WINDOW_CHARS" ]; then
@@ -201,8 +199,8 @@ REPO_ROOT=$(_lib_autonomous_shipping_root_for_cwd "$CWD") || {
 }
 
 # 9. Only status 1 (a non-default branch) fires. Status 0 (detached or default)
-# and status 2 (git could not read HEAD) stay silent, so neither status 0 nor
-# status 2 runs `git status`. See _lib_head_detached_or_default for how the
+# and status 2 (git could not read HEAD) stay silent, so they never run
+# `git status`. See _lib_head_detached_or_default for how the
 # default branch is resolved.
 HEAD_BRANCH_STATUS=0
 _lib_head_detached_or_default "$REPO_ROOT" >/dev/null || HEAD_BRANCH_STATUS=$?
@@ -214,11 +212,8 @@ _lib_head_detached_or_default "$REPO_ROOT" >/dev/null || HEAD_BRANCH_STATUS=$?
 # a branch's whole life including after the PR opens, which would re-fire
 # forever. The first `git push -u` (ready-for-review/SKILL.md's own push step)
 # configures tracking and moves later turns onto the ahead-of-upstream branch.
-# `rev-list` fails when no upstream is configured, when the configured
-# upstream's remote-tracking ref is gone (after a merge plus `fetch --prune`),
-# and when the capped call is killed. Each failure falls through to
-# `rev-parse`, which succeeds on any resolvable HEAD and so counts as work
-# pending.
+# A `rev-list` failure falls through to `rev-parse` and counts as pending; see
+# docs/commit-stall-block.md for the failure causes.
 # Up to three git calls. A failed or hung `status` reads as a clean tree.
 # _lib_capped is not a bound on stock macOS without GNU coreutils
 # (_lib.sh:29-35).
