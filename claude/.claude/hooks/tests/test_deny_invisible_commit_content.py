@@ -886,7 +886,7 @@ class TestDenyInvisibleCommitContent:
         assert "before this call's first real" in reason
 
     def test_backslash_newline_continuation_before_staging_subcommand_denied(self):
-        """A backslash-newline continuation joins `git` to `add`, so the chain stages before the commit."""
+        """The split at the newline leaves a lone `git \\` fragment, whose subcommand trims to empty, so it denies like bare `git`."""
         command = "git \\\nadd -A && git commit -m x"
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
 

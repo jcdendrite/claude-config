@@ -7,7 +7,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **`deny-reviewer-tree-mutation.sh` and `deny-invisible-commit-content.sh` now allow a fragment that is exactly `git --version`, with no read-only subcommand.**
-  - **Verdict change:** a fragment that is exactly `git --version` is now allowed. Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
+  - Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
   - The change is live on `git pull`.
 - **`check-skill-length.sh` gives `subagent-delegation/SKILL.md` a line cap of 218, above the 200-line default.** Splitting the skill's run-on `review-orchestrator` protocol lines into lists needed more lines than the default cap left, and the protocol could not move out of the skill. Other skills' caps are unchanged. The change is live on `git pull`.
 - **The evals harness reads SKILL.md and agent frontmatter with PyYAML, and the documented evals commands now run through `scripts/venv-run.sh python3`.** Plugin bumped: `skill-management` 5.1.0 → 5.1.1.
