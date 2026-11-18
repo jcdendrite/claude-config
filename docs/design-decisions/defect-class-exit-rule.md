@@ -77,7 +77,7 @@ The engineer answered findings from the original development set that the sessio
 
 Findings the labelers did not put in an ADDRESS class, on which the engineer's answers favored a fix:
 
-- Prose findings from review rounds after the exit pass of the branch they came from. The engineer chose to count a finding of this kind as an escape.
+- Prose findings from review rounds after the exit pass of the branch they came from. For these findings in this sample, the engineer selected the session's option to record them as an escape.
   - "Record opening sentence chains three facts": "yes the split is good because that sentence is not readable otherwise".
   - "Relative word current in dated measurement": "yes I think the FYI edit is better".
   - "Record states two caveats twice (unexercised tripwire sites, bullet-alone sentence)": "yes that needs to be fixed because it could cause drift".
