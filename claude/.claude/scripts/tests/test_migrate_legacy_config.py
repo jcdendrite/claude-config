@@ -972,16 +972,15 @@ class TestStateFileMalformedBeforeMigrationRuns:
 
 
 # ---------------------------------------------------------------------------
-# A retired key's leftover legacy file is outside the schema, so migration
-# ignores it rather than enumerating it.
+# A legacy file named by no schema row is ignored, not enumerated.
 # ---------------------------------------------------------------------------
 
 
 class TestRetiredAutonomousShippingSentinelIgnored:
     def test_leftover_required_file_writes_no_row_and_prints_no_hint(self, tmp_path: Path) -> None:
-        """`autonomous-shipping-required` belongs to no schema row any more, so
-        a home holding only that file must migrate with no `autonomous_shipping`
-        row, no hand-paste deferral hint and no mention of the retired key."""
+        """`autonomous-shipping-required` belongs to no schema row, so a home
+        holding only that file migrates with no `autonomous_shipping` row, no
+        hand-paste hint and no mention of the key."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)

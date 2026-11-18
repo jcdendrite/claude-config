@@ -3359,12 +3359,14 @@ _lib_worktree_enforcement_active() {
 # For a single-line CWD the two hooks agree on eligibility. The Stop hook blanks
 # a CWD that is not a single-line string before calling, and the compact hook
 # passes it through unfiltered.
-# Fails closed, because a grant must not rest on a guess:
+# Bounds only those two hooks. It does not limit what the agent ships, which
+# CLAUDE.md governs.
+# Fails closed, because neither hook should act on a guessed root:
 #   - CWD is empty or not absolute, so there is no fallback to the process's $PWD
 #   - CWD is not inside a git repository
 #   - HOME is empty or unresolvable
 #   - the root is HOME or one of its ancestors, since a work tree there would
-#     otherwise grant every project beneath it
+#     otherwise make both hooks act on every project beneath it
 _lib_autonomous_shipping_root_for_cwd() {
   [ "$#" -eq 1 ] || return 1
   local cwd="$1" root home_dir
@@ -3386,7 +3388,6 @@ _lib_autonomous_shipping_root_for_cwd() {
   printf '%s' "$root"
 }
 
-# Prints the agent-facing shipping statement.
 _lib_autonomous_shipping_statement() {
   printf '%s' 'Autonomous shipping is active for this repository: the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. A line recording any engineer-originated restriction on shipping, however paraphrased or summarized, is such a hold, so when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding. The override applies only to a line recording absence of authorization with no engineer wait behind it. The scope and limits CLAUDE.md sets for shipping still apply.'
 }
@@ -3394,12 +3395,11 @@ _lib_autonomous_shipping_statement() {
 # _lib_permission_prompt_tracking_active
 # Returns 0 (true) when this machine has opted into permission-prompt
 # tracking — gates track-permission-prompts.sh. Delegates to
-# _config_enabled's permission_prompt_tracking schema row, minus the
-# per-repo optout: this mechanism only appends to a local log and changes
-# no git/PR/tool behavior, so there is no per-repo axis to narrow (see
-# docs/permission-prompt-tracking.md). Fails toward NOT tracking on _config_enabled's
-# exit code 2 (unresolvable config dir), the same error direction every
-# other opt-in gate in this file takes.
+# _config_enabled's permission_prompt_tracking schema row. This mechanism only
+# appends to a local log and changes no git/PR/tool behavior, so it has no
+# per-repo axis (see docs/permission-prompt-tracking.md). Fails toward NOT
+# tracking on _config_enabled's exit code 2 (unresolvable config dir), the
+# same error direction every other opt-in gate in this file takes.
 _lib_permission_prompt_tracking_active() {
   _config_enabled permission_prompt_tracking
 }

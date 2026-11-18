@@ -392,6 +392,17 @@ class TestAutonomousShippingRootForCwd:
         assert result.returncode == 1
         assert result.stdout == ""
 
+    def test_accepts_any_repo_when_home_is_bare_root(self, tmp_path: Path) -> None:
+        """HOME=/ resolves, and the ancestor walk then refuses only a root of / itself.
+
+        The guard therefore accepts every repo for such an account.
+        The Stop hook still exits silently there unless CLAUDE_CONFIG_DIR is absolute, because _lib_config_dir fails when HOME is /.
+        """
+        _, repo = self._home_and_repo(tmp_path)
+        result = run_autonomous_shipping_root_for_cwd("/", str(repo))
+        assert result.returncode == 0
+        assert Path(result.stdout).resolve() == repo.resolve()
+
     def test_rejects_root_equal_to_home(self, tmp_path: Path) -> None:
         home, _ = self._home_and_repo(tmp_path)
         init_git_repo_with_commit(home, branch="main")

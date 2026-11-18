@@ -1912,12 +1912,49 @@ class TestMemoizationUnionBranch:
             "_config_location_value() { return 1; }; "
             "_config_value permission_prompt_tracking; "
             "printf '|'; "
+            "_config_enabled permission_prompt_tracking; "
+            "printf 'enabled1=%d|' \"$?\"; "
             '_config_location_value() { _config_location_value_real "$@"; }; '
-            "_config_value permission_prompt_tracking",
+            "_config_value permission_prompt_tracking; "
+            "printf '|'; "
+            "_config_enabled permission_prompt_tracking; "
+            "printf 'enabled2=%d' \"$?\"",
         )
-        assert result.stdout == "false|true", (
+        assert result.stdout == "false|enabled1=1|true|enabled2=0", (
             "the first call's union-fold fail-safe 'false' must not be memoized, "
-            "so the second call re-resolves against the state file's 'true': "
+            "so the second call re-resolves against the state file's 'true', and "
+            "_config_enabled must agree at both the fail-safe point and after the "
+            f"state change: stdout={result.stdout!r}"
+        )
+
+    def test_probe_false_union_key_fail_safe_when_only_primary_location_fails(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """The probe-false counterpart to
+        test_union_branch_fail_safe_when_only_primary_location_fails: with the
+        primary location failing alone, the fail-safe value is the schema default
+        "false", so home's real "true" must not leak past it."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, "permission_prompt_tracking")
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "permission_prompt_tracking = true\n")
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            f'_config_location_value() {{ [ "$2" = "{config_dir}" ] && return 1; '
+            '_config_location_value_real "$@"; }; '
+            "_config_value permission_prompt_tracking; "
+            "printf '|'; "
+            "_config_enabled permission_prompt_tracking; "
+            "printf 'enabled=%d' \"$?\"",
+        )
+        assert result.stdout == "false|enabled=1", (
+            "a primary-location-only failure must still take the union's "
+            "fail-safe path ('false', the schema default for a probe-false row) "
+            "rather than falling through to home's real 'true': "
             f"stdout={result.stdout!r}"
         )
 

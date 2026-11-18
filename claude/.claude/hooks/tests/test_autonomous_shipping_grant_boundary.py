@@ -1,9 +1,11 @@
-"""Grant-boundary tests shared by the two hooks that act on the autonomous-shipping root guard.
+"""Eligibility tests shared by the two hooks that call the autonomous-shipping root guard.
 
 restore-authorization-boundary-on-compact.sh (SessionStart compact) and advance-past-commit-stall.sh
 (Stop) each resolve a repo from the payload's `.cwd`. The compact hook prints the statement and the
 Stop hook fires only for an eligible root. They must agree on which roots are eligible, so every
 scenario below runs against both hooks.
+
+The guard bounds only those two hooks. It does not limit what the agent ships, which CLAUDE.md governs.
 """
 from __future__ import annotations
 
@@ -186,8 +188,8 @@ SCENARIO_NAMES = [
 ]
 
 
-def _compact_statement(isolated_home: Path, scenario: Scenario) -> str:
-    """Returns the statement the compact hook printed, or "" when its additionalContext carried none."""
+def _compact_additional_context(isolated_home: Path, scenario: Scenario) -> str:
+    """Returns the compact hook's whole additionalContext, or "" when it printed nothing."""
     payload: dict = {"source": "compact"}
     if scenario.cwd is not None:
         payload["cwd"] = scenario.cwd
@@ -199,11 +201,7 @@ def _compact_statement(isolated_home: Path, scenario: Scenario) -> str:
         extra_env=scenario.env_overrides,
     )
     assert result.returncode == 0
-    if not result.stdout:
-        return ""
-    additional_context = session_start_additional_context(result)
-    start = additional_context.find(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
-    return "" if start == -1 else additional_context[start:]
+    return session_start_additional_context(result) if result.stdout else ""
 
 
 def _stop_hook_fired(isolated_home: Path, scenario: Scenario) -> bool:
@@ -224,22 +222,37 @@ def _stop_hook_fired(isolated_home: Path, scenario: Scenario) -> bool:
     return blocked is not None
 
 
+def _stop_hook_log(isolated_home: Path, scenario: Scenario) -> str:
+    """Returns the Stop hook's log text, or "" when it wrote none."""
+    config_dir = Path(scenario.env_overrides.get("CLAUDE_CONFIG_DIR", isolated_home / ".claude"))
+    log_file = config_dir / ".commit-stall-block.log"
+    return log_file.read_text() if log_file.exists() else ""
+
+
 @pytest.mark.parametrize("scenario_name", SCENARIO_NAMES)
 def test_statement_is_printed_only_for_an_eligible_root(
     isolated_home, tmp_path, non_repo_dir, shipping_statement, scenario_name
 ):
     scenario = _build_scenario(scenario_name, isolated_home, tmp_path, non_repo_dir)
 
-    printed = _compact_statement(isolated_home, scenario)
+    additional_context = _compact_additional_context(isolated_home, scenario)
 
+    assert "not engineer authorization" in additional_context
     if scenario.granted:
-        assert printed == shipping_statement
+        statement_start = additional_context.find(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
+        assert statement_start != -1
+        assert additional_context[statement_start:] == shipping_statement
     else:
-        assert printed == ""
+        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in additional_context
 
 
 @pytest.mark.parametrize("scenario_name", SCENARIO_NAMES)
 def test_stop_hook_fires_only_for_an_eligible_root(isolated_home, tmp_path, non_repo_dir, scenario_name):
     scenario = _build_scenario(scenario_name, isolated_home, tmp_path, non_repo_dir)
 
-    assert _stop_hook_fired(isolated_home, scenario) is scenario.granted
+    fired = _stop_hook_fired(isolated_home, scenario)
+
+    assert fired is scenario.granted
+    if not scenario.granted:
+        # Silence alone cannot tell a root-guard denial from a crash or an earlier gate.
+        assert "root-denied session=s prompt=p1\n" in _stop_hook_log(isolated_home, scenario)

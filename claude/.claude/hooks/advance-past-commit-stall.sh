@@ -79,7 +79,7 @@ esac
 # multi-field read. Pre-initialized so a failed read leaves empty strings, not
 # unbound variables.
 # last_assistant_message stays the last field and is read to EOF, because it can span lines.
-# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured. The rationale for `$(cat)` and the 2048-character window is in `docs/design-decisions/autonomous-shipping-state-in-hook-context.md` § "The decision".
+# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured.
 # A newline inside a field would shift the later fields of the line-oriented read.
 # A .cwd that is not a single-line string is blanked, which step 8 denies.
 # Any other header field that is not a single-line string empties every field, which gate 4 denies.
@@ -141,7 +141,7 @@ STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$PREVIOUSLY_FIRED_PROMPT_ID" = "$PROMPT_ID" ] && exit 0
 
-# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned. The window's rationale is cited at the `$(cat)` read above.
+# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned. The window's rationale is in `docs/commit-stall-block.md` § "Fire predicate and the exclusion-window tradeoff".
 # A last sentence longer than the window is judged on its final ASK_WINDOW_CHARS characters.
 ASK_WINDOW_CHARS=2048
 if [ "${#LAST_ASSISTANT_MESSAGE}" -gt "$ASK_WINDOW_CHARS" ]; then
