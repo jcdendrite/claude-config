@@ -1290,7 +1290,7 @@ class TestRaiseIfBlockedPromptStdout:
             raise_if_blocked_prompt_stdout(BLOCKED_PROMPT_STDOUT.encode())
 
     def test_raises_on_a_model_reply_that_quotes_the_prefix(self) -> None:
-        """Documented limitation, not a requirement: the plain-text recognizer matches the prefix anywhere (see evals/README.md)."""
+        """Documented limitation, not a requirement: the plain-text recognizer matches the prefix anywhere."""
         quoting_reply = "Here is the review.\nThe hook printed main-session-rules: prompt blocked earlier.\n"
         with pytest.raises(BlockedPromptError):
             raise_if_blocked_prompt_stdout(quoting_reply)
