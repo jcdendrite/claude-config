@@ -185,14 +185,16 @@ STATUS_OK = "ok"
 STATUS_MISSING = "missing"
 
 # missing_reason is an open string that downstream code only counts per arm.
-# budget, timeout, and invalid-answer (judge runs only) are named here; every
-# other value is the VALIDITY_FAIL_* name of the check the second attempt failed.
+# budget, timeout, blocked-prompt, and invalid-answer (judge runs only) are
+# named here; every other value is the VALIDITY_FAIL_* name of the check the
+# second attempt failed.
 MISSING_REASON_BUDGET = "budget"
 MISSING_REASON_TIMEOUT = "timeout"
+MISSING_REASON_BLOCKED_PROMPT = "blocked-prompt"
 MISSING_REASON_INVALID_ANSWER = "invalid-answer"  # judge runs only
 
 # Per-run validity check failure reasons, one constant per check, kebab-cased
-# like the three above.
+# like the four above.
 VALIDITY_FAIL_PROMPT_MISMATCH = "prompt-mismatch"
 VALIDITY_FAIL_NO_DISPATCHER_TOOL_CALL = "no-dispatcher-tool-call"
 VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL = "extra-dispatcher-tool-call"
@@ -1351,6 +1353,19 @@ class RunContext:
     fix_commit_relpaths: tuple[str, ...] = ()
 
 
+def blocked_prompt_detail(lines: Sequence[bytes]) -> str | None:
+    """The hook's block message when the run's stream reports a blocked prompt, else None.
+
+    Callers record a blocked run missing instead of raising, so the campaign's cleanup
+    and all-missing stop rules still apply.
+    """
+    try:
+        run_skill_evals.raise_if_blocked_prompt_stream(lines)
+    except run_skill_evals.BlockedPromptError as blocked:
+        return str(blocked)
+    return None
+
+
 def execute_run(
     ctx: RunContext, *, arm: str, run_index: int, session_id: str, fault: str | None = None,
     launch=msmr._run_claude_to_completion,
@@ -1373,9 +1388,15 @@ def execute_run(
     wall_clock_s = time.monotonic() - start
 
     projects_root = config_dir() / "projects"
-    session_jsonl = wait_for_session_flush(projects_root, session_id, timed_out=timed_out)
+    blocked_detail = blocked_prompt_detail(lines)
+    session_jsonl = (
+        None if blocked_detail is not None
+        else wait_for_session_flush(projects_root, session_id, timed_out=timed_out)
+    )
 
-    if session_jsonl is None:
+    if blocked_detail is not None:
+        validity = _fail(MISSING_REASON_BLOCKED_PROMPT, detail=blocked_detail)
+    elif session_jsonl is None:
         # A run the timeout killed may never have flushed a transcript; the
         # timeout, not the absent store, is its recorded cause.
         validity = _fail(MISSING_REASON_TIMEOUT if timed_out else VALIDITY_FAIL_SESSION_STORE_NOT_FOUND)
