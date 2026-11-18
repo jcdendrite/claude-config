@@ -10,7 +10,7 @@
 # claude-config.toml, because claude/.claude/** goes live on `git pull`.
 #
 # Two phases, always in this order: (1) non-interactive import for all
-# 22 keys, then schema-default scaffold; (2) an interactive per-file
+# 21 keys, then schema-default scaffold; (2) an interactive per-file
 # delete offer, `[ -t 0 ]`-gated once for the whole phase -- hang-prevention
 # only, not a security control, since nothing here stops an agent from
 # running `rm` on a legacy sentinel directly. See docs/config-file.md's
@@ -27,12 +27,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=../hooks/_config.sh
 . "$SCRIPT_DIR/../hooks/_config.sh"
 
-# The same five keys config-keys.psv's own header comment names as
+# The same four keys config-keys.psv's own header comment names as
 # enforcement-critical -- a fixed identity list here, not a schema column,
 # since each one requires a claude-hook-review pass on any future change to
 # its resolution, legacy-probe-on-resolution-failure, or
 # legacy-import-locations column.
-_MIGRATE_ENFORCEMENT_CRITICAL_KEYS=" worktree_required autonomous_shipping round_consult_gate commit_stall_block authorization_boundary_restore "
+_MIGRATE_ENFORCEMENT_CRITICAL_KEYS=" worktree_required round_consult_gate commit_stall_block authorization_boundary_restore "
 
 # _migrate_enforcement_critical_safe_value KEY
 # Populates _MIGRATE_SAFE_VALUE with KEY's fail-closed value and returns 0,
@@ -40,21 +40,19 @@ _MIGRATE_ENFORCEMENT_CRITICAL_KEYS=" worktree_required autonomous_shipping round
 # statement. Deliberately not
 # config-keys.psv's own legacy-probe-on-resolution-failure column, which
 # answers a different question (does resolution-failure fall back to
-# $HOME/.claude?) and only coincides with these values for today's five
-# rows by accident -- a future schema-column edit to that column must not
-# silently change which value this function treats as safe. Each value
-# below is this key's own enforcement-stays-on (or kill-switch-stays-off)
+# $HOME/.claude?) and equals the safe value only for worktree_required; for
+# the other three it is false while the safe value is true. A future edit to
+# that column must not change which value this function treats as safe. Each value
+# below is this key's own enforcement-stays-on
 # direction per config-keys.psv's row-level comments, not simply "matches
 # the default column":
 #   worktree_required=true: enforcement stays on.
-#   autonomous_shipping=false: the ship-without-asking kill switch stays off.
 #   round_consult_gate=true, commit_stall_block=true,
 #   authorization_boundary_restore=true: the gate/block/restore stays on.
 _migrate_enforcement_critical_safe_value() {
   _MIGRATE_SAFE_VALUE=""
   case "$1" in
     worktree_required) _MIGRATE_SAFE_VALUE="true" ;;
-    autonomous_shipping) _MIGRATE_SAFE_VALUE="false" ;;
     round_consult_gate) _MIGRATE_SAFE_VALUE="true" ;;
     commit_stall_block) _MIGRATE_SAFE_VALUE="true" ;;
     authorization_boundary_restore) _MIGRATE_SAFE_VALUE="true" ;;
@@ -330,7 +328,7 @@ _migrate_process_key() {
   # Explicit, not left to the last statement's own truth value: a bash
   # function returns its last-executed command's exit status by default,
   # and the `[ ... ] && cmd` line directly above is 1 (not 0) whenever
-  # home_status != 0 -- the common case for the seven config-dir-only
+  # home_status != 0 -- the common case for the config-dir-only
   # keys -- which would then abort main's own calling loop under `set -e`,
   # since that loop calls this function as a bare statement.
   return 0

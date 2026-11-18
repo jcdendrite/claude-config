@@ -37,7 +37,6 @@ CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 
 _ENFORCEMENT_CRITICAL_KEYS = frozenset({
     "worktree_required",
-    "autonomous_shipping",
     "round_consult_gate",
     "commit_stall_block",
     "authorization_boundary_restore",
@@ -45,13 +44,12 @@ _ENFORCEMENT_CRITICAL_KEYS = frozenset({
 
 # Mirrors migrate-legacy-config.sh's own
 # _migrate_enforcement_critical_safe_value pair-list -- each value is that
-# key's enforcement-stays-on (or kill-switch-stays-off) direction, not
+# key's enforcement-stays-on direction, not
 # simply its schema default (see that function's own header for why it is
 # not derived from config-keys.psv's default or
 # legacy-probe-on-resolution-failure columns).
 _ENFORCEMENT_CRITICAL_SAFE_VALUES = {
     "worktree_required": "true",
-    "autonomous_shipping": "false",
     "round_consult_gate": "true",
     "commit_stall_block": "true",
     "authorization_boundary_restore": "true",
@@ -505,7 +503,7 @@ class TestDeleteConfirmationPrompt:
         legacy_file.touch()
 
         result = _run_sourced(
-            f'_migrate_prompt_delete_legacy_file "{legacy_file}" autonomous_shipping true imported\n',
+            f'_migrate_prompt_delete_legacy_file "{legacy_file}" permission_prompt_tracking true imported\n',
             "y\n",
             _env(home),
         )
@@ -520,7 +518,7 @@ class TestDeleteConfirmationPrompt:
         legacy_file.touch()
 
         result = _run_sourced(
-            f'_migrate_prompt_delete_legacy_file "{legacy_file}" autonomous_shipping true imported\n',
+            f'_migrate_prompt_delete_legacy_file "{legacy_file}" permission_prompt_tracking true imported\n',
             "n\n",
             _env(home),
         )
@@ -529,35 +527,39 @@ class TestDeleteConfirmationPrompt:
 
     def test_non_tty_calling_loop_leaves_every_legacy_file_in_place(self, tmp_path: Path) -> None:
         """The calling loop (main's own delete phase), not the prompt
-        function directly -- a closed/empty stdin is never a TTY regardless
-        of what it carries, matching test_install_sh_machine_level_opt_ins.py's
-        identical technique for its own TTY-gate tests."""
+        function directly -- a piped "y" is never a TTY, so only the gate
+        keeps the delete prompt from consuming it, matching
+        test_install_sh_machine_level_opt_ins.py's identical technique for
+        its own TTY-gate tests."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
-        (config_dir / "autonomous-shipping-required").touch()
+        (config_dir / "track-permission-prompts").touch()
 
-        result = _run(_env(home), stdin="")
+        result = _run(_env(home), stdin="y\n")
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert (config_dir / "autonomous-shipping-required").exists()
+        assert (config_dir / "track-permission-prompts").exists()
+        assert "not an interactive terminal" in result.stderr
 
     def test_key_not_imported_this_run_is_never_offered(self, tmp_path: Path) -> None:
         """A key that already had a state-file row before this run (so its
         legacy file's own derived value was never used) must not be offered
-        for deletion -- proven with autonomous_shipping specifically, not
+        for deletion -- proven with permission_prompt_tracking specifically, not
         worktree_required, so this condition is exercised independently of
         worktree_required's own unconditional exclusion."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
-        _state_file(config_dir).write_text("autonomous_shipping = false\n")
-        legacy_file = config_dir / "autonomous-shipping-required"
+        _state_file(config_dir).write_text("permission_prompt_tracking = false\n")
+        legacy_file = config_dir / "track-permission-prompts"
         legacy_file.touch()
 
         records_file = tmp_path / "records.psv"
         env = _env(home, config_dir=config_dir)
         env["MIGRATE_LEGACY_CONFIG_DEBUG_RECORDS_FILE"] = str(records_file)
-        result = _run(env, stdin="")
+        # A real pty satisfies the TTY gate, so only the record filter keeps
+        # the queued "y" from deleting the file.
+        result = _run_main_with_real_pty_stdin(env, stdin_response="y\n")
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert legacy_file.exists(), "a key with an existing row must never be offered for deletion"
         records = records_file.read_text()
@@ -618,7 +620,7 @@ class TestDeleteConfirmationPrompt:
             script = (
                 '_MIGRATE_TTY=1\n'
                 f'_MIGRATE_RECORDS=('
-                f'"{undeletable_file}|autonomous_shipping|true|imported|false" '
+                f'"{undeletable_file}|permission_prompt_tracking|true|imported|false" '
                 f'"{deletable_file}|handoff_nudge|true|imported|false")\n'
                 '_migrate_run_delete_confirmation_phase\n'
             )
@@ -755,7 +757,7 @@ class TestTTYInvarianceOfEnforcementCriticalImport:
         """The fail-closed counterpart to the permissive-direction test
         above: worktree_required is the sole enforcement-critical key whose
         legacy_polarity column (config-keys.psv) lets mere legacy-file
-        presence derive the SAFE value -- the other four enforcement-
+        presence derive the SAFE value -- the other three enforcement-
         critical keys can only ever derive the permissive value from
         presence, so only worktree_required can exercise this direction. A
         real pty as stdin must still import it; no `[ -t 0 ]`-satisfying pty
@@ -792,13 +794,13 @@ class TestEnforcementCriticalKeySet:
     def test_matches_config_keys_psv_header_comment(self) -> None:
         """config-keys.psv's own header comment is the second place (besides
         migrate-legacy-config.sh's _MIGRATE_ENFORCEMENT_CRITICAL_KEYS and
-        _migrate_enforcement_critical_safe_value) that names the five
+        _migrate_enforcement_critical_safe_value) that names the four
         enforcement-critical keys -- checked against the real bash variable
         itself, not a third, independently maintained Python copy, so a
         future key addition/removal can't silently drift the two apart."""
         text = CONFIG_KEYS_PSV.read_text()
-        match = re.search(r"The five enforcement-critical keys \(([^)]+)\)", text, re.DOTALL)
-        assert match, "config-keys.psv's header comment must name the five enforcement-critical keys"
+        match = re.search(r"The four enforcement-critical keys \(([^)]+)\)", text, re.DOTALL)
+        assert match, "config-keys.psv's header comment must name the four enforcement-critical keys"
         # The parenthesized list wraps across a `#`-continued comment line,
         # so each name is stripped of the leading `#` and whitespace a
         # mid-list line break leaves behind, not just surrounding spaces.
@@ -824,7 +826,7 @@ class TestEnforcementCriticalSafeValues:
 
 # Every enforcement-critical key except worktree_required pairs a
 # presence-only legacy polarity with a safe value on the opposite boolean --
-# so any legacy file for these four, merely by existing, always derives the
+# so any legacy file for these three, merely by existing, always derives the
 # permissive value; there is no legacy-file content that could exercise
 # their own safe-import branch. worktree_required is the sole exception
 # (presence-enables, safe value "true"), covered by its own test below.
@@ -832,7 +834,7 @@ _PERMISSIVE_VIA_LEGACY_FILE_KEYS = sorted(_ENFORCEMENT_CRITICAL_KEYS - {"worktre
 
 
 class TestEnforcementCriticalDirectionAwareImport:
-    """Import writes a legacy-derived value for one of the five
+    """Import writes a legacy-derived value for one of the four
     enforcement-critical keys only when it matches that key's own
     fail-closed value; a permissive-direction value is never written -- it
     is deferred and printed for a human to hand-paste into

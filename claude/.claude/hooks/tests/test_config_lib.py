@@ -155,6 +155,38 @@ def _isolated_hooks_dir_with_legacy_polarity_override(tmp_path: Path, key: str, 
     return isolated_hooks_dir
 
 
+def _isolated_hooks_dir_with_union_resolution(tmp_path: Path, key: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, rewriting
+    KEY's own resolution column (field 4 of 11) to `config-dir-or-home` --
+    every other column, including legacy-probe-on-resolution-failure, is left
+    untouched. No real row combines `config-dir-or-home` with
+    legacy-probe-on-resolution-failure `false`, so a test of that
+    combination rewrites a real `false`-probe row (e.g.
+    permission_prompt_tracking) instead of reading one off the real schema.
+    Raises if KEY's row is absent or its resolution column is not
+    `config-dir-or-home` afterwards, so a test cannot pass against an
+    unrewritten config-dir row."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = []
+    for line in _CONFIG_KEYS_PSV.read_text().splitlines():
+        if line.startswith(f"{key}|"):
+            fields = line.split("|")
+            fields[3] = "config-dir-or-home"
+            line = "|".join(fields)
+        lines.append(line)
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    written_rows = [
+        written.split("|")
+        for written in (isolated_hooks_dir / "config-keys.psv").read_text().splitlines()
+        if written.startswith(f"{key}|")
+    ]
+    if len(written_rows) != 1 or len(written_rows[0]) < 4 or written_rows[0][3] != "config-dir-or-home":
+        raise AssertionError(f"resolution rewrite for {key!r} did not take effect: {written_rows!r}")
+    return isolated_hooks_dir
+
+
 def _isolated_hooks_dir_with_empty_default_column(tmp_path: Path, key: str) -> Path:
     """Copies the real config-keys.psv into an isolated hooks dir, blanking
     KEY's own default column (field 3 of 11).
@@ -182,7 +214,7 @@ def _isolated_hooks_dir_with_empty_default_column(tmp_path: Path, key: str) -> P
 
 def _isolated_hooks_dir_with_legacy_probe_override(tmp_path: Path, key: str, legacy_probe: str) -> Path:
     """Copies the real config-keys.psv into an isolated hooks dir, replacing
-    KEY's own legacy-probe-on-resolution-failure column (field 4 of 11)
+    KEY's own legacy-probe-on-resolution-failure column (field 5 of 11)
     with LEGACY_PROBE.
     Every other row and field is left untouched.
     This exercises a synthetic opt-in to the legacy-probe fail-safe arm on
@@ -305,24 +337,22 @@ class TestExitCodeContract:
         assert result.stdout == ""
         assert "parsed zero rows" in result.stderr
 
-    def test_mid_row_truncation_returns_exit_4_not_a_silent_grant(self, tmp_path):
+    def test_mid_row_truncation_returns_exit_4_not_a_silent_enable(self, tmp_path):
         """Security regression: a config-keys.psv row present but cut off
         after the key/type fields (an interrupted stow-relink/git-pull
         caught mid-row, rather than mid-file) must not resolve as an empty
         string that _config_enabled's any-value-but-false rule would then
-        read as enabled. autonomous_shipping is the key this matters most
-        for: every other enforcement-critical key's safe direction is
-        "stays armed" regardless of this bug, but autonomous_shipping's safe
-        direction is "not shipping" -- a silent exit 0 with an empty
-        resolution/default here would silently grant it."""
+        read as enabled. permission_prompt_tracking is a default-`false` key,
+        so a silent exit 0 with an empty resolution/default here would
+        silently enable it."""
         isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
-            tmp_path, "autonomous_shipping", "autonomous_shipping|bool"
+            tmp_path, "permission_prompt_tracking", "permission_prompt_tracking|bool"
         )
-        value_result = _run_with_schema(isolated_hooks_dir, "_config_value autonomous_shipping")
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value permission_prompt_tracking")
         assert value_result.returncode == 4
         assert value_result.stdout == ""
-        assert "autonomous_shipping" in value_result.stderr
-        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled autonomous_shipping")
+        assert "permission_prompt_tracking" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled permission_prompt_tracking")
         assert enabled_result.returncode == 4
         assert enabled_result.stdout == ""
 
@@ -348,23 +378,23 @@ class TestExitCodeContract:
         assert enabled_result.returncode == 4
         assert enabled_result.stdout == ""
 
-    def test_empty_default_column_returns_exit_4_not_a_silent_grant(self, tmp_path):
+    def test_empty_default_column_returns_exit_4_not_a_silent_enable(self, tmp_path):
         """Security regression: a config-keys.psv row can have its default
         column alone blanked. Resolution and legacy-probe-on-resolution-
         failure stay intact. That row must not resolve as an empty string.
         _config_enabled's any-value-but-false rule would then read that
-        empty string as enabled. autonomous_shipping's safe direction is
-        "not shipping", so a silent exit 0 with an empty default here would
-        silently grant it. This is the very failure path
+        empty string as enabled. permission_prompt_tracking is a
+        default-`false` key, so a silent exit 0 with an empty default here
+        would silently enable it. This is the very failure path
         _config_resolve_fail_safe's own default fallback exists to close."""
         isolated_hooks_dir = _isolated_hooks_dir_with_empty_default_column(
-            tmp_path, "autonomous_shipping"
+            tmp_path, "permission_prompt_tracking"
         )
-        value_result = _run_with_schema(isolated_hooks_dir, "_config_value autonomous_shipping")
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value permission_prompt_tracking")
         assert value_result.returncode == 4
         assert value_result.stdout == ""
-        assert "autonomous_shipping" in value_result.stderr
-        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled autonomous_shipping")
+        assert "permission_prompt_tracking" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled permission_prompt_tracking")
         assert enabled_result.returncode == 4
         assert enabled_result.stdout == ""
 
@@ -381,7 +411,7 @@ class TestExitCodeContract:
         path -- but a truncated schema row is still a truncated schema row.
         Pins that this exit-4 case reaches state-file-backed keys too, not
         only the no-state-file fallback case
-        test_empty_default_column_returns_exit_4_not_a_silent_grant covers."""
+        test_empty_default_column_returns_exit_4_not_a_silent_enable covers."""
         home = tmp_path / "home"
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
@@ -425,7 +455,9 @@ class TestConfigDirOverrideArgument:
 
 # ---------------------------------------------------------------------------
 # legacy-probe-on-resolution-failure divergence between worktree_required
-# (true) and autonomous_shipping (false)
+# (true) and a config-dir-or-home key whose column is false. No real row has
+# the false combination, so that side runs against permission_prompt_tracking's
+# row rewritten to config-dir-or-home.
 # ---------------------------------------------------------------------------
 
 
@@ -437,12 +469,32 @@ class TestLegacyProbeOnResolutionFailure:
         assert result.returncode == 0
         assert result.stdout == "true"
 
-    def test_autonomous_shipping_does_not_probe_on_resolution_failure(self, isolated_home, monkeypatch):
-        (isolated_home / ".claude" / "autonomous-shipping-required").touch()
+    def test_union_key_with_probe_false_does_not_probe_on_resolution_failure(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, "permission_prompt_tracking")
+        (isolated_home / ".claude" / "track-permission-prompts").touch()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
-        result = _run("_config_value autonomous_shipping")
+        result = _run_with_schema(isolated_hooks_dir, "_config_value permission_prompt_tracking")
         assert result.returncode == 2
         assert result.stdout == ""
+
+    def test_union_key_with_probe_false_honors_the_legacy_file_when_resolution_succeeds(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """Positive control for the test above: the same legacy file is read
+        when the config dir resolves, so the exit 2 there comes from the
+        resolution failure and not from the file being ignored. The config
+        dir diverges from $HOME/.claude, so "true" is reachable only through
+        the union's read of the $HOME/.claude legacy file."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, "permission_prompt_tracking")
+        (isolated_home / ".claude" / "track-permission-prompts").touch()
+        diverged_config_dir = isolated_home / "altconfig"
+        diverged_config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(diverged_config_dir))
+        result = _run_with_schema(isolated_hooks_dir, "_config_value permission_prompt_tracking")
+        assert result.returncode == 0
+        assert result.stdout == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -633,23 +685,26 @@ class TestLegacyPolarity:
 class TestUnrecognizedLegacyPolarityFallback:
     """An unrecognized config-keys.psv legacy-polarity value (a schema-file
     typo, since this column has no other writer) falls through to the
-    key's schema default for four of the five enforcement-critical keys --
+    key's schema default for three of the four enforcement-critical keys --
     already that key's fail-closed direction, pinned here explicitly.
     worktree_required is the one exception: its schema default ("false") is
     the permissive direction, so _config_location_value fails closed to
-    "true" instead, per its own comment on that arm."""
+    "true" instead, per its own comment on that arm.
+    permission_prompt_tracking is not enforcement-critical; it is the
+    default-false, non-worktree_required witness that the fallback to the
+    schema default does not force "true" for every key."""
 
     @pytest.mark.parametrize(
         "key,expected",
         [
             ("worktree_required", "true"),
-            ("autonomous_shipping", "false"),
             ("commit_stall_block", "true"),
             ("round_consult_gate", "true"),
             ("authorization_boundary_restore", "true"),
+            ("permission_prompt_tracking", "false"),
         ],
     )
-    def test_enforcement_critical_key_resolves_fail_closed(self, tmp_path, key, expected):
+    def test_unrecognized_legacy_polarity_fails_closed_for_critical_and_noncritical_keys(self, tmp_path, key, expected):
         isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(
             tmp_path, key, "not-a-real-polarity"
         )
@@ -663,10 +718,10 @@ class TestUnrecognizedLegacyPolarityFallback:
         "key,schema_default",
         [
             ("worktree_required", "false"),
-            ("autonomous_shipping", "false"),
             ("commit_stall_block", "true"),
             ("round_consult_gate", "true"),
             ("authorization_boundary_restore", "true"),
+            ("permission_prompt_tracking", "false"),
         ],
     )
     def test_empty_legacy_polarity_falls_through_silently(self, tmp_path, key, schema_default):
@@ -686,7 +741,7 @@ class TestUnrecognizedLegacyPolarityFallback:
 
 class TestPrCostDisclosureDoesNotUnion:
     """pr_cost_disclosure's `resolution` column is `config-dir`, not
-    `config-dir-or-home` -- unlike worktree_required/autonomous_shipping, a
+    `config-dir-or-home` -- unlike worktree_required, a
     legacy file present only at $HOME/.claude must never activate it once
     CLAUDE_CONFIG_DIR diverges from $HOME/.claude, since there is no union
     for this key to fall back on."""
@@ -849,11 +904,11 @@ class TestReadKeyFromFileSchemaUnreadable:
         # class's other tests.
         (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
         state_file = tmp_path / "claude-config.toml"
-        state_file.write_text('autonomous_shipping = "banana"\n')
+        state_file.write_text('permission_prompt_tracking = "banana"\n')
 
         result = _run_with_schema(
             isolated_hooks_dir,
-            f'_config_read_key_from_file autonomous_shipping "{state_file}"; echo "status=$?"',
+            f'_config_read_key_from_file permission_prompt_tracking "{state_file}"; echo "status=$?"',
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert result.stdout == "status=1\n", (
@@ -1022,32 +1077,58 @@ class TestHomeOnlyFallbackBranchSchemaRowCallCount:
 
 
 class TestUnionBranchLocationValueFailure:
-    def test_location_value_failure_resolves_autonomous_shipping_to_not_enabled(
-        self, isolated_home, monkeypatch
+    def test_location_value_failure_resolves_probe_false_union_key_to_its_schema_default(
+        self, isolated_home, monkeypatch, tmp_path
     ):
         """Simulates an arity-guard trip (nonzero status, empty stdout) to
-        confirm the union branch fails closed to "false" instead of reading
-        the empty output as enabled."""
-        config_dir = isolated_home / "altconfig"
-        config_dir.mkdir()
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        confirm the union branch falls back to the schema default "false"
+        instead of reading the empty output as enabled. The legacy file
+        planted under $HOME/.claude, with the config dir diverged, resolves
+        the key to "true" without the stub only through the union's home
+        read (see
+        test_union_key_with_probe_false_resolves_its_legacy_file_without_the_stub),
+        so the "false" is the fail-safe and not the key's real value."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, "permission_prompt_tracking")
+        diverged_config_dir = isolated_home / "altconfig"
+        diverged_config_dir.mkdir()
+        (isolated_home / ".claude" / "track-permission-prompts").touch()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(diverged_config_dir))
         override = "_config_location_value() { return 1; }; "
 
-        value_result = _run(f"{override}_config_value autonomous_shipping")
+        value_result = _run_with_schema(isolated_hooks_dir, f"{override}_config_value permission_prompt_tracking")
         assert value_result.stdout == "false"
         assert value_result.returncode == 0
 
-        enabled_result = _run(f"{override}_config_enabled autonomous_shipping")
+        enabled_result = _run_with_schema(
+            isolated_hooks_dir, f"{override}_config_enabled permission_prompt_tracking"
+        )
         assert enabled_result.returncode == 1
+
+    def test_union_key_with_probe_false_resolves_its_legacy_file_without_the_stub(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """Positive control for the test above: the same setup with no
+        `_config_location_value` stub resolves the legacy file planted under
+        $HOME/.claude, which a plain config-dir key would not read once the
+        config dir diverges."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, "permission_prompt_tracking")
+        diverged_config_dir = isolated_home / "altconfig"
+        diverged_config_dir.mkdir()
+        (isolated_home / ".claude" / "track-permission-prompts").touch()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(diverged_config_dir))
+
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value permission_prompt_tracking")
+        assert value_result.stdout == "true"
+        assert value_result.returncode == 0
 
     def test_location_value_failure_resolves_worktree_required_to_enabled(
         self, isolated_home, monkeypatch
     ):
-        """Mirrors the autonomous_shipping test above, but for
-        worktree_required, whose failure-safe default is the opposite
-        direction: "true", not "false". Resolving "false" here would
-        silently disarm write-safety enforcement instead of merely
-        withholding a permission grant.
+        """Mirrors test_location_value_failure_resolves_probe_false_union_key_to_its_schema_default,
+        but for worktree_required,
+        whose failure-safe default is the opposite direction: "true", not
+        "false". Resolving "false" here would silently disarm write-safety
+        enforcement.
 
         The _config_value assertion below is the one that actually
         discriminates a regression here: the trailing _config_enabled
@@ -1070,27 +1151,17 @@ class TestUnionBranchLocationValueFailure:
 # A grammar-conforming but schema-invalid `bool` value must warn and fall
 # through to the legacy-file-then-default chain, not resolve as authoritative
 # -- otherwise a typo (or a value a hand-editor would believe disables it,
-# e.g. "off") on autonomous_shipping would silently grant it, since
+# e.g. "off") on a default-false key would silently enable it, since
 # _config_enabled treats any value other than the literal "false" as enabled.
 # ---------------------------------------------------------------------------
 
 
 class TestSchemaTypeValidationOnRead:
-    def test_autonomous_shipping_non_boolean_value_warns_and_falls_through(self, isolated_home):
+    def test_worktree_required_non_boolean_value_warns_and_falls_through(self, isolated_home):
         """Quoted, not bare: a bare `notabool` would hit the value-subset
         grammar's bareness gate first (`TestEnumValueQuotingGrammar` already
         covers that path), never reaching the schema-type check this test
         targets."""
-        _write_state_file(isolated_home, 'autonomous_shipping = "notabool"\n')
-        result = _run("_config_value autonomous_shipping")
-        assert result.stdout == "false"
-        assert result.returncode == 0
-        assert "malformed line" in result.stderr
-        assert 'autonomous_shipping = "notabool"' in result.stderr
-        assert _run("_config_enabled autonomous_shipping").returncode == 1
-
-    def test_worktree_required_non_boolean_value_warns_and_falls_through(self, isolated_home):
-        """Quoted, not bare -- see the sibling test above for why."""
         _write_state_file(isolated_home, 'worktree_required = "notabool"\n')
         result = _run("_config_value worktree_required")
         assert result.stdout == "false"
@@ -1314,12 +1385,12 @@ class TestConfigScaffold:
 
     def test_excluded_no_legacy_key_stays_absent_while_every_other_no_legacy_key_is_backfilled(self, isolated_home):
         excluded_no_legacy_key = "test_selection_tracking"
-        result = _run(f"_config_scaffold 'worktree_required autonomous_shipping {excluded_no_legacy_key}'")
+        result = _run(f"_config_scaffold 'worktree_required {excluded_no_legacy_key}'")
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        # worktree_required and autonomous_shipping would not have been
-        # backfilled anyway -- both carry a legacy-polarity value. The
+        # worktree_required would not have been backfilled anyway -- it
+        # carries a legacy-polarity value. The
         # excluded no-legacy key is the one that discriminates: every other
         # no-legacy key still gets its default row, and it does not.
         expected_rows = [
@@ -1550,14 +1621,14 @@ class TestMemoization:
         against cross-key corruption, a shape a single-key test structurally
         can't catch."""
         result = _run(
-            "_config_value autonomous_shipping; "
+            "_config_value permission_prompt_tracking; "
             "printf '|'; "
             "_config_value handoff_nudge; "
             "printf '|'; "
-            "_config_value autonomous_shipping"
+            "_config_value permission_prompt_tracking"
         )
         assert result.stdout == "false|true|false", (
-            f"autonomous_shipping's own memoized value must survive handoff_nudge "
+            f"permission_prompt_tracking's own memoized value must survive handoff_nudge "
             f"being memoized in between: stdout={result.stdout!r}"
         )
 
@@ -1820,51 +1891,6 @@ class TestMemoizationUnionBranch:
             f"after the state change: stdout={result.stdout!r}"
         )
 
-    def test_internal_failure_fail_safe_is_not_memoized_autonomous_shipping(
-        self, isolated_home, monkeypatch
-    ):
-        """autonomous_shipping counterpart to the worktree_required test
-        above. legacy_probe is "false" for this key, so its fail-safe value
-        is its own schema default, "false".
-        This is the opposite polarity from worktree_required's. It drives
-        the same _CONFIG_RESOLVED_MEMOIZABLE reset through the union fold's
-        other branch.
-
-        Catches a reset gated on only the legacy_probe="true" arm, which the
-        sibling worktree_required test above can't -- it never exercises
-        the "false"-default arm.
-
-        The real state-file-backed value "true" this test drives it to is
-        genuinely different from the fail-safe "false", the same
-        discriminating property the worktree_required test above relies on."""
-        config_dir = isolated_home / "altconfig"
-        config_dir.mkdir()
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
-        _write_state_file(isolated_home, "autonomous_shipping = true\n", config_dir=config_dir)
-
-        result = _run(
-            "eval \"$(declare -f _config_location_value | "
-            "sed '1s/.*/_config_location_value_real ()/')\"; "
-            "_config_location_value() { return 1; }; "
-            "_config_value autonomous_shipping; "
-            "printf '|'; "
-            "_config_enabled autonomous_shipping; "
-            "printf 'enabled1=%d|' \"$?\"; "
-            '_config_location_value() { _config_location_value_real "$@"; }; '
-            "_config_value autonomous_shipping; "
-            "printf '|'; "
-            "_config_enabled autonomous_shipping; "
-            "printf 'enabled2=%d' \"$?\""
-        )
-        assert result.stdout == "false|enabled1=1|true|enabled2=0", (
-            "the first call's union-fold fail-safe 'false' must not be "
-            "memoized, so the second call re-resolves fresh against the "
-            "real state file's 'true', and _config_enabled -- the real "
-            "enforcement call site's own contract, not just _config_value's "
-            "printed string -- must agree at both the fail-safe point and "
-            f"after the state change: stdout={result.stdout!r}"
-        )
-
     def test_union_branch_fail_safe_when_only_primary_location_fails(
         self, isolated_home, monkeypatch
     ):
@@ -1877,22 +1903,22 @@ class TestMemoizationUnionBranch:
         config_dir = isolated_home / "altconfig"
         config_dir.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
-        _write_state_file(isolated_home, "autonomous_shipping = true\n")
+        _write_state_file(isolated_home, "worktree_required = false\n")
 
         result = _run(
             "eval \"$(declare -f _config_location_value | "
             "sed '1s/.*/_config_location_value_real ()/')\"; "
             f'_config_location_value() {{ [ "$2" = "{config_dir}" ] && return 1; '
             '_config_location_value_real "$@"; }; '
-            "_config_value autonomous_shipping; "
+            "_config_value worktree_required; "
             "printf '|'; "
-            "_config_enabled autonomous_shipping; "
+            "_config_enabled worktree_required; "
             "printf 'enabled=%d' \"$?\""
         )
-        assert result.stdout == "false|enabled=1", (
+        assert result.stdout == "true|enabled=0", (
             "a primary-location-only failure must still take the union's "
-            "fail-safe path ('false', autonomous_shipping's own schema "
-            "default) rather than falling through to home's real 'true': "
+            "fail-safe path ('true', worktree_required's legacy-probe "
+            "override) rather than falling through to home's real 'false': "
             f"stdout={result.stdout!r}"
         )
 
@@ -1973,12 +1999,6 @@ class TestMemoizationSingleLocationBranch:
     @pytest.mark.parametrize(
         "key, expected_value, expected_enabled_returncode",
         [
-            # autonomous_shipping is the one enforcement-critical key whose
-            # safe direction is deny, not armed -- its schema default
-            # ("false") is already its own fail-closed direction.
-            # A raw-passthrough regression (an empty value read as
-            # "enabled") would flip its exit code from 1 to 0 here.
-            ("autonomous_shipping", "false", 1),
             # round_consult_gate, authorization_boundary_restore, and
             # commit_stall_block are structurally identical (config-dir,
             # presence-disables, default "true") -- see this repo's own
@@ -1991,22 +2011,29 @@ class TestMemoizationSingleLocationBranch:
             # fail-safe comes from legacy_probe's "true" override instead
             # (see _config_resolve_fail_safe).
             ("worktree_required", "true", 0),
+            # permission_prompt_tracking is not enforcement-critical. Its
+            # fail-safe value is "false", unlike every other row here, so
+            # its exit code (1) is the only one that discriminates a raw
+            # empty passthrough (exit 0) from a resolved fail-safe.
+            ("permission_prompt_tracking", "false", 1),
         ],
     )
-    def test_internal_failure_resolves_value_and_exit_code_for_enforcement_critical_keys(
+    def test_internal_failure_resolves_value_and_exit_code_for_critical_and_noncritical_keys(
         self, isolated_home, key, expected_value, expected_enabled_returncode
     ):
         """Asserts both the resolved value and the _config_enabled exit code
         on a forced _config_location_value failure through the single-
         location branch. test_internal_failure_is_not_memoized above already
         covers commit_stall_block's escape from memoization. This test adds
-        the exit-code check across all five enforcement-critical keys. A
-        raw-passthrough regression would read as enabled (exit 0) regardless
-        of key. That's the wrong direction for autonomous_shipping.
-        worktree_required and autonomous_shipping are both
-        resolution=config-dir-or-home keys. They land on this branch's own
-        code path only because isolated_home leaves CLAUDE_CONFIG_DIR
-        unset, so union_active never activates for them here."""
+        the exit-code check. The four enforcement-critical rows all expect
+        exit 0, which a raw empty passthrough also produces, so for them the
+        _config_value stdout assertion is what discriminates (a passthrough
+        prints ""). permission_prompt_tracking's exit 1 discriminates
+        additionally. worktree_required is a
+        resolution=config-dir-or-home key.
+        It lands on this branch's own code path only because isolated_home
+        leaves CLAUDE_CONFIG_DIR unset, so union_active never activates for
+        it here."""
         override = "_config_location_value() { return 1; }; "
 
         value_result = _run(f"{override}_config_value {key}")

@@ -203,7 +203,7 @@ class TestSentinelInventoryArray:
     ) -> None:
         """The schema comment requires no whitespace around any `|` --
         IFS='|' read -r bakes leading/trailing spaces into a field
-        otherwise. REPO_MARKER_INVENTORY carries only the four repo-scope
+        otherwise. REPO_MARKER_INVENTORY carries only the three repo-scope
         committed markers, each a fixed path-template|human-name|docs-anchor
         row with no optional trailing field."""
         install_text = _INSTALL_SH.read_text()
@@ -455,7 +455,7 @@ class TestReportSentinelInventory:
         self, tmp_path: Path
     ) -> None:
         """A relative CLAUDE_CONFIG_DIR makes the config dir unresolvable.
-        autonomous_shipping carries legacy-probe-on-resolution-failure:
+        permission_prompt_tracking carries legacy-probe-on-resolution-failure:
         false (config-keys.psv), so it must surface the resolution failure
         rather than silently falling back."""
         home = tmp_path / "home"
@@ -469,7 +469,7 @@ class TestReportSentinelInventory:
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert (
-            "Autonomous shipping: could not resolve (CLAUDE_CONFIG_DIR is a "
+            "Permission-prompt tracking: could not resolve (CLAUDE_CONFIG_DIR is a "
             "relative path, or $HOME is unset/empty)" in result.stdout
         )
 
@@ -492,11 +492,11 @@ class TestReportSentinelInventory:
         result = _run_report_config_key_directly(
             env,
             isolated_hooks_dir / "_config.sh",
-            'autonomous_shipping "Autonomous shipping" "docs/x.md#y" "config-dir"',
+            'permission_prompt_tracking "Permission-prompt tracking" "docs/x.md#y" "config-dir"',
         )
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "Autonomous shipping: could not resolve (config-keys.psv is missing or unreadable" in result.stdout
+        assert "Permission-prompt tracking: could not resolve (config-keys.psv is missing or unreadable" in result.stdout
         assert "CLAUDE_CONFIG_DIR is a relative path" not in result.stdout
 
     def test_worktree_required_falls_back_to_home_legacy_probe_on_resolution_failure(

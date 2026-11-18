@@ -633,7 +633,7 @@ def test_home_claude_dir_absent_silent(tmp_path, dirty_repo, monkeypatch):
 def test_relative_config_dir_fails_open(isolated_home, dirty_repo):
     """config-schema-audit.md's commit_stall_block fail-direction claim: a
     resolution failure (relative CLAUDE_CONFIG_DIR, unresolvable per
-    _lib_config_dir) must not block a Stop turn, matching the other four
+    _lib_config_dir) must not block a Stop turn, matching the other three
     enforcement-critical keys' equivalent tests (e.g.
     test_restore_authorization_boundary_on_compact.py's
     test_unresolvable_config_dir_exits_0_with_no_output). Hits the hook's
@@ -1176,7 +1176,7 @@ def test_head_on_the_default_branch_or_detached_runs_no_git_status(
 
     assert result is None
     git_subcommands = recorded_git_subcommands(invocation_log)
-    assert git_subcommands, "sanity check: the HEAD read itself must reach the git shim"
+    assert "symbolic-ref" in git_subcommands, "sanity check: the HEAD read must reach the git shim"
     assert "status" not in git_subcommands
 
 

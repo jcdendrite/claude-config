@@ -90,11 +90,12 @@ class TestLibConfigDir:
 
 
 # _lib_worktree_enforcement_active — direct unit coverage for the
-# machine-sentinel delegation arm only (the committed-repo-sentinel and
-# per-repo-optout arms are exercised via a bare filesystem check with no
-# config-dir involvement, so they're left to this function's callers'
-# integration tests). worktree_required is the highest-blast-radius of the
-# five enforcement-critical keys and the only one whose schema row carries
+# machine-sentinel delegation arm, and for the committed-repo-sentinel
+# arm's precedence over an unresolvable config dir and over the per-repo
+# opt-out. The opt-out's effect on the machine sentinel is left to this
+# function's callers' integration tests. worktree_required is the
+# highest-blast-radius of the
+# four enforcement-critical keys and the only one whose schema row carries
 # legacy-probe-on-resolution-failure: true, so a config-dir resolution
 # failure still probes the legacy $HOME/.claude location rather than
 # falling through to "not enforced" the way every other key's row does.
@@ -162,6 +163,31 @@ class TestWorktreeEnforcementActive:
         repo = tmp_path / "repo"
         repo.mkdir()
         assert not _worktree_enforcement_active(
+            repo, {"HOME": "", "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+    def test_active_when_config_dir_unresolvable_and_home_empty_but_repo_has_committed_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """With no machine-level location left to read, a committed
+        .claude/worktree-required still enforces."""
+        repo = tmp_path / "repo"
+        (repo / ".claude").mkdir(parents=True)
+        (repo / ".claude" / "worktree-required").touch()
+        assert _worktree_enforcement_active(
+            repo, {"HOME": "", "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+    def test_committed_sentinel_not_defeated_by_optout_when_config_dir_unresolvable_and_home_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """The per-repo opt-out has no effect on a committed sentinel, in
+        the unresolvable-location case too."""
+        repo = tmp_path / "repo"
+        (repo / ".claude").mkdir(parents=True)
+        (repo / ".claude" / "worktree-required").touch()
+        (repo / ".claude" / "worktree-optout").touch()
+        assert _worktree_enforcement_active(
             repo, {"HOME": "", "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
         )
 
