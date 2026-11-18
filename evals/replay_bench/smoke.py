@@ -164,8 +164,7 @@ def run_smoke(
         try:
             block = run_block(settings, task, account, SMOKE_ARM_NAMES, 1, config.seed, EnvironmentReference())
         except SpendAppendError as exc:
-            launches = "; ".join(f"task {task_id} session {session_id}" for task_id, session_id in settings.uncharged_launches)
-            print(f"{exc}. Launches begun and not charged: {launches or 'none'}", file=sys.stderr)
+            print(f"{exc}. {settings.uncharged_launches_report()}", file=sys.stderr)
             return 2
         if block.end_drift is not None or block.end_unread is not None:
             print(block.end_drift or block.end_unread, file=sys.stderr)

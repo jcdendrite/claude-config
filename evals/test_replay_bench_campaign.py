@@ -11,11 +11,13 @@ import sys
 import tempfile
 import threading
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
 from replay_bench import arms, campaign, checks, records, smoke_pass, summary
+from replay_bench import runner as replay_runner
 from replay_bench.spend import SpendAppendError, SpendFile, SpendLine
 from review_bench import runner as review_runner
 from review_bench.runner import HarnessInvalidatedError, RunStore
@@ -26,6 +28,8 @@ from test_replay_bench_runner_support import (
     add_second_account,
     build_replay_world,
     leaking_log_lines,
+    make_account,
+    synthetic_task,
 )
 
 CAP = 1.0
@@ -41,31 +45,79 @@ def failing_bare(call):
     return Scenario(observed_model="other-model") if call.agent_name == arms.BARE.agent_name else Scenario()
 
 
+READ_PHASES = ("pin", "block start", "block end")
+
+
+def make_config(local_dir, tasks, **overrides) -> campaign.CampaignConfig:
+    defaults = dict(
+        campaign_id="test", tasks_name="set", tasks=tuple(tasks), arm_names=("toolkit", "bare"), k=1, seed=0,
+        model_id=MODEL_ID, budget_cap_usd=CAP, timeout_s=30, cumulative_stop_usd=100.0, account_stop_usd=100.0,
+        allow_early_stop=False, fixture_git_timeout_s=60.0, local_dir=local_dir, workers=1,
+    )
+    return campaign.CampaignConfig(**{**defaults, **overrides})
+
+
 class CampaignEnv:
-    def __init__(self, world, monkeypatch, *, readings=None):
+    """The environment reading of each account is scripted by phase, and for a block's reads by the block, so a
+    test says which read it injects and a change to how many reads another phase makes shifts nothing."""
+
+    def __init__(self, world, monkeypatch):
         self.world = world
         self.monkeypatch = monkeypatch
-        # Each item is a reading, or an exception the read raises.
-        self.readings = readings if readings is not None else [READING]
-        self.reading_calls = 0
-        # A second account's config dir, its readings in order, and which repo maps to which account.
+        # Per phase, the readings in the order that phase asks for them within one block. The last one repeats. A
+        # reading is an environment record, or an exception the read raises.
+        self.readings = {phase: [READING] for phase in READ_PHASES}
+        # The readings of one block's phase, by block number counted from zero, in place of the phase's.
+        self.block_readings = {}
+        # A second account's config dir, its readings, and which repo maps to which account.
         self.second_account = None
-        self.second_readings = [READING]
-        self.second_reading_calls = 0
+        self.second_readings = {phase: [READING] for phase in READ_PHASES}
         self.account_by_repo = {}
+        self._phase = "block start"
+        self._block_number = -1
+        self._reads_made = Counter()
         monkeypatch.setattr(review_runner, "read_environment_record", self._read)
+        monkeypatch.setattr(campaign, "read_environment", self._in_phase("pin", campaign.read_environment))
+        monkeypatch.setattr(campaign, "run_block", self._counting_blocks(campaign.run_block))
+        monkeypatch.setattr(
+            replay_runner, "_read_end_environment",
+            self._in_phase("block end", replay_runner._read_end_environment),
+        )
         self.pass_smoke()
 
+    def _counting_blocks(self, run_block):
+        def run_counted_block(*args, **kwargs):
+            self._block_number += 1
+            return run_block(*args, **kwargs)
+
+        return run_counted_block
+
+    def _in_phase(self, phase, read):
+        def read_in_phase(*args, **kwargs):
+            self._phase = phase
+            try:
+                return read(*args, **kwargs)
+            finally:
+                self._phase = "block start"
+
+        return read_in_phase
+
     def _read(self, *, checkout_root=None):
-        if self.second_account is not None and Path(checkout_root).is_relative_to(self.second_account.config_dir.parent):
-            reading = self.second_readings[min(self.second_reading_calls, len(self.second_readings) - 1)]
-            self.second_reading_calls += 1
-            return reading
-        reading = self.readings[min(self.reading_calls, len(self.readings) - 1)]
-        self.reading_calls += 1
+        is_second = self.second_account is not None and Path(checkout_root).is_relative_to(
+            self.second_account.config_dir.parent,
+        )
+        sequence = (self.second_readings if is_second else self.readings)[self._phase]
+        sequence = self.block_readings.get((self._block_number, self._phase), sequence)
+        read_key = (is_second, self._phase, self._block_number)
+        reading = sequence[min(self._reads_made[read_key], len(sequence) - 1)]
+        self._reads_made[read_key] += 1
         if isinstance(reading, Exception):
             raise reading
         return reading
+
+    def read_everywhere_as(self, reading) -> None:
+        """The first account's every read, in every phase, returns `reading`."""
+        self.readings = {phase: [reading] for phase in READ_PHASES}
 
     def add_second_account(self, tasks_in_order_of=None):
         """`tasks_in_order_of` receives the first account's task and the second's and returns the task list."""
@@ -81,12 +133,7 @@ class CampaignEnv:
         smoke_pass.write_smoke_pass(self.world.local_dir, self.world.account.key, reading, model_id, arm_names)
 
     def config(self, **overrides) -> campaign.CampaignConfig:
-        defaults = dict(
-            campaign_id="test", tasks_name="set", tasks=tuple(self.world.tasks), arm_names=("toolkit", "bare"), k=1, seed=0,
-            model_id=MODEL_ID, budget_cap_usd=CAP, timeout_s=30, cumulative_stop_usd=100.0, account_stop_usd=100.0,
-            allow_early_stop=False, fixture_git_timeout_s=60.0, local_dir=self.world.local_dir, workers=1,
-        )
-        return campaign.CampaignConfig(**{**defaults, **overrides})
+        return make_config(self.world.local_dir, self.world.tasks, **overrides)
 
     def run(self, launch_stub, **overrides) -> int:
         config = self.config(**overrides)
@@ -102,6 +149,10 @@ class CampaignEnv:
 
     def spend(self) -> SpendFile:
         return SpendFile(self.campaign_dir / "spend.jsonl", budget_cap_usd=CAP)
+
+    def assert_nothing_is_pinned_or_spent(self) -> None:
+        assert not (self.campaign_dir / "manifest.json").exists(), "a refused campaign pins no inputs"
+        assert not (self.campaign_dir / "spend.jsonl").exists(), "a refused campaign spends nothing"
 
 
 @pytest.fixture
@@ -249,7 +300,7 @@ class TestTwoAccounts:
 
     def test_drift_on_the_second_account_halts_at_its_block(self, env, capsys):
         second_task = env.add_second_account(lambda first, second: [first, second])
-        env.second_readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
+        env.second_readings["block end"] = [dataclasses.replace(READING, cli_version="2.9.9")]
 
         assert env.run(env.world.launch()) == 1
 
@@ -332,16 +383,141 @@ class TestASingleArmCampaign:
         with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
             env.run(launch_stub)
         assert launch_stub.calls == []
+        env.assert_nothing_is_pinned_or_spent()
+
+
+class TestTheSmokePassRecord:
+    ACCOUNT_KEY = "/synthetic/account"
+
+    def write(self, local_dir, **overrides):
+        record = {"reading": READING, "model_id": MODEL_ID, "arm_names": ("toolkit", "bare"), **overrides}
+        smoke_pass.write_smoke_pass(
+            local_dir, self.ACCOUNT_KEY, record["reading"], record["model_id"], record["arm_names"],
+        )
 
     @pytest.mark.parametrize(
         ("requested", "accepted"),
         [(("bare",), True), (("toolkit",), True), (("toolkit", "bare"), True), (("toolkit", "bare", "other"), False)],
         ids=["bare", "toolkit", "both", "an-arm-the-record-lacks"],
     )
-    def test_a_smoke_record_of_both_arms_covers_any_subset_of_them(self, env, requested, accepted):
-        assert smoke_pass.has_smoke_pass(
-            env.world.local_dir, env.world.account.key, READING, MODEL_ID, requested,
-        ) is accepted
+    def test_a_smoke_record_of_both_arms_covers_any_subset_of_them(self, tmp_path, requested, accepted):
+        self.write(tmp_path)
+
+        assert smoke_pass.has_smoke_pass(tmp_path, self.ACCOUNT_KEY, READING, MODEL_ID, requested) is accepted
+
+    @pytest.mark.parametrize(
+        ("field_name", "stale"),
+        [
+            ("control", {}),
+            ("cli_version", {"reading": dataclasses.replace(READING, cli_version="2.9.9")}),
+            ("ambient_config_commit", {"reading": dataclasses.replace(READING, ambient_config_commit="other-commit")}),
+            ("model_id", {"model_id": "claude-other"}),
+            ("arms", {"arm_names": ("toolkit",)}),
+        ],
+    )
+    def test_only_a_stale_field_fails_the_record(self, tmp_path, field_name, stale):
+        self.write(tmp_path, **stale)
+
+        accepted = smoke_pass.has_smoke_pass(tmp_path, self.ACCOUNT_KEY, READING, MODEL_ID, ("toolkit", "bare"))
+
+        assert accepted is (field_name == "control")
+
+
+class PinnedCampaign:
+    """A campaign whose manifest was written for synthetic inputs. Nothing runs and no fixture is built, so a
+    resume that is refused refuses on the manifest alone."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        self.account = make_account(home / ".claude", home)
+        self.local_dir = tmp_path / "local"
+        self.tasks = (synthetic_task(),)
+        self.accounts = {self.tasks[0].source_repo: self.account}
+        self.manifest_path = self.local_dir / "campaigns" / "test" / "manifest.json"
+        monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
+        self.manifest_path.parent.mkdir(parents=True)
+        self.manifest_path.write_text(json.dumps(campaign._manifest_for(
+            self.config(), self.accounts, {self.account.key: READING},
+        )))
+
+    def config(self, **overrides) -> campaign.CampaignConfig:
+        return make_config(self.local_dir, self.tasks, **overrides)
+
+    @staticmethod
+    def never_launched(_command, _cwd, _timeout_s):
+        pytest.fail("a resume refused on its manifest launched a run")
+
+    def resume(self, **overrides) -> int:
+        return campaign.run_campaign(
+            self.config(**overrides), self.accounts, runner_environ={}, launch=self.never_launched,
+        )
+
+
+@pytest.fixture
+def pinned(tmp_path, monkeypatch):
+    return PinnedCampaign(tmp_path, monkeypatch)
+
+
+class TestAResumeAgainstThePinnedManifest:
+    @pytest.mark.parametrize(
+        ("field_name", "override"),
+        [
+            ("k", {"k": 2}), ("seed", {"seed": 9}), ("model_id", {"model_id": "claude-other"}),
+            ("arms", {"arm_names": ("toolkit",)}), ("budget_cap_usd", {"budget_cap_usd": 2.0}),
+            ("timeout_s", {"timeout_s": 60}),
+        ],
+    )
+    def test_a_resume_with_a_different_input_exits_two(self, pinned, field_name, override):
+        with pytest.raises(HarnessInvalidatedError, match=f"{field_name}.*start a new --campaign-id"):
+            pinned.resume(**override, cumulative_stop_usd=1000, account_stop_usd=1000)
+
+    @pytest.mark.parametrize(
+        ("damage", "refusal"),
+        [
+            pytest.param(lambda manifest: "not json", "cannot read the manifest", id="invalid-json"),
+            pytest.param(
+                lambda manifest: "{}", "lacks the key 'task_set_hash'; start a new --campaign-id", id="empty-object",
+            ),
+            pytest.param(lambda manifest: "[]", "malformed: .*; start a new --campaign-id", id="array"),
+            pytest.param(lambda manifest: "null", "malformed: .*; start a new --campaign-id", id="null"),
+            pytest.param(lambda manifest: "5", "malformed: .*; start a new --campaign-id", id="number"),
+            pytest.param(
+                lambda manifest: json.dumps({**manifest, "environments": {}}),
+                "lacks the key .*; start a new --campaign-id", id="no-environments-entry",
+            ),
+            pytest.param(
+                lambda manifest: json.dumps({**manifest, "repo_accounts": []}),
+                "malformed: .*; start a new --campaign-id", id="wrong-type",
+            ),
+            pytest.param(
+                lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "budget_cap_usd"}),
+                "lacks the key 'budget_cap_usd'; start a new --campaign-id", id="no-budget-cap-pin",
+            ),
+            pytest.param(
+                lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "timeout_s"}),
+                "lacks the key 'timeout_s'; start a new --campaign-id", id="no-timeout-pin",
+            ),
+        ],
+    )
+    def test_a_resume_over_a_damaged_manifest_exits_two(self, pinned, damage, refusal):
+        pinned.manifest_path.write_text(damage(json.loads(pinned.manifest_path.read_text())))
+
+        with pytest.raises(HarnessInvalidatedError, match=refusal):
+            pinned.resume()
+
+    def test_a_resume_whose_manifest_path_is_a_directory_exits_two(self, pinned):
+        pinned.manifest_path.unlink()
+        pinned.manifest_path.mkdir()
+
+        with pytest.raises(HarnessInvalidatedError, match="cannot read the manifest"):
+            pinned.resume()
+
+    def test_a_resume_with_the_pinned_inputs_is_not_refused_on_the_manifest(self, pinned):
+        """The control for the refusals above: with nothing changed the manifest check passes and the resume goes on,
+        here to the smoke gate, which no smoke record passes."""
+        with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
+            pinned.resume()
 
 
 class TestParallelWorkers:
@@ -452,68 +628,19 @@ class TestThePerArmStop:
 
 
 class TestTheManifestAndTheSmokeGate:
-    @pytest.mark.parametrize(
-        ("field_name", "override"),
-        [
-            ("k", {"k": 2}), ("seed", {"seed": 9}), ("model_id", {"model_id": "claude-other"}),
-            ("arms", {"arm_names": ("toolkit",)}), ("budget_cap_usd", {"budget_cap_usd": 2.0}),
-            ("timeout_s", {"timeout_s": 60}),
-        ],
-    )
-    def test_a_resume_with_a_different_input_exits_two(self, env, field_name, override):
+    def test_a_resume_with_a_different_input_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
         resumed = env.world.launch()
 
-        with pytest.raises(HarnessInvalidatedError, match=f"{field_name}.*start a new --campaign-id"):
-            env.run(resumed, **override, cumulative_stop_usd=1000, account_stop_usd=1000)
+        with pytest.raises(HarnessInvalidatedError, match="k.*start a new --campaign-id"):
+            env.run(resumed, k=2, cumulative_stop_usd=1000, account_stop_usd=1000)
         assert resumed.calls == []
 
-    @pytest.mark.parametrize(
-        ("damage", "refusal"),
-        [
-            pytest.param(lambda manifest: "not json", "cannot read the manifest", id="invalid-json"),
-            pytest.param(
-                lambda manifest: "{}", "lacks the key 'task_set_hash'; start a new --campaign-id", id="empty-object",
-            ),
-            pytest.param(lambda manifest: "[]", "malformed: .*; start a new --campaign-id", id="array"),
-            pytest.param(lambda manifest: "null", "malformed: .*; start a new --campaign-id", id="null"),
-            pytest.param(lambda manifest: "5", "malformed: .*; start a new --campaign-id", id="number"),
-            pytest.param(
-                lambda manifest: json.dumps({**manifest, "environments": {}}),
-                "lacks the key .*; start a new --campaign-id", id="no-environments-entry",
-            ),
-            pytest.param(
-                lambda manifest: json.dumps({**manifest, "repo_accounts": []}),
-                "malformed: .*; start a new --campaign-id", id="wrong-type",
-            ),
-            pytest.param(
-                lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "budget_cap_usd"}),
-                "lacks the key 'budget_cap_usd'; start a new --campaign-id", id="no-budget-cap-pin",
-            ),
-            pytest.param(
-                lambda manifest: json.dumps({key: value for key, value in manifest.items() if key != "timeout_s"}),
-                "lacks the key 'timeout_s'; start a new --campaign-id", id="no-timeout-pin",
-            ),
-        ],
-    )
-    def test_a_resume_over_a_damaged_manifest_exits_two(self, env, damage, refusal):
+    def test_a_resume_over_a_damaged_manifest_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
-        manifest_path = env.campaign_dir / "manifest.json"
-        manifest_path.write_text(damage(json.loads(manifest_path.read_text())))
-        resumed = env.world.launch()
-
-        with pytest.raises(HarnessInvalidatedError, match=refusal):
-            env.run(resumed)
-        assert resumed.calls == []
-
-    def test_a_resume_whose_manifest_path_is_a_directory_exits_two(self, env):
-        env.world.tasks[:] = env.world.tasks[:1]
-        env.run(env.world.launch())
-        manifest_path = env.campaign_dir / "manifest.json"
-        manifest_path.unlink()
-        manifest_path.mkdir()
+        (env.campaign_dir / "manifest.json").write_text("not json")
         resumed = env.world.launch()
 
         with pytest.raises(HarnessInvalidatedError, match="cannot read the manifest"):
@@ -565,7 +692,7 @@ class TestTheManifestAndTheSmokeGate:
     def test_a_resume_after_an_environment_change_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
         env.run(env.world.launch())
-        env.readings = [dataclasses.replace(READING, ambient_config_commit="synthetic-commit-b")]
+        env.read_everywhere_as(dataclasses.replace(READING, ambient_config_commit="synthetic-commit-b"))
         resumed = env.world.launch()
 
         with pytest.raises(HarnessInvalidatedError, match=r"ambient_config_commit.*synthetic-commit-b"):
@@ -589,6 +716,7 @@ class TestTheManifestAndTheSmokeGate:
         with pytest.raises(HarnessInvalidatedError) as raised:
             env.run(launch_stub)
         assert launch_stub.calls == []
+        env.assert_nothing_is_pinned_or_spent()
         return str(raised.value)
 
     def test_no_smoke_pass_record_refuses(self, env):
@@ -625,25 +753,7 @@ class TestTheManifestAndTheSmokeGate:
         with pytest.raises(HarnessInvalidatedError, match=f"account {re.escape(repr(second_key))} has no passing smoke"):
             env.run(launch_stub)
         assert launch_stub.calls == []
-
-    @pytest.mark.parametrize(
-        ("field_name", "stale"),
-        [
-            ("control", {}),
-            ("cli_version", {"reading": dataclasses.replace(READING, cli_version="2.9.9")}),
-            ("ambient_config_commit", {"reading": dataclasses.replace(READING, ambient_config_commit="other-commit")}),
-            ("model_id", {"model_id": "claude-other"}),
-            ("arms", {"arm_names": ("toolkit",)}),
-        ],
-    )
-    def test_only_a_stale_field_fails_the_record(self, env, field_name, stale):
-        env.pass_smoke(**stale)
-
-        accepted = smoke_pass.has_smoke_pass(
-            env.world.local_dir, env.world.account.key, READING, MODEL_ID, ("toolkit", "bare"),
-        )
-
-        assert accepted is (field_name == "control")
+        env.assert_nothing_is_pinned_or_spent()
 
     @pytest.mark.parametrize("damage", ["not json", "{}", {"account_key": "different"}])
     def test_a_damaged_record_refuses(self, env, damage):
@@ -657,7 +767,7 @@ class TestTheManifestAndTheSmokeGate:
 class TestEnvironmentDrift:
     def test_drift_at_a_blocks_start_halts_without_launching(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
-        env.readings = [READING, dataclasses.replace(READING, cli_version="2.9.9")]
+        env.readings["block start"] = [dataclasses.replace(READING, cli_version="2.9.9")]
 
         launch_stub = env.world.launch()
 
@@ -673,9 +783,7 @@ class TestEnvironmentDrift:
     def test_an_unreadable_start_reading_raises(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
         unreadable = HarnessInvalidatedError("environment record: read timed out")
-        # The campaign's initial pin read comes first, then each block reads at its start and end. The second
-        # block's start read is the fourth.
-        env.readings = [READING, READING, READING, unreadable]
+        env.block_readings[(1, "block start")] = [unreadable]
         launch_stub = env.world.launch()
 
         with pytest.raises(HarnessInvalidatedError, match="could not read the CLI version"):
@@ -709,7 +817,7 @@ class TestEnvironmentDrift:
 
     def test_drift_at_a_blocks_end_halts_with_the_block_unmarked(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
-        env.readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
+        env.readings["block end"] = [dataclasses.replace(READING, cli_version="2.9.9")]
 
         assert env.run(env.world.launch()) == 1
 
@@ -720,11 +828,11 @@ class TestEnvironmentDrift:
 
     def test_a_resume_after_a_blocks_end_drift_reruns_the_block(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
-        env.readings = [READING, READING, dataclasses.replace(READING, cli_version="2.9.9")]
+        env.readings["block end"] = [dataclasses.replace(READING, cli_version="2.9.9")]
         assert env.run(env.world.launch()) == 1
         assert env.completed() == set()
 
-        env.readings = [READING]
+        env.readings["block end"] = [READING]
 
         assert env.run(env.world.launch()) == 0
         assert env.completed() == {env.world.tasks[0].id}
@@ -733,7 +841,7 @@ class TestEnvironmentDrift:
 
     def test_an_end_reading_that_fails_once_is_read_again(self, env):
         env.world.tasks[:] = env.world.tasks[:1]
-        env.readings = [READING, READING, HarnessInvalidatedError("environment record: read timed out"), READING]
+        env.readings["block end"] = [HarnessInvalidatedError("environment record: read timed out"), READING]
 
         assert env.run(env.world.launch()) == 0
 
@@ -742,7 +850,7 @@ class TestEnvironmentDrift:
     def test_an_end_reading_that_fails_twice_halts_as_a_failed_read(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
         unreadable = HarnessInvalidatedError("environment record: read timed out")
-        env.readings = [READING, READING, unreadable, unreadable]
+        env.readings["block end"] = [unreadable]
 
         assert env.run(env.world.launch()) == 1
 

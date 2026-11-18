@@ -224,7 +224,7 @@ class TestTheHookLogRead:
             recorded.append(seconds)
             recorded.on_sleep["call"](len(recorded))
 
-        monkeypatch.setattr(attempt.time, "sleep", fake_sleep)
+        monkeypatch.setattr(attempt, "time", types.SimpleNamespace(monotonic=time.monotonic, sleep=fake_sleep))
         monkeypatch.setattr(review_runner, "SESSION_FLUSH_TIMEOUT_S", 60.0)
         monkeypatch.setattr(review_runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.25)
         return recorded
@@ -289,6 +289,12 @@ class TestTheHookLogRead:
 
     def test_a_timed_out_attempt_makes_no_sleep(self, log_path, sleeps):
         attempt.wait_for_hook_log_to_settle(log_path, timed_out=True)
+        assert sleeps == []
+
+    def test_the_fake_sleep_is_local_to_the_attempt_module(self, sleeps):
+        """Another thread's sleep must not land in `sleeps`."""
+        time.sleep(0)
+
         assert sleeps == []
 
     @pytest.mark.timing

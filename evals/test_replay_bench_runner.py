@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import errno
 import inspect
 import json
 import os
@@ -69,12 +70,14 @@ def delete_session_transcript(call) -> None:
 
 
 def leftovers(world, launch_stub) -> list[Path]:
-    """The fixtures and attempt dirs that survived the run, found by the directories themselves so a fixture
-    built for an attempt that never launched is seen too."""
+    """The fixtures, attempt dirs and session stores that survived the run, found by the directories themselves so a
+    fixture built for an attempt that never launched is seen too."""
     survivors = [call.cwd for call in launch_stub.calls if call.cwd.exists()]
     survivors.extend(world.root.glob("tmp/review-bench-*"))
     attempts_root = make_settings(world, launch_stub).attempts_root
     survivors.extend(attempts_root.iterdir() if attempts_root.exists() else [])
+    projects_root = world.config_dir / "projects"
+    survivors.extend(projects_root.iterdir() if projects_root.exists() else [])
     return survivors
 
 
@@ -283,28 +286,45 @@ class TestInstrumentReasons:
         assert len(launch_stub.calls) == 1
 
     @pytest.mark.parametrize(
-        ("scenario", "expected_reason"),
+        ("scenario", "expected_reason", "expected_cap_charges"),
         [
-            (without_account_evidence(timed_out=True), review_runner.MISSING_REASON_TIMEOUT),
-            (without_account_evidence(omit_result_event=True), review_runner.VALIDITY_FAIL_NO_RESULT_EVENT),
+            (without_account_evidence(timed_out=True), review_runner.MISSING_REASON_TIMEOUT, [True, True]),
+            (
+                without_account_evidence(omit_result_event=True), review_runner.VALIDITY_FAIL_NO_RESULT_EVENT,
+                [True, True],
+            ),
             (
                 without_account_evidence(after_write=delete_session_transcript),
-                review_runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND,
+                review_runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND, [False, False],
             ),
             (
                 Scenario(timed_out=True, log_lines=["not an object"], write_account_session_file=False),
-                review_runner.MISSING_REASON_TIMEOUT,
+                review_runner.MISSING_REASON_TIMEOUT, [True, True],
             ),
         ],
         ids=["timeout", "no-result-event", "session-store-not-found", "timeout-with-a-non-object-log-line"],
     )
     def test_a_run_that_did_not_complete_keeps_its_own_reason(
-        self, world, scenario, expected_reason,
+        self, world, scenario, expected_reason, expected_cap_charges,
     ):
-        outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name, lambda _n, _a: scenario)
+        """A launch that ends in the timeout kill leaves no result event, so its attempts are charged at the cap."""
+        outcome, launch_stub, settings = run(world, arms.TOOLKIT.name, lambda _n, _a: scenario)
 
         assert outcome.record.missing_reason == expected_reason
         assert len(launch_stub.calls) == 2
+        assert [line["is_cap_charge"] for line in spend_lines(settings)] == expected_cap_charges
+
+    def test_a_missing_dispatcher_transcript_leaves_the_store_dir_cleanup_cannot_find(self, world):
+        """Cleanup finds a session store through its dispatcher transcript, so a store whose transcript is gone stays
+        and nothing else of the run does."""
+        _outcome, launch_stub, _settings = run(
+            world, arms.TOOLKIT.name,
+            lambda _n, _a: without_account_evidence(after_write=delete_session_transcript),
+        )
+
+        projects_root = world.config_dir / "projects"
+        stores = {stub_session_store(projects_root, call.session_id) for call in launch_stub.calls}
+        assert len(stores) == 2 and set(leftovers(world, launch_stub)) == stores
 
     @pytest.mark.parametrize(
         "result_event_fields",
@@ -735,7 +755,7 @@ class TestWorkerFailures:
         """Kills:
         - `abort_launches()` missing from the failing worker: the wait times out.
         - The pre-launch recheck missing: the held run launches.
-        - The root-cause remap missing: LaunchAbortedError surfaces."""
+        - The spend failure missing from the root-cause choice: LaunchAbortedError surfaces."""
         first_arm, _index = review_runner.build_block_plan(world.task.id, ("toolkit", "bare"), 1, 0).ordered_runs[0]
         real_build = tasks.build_task_fixture
         released_by = {}
@@ -760,6 +780,191 @@ class TestWorkerFailures:
         assert [call.agent_name for call in launch_stub.calls] != [arms.ARMS[first_arm].agent_name]
         assert len(launch_stub.calls) == 1, "only the run that failed launched; the held run made no launch call"
 
+    @pytest.mark.parametrize(
+        "incidental_error",
+        [OSError(errno.ENOSPC, "synthetic: no space left"), review_runner.HarnessInvalidatedError("synthetic refusal")],
+        ids=["os-error", "harness-invalidated"],
+    )
+    def test_a_spend_failure_outranks_an_earlier_runs_incidental_error(self, world, monkeypatch, incidental_error):
+        """The earlier run in the plan fails after a sibling's cap charge did. The block reports the spend failure,
+        whose halt names the launch begun and not charged; the incidental error would end the run without it."""
+        first_arm, _index = review_runner.build_block_plan(world.task.id, ("toolkit", "bare"), 1, 0).ordered_runs[0]
+        real_build = tasks.build_task_fixture
+        real_record_directory = review_runner.RunStore.record_directory
+        held_fixture_dirs = []
+
+        def build(task, dest_dir, baseline_git_dir, **kwargs):
+            if f"-{first_arm}-" not in baseline_git_dir.parent.name:
+                return real_build(task, dest_dir, baseline_git_dir, **kwargs)
+            held_fixture_dirs.append(dest_dir)
+            assert msmr._launches_aborted.wait(timeout=10), "the sibling's failure never stopped launches"
+            return "0" * 40
+
+        def record_directory(self, task_id, fixture_dir, session_id):
+            if session_id and fixture_dir in held_fixture_dirs:
+                raise incidental_error
+            return real_record_directory(self, task_id, fixture_dir, session_id)
+
+        def failing_append(self, line):
+            raise SpendAppendError("disk full")
+
+        monkeypatch.setattr(tasks, "build_task_fixture", build)
+        monkeypatch.setattr(review_runner.RunStore, "record_directory", record_directory)
+        monkeypatch.setattr(SpendFile, "append", failing_append)
+        launch_stub = world.launch(by_call=lambda call: Scenario(raises=RuntimeError("synthetic")))
+        settings = make_settings(world, launch_stub)
+
+        with pytest.raises(SpendAppendError, match="disk full") as halt:
+            replay_runner.run_block(
+                settings, world.task, world.account, ("toolkit", "bare"), 1, 0, review_runner.EnvironmentReference(),
+                workers=2,
+            )
+
+        assert incidental_error in settings.failures, "the earlier run failed with its own error"
+        assert settings.uncharged_launches == [(world.task.id, launch_stub.calls[0].session_id)]
+        assert f"1 other failure(s) in the block: {type(incidental_error).__name__}: {incidental_error}" in str(halt.value)
+        spend_failure = halt.value.__cause__
+        assert isinstance(spend_failure, SpendAppendError) and str(spend_failure) == "disk full"
+        assert isinstance(spend_failure.__context__, RuntimeError), "the failure that preceded the append is kept"
+
+    def test_a_non_spend_failure_at_launch_is_reported_over_the_abort_it_caused(self, world, monkeypatch):
+        """Kills: the root-cause choice returning the earlier run's `LaunchAbortedError` instead of the recorded
+        failure that caused it, which reports "a sibling run failed" with no sign of the failure itself."""
+
+        class SyntheticWorkerFailure(Exception):
+            pass
+
+        first_arm, _index = review_runner.build_block_plan(world.task.id, ("toolkit", "bare"), 1, 0).ordered_runs[0]
+        real_build = tasks.build_task_fixture
+
+        def build(task, dest_dir, baseline_git_dir, **kwargs):
+            if f"-{first_arm}-" not in baseline_git_dir.parent.name:
+                return real_build(task, dest_dir, baseline_git_dir, **kwargs)
+            assert msmr._launches_aborted.wait(timeout=10), "the sibling's failure never stopped launches"
+            return "0" * 40
+
+        monkeypatch.setattr(tasks, "build_task_fixture", build)
+        launch_stub = world.launch(by_call=lambda call: Scenario(raises=SyntheticWorkerFailure("synthetic")))
+        settings = make_settings(world, launch_stub)
+
+        with pytest.raises(SyntheticWorkerFailure, match="synthetic"):
+            replay_runner.run_block(
+                settings, world.task, world.account, ("toolkit", "bare"), 1, 0, review_runner.EnvironmentReference(),
+                workers=2,
+            )
+
+        assert len(launch_stub.calls) == 1, "the held earlier run was aborted before it launched"
+
+    def test_an_interrupt_is_reported_as_the_interrupt_over_a_recorded_spend_failure(self, world, monkeypatch, capsys):
+        """Kills: dropping the non-`Exception` guard in the root-cause choice, which reports an interrupt that lands
+        after a spend failure as a spend halt and loses the interrupt's exit status."""
+
+        def interrupting_runs():
+            raise KeyboardInterrupt
+            yield
+
+        monkeypatch.setattr(
+            review_runner, "build_block_plan", lambda *a, **k: types.SimpleNamespace(ordered_runs=interrupting_runs()),
+        )
+        settings = make_settings(world, world.launch())
+        settings.failures.append(SpendAppendError("disk full"))
+
+        with pytest.raises(KeyboardInterrupt):
+            replay_runner.run_block(
+                settings, world.task, world.account, ("toolkit", "bare"), 1, 0, review_runner.EnvironmentReference(),
+                workers=2,
+            )
+
+        assert capsys.readouterr().err == "", "no launch went uncharged, so there is nothing to name"
+
+    def test_an_interrupt_names_the_launch_it_left_uncharged(self, world, monkeypatch, capsys):
+        """Kills: `run_block` ending an interrupt without naming `settings.uncharged_launches`, which leaves a paid
+        session missing from the spend file with no sign of it on the interrupt's exit path."""
+        in_flight = threading.Event()
+        launched_session_ids = []
+
+        def blocking_launch(cmd, _cwd, _timeout_s):
+            launched_session_ids.append(cmd[cmd.index("--session-id") + 1])
+            in_flight.set()
+            assert msmr._launches_aborted.wait(timeout=10), "the interrupt never aborted the launch"
+            raise msmr.LaunchAbortedError("aborted while the child was running")
+
+        def interrupting_runs():
+            yield ("toolkit", 0)
+            assert in_flight.wait(timeout=10), "the first run never reached its launch"
+            raise KeyboardInterrupt
+
+        def failing_append(self, line):
+            raise SpendAppendError("disk full")
+
+        monkeypatch.setattr(SpendFile, "append", failing_append)
+        monkeypatch.setattr(
+            review_runner, "build_block_plan", lambda *a, **k: types.SimpleNamespace(ordered_runs=interrupting_runs()),
+        )
+        settings = make_settings(world, blocking_launch)
+
+        with pytest.raises(KeyboardInterrupt):
+            replay_runner.run_block(
+                settings, world.task, world.account, ("toolkit", "bare"), 1, 0, review_runner.EnvironmentReference(),
+                workers=2,
+            )
+
+        assert capsys.readouterr().err == (
+            f"Launches begun and not charged: task {world.task.id} session {launched_session_ids[0]}\n"
+        )
+
+    def test_a_spend_failure_landing_after_the_earlier_runs_error_is_consumed_is_still_reported(
+        self, world, monkeypatch,
+    ):
+        """Kills: choosing the root cause before the pool joins, which reports the earlier run's error and loses the
+        spend failure that lands while the pool ends."""
+
+        class SyntheticWorkerFailure(Exception):
+            pass
+
+        first_arm, later_arm = (
+            arm for arm, _index in review_runner.build_block_plan(world.task.id, ("toolkit", "bare"), 1, 0).ordered_runs
+        )
+        later_run_launching = threading.Event()
+        consumer_stopped_launches = threading.Event()
+        abort_calls = []
+        real_abort_launches = msmr.abort_launches
+
+        def counting_abort_launches():
+            # The first call is the earlier run's worker, the second is the consumer taking its error.
+            real_abort_launches()
+            abort_calls.append(None)
+            if len(abort_calls) == 2:
+                consumer_stopped_launches.set()
+
+        def scenario(call):
+            if call.agent_name == arms.ARMS[first_arm].agent_name:
+                assert later_run_launching.wait(timeout=10), "the later run never reached its launch"
+                return Scenario(raises=SyntheticWorkerFailure("synthetic"))
+            later_run_launching.set()
+            assert consumer_stopped_launches.wait(timeout=10), "the consumer never took the earlier run's error"
+            return Scenario()
+
+        def failing_append(self, line):
+            if line.arm == later_arm:
+                raise SpendAppendError("disk full")
+
+        monkeypatch.setattr(msmr, "abort_launches", counting_abort_launches)
+        monkeypatch.setattr(SpendFile, "append", failing_append)
+        launch_stub = world.launch(by_call=scenario)
+        settings = make_settings(world, launch_stub)
+
+        with pytest.raises(SpendAppendError, match="disk full") as halt:
+            replay_runner.run_block(
+                settings, world.task, world.account, ("toolkit", "bare"), 1, 0, review_runner.EnvironmentReference(),
+                workers=2,
+            )
+
+        assert "SyntheticWorkerFailure: synthetic" in str(halt.value)
+        assert settings.uncharged_launches == [(world.task.id, next(
+            call.session_id for call in launch_stub.calls if call.agent_name == arms.ARMS[later_arm].agent_name
+        ))]
+
     def test_run_block_hands_the_live_checkout_roots_to_the_path_check(self, world, monkeypatch):
         """Kills: `BlockContext(task, account, environment, ())` in `run_block`, which guards no live checkout."""
         live = world.root / "live-checkout"
@@ -780,6 +985,52 @@ class TestWorkerFailures:
         assert bare_record.missing_reason == checks.REASON_OUT_OF_FIXTURE_PATH
         assert str(live / ".git") in bare_record.out_of_fixture_tokens
         assert block.outcomes_for("toolkit")[0].record.missing_reason is None
+
+
+class TestAttemptsRunningTogether:
+    @pytest.fixture(autouse=True)
+    def stub_environment(self, monkeypatch):
+        monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
+
+    def test_attempts_that_overlap_share_no_state_and_each_keeps_its_own_record(self, world):
+        """Every attempt waits at the barrier between its fixture build and its cleanup, so all of them hold their
+        fixture and session store at once. The first launch to return then finishes, cleanup included, before any
+        other attempt reads its session, so state that two attempts share is deleted under the others."""
+        arm_names, k, workers = ("toolkit", "bare"), 2, 4
+        attempts_in_flight = threading.Barrier(workers, timeout=60)
+
+        def hold_until_the_first_launch_is_cleaned_up(call):
+            if launch_stub.calls.index(call) >= workers:
+                return  # only the first wave meets at the barrier; a retry starts after it
+            attempts_in_flight.wait()
+            first_call = launch_stub.calls[0]
+            if call is first_call:
+                return
+            deadline = time.monotonic() + 60
+            while first_call.cwd.exists():
+                assert time.monotonic() < deadline, "the first attempt never finished its cleanup"
+                time.sleep(0.05)
+
+        launch_stub = world.launch(by_call=lambda _call: Scenario(after_write=hold_until_the_first_launch_is_cleaned_up))
+        settings = make_settings(world, launch_stub)
+
+        block = replay_runner.run_block(
+            settings, world.task, world.account, arm_names, k, 0, review_runner.EnvironmentReference(), workers=workers,
+        )
+
+        planned_runs = review_runner.build_block_plan(world.task.id, arm_names, k, 0).ordered_runs
+        assert len(planned_runs) == workers
+        assert [(arm, index) for arm, index, _outcome in block.runs] == list(planned_runs)
+        for arm, index, outcome in block.runs:
+            assert (outcome.record.arm, outcome.record.run_index) == (arm, index)
+            assert (outcome.record.status, outcome.record.attempts) == ("ok", 1)
+        spent = spend_lines(settings)
+        assert sorted((line["arm"], line["run_index"], line["attempt"]) for line in spent) == sorted(
+            (arm, index, 1) for arm, index in planned_runs
+        )
+        assert len({call.session_id for call in launch_stub.calls}) == workers
+        assert len({call.cwd for call in launch_stub.calls}) == workers
+        assert leftovers(world, launch_stub) == []
 
 
 class TestAWorktreeListFailure:

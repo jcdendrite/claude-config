@@ -66,6 +66,10 @@ class RunSettings:
     # Fatal worker failures other than the abort a failure causes in its siblings, in the order they were caught.
     failures: list[BaseException] = field(default_factory=list)
 
+    def uncharged_launches_report(self) -> str:
+        launches = "; ".join(f"task {task_id} session {session_id}" for task_id, session_id in self.uncharged_launches)
+        return f"Launches begun and not charged: {launches or 'none'}"
+
 
 @dataclass(frozen=True)
 class BlockContext:

@@ -1,5 +1,5 @@
-"""Tests for replay_bench/arms. Every agent file and config dir is synthetic under `tmp_path`, so no case reads
-this checkout's agents directory. No test launches `claude`.
+"""Tests for replay_bench/arms. Every agent file and config dir is synthetic under `tmp_path`, except the one
+contract case that reads this checkout's `code-writer.md`. No test launches `claude`.
 """
 from __future__ import annotations
 
@@ -43,6 +43,21 @@ class TestBareWriterMarkdown:
         text = "".join(line for line in CODE_WRITER_TEXT.splitlines(keepends=True) if not line.startswith(f"{missing}:"))
         with pytest.raises(arms.AgentConfigError, match=missing):
             arms.bare_writer_markdown(text)
+
+
+class TestTheCheckoutsCodeWriterFile:
+    """The bare arm copies fields from the account's `code-writer.md`, which a checkout's edit can break."""
+
+    def test_the_real_file_yields_the_fields_the_bare_writer_copies(self):
+        real_text = arms.code_writer_text(msmr.AGENTS_DIR.parent)
+
+        tools = msmr.agent_frontmatter_tools(real_text)
+        bare_writer = arms.bare_writer_markdown(real_text)
+
+        assert tools and all(tool.isidentifier() for tool in tools), "a comma-separated line of bare tool names"
+        assert msmr.agent_frontmatter_tools(bare_writer) == tools
+        assert msmr.agent_frontmatter_model(bare_writer) == msmr.agent_frontmatter_model(real_text)
+        assert arms.agent_frontmatter_effort(bare_writer) == arms.agent_frontmatter_effort(real_text) is not None
 
 
 class TestRegistry:

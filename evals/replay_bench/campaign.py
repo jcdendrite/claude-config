@@ -312,10 +312,9 @@ def _run_locked(
         except review_runner.EnvironmentMismatchError as exc:
             return _discarded_block_halt(None, task, str(exc), spend)
         except SpendAppendError as exc:
-            launches = "; ".join(f"task {task_id} session {session_id}" for task_id, session_id in settings.uncharged_launches)
             return _halt(
                 f"{exc}; {task.id} is not marked complete and a resume reruns it. "
-                f"Launches begun and not charged: {launches or 'none'}"
+                f"{settings.uncharged_launches_report()}"
             )
         if block.end_drift is not None:
             return _discarded_block_halt(block, task, block.end_drift, spend)

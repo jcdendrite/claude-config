@@ -70,6 +70,8 @@ class TestReadAllowList:
         paths = launch.read_allow_paths(config_dir, same_root_home)
 
         assert not any(str(same_root_home / ".claude") in str(path) for path in paths)
+        assert paths.count(config_dir / "agents" / "a.md") == 1
+        assert paths.count(config_dir / "skills" / "demo" / "SKILL.md") == 1
 
     def test_no_entry_holds_a_wildcard(self, tmp_path):
         home, config_dir, _checkout = stow_style_tree(tmp_path)

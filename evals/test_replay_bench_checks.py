@@ -3,6 +3,7 @@ the account-hook check and the block calibration. Shared helpers live in test_re
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -664,15 +665,34 @@ class TestAccountHooks:
         assert reason == checks.REASON_ACCOUNT_HOOKS_MISSING
 
     @pytest.mark.timing
-    def test_a_matching_file_still_passes_beside_a_fifo_entry(self, checks_world):
-        fifo = checks_world.config_dir / "sessions" / "0001"
+    @pytest.mark.parametrize("fifo_listed_first", [True, False], ids=["fifo-listed-first", "match-listed-first"])
+    def test_a_matching_file_still_passes_beside_a_fifo_entry(self, checks_world, monkeypatch, fifo_listed_first):
+        sessions_dir = checks_world.config_dir / "sessions"
+        fifo = sessions_dir / "0001"
         os.mkfifo(fifo)
         self._session_file(checks_world, "4242", f"{SESSION_ID}\n")
+        real_scandir = os.scandir
+        ordered_listings = []
+
+        @contextlib.contextmanager
+        def scandir_in_a_set_order(path):
+            ordered_listings.append(Path(path))
+            with real_scandir(path) as entries:
+                # The directory yields `fifo` first or last, as a filesystem may.
+                yield sorted(entries, key=lambda entry: entry.name, reverse=not fifo_listed_first)
+
+        def scandir_of_the_sessions_dir_in_a_set_order(path):
+            if not isinstance(path, (str, os.PathLike)) or Path(path) != sessions_dir:
+                return real_scandir(path)
+            return scandir_in_a_set_order(path)
+
+        monkeypatch.setattr(os, "scandir", scandir_of_the_sessions_dir_in_a_set_order)
         reason = call_with_deadline(
             lambda: checks.check_account_hooks(checks_world.config_dir, SESSION_ID),
             deadline_s=30, hang_message=f"check_account_hooks blocked opening the FIFO {fifo.name}",
         )
         assert reason is None
+        assert ordered_listings == [sessions_dir], "the sessions directory was not listed through the ordered stub"
 
     @pytest.mark.parametrize("file_text", ["", "\n", "synthetic\n"])
     def test_an_empty_session_id_matches_no_file(self, checks_world, file_text):

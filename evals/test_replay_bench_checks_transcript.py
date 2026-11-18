@@ -63,10 +63,24 @@ class TestFirstTurnPromptSize:
     def test_it_is_null_when_the_transcript_holds_no_assistant_entry(self, tmp_path):
         assert _transcript(tmp_path, [_result("toolu_1")]).first_turn_prompt_size is None
 
-    def test_a_send_back_attachment_is_tolerated(self, tmp_path):
-        transcript = _transcript(tmp_path, [_send_back_attachment(), "not json", _assistant([]), _send_back_attachment()])
+    def test_a_send_back_attachment_and_an_unrecognized_entry_type_damage_nothing(self, checks_world, tmp_path):
+        """Real subagent transcripts carry such entries, so counting one as a skipped line would fail every run as
+        `transcript-unreadable`."""
+        unrecognized_entry = {"type": "queue-operation", "operation": "enqueue"}
+        transcript = _transcript(
+            tmp_path, [_send_back_attachment(), unrecognized_entry, _assistant([]), _send_back_attachment()],
+        )
+
         assert transcript.first_turn_prompt_size == 66
         assert transcript.tool_calls == ()
+        assert (transcript.skipped_lines, transcript.last_line_torn, transcript.unreadable_detail) == (0, False, None)
+        assert _path_check(checks_world, transcript).failure_reasons == ()
+
+    def test_a_line_that_is_not_json_between_entries_is_skipped_and_counted(self, tmp_path):
+        transcript = _transcript(tmp_path, [_send_back_attachment(), "not json", _assistant([]), _send_back_attachment()])
+
+        assert transcript.first_turn_prompt_size == 66
+        assert (transcript.skipped_lines, transcript.last_line_torn) == (1, False)
 
 
 def _log_with_trigger(checks_world: World, trigger: object) -> InstructionLog:
@@ -756,6 +770,33 @@ class TestToolkitReach:
     def test_bare_reading_a_fixture_file_passes(self, checks_world, tmp_path):
         entries = _call_and_result("toolu_1", "Read", {"file_path": str(checks_world.fixture_dir / "src" / "app.py")})
         assert self._reasons(checks_world, tmp_path, entries, _bare(checks_world)) == ()
+
+
+class TestAnUnansweredCall:
+    """A run killed mid-call may have executed it, so a call with no result is judged as one that ran."""
+
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_input_for", "reason"),
+        [
+            pytest.param(
+                "Write", lambda world: {"file_path": str(world.root / "elsewhere.py")},
+                checks.REASON_OUT_OF_FIXTURE_WRITE, id="write",
+            ),
+            pytest.param(
+                "Bash", lambda world: {"command": f"cat {world.live_checkout / 'src' / 'app.py'}"},
+                checks.REASON_OUT_OF_FIXTURE_PATH, id="bash",
+            ),
+        ],
+    )
+    def test_an_unanswered_out_of_fixture_call_fails_like_an_answered_one(
+        self, checks_world, tmp_path, tool_name, tool_input_for, reason,
+    ):
+        tool_input = tool_input_for(checks_world)
+        answered = _transcript(tmp_path, _call_and_result("toolu_1", tool_name, tool_input))
+        unanswered = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", tool_name, tool_input)])])
+
+        assert _path_check(checks_world, answered).failure_reasons == (reason,)
+        assert _path_check(checks_world, unanswered).failure_reasons == (reason,)
 
 
 class TestWritePaths:

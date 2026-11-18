@@ -11,6 +11,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 from replay_bench import arms, attempt, tasks
 from replay_bench.account import Account
+from replay_bench.comment_metrics import CommentMetrics
 from replay_bench.spend import SpendFile
 from review_bench import runner as review_runner
 from review_bench.runner import EnvironmentRecord, RunStore
@@ -72,7 +74,8 @@ class Scenario:
     first_turn_size: int | None = None
     damage_sidecar: str | None = None  # "skip" puts a non-JSON line before the last line, "torn" appends a truncated line
     write_account_session_file: bool = True
-    # The stream carries no `result` event, as a `claude` killed before it finished leaves it.
+    # The stream carries no `result` event, as a `claude` killed before it finished leaves it. A timed-out launch
+    # always omits it, since the timeout is that kill.
     omit_result_event: bool = False
     # Keys that replace the clean `result` event's, such as `is_error` or `terminal_reason`.
     result_event_fields: dict | None = None
@@ -143,6 +146,8 @@ class ScriptedLaunch:
     # Picks a scenario from the whole call, such as by the task its inner prompt names. It wins over `scenario_for`.
     by_call: Callable[[LaunchCall], Scenario] | None = None
     calls: list[LaunchCall] = field(default_factory=list)
+    # Makes a call's number and its place in `calls` one step, so parallel launches never share a number.
+    _numbering: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __call__(self, cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
         session_id = cmd[cmd.index("--session-id") + 1]
@@ -158,8 +163,9 @@ class ScriptedLaunch:
         call.fixture_status = subprocess.run(
             ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True, check=False,
         ).stdout
-        number = len(self.calls)
-        self.calls.append(call)
+        with self._numbering:
+            number = len(self.calls)
+            self.calls.append(call)
         if self.by_call is not None:
             scenario = self.by_call(call)
         else:
@@ -170,7 +176,8 @@ class ScriptedLaunch:
             return [], False
         self._write_session(call, scenario)
         return stream_lines(
-            scenario.cost, omit_result_event=scenario.omit_result_event, result_event_fields=scenario.result_event_fields,
+            scenario.cost, omit_result_event=scenario.omit_result_event or scenario.timed_out,
+            result_event_fields=scenario.result_event_fields,
         ), scenario.timed_out
 
     def _default_log(self, call: LaunchCall) -> list[dict]:
@@ -324,6 +331,17 @@ def make_account(config_dir: Path, home: Path) -> Account:
         key=os.path.realpath(config_dir), config_dir=config_dir, config_dir_value=str(config_dir), home=home,
         code_writer_tools=frozenset({"Read", "Edit", "Write", "Bash", "Grep", "Glob"}),
         bare_writer_markdown=arms.bare_writer_markdown(CODE_WRITER_MARKDOWN), dropped_variables=(), probe_seconds=0.0,
+    )
+
+
+def synthetic_task() -> tasks.ReplayTask:
+    """A task no repository backs, for tests that never build its fixture."""
+    source_repo, commit = "/synthetic/source-repo", "a" * 40
+    return tasks.ReplayTask(
+        id=tasks.make_task_id(Path(source_repo), commit), source_repo=source_repo, base_commit="b" * 40, commit=commit,
+        brief="synthetic brief", changed_paths=("src/app.py",), author_email="author@example.invalid",
+        committer_email="committer@example.invalid", reference_metrics=CommentMetrics(), base_density=None,
+        base_tree_bytes=0, base_tree_entries=0,
     )
 
 

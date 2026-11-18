@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import run_replay_bench
@@ -25,6 +26,13 @@ from test_replay_bench_runner_support import (
     write_executable,
 )
 
+# What the fake tools run under in place of the 10 s production default, which a loaded host can outlast. A test of a
+# timeout passes its own limit.
+SPAWN_TIMEOUT_S = 120.0
+# The sleeping fakes outlast their timeout by far more than a loaded host can stall a spawn.
+SLEEP_PAST_TIMEOUT_S = 60
+SLEEP_REFUSAL_BOUND_S = 30
+CREDENTIAL = urlsplit(PROXY_WITH_CREDENTIALS).password
 PASSTHROUGH_DIRENV = "shift 2\nexec \"$@\"\n"
 CLAUDE_PRINTING_VERSION = 'echo "2.1.322 (Claude Code)"\n'
 
@@ -42,6 +50,7 @@ class Preflight:
         self.claude_ran = tmp_path / "claude-ran"
         monkeypatch.setenv("HOME", str(self.home))
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(review_runner, "_ENVIRONMENT_READ_TIMEOUT_S", SPAWN_TIMEOUT_S)
         self.install_direnv(PASSTHROUGH_DIRENV)
         self.install_claude(CLAUDE_PRINTING_VERSION)
 
@@ -126,13 +135,13 @@ class TestTheProbe:
 
     @pytest.mark.timing
     def test_a_probe_that_sleeps_past_the_limit_is_refused(self, preflight):
-        preflight.install_direnv("exec sleep 10\n")
+        preflight.install_direnv(f"exec sleep {SLEEP_PAST_TIMEOUT_S}\n")
         started = time.monotonic()
 
         message = preflight.refusal(direnv_timeout_s=1)
 
         assert "timed out after 1 s; raise --direnv-timeout-s" in message
-        assert time.monotonic() - started < 5
+        assert time.monotonic() - started < SLEEP_REFUSAL_BOUND_S, "the kill did not reach the sleeper"
 
     def test_a_failed_probe_carries_the_hint_without_its_stderr(self, preflight):
         preflight.install_direnv('echo "sentinel-stderr" >&2\nexit 3\n')
@@ -254,12 +263,13 @@ class TestTheReadinessCheck:
 
     @pytest.mark.timing
     def test_a_claude_that_sleeps_past_the_limit_is_refused(self, preflight):
-        preflight.install_claude("exec sleep 10\n")
+        preflight.install_claude(f"exec sleep {SLEEP_PAST_TIMEOUT_S}\n")
         started = time.monotonic()
 
         message = preflight.refusal(readiness_timeout_s=1)
 
-        assert "timed out after 1 s" in message and time.monotonic() - started < 5
+        assert "claude --version timed out after 1 s" in message
+        assert time.monotonic() - started < SLEEP_REFUSAL_BOUND_S, "the kill did not reach the sleeper"
 
     def test_the_readiness_timeout_defaults_to_the_environment_read_timeout(
         self, preflight, monkeypatch,
@@ -291,16 +301,18 @@ class TestPrintHygiene:
         message = preflight.refusal()
 
         captured = capsys.readouterr()
-        assert "sentinel-credential" not in message + captured.out + captured.err
+        assert "claude --version: exit 1" in message, "the refusal came from the readiness check"
+        assert CREDENTIAL not in message + captured.out + captured.err
 
     @pytest.mark.timing
     def test_a_sleeping_claude_version_hides_the_sentinel(self, preflight, capsys):
-        preflight.install_claude("exec sleep 10\n")
+        preflight.install_claude(f"exec sleep {SLEEP_PAST_TIMEOUT_S}\n")
 
         message = preflight.refusal(readiness_timeout_s=1)
 
         captured = capsys.readouterr()
-        assert "sentinel-credential" not in message + captured.out + captured.err
+        assert "claude --version timed out after 1 s" in message, "the refusal came from the readiness check"
+        assert CREDENTIAL not in message + captured.out + captured.err
 
 
 
@@ -321,7 +333,7 @@ class TestLaunchExceptionHygiene:
 
         captured = capsys.readouterr()
         assert outcome.record.missing_reason == attempt.REASON_LAUNCH_ERROR
-        assert "sentinel-credential" not in outcome.record.missing_detail + captured.out + captured.err
+        assert CREDENTIAL not in outcome.record.missing_detail + captured.out + captured.err
 
 
 class TestAFixtureUnderHome:

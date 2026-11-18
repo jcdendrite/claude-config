@@ -161,10 +161,6 @@ def _test_corpus(repo_root: Path) -> list[str]:
     return sorted(corpus)
 
 
-def _expand_target_paths(repo_root: Path, target_paths: list[str]) -> set[Path]:
-    return {path for target in target_paths for path in repo_root.glob(target)}
-
-
 def _selection_covers(target_paths: tuple[str, ...], path: str) -> bool:
     return any(
         _mod._is_under(path, target) or path in _mod._expand_target(target, repo_root=_REPO_ROOT)
@@ -536,6 +532,7 @@ _HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
     ("TRANSCRIPT_COST_COUNTS_TEST_PATH", "test_every_tracked_agent_stem_matches_the_charset"),
     ("TRANSCRIPT_REDACTION_TEST_PATH", "test_real_agents_directory_allowlists_code_writer"),
     ("MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST", "test_staff_backend_engineer_declared_model_is_sonnet"),
+    ("REPLAY_BENCH_ARMS_TEST_PATH", "test_the_real_file_yields_the_fields_the_bare_writer_copies"),
 )
 
 
@@ -993,19 +990,23 @@ class TestSelectPytestTargets:
             relative_path = changed_file.relative_to(_REPO_ROOT).as_posix()
             result = _mod.select_pytest_targets([relative_path])
             assert result.is_full_suite is False, relative_path
-            selected_files = _expand_target_paths(_REPO_ROOT, result.target_paths)
-            assert set(replay_test_files) <= selected_files, relative_path
+            for replay_test_file in replay_test_files:
+                replay_test_path = replay_test_file.relative_to(_REPO_ROOT).as_posix()
+                assert _selection_covers(result.target_paths, replay_test_path), (relative_path, replay_test_path)
 
     def test_every_replay_bench_package_module_on_disk_selects_the_replay_tests(self):
         module_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
         assert {path.name for path in module_files} >= {"tasks.py", "runner.py", "checks.py"}
-        replay_test_files = set((_REPO_ROOT / "evals").glob("test_replay_bench*.py"))
-        assert replay_test_files
+        replay_test_paths = [
+            path.relative_to(_REPO_ROOT).as_posix() for path in sorted((_REPO_ROOT / "evals").glob("test_replay_bench*.py"))
+        ]
+        assert replay_test_paths
         for module_file in module_files:
             relative_path = module_file.relative_to(_REPO_ROOT).as_posix()
             result = _mod.select_pytest_targets([relative_path])
             assert result.is_full_suite is False, relative_path
-            assert replay_test_files <= _expand_target_paths(_REPO_ROOT, result.target_paths), relative_path
+            for replay_test_path in replay_test_paths:
+                assert _selection_covers(result.target_paths, replay_test_path), (relative_path, replay_test_path)
 
     def test_replay_bench_scripts_dependency_change_also_selects_replay_bench_tests(self):
         """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REPLAY_BENCH_TEST_GLOB:
@@ -1029,9 +1030,10 @@ class TestSelectPytestTargets:
         transitive first-party import closure walked from a fixed set of
         seed files, rather than a second hand-written list -- a fixed
         expected list would tolerate the same added-import-not-added-to-the-
-        frozenset drift this row exists to catch. The seed list itself is
-        not derived from the repo: a new review_bench entry point or sibling
-        eval script needs its own addition to `pending` below."""
+        frozenset drift this row exists to catch. The seeds are every
+        `evals/run_*.py` and `evals/measure_*.py` entry point on disk and the
+        two bench packages' modules, so a new entry point is walked without
+        an edit here."""
         evals_dir = _REPO_ROOT / "evals"
         scripts_dir = _REPO_ROOT / _mod.SCRIPTS_DIR
 
@@ -1058,14 +1060,15 @@ class TestSelectPytestTargets:
                         names.update(f"{module}.{alias.name}" for alias in node.names)
             return names
 
+        entry_points = sorted([*evals_dir.glob("run_*.py"), *evals_dir.glob("measure_*.py")])
+        assert {path.name for path in entry_points} >= {
+            "run_review_bench.py", "run_replay_bench.py", "measure_subagent_model_resolution.py",
+            "measure_explore_recall.py", "measure_main_session_rule_adherence.py",
+        }, "the entry-point globs no longer find the entry points the walk must start from"
         pending = [
             *(evals_dir / "review_bench").glob("*.py"),
-            evals_dir / "run_review_bench.py",
-            evals_dir / "measure_subagent_model_resolution.py",
-            evals_dir / "measure_explore_recall.py",
             *(evals_dir / "replay_bench").glob("*.py"),
-            evals_dir / "run_replay_bench.py",
-            evals_dir / "measure_main_session_rule_adherence.py",
+            *entry_points,
         ]
         reached: set[Path] = set()
         while pending:
@@ -1078,9 +1081,6 @@ class TestSelectPytestTargets:
                 if (module_file := resolve_module_file(name)) is not None
             )
 
-        # No seeded module imports the runner, so it enters `reached` only as a seed. Without this control, dropping the
-        # seed changes nothing while every module the runner imports today is reached through another seed.
-        assert evals_dir / "run_replay_bench.py" in reached, "the replay runner is not a seed of the walk"
         reached_scripts_files = {
             source_file.relative_to(_REPO_ROOT).as_posix()
             for source_file in reached if source_file.is_relative_to(scripts_dir)
@@ -2503,6 +2503,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TRANSCRIPT_REDACTION_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    _mod.REPLAY_BENCH_ARMS_TEST_PATH,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
     *_mod.CURSOR_ADAPTER_READING_TESTS,
     _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,

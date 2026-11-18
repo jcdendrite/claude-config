@@ -326,6 +326,21 @@ class TestSecondaryAndDiagnostics:
         assert "bare: unclassified-line share 0.0278," in text, "3 of 108 lines"
         assert "non_file_entries 1" in text and "undecodable_files 4" in text and "ignored_paths 7" in text
 
+    def test_a_missing_run_still_counts_its_denials_and_ignored_paths(self, campaign):
+        """The two counts are diagnostics of a run that went wrong, which a missing run is the likeliest to be."""
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit"),
+            record("t1", "bare"),
+            record("t1", "bare", run_index=1, ok=False, reason="timeout", denials=2, ignored=3),
+        )
+
+        lines = campaign.summarize()
+
+        bare_line = next(line for line in lines if line.startswith("  bare: unclassified-line share"))
+        assert "runs with a permission-rule denial 1," in bare_line
+        assert "ignored_paths 3," in bare_line
+
     def test_a_run_with_no_non_test_code_line_enters_its_tasks_sums(self, campaign):
         campaign.add_block(
             "t1",

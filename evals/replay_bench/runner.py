@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from replay_bench.account import Account
 from replay_bench.arms import ARMS
 from replay_bench.attempt import NO_RETRY_REASONS, AttemptResult, BlockContext, RunSettings, run_attempt
 from replay_bench.records import ReplayRunRecord
+from replay_bench.spend import SpendAppendError
 
 # Basis: the Fixture section of .claude/plans/docstring-verbosity-experiment.md.
 FIXTURE_GIT_TIMEOUT_S = 110
@@ -154,6 +156,25 @@ def _stop_further_launches(settings: RunSettings) -> None:
     msmr.abort_launches()
 
 
+def _reported_root_cause(settings: RunSettings, raised: BaseException) -> BaseException:
+    """A spend failure outranks every other: only its halt names the launches begun and not charged. The failures it
+    outranks are named in its message. Otherwise a sibling's abort yields to the failure that caused it."""
+    if not isinstance(raised, Exception):
+        return raised
+    spend_failure = next((failure for failure in settings.failures if isinstance(failure, SpendAppendError)), None)
+    if spend_failure is not None:
+        outranked = [failure for failure in settings.failures if failure is not spend_failure]
+        if not outranked:
+            return spend_failure
+        detail = "; ".join(f"{type(failure).__name__}: {failure}" for failure in outranked)
+        halt = SpendAppendError(f"{spend_failure}. {len(outranked)} other failure(s) in the block: {detail}")
+        halt.__cause__ = spend_failure
+        return halt
+    if settings.failures and isinstance(raised, msmr.LaunchAbortedError):
+        return settings.failures[0]
+    return raised
+
+
 def run_block(
     settings: RunSettings, task: tasks.ReplayTask, account: Account, arm_names: tuple[str, ...], k: int, seed: int,
     environment_reference: EnvironmentReference, *, workers: int = run_skill_evals.DEFAULT_WORKERS,
@@ -175,15 +196,21 @@ def run_block(
             _stop_further_launches(settings)
             raise
 
+    raised: BaseException | None = None
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         try:
             outcomes = list(pool.map(run_one, plan.ordered_runs))
         except BaseException as exc:
             # Worker threads never see the interrupt, and the pool's exit joins them, so in-flight children stop first.
             _stop_further_launches(settings)
-            if settings.failures and isinstance(exc, msmr.LaunchAbortedError):
-                raise settings.failures[0] from None  # the root cause, not a sibling's abort
-            raise
+            raised = exc
+    if raised is not None:
+        # Chosen after the join, so a sibling's failure that lands while it ends is still seen.
+        root_cause = _reported_root_cause(settings, raised)
+        if not isinstance(root_cause, Exception) and settings.uncharged_launches:
+            # An interrupt keeps its exit status and resume hint, and neither names the uncharged launches.
+            print(settings.uncharged_launches_report(), file=sys.stderr)
+        raise root_cause
     end_drift = end_unread = None
     try:
         environment_reference.require_match(

@@ -79,6 +79,8 @@ REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
 REPLAY_BENCH_DIR = "evals/replay_bench"
 REPLAY_BENCH_RUNNER = "evals/run_replay_bench.py"
 REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"
+# Reads claude/.claude/agents/code-writer.md by path, so the AGENTS_DIR row selects it by name.
+REPLAY_BENCH_ARMS_TEST_PATH = "evals/test_replay_bench_arms.py"
 # A sibling tree, not a REVIEW_BENCH_DIR subdirectory: evals/fixtures/, not
 # evals/review_bench/, and hyphenated review-bench, not review_bench.
 # test_review_bench_runner.py loads its scenarios from here.
@@ -987,7 +989,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         (
             HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
             TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_REDACTION_TEST_PATH, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH, REPLAY_BENCH_ARMS_TEST_PATH,
         ),
     ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
