@@ -25,6 +25,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import uuid
@@ -32,10 +33,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
+from helpers import CLAUDE_DIR, HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
 from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, redaction, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
+
+# claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_cursor_adapter_shim.py.
+sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests._cursor_identity_fixtures import clear_adapter_environment  # noqa: E402
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -130,6 +135,19 @@ def require_direnv() -> None:
         if os.environ.get("GITHUB_ACTIONS"):
             pytest.fail("direnv missing in CI — .github/workflows/tests.yml must install it")
         pytest.skip("direnv not installed")
+
+
+def require_zsh() -> None:
+    """Guard for a test that needs a real zsh: skip locally when zsh isn't
+    installed, but hard-fail in this repo's own CI.
+
+    Checks only that a zsh is on PATH. It does not show that the workflow's
+    pinned-zsh step ran, which a runner image that ships zsh would hide.
+    """
+    if not shutil.which("zsh"):
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("zsh missing in CI — .github/workflows/tests.yml must install it")
+        pytest.skip("zsh not installed")
 
 
 def _curated_path_without_direnv(tmp_path: Path) -> str:
@@ -1633,11 +1651,22 @@ def _guard_shell_exec(monkeypatch):
     install_shell_exec_guard(monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def _clear_adapter_env(monkeypatch):
+    """_lib_adapter_session_pair reads CLAUDE_CONFIG_ADAPTER_SESSION_ID and
+    CLAUDE_CONFIG_ADAPTER_HOST_PID from its own environment. A suite run from a
+    Cursor agent's Shell call inherits both, and the builders that copy the
+    parent environment would pass a real value to the scripts under test.
+    test_cursor_adapter_scripts_env_scrub.py runs this fixture's own test.
+    """
+    clear_adapter_environment(monkeypatch)
+
+
 def _pin_transcript_corpus_lookups(tmp_path, monkeypatch):
     """Pin both env vars transcript-analysis.py's root resolution reads, so no
     test in this suite can accidentally scan or declare against this
-    workstation's real ~/.claude. Also unset PR_COST_LEDGER_PATH, which replaces every account's ledger path with
-    one file and so would send a ledger reader to a workstation's exported ledger.
+    workstation's real ~/.claude. Also unset PR_COST_LEDGER_PATH and COST_LEDGER_PATH, each of which replaces
+    a ledger's path and so would send a ledger reader or writer to a workstation's exported ledger.
 
     Pinning only TRANSCRIPT_CONFIG_DIRS_FILE is insufficient:
     _resolve_scan_roots/_resolve_cost_roots' base is PROJECTS_DIR/config_dir()
@@ -1661,6 +1690,7 @@ def _pin_transcript_corpus_lookups(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "isolated-claude-config"))
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "nonexistent-transcript-config-dirs"))
     monkeypatch.delenv("PR_COST_LEDGER_PATH", raising=False)
+    monkeypatch.delenv("COST_LEDGER_PATH", raising=False)
 
 
 @pytest.fixture(autouse=True)

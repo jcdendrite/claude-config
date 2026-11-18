@@ -1331,10 +1331,10 @@ class TestParityExceptions:
     ) -> None:
         assert _names_outside_plain_grammar(matcher) == outside
 
-    def test_the_git_write_worktree_gate_and_the_commit_stall_hook_are_listed_as_pending_phase(self) -> None:
+    def test_the_commit_stall_hook_is_listed_as_pending_phase_and_the_two_worktree_gates_are_not(self) -> None:
         pending = {e["key"] for e in load_json(PARITY_EXCEPTIONS_JSON)["entries"] if e["reason"] == "pending-phase"}
-        assert "PreToolUse|Bash|require-worktree-for-git-writes.sh" in pending
         assert "Stop|*|advance-past-commit-stall.sh" in pending
+        assert not {key for key in pending if "require-worktree-for-" in key}
 
     def test_tool_map_and_cursor_tool_entries_list_every_known_tool_exactly(self) -> None:
         tool_map = load_json(TOOL_MAP_JSON)

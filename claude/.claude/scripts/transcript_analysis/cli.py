@@ -28,10 +28,7 @@ from transcript_analysis.context_composition import (
 from transcript_analysis.context_distribution import (
     _add_context_distribution_subparser,
 )
-from transcript_analysis.cost import (
-    cmd_cost,
-    cmd_cost_trend,
-)
+from transcript_analysis.cost import _add_cost_subparser, _add_cost_trend_subparser
 from transcript_analysis.cost_ledger import _add_cost_ledger_subparser
 from transcript_analysis.duration import (
     _add_duration_subparser,
@@ -52,15 +49,9 @@ from transcript_analysis.instrument_authoring import (
 from transcript_analysis.judgment_pair import (
     _add_judgment_pair_subparser,
 )
-from transcript_analysis.period_cost import (
-    cmd_period_cost,
-)
+from transcript_analysis.period_cost import _add_period_cost_subparser
 from transcript_analysis.plan_boundary import _add_plan_boundary_subparser
-from transcript_analysis.pr_cost import (
-    _DEFAULT_PR_COST_PLAN_FILE_GLOB,
-    _PR_COST_ASOF_WINDOW_DAYS_DEFAULT,
-    cmd_pr_cost,
-)
+from transcript_analysis.pr_cost import _add_pr_cost_subparser
 from transcript_analysis.pr_cost_export import _add_pr_cost_export_subparser
 from transcript_analysis.pr_link import (
     _add_pr_link_subparser,
@@ -73,22 +64,13 @@ from transcript_analysis.rearm_backtest import _add_rearm_backtest_subparser
 from transcript_analysis.review_cost_by_size import (
     _add_review_cost_by_size_subparser,
 )
-from transcript_analysis.review_rounds import (
-    REVIEW_SKILLS,
-    cmd_review_round_cost,
-)
+from transcript_analysis.review_rounds import _add_review_round_cost_subparser
 from transcript_analysis.review_trace import _add_review_trace_subparser
 from transcript_analysis.reviewer_yield import _add_reviewer_yield_subparser
 from transcript_analysis.routing_guard import (
     _add_routing_guard_subparser,
 )
-from transcript_analysis.scope import (
-    _EXTRA_CONFIG_DIRS_HELP_PREAMBLE,
-    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
-    _add_extra_config_dirs_arg,
-    _add_project_scope_args,
-    _iso_date,
-)
+from transcript_analysis.scope import _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
 from transcript_analysis.sessions import (
     _add_sessions_subparser,
 )
@@ -148,65 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_review_trace_subparser(sub)
     _add_judgment_pair_subparser(sub)
     _add_audit_routing_subparser(sub)
-
-    p_cost = sub.add_parser(
-        "cost",
-        help=(
-            "Price-weighted dollar cost by token class (cache read/write/output/input), model ID,"
-            " and context-at-turn bucket, plus top-N sessions by dollars. Redacted by default."
-        ),
-    )
-    _add_project_scope_args(p_cost)
-    _add_extra_config_dirs_arg(
-        p_cost,
-        f"{_EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
-        " across every resulting root; --no-redact is refused once this puts more than one"
-        " root in scope.",
-    )
-    p_cost.add_argument(
-        "--since", metavar="Nd",
-        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
-    )
-    p_cost.add_argument(
-        "--top", type=int, default=20, metavar="N",
-        help="Maximum number of per-session rows in the top-N-by-dollars section (default: 20).",
-    )
-    p_cost.add_argument(
-        "--by-project", action="store_true",
-        help=(
-            "Add a per-project cost breakdown, keyed on (account root, project family)."
-            " Composes with --projects and --this-repo; one repo's own worktrees"
-            " collapse into a single row instead of fragmenting per branch."
-        ),
-    )
-    p_cost.add_argument(
-        "--no-redact", action="store_true",
-        help=(
-            "Emit real project names and session IDs instead of anonymized labels."
-            " Never publish --no-redact output — see docs/transcript-analysis.md."
-            " Refused when --config-dir puts more than one root in scope."
-        ),
-    )
-    p_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
-    p_cost.add_argument(
-        "--summary", action="store_true",
-        help=(
-            "Compact, aggregate-only block for a PR body: dollars and tokens by token class,"
-            " model ID, and thread, plus session and priced-turn counts — no per-session or"
-            " per-project row. Requires --this-repo; refuses --projects, --by-project,"
-            " --no-redact, and --config-dir."
-        ),
-    )
-    p_cost.add_argument(
-        "--share-only", action="store_true",
-        help=(
-            "Four dimensionless percentage-share tables (class, model, thread, context bucket) —"
-            " never a dollar figure, a token count, or a grand total. Refuses --by-project,"
-            " --no-redact, --summary, and --top. See docs/transcript-analysis.md."
-        ),
-    )
-    p_cost.set_defaults(func=cmd_cost)
-
+    _add_cost_subparser(sub)
     _add_context_distribution_subparser(sub)
     _add_edit_format_subparser(sub)
     _add_read_scope_subparser(sub)
@@ -214,156 +138,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_instrument_authoring_subparser(sub)
     _add_context_composition_subparser(sub)
     _add_cache_efficiency_subparser(sub)
-
-    p_cost_trend = sub.add_parser(
-        "cost-trend",
-        help="Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.",
-    )
-    _add_project_scope_args(p_cost_trend)
-    _add_extra_config_dirs_arg(
-        p_cost_trend,
-        f"{_EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
-        " across every resulting root.",
-    )
-    p_cost_trend.set_defaults(func=cmd_cost_trend)
-
+    _add_cost_trend_subparser(sub)
     _add_cache_rebuild_subparser(sub)
     _add_cost_ledger_subparser(sub)
-
-    p_pr_cost = sub.add_parser(
-        "pr-cost",
-        help=(
-            "Per-PR AI-tooling dollar cost, joined against PR size/rework/review-surface via"
-            " gh. Default: list uncaptured merged PRs still in the local transcript window."
-            " --record durably appends one row per captured PR to the pr-cost ledger (see"
-            " PR_COST_LEDGER_PATH). Always redacted -- no --no-redact escape hatch. Requires gh."
-        ),
-    )
-    _add_project_scope_args(p_pr_cost)
-    _add_extra_config_dirs_arg(
-        p_pr_cost,
-        "Additional Claude Code config directory to scan (repeatable). pr-cost refuses"
-        " (exit 2) whenever more than one root resolves, unless --all-accounts is given --"
-        " see docs/pr-cost.md.",
-    )
-    p_pr_cost.add_argument(
-        "--all-accounts", action="store_true",
-        help=(
-            "Scan every declared account in one run instead of refusing when more than one root"
-            " resolves. Each account's own pr_cost_recording config key still individually"
-            " gates whether that account's row is recorded -- see docs/pr-cost.md."
-        ),
-    )
-    p_pr_cost.add_argument(
-        "--record", action="store_true",
-        help=(
-            "Capture ledger rows for eligible merged PRs. Requires the pr_cost_recording config key"
-            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
-        ),
-    )
-    p_pr_cost.add_argument(
-        "--pr", type=int, metavar="N",
-        help="Target exactly one PR number instead of every branch with local corpus activity.",
-    )
-    p_pr_cost.add_argument(
-        "--machine-label", metavar="LABEL",
-        help=(
-            "Narrow read mode's uncaptured-PR listing to one machine: ^[a-z0-9]{1,8}$. Refused"
-            " (exit 1) together with --record -- machine identity is generated and persisted"
-            " automatically there; see docs/pr-cost.md."
-        ),
-    )
-    p_pr_cost.add_argument(
-        "--force", action="store_true",
-        help="With --record and --pr, append a correcting row for an already-captured PR instead of refusing.",
-    )
-    p_pr_cost.add_argument(
-        "--asof-window-days", type=float, metavar="DAYS",
-        help=(
-            "Close-out window before a merged PR is eligible for capture (default:"
-            f" {_PR_COST_ASOF_WINDOW_DAYS_DEFAULT:g}, a provisional placeholder -- see docs/pr-cost.md)."
-        ),
-    )
-    p_pr_cost.add_argument(
-        "--plan-file-glob", metavar="GLOB",
-        help=(
-            "Glob checked against a PR's added files for the plan-slug join cross-check"
-            f" (default: {_DEFAULT_PR_COST_PLAN_FILE_GLOB!r})."
-        ),
-    )
-    p_pr_cost.add_argument(
-        "--risk-surface-glob", action="append", dest="risk_surface_globs", metavar="GLOB",
-        help=(
-            "Glob pattern considered risk surface for the risk_surface_flag proxy (repeatable;"
-            " replaces the claude-config defaults entirely when given)."
-        ),
-    )
-    p_pr_cost.set_defaults(func=cmd_pr_cost)
-
+    _add_pr_cost_subparser(sub)
     _add_pr_cost_export_subparser(sub)
     _add_spend_over_threshold_subparser(sub)
     _add_workstream_cost_subparser(sub)
-
-    p_review_round_cost = sub.add_parser(
-        "review-round-cost",
-        help=(
-            "Per-branch review-round dollar cost: prices every code-review/plan-review/"
-            "ready-for-review invocation's own window (main-thread turns plus every subagent"
-            " dispatched inside it), with a round-vs-non-round reconciliation line. Corpus-wide,"
-            " no gh calls."
-        ),
-    )
-    _add_project_scope_args(p_review_round_cost)
-    p_review_round_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
-    p_review_round_cost.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
-    p_review_round_cost.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
-    p_review_round_cost.add_argument(
-        "--skill", metavar="NAME", choices=sorted(REVIEW_SKILLS),
-        help="Print only rounds for one skill name (default: all three); never narrows detection.",
-    )
-    p_review_round_cost.add_argument(
-        "--pooled", action="store_true",
-        help=(
-            "Print only a cross-account pooled block of shares (no dollar amounts, no"
-            " raw counts printed directly, no per-branch rows). Refuses every scope-narrowing flag; see"
-            " docs/private-project-redaction.md."
-        ),
-    )
-    p_review_round_cost.add_argument(
-        "--show-withheld", action="store_true",
-        help=(
-            "With --pooled: print the figures the dominance-precision floor would"
-            " otherwise withhold, plus the two data-quality-gap lines, under a DO NOT"
-            " PUBLISH banner. Never publish this output; cite a plain --pooled run"
-            " instead."
-        ),
-    )
-    p_review_round_cost.set_defaults(func=cmd_review_round_cost)
-
+    _add_review_round_cost_subparser(sub)
     _add_review_cost_by_size_subparser(sub)
     _add_author_outcome_subparser(sub)
     _add_cost_counts_subparser(sub)
-
-    p_period_cost = sub.add_parser(
-        "period-cost",
-        help=(
-            "Per-PR and per-review Claude Code spend for an inclusive UTC date range, grouped by repository, as"
-            " Slack mrkdwn. The scope is fixed to the active account's whole projects directory, for an account"
-            " that works for one project owner; no scope flags. Calls gh. --sample prints a synthetic report."
-        ),
-    )
-    p_period_cost.add_argument(
-        "--since", metavar="DATE", type=_iso_date, help="Inclusive start date, zero-padded YYYY-MM-DD; required unless --sample",
-    )
-    p_period_cost.add_argument(
-        "--until", metavar="DATE", type=_iso_date, help="Inclusive end date, zero-padded YYYY-MM-DD; required unless --sample",
-    )
-    p_period_cost.add_argument(
-        "--sample", action="store_true",
-        help="Print the synthetic sample report; reads no transcript and runs no git or gh. Refuses --since and --until.",
-    )
-    p_period_cost.set_defaults(func=cmd_period_cost)
-
+    _add_period_cost_subparser(sub)
     _add_rearm_backtest_subparser(sub)
     _add_handoff_signal_response_subparser(sub)
     _add_plan_boundary_subparser(sub)

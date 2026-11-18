@@ -10,30 +10,34 @@ from .conftest import _pin_transcript_corpus_lookups, _table_cols
 _LEDGER_PATH_SENTINEL = "/zz-ledger-path-sentinel/pr-cost-ledger.tsv"
 
 
-def test_pin_transcript_corpus_lookups_unsets_the_ledger_path_and_pins_both_corpus_variables(tmp_path, monkeypatch):
+def test_pin_transcript_corpus_lookups_unsets_both_ledger_paths_and_pins_both_corpus_variables(tmp_path, monkeypatch):
     monkeypatch.setenv("PR_COST_LEDGER_PATH", _LEDGER_PATH_SENTINEL)
+    monkeypatch.setenv("COST_LEDGER_PATH", _LEDGER_PATH_SENTINEL)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "unpinned")
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", "unpinned")
 
     _pin_transcript_corpus_lookups(tmp_path, monkeypatch)
 
     assert "PR_COST_LEDGER_PATH" not in os.environ
+    assert "COST_LEDGER_PATH" not in os.environ
     assert os.environ["CLAUDE_CONFIG_DIR"] == str(tmp_path / "isolated-claude-config")
     assert os.environ["TRANSCRIPT_CONFIG_DIRS_FILE"] == str(tmp_path / "nonexistent-transcript-config-dirs")
 
 
 class TestAutouseIsolationAppliesTheCorpusPin:
-    """Wires _isolate_transcript_corpus_lookups to the pin helper. The class-scoped fixture sets the variable before
-    the function-scoped autouse fixture runs, so only that fixture's own call can remove it."""
+    """Wires _isolate_transcript_corpus_lookups to the pin helper. The class-scoped fixture sets both ledger-path
+    variables before the function-scoped autouse fixture runs, so only that fixture's own call can remove them."""
 
     @pytest.fixture(scope="class", autouse=True)
     def _ledger_path_set_before_autouse_isolation(self):
         with pytest.MonkeyPatch.context() as class_scoped_monkeypatch:
             class_scoped_monkeypatch.setenv("PR_COST_LEDGER_PATH", _LEDGER_PATH_SENTINEL)
+            class_scoped_monkeypatch.setenv("COST_LEDGER_PATH", _LEDGER_PATH_SENTINEL)
             yield
 
-    def test_ledger_path_is_unset_in_the_test_body(self):
+    def test_ledger_paths_are_unset_in_the_test_body(self):
         assert "PR_COST_LEDGER_PATH" not in os.environ
+        assert "COST_LEDGER_PATH" not in os.environ
 
 
 def test_fake_projects_patches_every_config_dir_binding_without_a_shim(fake_projects, tmp_path):
