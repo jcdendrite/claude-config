@@ -181,16 +181,6 @@
         ]
       },
       {
-        "matcher": "startup|resume|clear",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/announce-autonomous-shipping.sh",
-            "timeout": 10
-          }
-        ]
-      },
-      {
         "matcher": "compact",
         "hooks": [
           {

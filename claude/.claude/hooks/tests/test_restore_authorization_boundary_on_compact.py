@@ -26,6 +26,8 @@ from helpers import (
     HOOKS_DIR,
     build_path_without,
     hook_beside_degraded_schema,
+    init_git_repo_with_commit,
+    install_recording_shims,
     run_additional_context_session_start_hook,
     session_start_additional_context,
     session_start_registered_timeouts,
@@ -225,8 +227,8 @@ class TestRestoreAuthorizationBoundaryOnCompact:
 
 
 class TestShippingStatementOnCompact:
-    """When autonomous shipping is active, the compact hook appends the shared statement to the boundary
-    text in one message. The statement follows `autonomous_shipping`, not the boundary kill switch."""
+    """For an eligible `.cwd`, the compact hook appends the shared statement to the boundary text in one message.
+    The statement depends only on the root guard, not on the boundary kill switch."""
 
     @staticmethod
     def _compact_payload(repo: Path | None) -> dict:
@@ -235,71 +237,93 @@ class TestShippingStatementOnCompact:
             payload["cwd"] = str(repo)
         return payload
 
-    def test_armed_compact_is_the_boundary_text_then_one_space_then_the_statement(
-        self, armed_home, shipping_repo, shipping_statement, tmp_path
+    def test_eligible_compact_is_the_boundary_text_then_one_space_then_the_statement(
+        self, isolated_home, shipping_repo, shipping_statement
     ):
-        unarmed_home = tmp_path / "unarmed-home"
-        (unarmed_home / ".claude").mkdir(parents=True)
         boundary_text = session_start_additional_context(
-            _run_hook(self._compact_payload(shipping_repo), unarmed_home)
+            _run_hook(self._compact_payload(None), isolated_home)
         )
-        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
         assert result.returncode == 0
         ctx = session_start_additional_context(result)
         assert "not engineer authorization" in boundary_text
-        assert ctx == f"{boundary_text} {shipping_statement(shipping_repo)}"
+        assert ctx == f"{boundary_text} {shipping_statement}"
         assert "gh pr merge" not in ctx
 
     def test_kill_switch_silences_only_the_boundary_text(
-        self, armed_home, shipping_repo, shipping_statement
+        self, isolated_home, shipping_repo, shipping_statement
     ):
-        (armed_home / ".claude" / ".authorization-boundary-disabled").touch()
-        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+        (isolated_home / ".claude" / ".authorization-boundary-disabled").touch()
+        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
         assert result.returncode == 0
-        assert session_start_additional_context(result) == shipping_statement(shipping_repo)
+        assert session_start_additional_context(result) == shipping_statement
 
-    def test_kill_switch_with_empty_statement_part_is_silent(self, armed_home, shipping_repo):
-        (armed_home / ".claude" / ".authorization-boundary-disabled").touch()
-        (shipping_repo / ".claude").mkdir()
-        (shipping_repo / ".claude" / "autonomous-shipping-optout").touch()
-        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+    def test_kill_switch_with_empty_statement_part_is_silent(self, isolated_home, non_repo_dir):
+        (isolated_home / ".claude" / ".authorization-boundary-disabled").touch()
+        result = _run_hook(self._compact_payload(non_repo_dir), isolated_home)
         assert result.returncode == 0
         assert result.stdout == b""
 
-    def test_repo_optout_leaves_the_boundary_text_alone(self, armed_home, shipping_repo):
-        (shipping_repo / ".claude").mkdir()
-        (shipping_repo / ".claude" / "autonomous-shipping-optout").touch()
-        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+    def test_cwd_outside_a_repo_leaves_the_boundary_text_alone(self, isolated_home, non_repo_dir):
+        result = _run_hook(self._compact_payload(non_repo_dir), isolated_home)
         ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
         assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
 
-    def test_cwd_outside_a_repo_leaves_the_boundary_text_alone(self, armed_home, non_repo_dir):
-        result = _run_hook(self._compact_payload(non_repo_dir), armed_home)
-        ctx = session_start_additional_context(result)
-        assert "not engineer authorization" in ctx
-        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
-
-    def test_missing_cwd_leaves_the_boundary_text_alone(self, armed_home, shipping_repo):
-        """The process cwd is an eligible repo, so a `$PWD` fallback would append the statement."""
-        result = _run_hook(self._compact_payload(None), armed_home, process_cwd=shipping_repo)
-        ctx = session_start_additional_context(result)
-        assert "not engineer authorization" in ctx
-        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
-
-    def test_unarmed_machine_carries_no_statement(self, isolated_home, shipping_repo):
-        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
-        ctx = session_start_additional_context(result)
-        assert "not engineer authorization" in ctx
-        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
-
-    def test_sentinel_only_under_claude_config_dir_appends_the_statement(
-        self, isolated_home, shipping_repo, tmp_path
+    def test_cwd_containing_a_newline_gets_the_statement_even_though_the_stop_hook_stays_silent(
+        self, isolated_home, tmp_path, shipping_statement
     ):
-        """HOME carries no sentinel, so only the config dir can have armed the hook."""
+        """The compact hook hands a multi-line `.cwd` to the root guard unfiltered, unlike the Stop hook
+        (test_cwd_containing_a_newline_fails_closed), so a repo whose directory name holds a newline is eligible here."""
+        newline_repo = tmp_path / "shipping\nrepo"
+        try:
+            init_git_repo_with_commit(newline_repo, branch="main")
+        except OSError as filesystem_error:
+            pytest.skip(f"filesystem cannot hold a newline in a directory name: {filesystem_error}")
+        boundary_text = session_start_additional_context(
+            _run_hook(self._compact_payload(None), isolated_home)
+        )
+
+        result = _run_hook(self._compact_payload(newline_repo), isolated_home)
+
+        assert result.returncode == 0
+        assert session_start_additional_context(result) == f"{boundary_text} {shipping_statement}"
+
+    def test_missing_cwd_leaves_the_boundary_text_alone(self, isolated_home, shipping_repo):
+        """The process cwd is an eligible repo, so a `$PWD` fallback would append the statement."""
+        result = _run_hook(self._compact_payload(None), isolated_home, process_cwd=shipping_repo)
+        ctx = session_start_additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
+
+    @pytest.mark.parametrize("bad_cwd", [42, ["/tmp"]], ids=["number", "array"])
+    def test_non_string_payload_cwd_leaves_the_boundary_text_alone_even_when_process_cwd_is_an_eligible_repo(
+        self, isolated_home, shipping_repo, bad_cwd
+    ):
+        """Pins end behavior, not the `(.cwd | type) == "string"` guard, because the root guard rejects both values
+        with or without it. Missing, empty and relative cwd are rows of test_autonomous_shipping_grant_boundary.py."""
+        result = _run_hook({"source": "compact", "cwd": bad_cwd}, isolated_home, process_cwd=shipping_repo)
+        ctx = session_start_additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
+
+    def test_git_absent_from_path_still_emits_the_boundary_text(self, isolated_home, shipping_repo, tmp_path):
+        """No git means no root resolves, so the statement drops while the boundary text stays."""
+        path_farm = tmp_path / "path-without-git"
+        path_farm.mkdir()
+        result = _run_hook(
+            self._compact_payload(shipping_repo),
+            isolated_home,
+            extra_env={"PATH": build_path_without("git", path_farm)},
+        )
+        assert result.returncode == 0
+        ctx = session_start_additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
+
+    def test_relocated_config_dir_appends_the_statement(self, isolated_home, shipping_repo, tmp_path):
         config_dir = tmp_path / "profile"
         config_dir.mkdir()
-        (config_dir / "autonomous-shipping-required").write_text("# machine sentinel\n")
         result = _run_hook(
             self._compact_payload(shipping_repo),
             isolated_home,
@@ -309,57 +333,30 @@ class TestShippingStatementOnCompact:
         assert "not engineer authorization" in ctx
         assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD in ctx
 
-    def test_sentinel_only_under_legacy_home_dir_appends_the_statement_when_config_dir_is_empty(
-        self, armed_home, shipping_repo, tmp_path
+    def test_relative_config_dir_emits_the_statement_alone_with_no_boundary_text(
+        self, isolated_home, shipping_repo, shipping_statement
     ):
-        """The legacy `$HOME/.claude` location stays armed after CLAUDE_CONFIG_DIR adoption."""
-        empty_config_dir = tmp_path / "empty-profile"
-        empty_config_dir.mkdir()
+        """An unresolvable config dir skips the boundary text, and the statement path reads no config."""
         result = _run_hook(
             self._compact_payload(shipping_repo),
-            armed_home,
-            extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
-        )
-        ctx = session_start_additional_context(result)
-        assert "not engineer authorization" in ctx
-        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD in ctx
-
-    def test_armed_machine_with_a_relative_config_dir_stays_silent(self, armed_home, shipping_repo):
-        """An unresolvable config dir yields neither the boundary text nor a statement, even with an eligible cwd."""
-        result = _run_hook(
-            self._compact_payload(shipping_repo),
-            armed_home,
+            isolated_home,
             extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
         )
         assert result.returncode == 0
-        assert result.stdout == b""
+        assert session_start_additional_context(result) == shipping_statement
 
-    @pytest.mark.parametrize("schema_without_key", [None, "autonomous_shipping"], ids=["schema-absent", "row-missing"])
-    def test_armed_machine_with_a_degraded_schema_keeps_the_boundary_text_and_drops_the_statement(
-        self, armed_home, shipping_repo, tmp_path, schema_without_key
+    @pytest.mark.parametrize(
+        "schema_without_key", [None, "authorization_boundary_restore"], ids=["schema-absent", "row-missing"]
+    )
+    def test_degraded_schema_keeps_both_the_boundary_text_and_the_statement(
+        self, isolated_home, shipping_repo, tmp_path, schema_without_key
     ):
-        """The boundary text stays armed on a torn config-keys.psv, but autonomous_shipping fails toward not shipping."""
+        """The boundary text stays armed on a torn config-keys.psv, and the statement path reads no config."""
         degraded_hook = hook_beside_degraded_schema(
             tmp_path, RESTORE_BOUNDARY_HOOK, schema_without_key=schema_without_key
         )
         result = run_additional_context_session_start_hook(
-            degraded_hook, self._compact_payload(shipping_repo), armed_home
-        )
-        assert result.returncode == 0
-        ctx = session_start_additional_context(result)
-        assert "not engineer authorization" in ctx
-        assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD not in ctx
-
-    def test_armed_machine_with_an_unrelated_schema_row_missing_still_appends_the_statement(
-        self, armed_home, shipping_repo, tmp_path
-    ):
-        """Control for the degraded-schema test.
-        The same directory shape emits the statement when the autonomous_shipping row survives."""
-        degraded_hook = hook_beside_degraded_schema(
-            tmp_path, RESTORE_BOUNDARY_HOOK, schema_without_key="commit_stall_block"
-        )
-        result = run_additional_context_session_start_hook(
-            degraded_hook, self._compact_payload(shipping_repo), armed_home
+            degraded_hook, self._compact_payload(shipping_repo), isolated_home
         )
         assert result.returncode == 0
         ctx = session_start_additional_context(result)
@@ -367,11 +364,37 @@ class TestShippingStatementOnCompact:
         assert AUTONOMOUS_SHIPPING_STATEMENT_LEAD in ctx
 
     @pytest.mark.parametrize("source", ["startup", "clear", "resume", "fork"])
-    def test_armed_non_compact_sources_stay_silent(self, armed_home, shipping_repo, source):
-        """The announce hook is the only emitter on these sources."""
-        result = _run_hook({"source": source, "cwd": str(shipping_repo)}, armed_home)
+    def test_non_compact_sources_stay_silent(self, isolated_home, shipping_repo, source):
+        """The hook emits only for `.source == "compact"`, whatever the `.cwd` names."""
+        result = _run_hook({"source": source, "cwd": str(shipping_repo)}, isolated_home)
         assert result.returncode == 0
         assert result.stdout == b""
+
+    def test_non_compact_source_spawns_one_jq_and_no_git(self, isolated_home, shipping_repo, tmp_path):
+        """The `.source` read is the only spawn on a non-compact event, so a session start never pays for git."""
+        shimmed_path, invocation_log = install_recording_shims(tmp_path)
+        result = _run_hook(
+            {"source": "startup", "cwd": str(shipping_repo)},
+            isolated_home,
+            extra_env={"PATH": shimmed_path},
+        )
+        assert result.returncode == 0
+        assert result.stdout == b""
+        assert invocation_log.read_text().split() == ["jq"]
+
+    def test_shims_record_git_and_jq_spawns_on_a_compact_event_for_an_eligible_cwd(
+        self, isolated_home, shipping_repo, tmp_path
+    ):
+        """Positive control: proves the shims detect spawns, so the non-compact run's lone jq entry means no git ran."""
+        shimmed_path, invocation_log = install_recording_shims(tmp_path)
+        result = _run_hook(
+            self._compact_payload(shipping_repo),
+            isolated_home,
+            extra_env={"PATH": shimmed_path},
+        )
+        assert result.returncode == 0
+        assert result.stdout != b""
+        assert set(invocation_log.read_text().split()) == {"git", "jq"}
 
 
 class TestRestoreAuthorizationBoundaryRegistration:

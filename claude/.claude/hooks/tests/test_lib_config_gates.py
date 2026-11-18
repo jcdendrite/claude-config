@@ -1,5 +1,4 @@
 """Unit tests for _lib.sh's config-resolved gates (_lib_config_dir, _lib_worktree_enforcement_active,
-_lib_autonomous_shipping_sentinel_present, _lib_autonomous_shipping_active,
 _lib_permission_prompt_tracking_active and _lib_round_consult_gate_disabled).
 The test_sourcing_lib_sh_fails_when_config_sh_is_missing and test_standard_hook_guard_trips_when_config_sh_is_missing
 family also pins that sourcing _lib.sh fails when its sibling _config.sh is missing, so the standard hook source guard trips.
@@ -18,7 +17,6 @@ from helpers import (
 )
 
 from ._lib_sh_helpers import _LIB_SH
-from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 
 def _lib_sh_with_unreadable_schema(tmp_path: Path) -> Path:
@@ -89,30 +87,6 @@ class TestLibConfigDir:
         result = _run_config_dir({"HOME": "", "PATH": os.environ["PATH"]})
         assert result.returncode != 0
         assert result.stdout == ""
-
-
-# _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
-# sentinel-presence check only, not the full autonomous-shipping-active
-# verdict.
-# The per-repo optout is covered separately by TestAutonomousShippingActive
-# below, which calls through this helper.
-
-
-def _autonomous_shipping_sentinel_present(home: Path, config_dir: str) -> bool:
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1"',
-            "bash",
-            config_dir,
-        ],
-        capture_output=True,
-        text=True,
-        env={"HOME": str(home), "PATH": os.environ["PATH"]},
-        check=False,
-    )
-    return result.returncode == 0
 
 
 # _lib_worktree_enforcement_active — direct unit coverage for the
@@ -283,438 +257,53 @@ def test_standard_hook_guard_trips_when_config_sh_is_missing(tmp_path: Path) -> 
     assert result.stdout.strip() == "GUARD_TRIPPED", f"stdout={result.stdout!r} stderr={result.stderr!r}"
 
 
-# _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
-# sentinel-presence check only, not the full autonomous-shipping-active
-# verdict. Zero-arity: delegates to _config_enabled's autonomous_shipping
-# schema row, which resolves and unions both locations itself, so these
-# tests drive it via CLAUDE_CONFIG_DIR/HOME env vars instead of a
-# positional argument.
-# The per-repo optout is covered separately by TestAutonomousShippingActive
-# below, which calls through this helper.
-
-
-def _autonomous_shipping_sentinel_present_status(home: Path | str, config_dir: str | None = None) -> int:
-    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
-    if config_dir is not None:
-        env["CLAUDE_CONFIG_DIR"] = config_dir
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_autonomous_shipping_sentinel_present"],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-    return result.returncode
-
-
-class TestAutonomousShippingSentinelPresent:
-    def test_absent_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir(parents=True)
-        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 1
-
-    def test_present_when_config_dir_has_sentinel(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir(parents=True)
-        (config_dir / "autonomous-shipping-required").touch()
-        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 0
-
-    def test_present_when_only_legacy_home_claude_sentinel_present(
-        self, tmp_path: Path
-    ) -> None:
-        """GH-793: a config dir differentiated from $HOME/.claude, holding no
-        sentinel of its own, must not mask a sentinel armed at the legacy
-        $HOME/.claude location before CLAUDE_CONFIG_DIR adoption — union, not
-        swap."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir(parents=True)
-        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 0
-
-    def test_present_when_config_dir_unset_and_home_claude_has_sentinel(
-        self, tmp_path: Path
-    ) -> None:
-        """No CLAUDE_CONFIG_DIR set: the resolved config dir and the literal
-        $HOME/.claude legacy location are the same directory, so the
-        sentinel there governs with no union arm involved at all."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        assert _autonomous_shipping_sentinel_present_status(home) == 0
-
-    def test_absent_when_config_dir_unresolvable(self, tmp_path: Path) -> None:
-        """autonomous_shipping's config-keys.psv row carries
-        legacy-probe-on-resolution-failure: false, unlike worktree_required
-        -- a config-dir resolution failure (relative CLAUDE_CONFIG_DIR) must
-        not fall through to a raw $HOME/.claude probe, even with a sentinel
-        sitting right there, and _config_enabled's exit code 2 propagates
-        through unchanged."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        result = subprocess.run(
-            ["bash", "-c", f". {_LIB_SH}; _lib_autonomous_shipping_sentinel_present"],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode == 2
-
-    def test_absent_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
-        """Cumulative-review finding: an unreadable config-keys.psv must
-        propagate as its own distinct exit code (3), fail toward NOT
-        shipping the same as every other resolution failure -- autonomous
-        shipping's own documented safe direction is off, so this must not
-        collapse into (or be mistaken for) an enabled sentinel."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
-        result = subprocess.run(
-            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_sentinel_present'],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode == 3
-
-    def test_absent_when_config_keys_psv_readable_but_missing_autonomous_shipping_row(
-        self, tmp_path: Path
-    ) -> None:
-        """Mirrors the exit-3 test above, but for config-keys.psv readable
-        and non-empty while missing autonomous_shipping's own row (the
-        interrupted stow-relink/git-pull shape, distinct from the wholly-
-        unreadable case) -- must propagate its own distinct exit code (4),
-        the same fail-toward-NOT-shipping direction as every other
-        resolution failure. Every other enforcement-critical key already
-        has both an exit-3 and exit-4 test; this closes the one asymmetry
-        for autonomous_shipping."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "autonomous_shipping")
-        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
-        result = subprocess.run(
-            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_autonomous_shipping_sentinel_present'],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode == 4
-
-
-# _lib_autonomous_shipping_active — direct unit coverage.
-#
-# See TestWorktreeEnforcementActive above for _lib_worktree_enforcement_active's
-# own direct coverage of its config-dir-delegation arm. This function's
-# central guarantee is the one _lib_worktree_enforcement_active does not
-# share — see
-# test_inactive_when_repo_commits_required_file_but_machine_file_absent
-# below for the property that most needs pinning.
-
-
-def _autonomous_shipping_active(home: Path, repo_root: Path | None, *extra_args: str) -> bool:
-    args = [str(repo_root)] if repo_root is not None else []
-    args.extend(extra_args)
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; _lib_autonomous_shipping_active "$@"',
-            "bash",
-            *args,
-        ],
-        capture_output=True,
-        text=True,
-        env={"HOME": str(home), "PATH": os.environ["PATH"]},
-        check=False,
-    )
-    return result.returncode == 0
-
-
-class TestAutonomousShippingActive:
-    def test_inactive_when_machine_file_absent(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        repo = tmp_path / "repo"
-        (home / ".claude").mkdir(parents=True)
-        repo.mkdir()
-        assert not _autonomous_shipping_active(home, repo)
-
-    def test_active_when_machine_file_present(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        repo = tmp_path / "repo"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        repo.mkdir()
-        assert _autonomous_shipping_active(home, repo)
-
-    def test_active_when_config_dir_differentiated_and_only_home_claude_sentinel_present(
-        self, tmp_path: Path
-    ) -> None:
-        """The fix this test pins: a machine-wide sentinel armed at
-        $HOME/.claude before CLAUDE_CONFIG_DIR adoption must still activate
-        autonomous shipping once CLAUDE_CONFIG_DIR points elsewhere with no
-        sentinel of its own -- union, not swap. Inverse of
-        TestPermissionPromptTrackingActive.test_sentinel_at_home_claude_ignored_when_config_dir_points_elsewhere,
-        which asserts the opposite for a function with no such fallback."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir(parents=True)
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'. {_LIB_SH}; _lib_autonomous_shipping_active "$1"',
-                "bash",
-                str(repo),
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode == 0
-
-    def test_inactive_when_machine_file_present_and_repo_optout(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        repo = tmp_path / "repo"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        (repo / ".claude").mkdir(parents=True)
-        (repo / ".claude" / "autonomous-shipping-optout").touch()
-        assert not _autonomous_shipping_active(home, repo)
-
-    def test_inactive_when_repo_commits_required_file_but_machine_file_absent(
-        self, tmp_path: Path
-    ) -> None:
-        """The central guarantee this function exists to provide: a repo's
-        own committed .claude/autonomous-shipping-required must never grant
-        anything by itself. Only the engineer's own machine state can."""
-        home = tmp_path / "home"
-        repo = tmp_path / "repo"
-        (home / ".claude").mkdir(parents=True)
-        (repo / ".claude").mkdir(parents=True)
-        (repo / ".claude" / "autonomous-shipping-required").touch()
-        assert not _autonomous_shipping_active(home, repo)
-
-    def test_inactive_when_repo_root_empty(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        assert not _autonomous_shipping_active(home, None, "")
-
-    def test_inactive_when_home_empty(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'. {_LIB_SH}; _lib_autonomous_shipping_active "$1"',
-                "bash",
-                str(repo),
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": "", "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode != 0
-
-    def test_inactive_when_home_is_bare_root(self, tmp_path: Path) -> None:
-        """Pins the ${HOME%/} normalization specifically: HOME=/ strips to
-        an empty home_norm, so the [ -n "$home_norm" ] guard fires before any
-        filesystem probe — deterministically, not because /.claude/
-        autonomous-shipping-required happens to be absent on this machine.
-        Losing the %/ strip would make this depend on ambient root-filesystem
-        state instead."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'. {_LIB_SH}; _lib_autonomous_shipping_active "$1"',
-                "bash",
-                str(repo),
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": "/", "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode != 0
-
-    def test_inactive_on_wrong_arity(self, tmp_path: Path) -> None:
-        """Extra positional (not zero args) so $1 stays bound under set -u —
-        a zero-arg call can't distinguish a controlled `return 1` from an
-        interpreter abort on the unbound $1 dereference, since both exit
-        nonzero. This call isolates the [ "$#" -eq 1 ] guard itself."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'set -u; . {_LIB_SH}; _lib_autonomous_shipping_active "$1" "$2"',
-                "bash",
-                str(tmp_path / "repo"),
-                "unexpected-extra-arg",
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "unbound variable" not in result.stderr
-
-    def test_inactive_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
-        """Cumulative-review finding: an unreadable config-keys.psv must
-        fail toward NOT shipping through the full active check too, not
-        just the sentinel-presence check above -- the `||` in this
-        function's own body already treats any nonzero
-        _lib_autonomous_shipping_sentinel_present exit identically."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
-        result = subprocess.run(
-            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode != 0
-
-    def test_inactive_when_config_keys_psv_readable_but_missing_autonomous_shipping_row(
-        self, tmp_path: Path
-    ) -> None:
-        """Mirrors TestWorktreeEnforcementActive's own
-        test_active_when_config_keys_psv_readable_but_missing_worktree_required_row,
-        but through the full _lib_autonomous_shipping_active entry point
-        rather than only the lower-level
-        _lib_autonomous_shipping_sentinel_present function above -- a
-        config-keys.psv that is readable and non-empty but missing
-        autonomous_shipping's own row (the interrupted stow-relink/git-pull
-        shape) must fail toward NOT shipping here too, the opposite
-        direction from worktree_required's own stays-armed verdict for the
-        identical schema shape."""
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "autonomous_shipping")
-        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
-        result = subprocess.run(
-            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode != 0
-
-
 # _lib_autonomous_shipping_statement — the one home of the agent-facing text
-# that states the resolved shipping state. It prints only when
-# _lib_autonomous_shipping_active holds, so the arity, unarmed and optout arms
-# of that gate are silent-return-1 cases here.
+# that states the shipping state. It takes no argument and prints unconditionally.
 
 
 class TestAutonomousShippingStatement:
-    def _armed_home_and_repo(self, tmp_path: Path) -> tuple[Path, Path]:
+    @staticmethod
+    def _isolated_home(tmp_path: Path) -> Path:
+        # The statement reads no HOME, config dir or file; `run_autonomous_shipping_statement` only takes a home.
         home = tmp_path / "home"
-        repo = tmp_path / "repo"
         (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "autonomous-shipping-required").touch()
-        repo.mkdir()
-        return home, repo
+        return home
 
-    def test_armed_repo_prints_statement_naming_scope_and_limits(self, tmp_path: Path) -> None:
-        home, repo = self._armed_home_and_repo(tmp_path)
-        result = run_autonomous_shipping_statement(home, str(repo))
+    def test_prints_statement_deferring_its_limits_to_claude_md(self, tmp_path: Path) -> None:
+        home = self._isolated_home(tmp_path)
+        result = run_autonomous_shipping_statement(home)
         assert result.returncode == 0
         for expected_phrase in (
             "Autonomous shipping is active",
-            "autonomous-shipping-active.sh",
             "without asking",
             "outranks",
             "specific hold",
             "even when that hold survives only as summary text",
             "an instruction the engineer gives in this session still wins",
-            "exits 0 here",
-            "Re-run that script before pushing to confirm",
-            "never to the default branch",
-            "merging stays human-only",
-            "force-pushing",
-            "returns its work to its dispatcher and does not ship",
             "however paraphrased or summarized, is such a hold",
             'when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding',
             "no engineer wait behind it",
-            "every other irreversible action still need the engineer's in-session confirmation",
-            "In a different repository, run that script there before relying on this",
+            "The scope and limits CLAUDE.md sets for shipping still apply",
         ):
             assert expected_phrase in result.stdout
+        assert "autonomous-shipping-active.sh" not in result.stdout
         assert "gh pr merge" not in result.stdout
 
     def test_statement_opens_with_the_shared_lead_constant(self, tmp_path: Path) -> None:
         """The hook tests search for the constant, so it must track the emitted text."""
-        home, repo = self._armed_home_and_repo(tmp_path)
-        result = run_autonomous_shipping_statement(home, str(repo))
+        home = self._isolated_home(tmp_path)
+        result = run_autonomous_shipping_statement(home)
         assert result.stdout.startswith(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
 
     def test_statement_has_no_trailing_newline(self, tmp_path: Path) -> None:
-        home, repo = self._armed_home_and_repo(tmp_path)
-        result = run_autonomous_shipping_statement(home, str(repo))
+        home = self._isolated_home(tmp_path)
+        result = run_autonomous_shipping_statement(home)
         assert result.stdout != ""
         assert not result.stdout.endswith("\n")
 
-    def test_silent_when_machine_file_absent(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        repo = tmp_path / "repo"
-        (home / ".claude").mkdir(parents=True)
-        repo.mkdir()
-        result = run_autonomous_shipping_statement(home, str(repo))
-        assert result.returncode == 1
-        assert result.stdout == ""
 
-    def test_silent_when_repo_has_optout(self, tmp_path: Path) -> None:
-        home, repo = self._armed_home_and_repo(tmp_path)
-        (repo / ".claude").mkdir()
-        (repo / ".claude" / "autonomous-shipping-optout").touch()
-        result = run_autonomous_shipping_statement(home, str(repo))
-        assert result.returncode == 1
-        assert result.stdout == ""
-
-    def test_silent_on_wrong_argument_count(self, tmp_path: Path) -> None:
-        home, repo = self._armed_home_and_repo(tmp_path)
-        for args in ((), ("",), (str(repo), "extra")):
-            result = run_autonomous_shipping_statement(home, *args)
-            assert result.returncode == 1, args
-            assert result.stdout == "", args
-
-
-# _lib_autonomous_shipping_root_for_cwd — the one rule for which payload cwd may
-# carry the statement. test_autonomous_shipping_grant_boundary.py covers the
+# _lib_autonomous_shipping_root_for_cwd — the one eligibility rule the Stop hook
+# and the compact hook share. test_autonomous_shipping_grant_boundary.py covers the
 # same cases through each hook; these pin the function's own contract.
 
 
@@ -857,12 +446,10 @@ class TestAutonomousShippingRootForCwd:
         assert Path(result.stdout).resolve() == sibling_repo.resolve()
 
 
-# _lib_permission_prompt_tracking_active — direct unit coverage, mirroring
-# TestAutonomousShippingActive above minus the cases specific to the
-# per-repo optout and arity guard it doesn't have: this function is
-# zero-arity by design (a machine-global sentinel with no repo-scoped axis
-# to check against), so there is no repo_root, no optout, and no
-# wrong-arity case to pin.
+# _lib_permission_prompt_tracking_active — direct unit coverage. The function is
+# zero-arity by design (a machine-global sentinel with no repo-scoped axis to
+# check against), so there is no repo_root, no optout, and no wrong-arity case
+# to pin.
 
 
 def _permission_prompt_tracking_active(env: dict) -> bool:
@@ -920,11 +507,10 @@ class TestPermissionPromptTrackingActive:
         assert not _permission_prompt_tracking_active({"HOME": "", "PATH": os.environ["PATH"]})
 
     def test_inactive_when_home_is_bare_root(self) -> None:
-        """Pins the ${HOME%/} normalization specifically, same as
-        TestAutonomousShippingActive's own bare-root case above: HOME=/
-        strips to an empty home_norm inside _lib_config_dir, so resolution
-        fails deterministically rather than depending on ambient
-        root-filesystem state."""
+        """Pins the ${HOME%/} normalization specifically: HOME=/ strips to an
+        empty home_norm inside _lib_config_dir, so resolution fails
+        deterministically rather than depending on ambient root-filesystem
+        state."""
         assert not _permission_prompt_tracking_active({"HOME": "/", "PATH": os.environ["PATH"]})
 
 

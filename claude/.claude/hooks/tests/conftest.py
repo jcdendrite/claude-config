@@ -500,14 +500,6 @@ def isolated_home(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def armed_home(isolated_home):
-    """isolated_home plus the machine-level autonomous-shipping sentinel."""
-    marker = isolated_home / ".claude" / "autonomous-shipping-required"
-    marker.write_text("# machine sentinel\n")
-    return isolated_home
-
-
-@pytest.fixture
 def shipping_repo(tmp_path):
     """A committed git repo for tests of hooks that resolve a repo from a payload `.cwd`."""
     return init_git_repo_with_commit(tmp_path / "shipping-repo", branch="main")
@@ -522,16 +514,12 @@ def non_repo_dir(tmp_path):
 
 
 @pytest.fixture
-def shipping_statement(armed_home):
-    """Returns a callable that returns the text _lib_autonomous_shipping_statement emits for a repo root.
+def shipping_statement(isolated_home):
+    """The text _lib_autonomous_shipping_statement emits.
     Hook tests compare emitted text against it, so a hook whose text drifts from the helper's fails."""
-
-    def statement_for(repo_root: Path) -> str:
-        result = run_autonomous_shipping_statement(armed_home, str(repo_root))
-        assert result.returncode == 0, result.stderr
-        return result.stdout
-
-    return statement_for
+    result = run_autonomous_shipping_statement(isolated_home)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
 
 
 @pytest.fixture

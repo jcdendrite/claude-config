@@ -2,7 +2,7 @@
 # hook-class: informational
 # SessionStart (compact only): restates the irreversible-action boundary the
 # harness compact summary's "Optional Next Step" section doesn't distinguish
-# from a reversible step. When autonomous shipping is active it appends the
+# from a reversible step. For any repo the root guard accepts, it appends the
 # shipping statement to that same message. See docs/hooks.md.
 #
 # Advisory only: this emits additionalContext, not a gate — it cannot block a
@@ -25,7 +25,8 @@
 # Kill switch: ~/.claude/.authorization-boundary-disabled (or under
 # $CLAUDE_CONFIG_DIR), mirroring .handoff-nudge-disabled /
 # .consume-durable-continuity-disabled. It silences only the boundary text.
-# The statement follows autonomous_shipping and the repo optout instead.
+# The statement depends only on the root guard, so a relative CLAUDE_CONFIG_DIR
+# skips the boundary text and keeps the statement.
 #
 # Exit 0 always — a SessionStart hook has no deny path, so erroring here would
 # only block session startup, strictly worse than silently skipping the text.
@@ -60,17 +61,13 @@ case "$AUTHORIZATION_BOUNDARY_RESTORE_STATUS" in
   *) ;;
 esac
 
-# The statement is resolved for the repo the payload's .cwd names, through
+# The statement is appended only when the payload's .cwd passes
 # _lib_autonomous_shipping_root_for_cwd, which fails closed when the payload
 # names no usable directory.
-# The sentinel fast path keeps a machine that never adopted shipping from
-# spawning jq or git here.
 SHIPPING_STATEMENT=''
-if _lib_autonomous_shipping_sentinel_present; then
-  PAYLOAD_CWD=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.cwd | type) == "string" then .cwd else empty end' 2>/dev/null)
-  if REPO_ROOT=$(_lib_autonomous_shipping_root_for_cwd "$PAYLOAD_CWD"); then
-    SHIPPING_STATEMENT=$(_lib_autonomous_shipping_statement "$REPO_ROOT") || true
-  fi
+PAYLOAD_CWD=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.cwd | type) == "string" then .cwd else empty end' 2>/dev/null)
+if _lib_autonomous_shipping_root_for_cwd "$PAYLOAD_CWD" >/dev/null; then
+  SHIPPING_STATEMENT=$(_lib_autonomous_shipping_statement)
 fi
 
 ADDITIONAL_CONTEXT="$BOUNDARY_TEXT"
