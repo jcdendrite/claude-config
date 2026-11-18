@@ -26,13 +26,24 @@ import pytest
 from helpers import CLAUDE_DIR, HOOKS_DIR
 
 sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests._cursor_identity_fixtures import (  # noqa: E402
+    HOST_PROCESS_ID,
+    HOST_SHOWING_PS_BODY,
+    PID_GRAMMAR_EDGE_TABLE,
+    REJECTED_PID_GRAMMAR_ROWS,
+    write_stub_tool_directory,
+)
 from hooks.tests._cursor_payloads import (  # noqa: E402
+    CHILD_CONVERSATION_ID,
     CONTRACT_VERSION,
     CONVERSATION_ID,
     IS_ROOT,
+    LIB_SH,
+    PARENT_CONVERSATION_ID,
     PARITY_EXCEPTIONS_JSON,
     SHIM,
     SHIM_INTERPRETER_FLAGS,
+    STUBBED_WALK_DEADLINE_SECONDS,
     TEXT_RULE_CORPUS,
     TOOL_MAP_JSON,
     ShimEnv,
@@ -58,6 +69,8 @@ from hooks.tests._cursor_payloads import (  # noqa: E402
     wrapper_name,
     write_hook_script,
 )
+
+from .conftest import require_zsh
 
 SHIM_MODULE = load_shim()
 RECOVERY_SENTENCE = SHIM_MODULE.RECOVERY_SENTENCE
@@ -538,6 +551,7 @@ NON_FAILURE_OUTCOME_TOKENS = frozenset(
         "classified",
         "not-shell",
         "pin",
+        "pin-no-host",
         "pin-unchanged",
         "pin-check-ok",
     }
@@ -1115,9 +1129,10 @@ class TestPayloadValidation:
             payload["command"] = command
         else:
             payload = shell_pre_payload(root, command)
-        output, env = _run_probe(tmp_path, payload, mode=mode)
+        env = _walkless_env(tmp_path)
+        output, env = _run_probe(tmp_path, payload, env=env, mode=mode)
         if mode == "pin":
-            assert output["updated_input"]["command"] == f"builtin cd -- '{root}' || exit 1\n{command}"
+            assert output["updated_input"]["command"] == _pin_prefix(env, root) + command
         elif mode == "pin-check":
             assert output["permission"] == "deny"
             assert read_log_lines(env)[-1]["out"] == "pin-check"
@@ -1322,6 +1337,40 @@ class TestShimPrologue:
             },
         )
         assert (tmp_path / "seen").read_text().splitlines() == [f"dir={env.config_dir}", "0"]
+
+    def test_a_host_pid_the_shim_inherited_from_an_ide_shell_call_never_reaches_the_hook(self, tmp_path: Path) -> None:
+        env = make_shim_env(tmp_path)
+        script = write_hook_script(
+            tmp_path / "hook.sh", f"printf '%s' \"${{CLAUDE_CONFIG_ADAPTER_HOST_PID-unset}}\" > '{tmp_path / 'seen'}'\n"
+        )
+        run_shim(
+            env,
+            shell_pre_payload(_workspace(tmp_path), "ls"),
+            hook_args("PreToolUse", script=script),
+            cwd=_scratch(tmp_path),
+            extra_env={"CLAUDE_CONFIG_ADAPTER_HOST_PID": "9999"},
+        )
+        assert (tmp_path / "seen").read_text() == "unset"
+
+    @pytest.mark.parametrize(
+        ("spec_id", "expected_session_id"),
+        [("shell_pre", CONVERSATION_ID), ("shell_pre_child", PARENT_CONVERSATION_ID)],
+        ids=["root-call", "subagent-call"],
+    )
+    def test_the_hook_runs_with_the_session_id_the_shim_resolved_which_is_the_parents_for_a_subagent_call(
+        self, tmp_path: Path, spec_id: str, expected_session_id: str
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        script = write_hook_script(
+            tmp_path / "hook.sh", f"printf '%s' \"${{CLAUDE_CONFIG_ADAPTER_SESSION_ID-unset}}\" > '{tmp_path / 'seen'}'\n"
+        )
+        run_shim(
+            env,
+            build_spec(spec_id, _workspace(tmp_path)).cursor,
+            hook_args("PreToolUse", script=script),
+            cwd=_scratch(tmp_path),
+        )
+        assert (tmp_path / "seen").read_text() == expected_session_id
 
     @pytest.mark.timing
     def test_a_kill_of_the_shim_mid_call_leaves_the_wrapper_bounding_the_hook(self, tmp_path: Path) -> None:
@@ -1740,8 +1789,10 @@ SEEDED_STARTS = {
 class TestShimExecCount:
     """Process starts per call are counted by an audit hook, so the count needs no time budget and cannot flake on wall time."""
 
-    def _run(self, tmp_path: Path, payload: dict, args: list[str]) -> tuple[subprocess.CompletedProcess, list[dict], dict]:
-        env = make_shim_env(tmp_path)
+    def _run(
+        self, tmp_path: Path, payload: dict, args: list[str], *, env: ShimEnv | None = None
+    ) -> tuple[subprocess.CompletedProcess, list[dict], dict]:
+        env = env or make_shim_env(tmp_path)
         result, events, extra = run_audited(
             args, payload=json.dumps(payload).encode(), env=shim_process_env(env), cwd=_scratch(tmp_path)
         )
@@ -1753,26 +1804,52 @@ class TestShimExecCount:
         _, events, _ = self._run(tmp_path, shell_pre_payload(_workspace(tmp_path), "ls"), hook_args("PreToolUse", script=script))
         assert [event["event"] for event in events] == ["subprocess.Popen"]
 
-    @pytest.mark.parametrize("mode", ["classify", "pin", "pin-check"])
+    @pytest.mark.parametrize("mode", ["classify", "pin-check"])
     def test_the_other_modes_start_no_process(self, tmp_path: Path, mode: str) -> None:
         root = _workspace(tmp_path)
         payload = build_spec("shell_before_execution", root).cursor if mode == "pin-check" else shell_pre_payload(root, "ls")
         _, events, _ = self._run(tmp_path, payload, hook_args("PreToolUse", mode=mode))
         assert events == []
 
+    def test_pin_mode_starts_exactly_one_process_the_host_walk(self, tmp_path: Path) -> None:
+        _, events, _ = self._run(tmp_path, shell_pre_payload(_workspace(tmp_path), "ls"), hook_args("PreToolUse", mode="pin"))
+        assert [event["event"] for event in events] == ["subprocess.Popen"]
+
+    def test_pin_mode_starts_no_process_over_a_record_that_names_no_bash(self, tmp_path: Path) -> None:
+        _, events, _ = self._run(
+            tmp_path,
+            shell_pre_payload(_workspace(tmp_path), "ls"),
+            hook_args("PreToolUse", mode="pin"),
+            env=_walkless_env(tmp_path),
+        )
+        assert events == []
+
+    @pytest.mark.parametrize("host_pid", ["4242", None], ids=["export-form", "unset-form"])
+    def test_pin_check_starts_no_process_on_a_command_whose_prefix_carries_either_host_pid_form(
+        self, tmp_path: Path, host_pid: str | None
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        root = _workspace(tmp_path)
+        payload = build_spec("shell_before_execution", root).cursor
+        payload["command"] = _pin_prefix(env, root, host_pid) + "ls"
+        result, events, _ = self._run(tmp_path, payload, hook_args("PreToolUse", mode="pin-check"), env=env)
+        assert events == []
+        assert json.loads(result.stdout) == {}
+
     @pytest.mark.parametrize("mode", ["pin", "hook"])
     def test_a_leading_cd_into_a_directory_inside_a_root_starts_no_process_beyond_the_wrapper(
         self, tmp_path: Path, mode: str
     ) -> None:
         root = _workspace(tmp_path)
+        env = _walkless_env(tmp_path)
         script = write_hook_script(tmp_path / "hook.sh", "cat > /dev/null\n")
         args = hook_args("PreToolUse", script=script) if mode == "hook" else hook_args("PreToolUse", mode=mode)
-        result, events, _ = self._run(tmp_path, shell_pre_payload(root, f"cd {root / 'src'} && make"), args)
+        result, events, _ = self._run(tmp_path, shell_pre_payload(root, f"cd {root / 'src'} && make"), args, env=env)
         assert [event["event"] for event in events] == (["subprocess.Popen"] if mode == "hook" else [])
         if mode == "pin":
             # A refusal also exits 0 with no process, and the first-root fallback pins `root`: the line must name the cd target.
             pinned = json.loads(result.stdout)["updated_input"]["command"]
-            assert pinned.startswith(f"builtin cd -- '{root / 'src'}' || exit 1\n")
+            assert pinned.startswith(_pin_prefix(env, root / "src"))
 
     @pytest.mark.parametrize("tool", ["Read", "Write", "Delete"])
     def test_a_file_tool_call_resolving_an_agent_named_path_starts_no_process_beyond_the_wrapper(
@@ -2011,9 +2088,9 @@ class TestPinModeLeavesNonShellCallsAlone:
 
     def test_a_pre_tool_use_shell_call_is_still_rewritten_as_the_polarity_control(self, tmp_path: Path) -> None:
         root = _workspace(tmp_path)
-        output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), mode="pin")
-        assert output["updated_input"]["command"] == f"builtin cd -- '{root}' || exit 1\nls"
-        assert read_log_lines(env)[-1]["out"] == "pin"
+        output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), env=_walkless_env(tmp_path), mode="pin")
+        assert output["updated_input"]["command"] == _pin_prefix(env, root) + "ls"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
 
 
 class TestModesThatNeedNoWrapper:
@@ -2034,14 +2111,15 @@ class TestModesThatNeedNoWrapper:
     def test_pin_rewrites_a_shell_call_on_a_record_with_no_wrapper(self, tmp_path: Path) -> None:
         root = _workspace(tmp_path)
         output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), env=self._wrapperless_env(tmp_path), mode="pin")
-        assert output["updated_input"]["command"] == f"builtin cd -- '{root}' || exit 1\nls"
-        assert read_log_lines(env)[-1]["out"] == "pin"
+        assert output["updated_input"]["command"] == _pin_prefix(env, root) + "ls"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
 
     def test_pin_check_passes_a_pinned_command_on_a_record_with_no_wrapper(self, tmp_path: Path) -> None:
         root = _workspace(tmp_path)
         payload = build_spec("shell_before_execution", root).cursor
-        payload["command"] = f"builtin cd -- '{root}' || exit 1\nls"
-        output, env = _run_probe(tmp_path, payload, env=self._wrapperless_env(tmp_path), mode="pin-check")
+        env = self._wrapperless_env(tmp_path)
+        payload["command"] = _pin_prefix(env, root) + "ls"
+        output, env = _run_probe(tmp_path, payload, env=env, mode="pin-check")
         assert output == {}
         assert read_log_lines(env)[-1]["out"] == "pin-check-ok"
 
@@ -2181,7 +2259,7 @@ def stand_in(monkeypatch: pytest.MonkeyPatch):
 
 
 def _call_run_wrapped(deadline_at: float = 8.0, directory: str = "/", wrapper: str = "/recorded/timeout"):
-    return SHIM_MODULE.run_wrapped_hook(wrapper, "/hook.sh", b'{"k":1}', directory, {}, deadline_at)
+    return SHIM_MODULE.run_wrapped_hook(wrapper, ["/hook.sh"], b'{"k":1}', directory, {}, deadline_at)
 
 
 class TestShimHookRun:
@@ -2599,6 +2677,12 @@ def raiser(*arguments, **keywords):
         raise SystemExit(config["canary"])
     if kind == "recursion":
         raise RecursionError(config["canary"])
+    if kind == "oserror":
+        raise OSError(5, config["canary"])
+    if kind == "subprocess-error":
+        raise sys.modules["subprocess"].SubprocessError(config["canary"])
+    if kind == "refusal":
+        raise namespace["Refusal"]("timeout", config["canary"])
     raise MemoryError(config["canary"])
 
 
@@ -3280,8 +3364,34 @@ DIRECTORY_INPUT_REFUSAL_TEXT = (
 )
 
 
+def _walkless_env(tmp_path: Path) -> ShimEnv:
+    """An install record that names no bash, so `pin` mode starts no host walk and writes the unset form."""
+    tool_paths = recorded_tool_paths()
+    del tool_paths["bash"]
+    return make_shim_env(tmp_path, tool_paths=tool_paths)
+
+
+def _environment_line(env: ShimEnv, host_pid: str | None = None, session_id: str = CONVERSATION_ID) -> str:
+    """The pin prefix's first line, spelled out here and not built by the shim, so a drift in its text fails a row."""
+    exports = f"export CLAUDE_CONFIG_DIR='{env.config_dir}' CLAUDE_CONFIG_ADAPTER_SESSION_ID='{session_id}'"
+    if host_pid is None:
+        return f"unset CLAUDECODE CLAUDE_CONFIG_ADAPTER_HOST_PID; {exports}"
+    return f"unset CLAUDECODE; {exports} CLAUDE_CONFIG_ADAPTER_HOST_PID={host_pid}"
+
+
+def _pin_prefix(env: ShimEnv, directory: Path | str, host_pid: str | None = None, session_id: str = CONVERSATION_ID) -> str:
+    """The whole pin prefix: the environment line, the pin line and the newline after each."""
+    return f"{_environment_line(env, host_pid, session_id)}\nbuiltin cd -- '{directory}' || exit 1\n"
+
+
+def _stand_in_bash_env(tmp_path: Path, body: str) -> ShimEnv:
+    """An install record whose bash is a stand-in running `body`, the program `pin` mode's host walk starts."""
+    stand_in = write_stub_tool_directory(tmp_path, "walk-bin", "bash", body) / "bash"
+    return make_shim_env(tmp_path, tool_paths={**recorded_tool_paths(), "bash": str(stand_in)})
+
+
 def _pin(env: ShimEnv, payload: dict, tmp_path: Path, *, fail_closed: bool = True) -> dict:
-    args = hook_args("PreToolUse", mode="pin", fail_closed=fail_closed)
+    args = hook_args("PreToolUse", mode="pin", fail_closed=fail_closed, deadline=STUBBED_WALK_DEADLINE_SECONDS)
     result = run_shim(env, payload, args, cwd=_scratch(tmp_path))
     assert result.returncode == 0, result.stderr
     return shim_json(result)
@@ -3302,24 +3412,24 @@ def _prefixed(env: ShimEnv, tmp_path: Path, root: Path, command: str, **tool_inp
 
 class TestDirectoryPin:
     def test_a_multi_root_workspace_pins_the_first_root(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         first, second = (tmp_path / "one").resolve(), (tmp_path / "two").resolve()
         first.mkdir()
         second.mkdir()
         payload = shell_pre_payload(first, "pwd -P")
         payload["workspace_roots"] = [str(first), str(second)]
         command = _pin(env, payload, tmp_path)["updated_input"]["command"]
-        assert command == f"builtin cd -- '{first}' || exit 1\npwd -P"
+        assert command == _pin_prefix(env, first) + "pwd -P"
 
     def test_no_workspace_root_pins_home(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         payload = shell_pre_payload(tmp_path, "pwd -P")
         payload["workspace_roots"] = []
         command = _pin(env, payload, tmp_path)["updated_input"]["command"]
-        assert command.startswith(f"builtin cd -- '{env.home.resolve()}' || exit 1\n")
+        assert command.startswith(_pin_prefix(env, env.home.resolve()))
 
     def test_a_non_absolute_first_root_takes_the_resolution_deny(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         payload = shell_pre_payload(tmp_path, "pwd -P")
         payload["workspace_roots"] = ["relative/root"]
         output = _pin(env, payload, tmp_path)
@@ -3330,7 +3440,7 @@ class TestDirectoryPin:
         _assert_deny_text_rules(output)
 
     def test_an_informational_pin_prints_empty_output_and_logs_the_cause(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         payload = shell_pre_payload(tmp_path, "pwd -P")
         payload["workspace_roots"] = ["relative/root"]
         assert _pin(env, payload, tmp_path, fail_closed=False) == {}
@@ -3342,7 +3452,7 @@ class TestDirectoryPin:
         ids=["space", "single-quote", "dash", "tab", "newline", "control-byte", "delete-byte"],
     )
     def test_a_pinned_directory_is_quoted_so_the_prefixed_command_starts_there(self, tmp_path: Path, name: str) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / name).resolve()
         root.mkdir()
         command = _prefixed(env, tmp_path, root, "pwd -P")
@@ -3380,7 +3490,7 @@ class TestDirectoryPin:
         ["first-root", "home-fallback", "exception-inside-first", "exception-inside-later", "exception-with-space-and-quote"],
     )
     def test_the_round_trip_prefixes_once_checks_strips_and_survives_a_double_fire(self, tmp_path: Path, source: str) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root, original, roots = self._sources(tmp_path)[source]
         payload = shell_pre_payload(root, original)
         payload["workspace_roots"] = roots
@@ -3400,14 +3510,14 @@ class TestDirectoryPin:
         assert json.loads(saved.read_text())["tool_input"]["command"] == original
 
     def test_a_lookalike_pin_prefix_naming_another_directory_is_agent_text_and_is_prefixed_again(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         other = (tmp_path / "other").resolve()
         root.mkdir()
         other.mkdir()
         lookalike = f"builtin cd -- '{other}' || exit 1\nmake"
         prefixed = _prefixed(env, tmp_path, root, lookalike)
-        assert prefixed == f"builtin cd -- '{root}' || exit 1\n{lookalike}"
+        assert prefixed == _pin_prefix(env, root) + lookalike
         payload = shell_pre_payload(root, prefixed)
         saved = tmp_path / "saved.json"
         script = recording_probe_script(tmp_path / "hook.sh", saved)
@@ -3420,10 +3530,10 @@ class TestDirectoryPin:
     def test_each_shell_events_hooks_receive_the_stripped_command(
         self, tmp_path: Path, event_spec: str, carry_prefix: bool
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = _workspace(tmp_path)
         spec = build_spec(event_spec, root)
-        command = f"builtin cd -- '{root}' || exit 1\necho hello" if carry_prefix else "echo hello"
+        command = _pin_prefix(env, root) + "echo hello" if carry_prefix else "echo hello"
         payload = spec.cursor
         if "command" in payload:
             payload["command"] = command
@@ -3438,13 +3548,13 @@ class TestDirectoryPin:
     def test_pin_check_denies_an_unprefixed_command_a_lookalike_and_a_foreign_rewrite_and_allows_the_expected_prefix(
         self, tmp_path: Path
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = _workspace(tmp_path)
         other = (tmp_path / "other").resolve()
         other.mkdir()
-        expected = f"builtin cd -- '{root}' || exit 1\nmake"
+        expected = _pin_prefix(env, root) + "make"
         assert _pin_check(env, expected, root, tmp_path) == {}
-        for denied in ("make", f"builtin cd -- '{other}' || exit 1\nmake", "rewritten by a foreign entry"):
+        for denied in ("make", _pin_prefix(env, other) + "make", "rewritten by a foreign entry"):
             output = _pin_check(env, denied, root, tmp_path)
             assert output["permission"] == "deny", denied
             assert "pin-check" in output["agent_message"]
@@ -3452,7 +3562,7 @@ class TestDirectoryPin:
         assert read_log_lines(env)[-1]["out"] == "pin-check"
 
     def test_the_pin_output_has_updated_input_and_no_permission_key_and_keeps_every_other_input_key(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = _workspace(tmp_path)
         payload = shell_pre_payload(root, "make", timeout=30, description="build", run_in_background=False)
         output = _pin(env, payload, tmp_path)
@@ -3466,7 +3576,7 @@ class TestDirectoryPin:
         "payload_cwd", [None, "", "relative/dir", "/some/absolute/dir"], ids=["absent", "empty", "relative", "absolute"]
     )
     def test_the_payload_cwd_never_changes_the_directory_a_hook_starts_in(self, tmp_path: Path, payload_cwd: str | None) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = _workspace(tmp_path)
         payload = shell_pre_payload(root, "make")
         if payload_cwd is None:
@@ -3482,7 +3592,7 @@ class TestDirectoryPin:
     def test_an_absent_null_empty_or_pinned_directory_input_is_accepted_and_left_unchanged(
         self, tmp_path: Path, accepted: str | None
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = _workspace(tmp_path)
         payload = shell_pre_payload(root, "make")
         payload["tool_input"].pop("cwd", None)
@@ -3514,7 +3624,7 @@ class TestDirectoryPin:
 
     @pytest.mark.parametrize("refused", list(REFUSED_INPUTS))
     def test_any_other_directory_input_takes_the_refusal_with_one_fixed_text(self, tmp_path: Path, refused: str) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         first = (tmp_path / "first").resolve()
         other = (tmp_path / "other").resolve()
         (other / "pkg").mkdir(parents=True)
@@ -3538,7 +3648,7 @@ class TestDirectoryPin:
             assert value not in output["agent_message"]
 
     def test_the_refusal_text_is_byte_identical_for_every_refused_value(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         first = (tmp_path / "first").resolve()
         first.mkdir()
         texts = set()
@@ -3551,7 +3661,7 @@ class TestDirectoryPin:
     def test_under_a_leading_cd_into_a_later_root_the_exception_directory_is_the_pin_and_the_first_root_is_refused(
         self, tmp_path: Path
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         first = (tmp_path / "first").resolve()
         later = (tmp_path / "later").resolve()
         first.mkdir()
@@ -3572,7 +3682,7 @@ class TestDirectoryPin:
     def test_a_leading_cd_that_escapes_every_root_is_never_the_pin_and_its_directory_input_is_refused(
         self, tmp_path: Path, shape: str
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         elsewhere = (tmp_path / "elsewhere").resolve()
         root.mkdir()
@@ -3617,7 +3727,7 @@ class TestDirectoryPin:
     def test_a_double_quoted_leading_cd_path_holding_a_backslash_takes_no_exception_and_a_plain_one_does(
         self, tmp_path: Path
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         inside = root / "inside"
         # A shell removes a backslash-newline pair inside double quotes, so it reads this path as `inside/../..`.
@@ -3625,82 +3735,82 @@ class TestDirectoryPin:
         (inside / ".\\\n.").mkdir(parents=True)
         backslash_leading_cd = f'cd "{inside}/.\\\n./.."'
         denied = _prefixed(env, tmp_path, root, f"{backslash_leading_cd} && make")
-        assert denied.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        assert denied.startswith(_pin_prefix(env, root))
         assert self._directory_bash_enters(backslash_leading_cd, root) not in ("", str(inside))
         # A shell reads `\"` as a literal quote and keeps the word going, while the shim's quoted group ends at the quote.
         # The shim reads the path as `inside/d\`, a directory that exists here.
         (inside / "d\\").mkdir()
         quote_leading_cd = f'cd "{inside}/d\\"'
         denied_at_quote = _prefixed(env, tmp_path, root, f"{quote_leading_cd} && make")
-        assert denied_at_quote.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        assert denied_at_quote.startswith(_pin_prefix(env, root))
         assert self._directory_bash_enters(quote_leading_cd, root) != str(inside / "d\\")
         plain_leading_cd = f'cd "{inside}"'
         accepted = _prefixed(env, tmp_path, root, f"{plain_leading_cd} && make")
-        assert accepted.startswith(f"builtin cd -- '{inside}' || exit 1\n")
+        assert accepted.startswith(_pin_prefix(env, inside))
         assert self._directory_bash_enters(plain_leading_cd, root) == str(inside)
 
     def test_a_single_quoted_leading_cd_path_holding_a_backslash_takes_the_exception(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         backslash_directory = root / "inside" / "d\\"
         backslash_directory.mkdir(parents=True)
         # A shell reads a single-quoted backslash literally, so the shim's path and the shell's path are the same.
         leading_cd = f"cd '{backslash_directory}'"
         pinned = _prefixed(env, tmp_path, root, f"{leading_cd} && make")
-        assert pinned.startswith(f"builtin cd -- '{backslash_directory}' || exit 1\n")
+        assert pinned.startswith(_pin_prefix(env, backslash_directory))
         assert self._directory_bash_enters(leading_cd, root) == str(backslash_directory)
 
     def test_an_unquoted_leading_cd_path_holding_a_backslash_takes_no_exception(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         backslash_directory = root / "inside" / "d\\"
         backslash_directory.mkdir(parents=True)
         # A shell reads an unquoted `\ ` as an escaped space, so it reads this path as `inside/d `, not `inside/d\`.
         leading_cd = f"cd {backslash_directory}"
         denied = _prefixed(env, tmp_path, root, f"{leading_cd} && make")
-        assert denied.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        assert denied.startswith(_pin_prefix(env, root))
         assert self._directory_bash_enters(leading_cd, root) != str(backslash_directory)
 
     @pytest.mark.parametrize("blank", ["\r", "\x0b", "\x0c"], ids=["carriage-return", "vertical-tab", "form-feed"])
     def test_a_carriage_return_vertical_tab_or_form_feed_around_the_leading_cd_path_is_not_a_blank_and_takes_no_exception(
         self, tmp_path: Path, blank: str
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         inside = root / "inside"
         inside.mkdir(parents=True)
         # A shell keeps the character in the path word, so `inside<blank>` names a directory that does not exist.
         for command in (f"cd {inside}{blank}&& make", f"cd{blank}{inside} && make"):
-            assert _prefixed(env, tmp_path, root, command).startswith(f"builtin cd -- '{root}' || exit 1\n")
+            assert _prefixed(env, tmp_path, root, command).startswith(_pin_prefix(env, root))
 
     @pytest.mark.parametrize("blank", [" ", "\t"], ids=["space", "tab"])
     def test_a_space_or_tab_around_the_leading_cd_path_takes_the_exception(self, tmp_path: Path, blank: str) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         inside = root / "inside"
         inside.mkdir(parents=True)
         pinned = _prefixed(env, tmp_path, root, f"cd{blank}{inside}{blank}&& make")
-        assert pinned.startswith(f"builtin cd -- '{inside}' || exit 1\n")
+        assert pinned.startswith(_pin_prefix(env, inside))
 
     @pytest.mark.parametrize("blank", ["\r", "\x0b", "\x0c"], ids=["carriage-return", "vertical-tab", "form-feed"])
     def test_an_unquoted_leading_cd_path_ending_in_such_a_character_takes_the_exception_for_the_directory_the_shell_enters(
         self, tmp_path: Path, blank: str
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "root").resolve()
         sibling = root / f"inside{blank}"
         sibling.mkdir(parents=True)
         (root / "inside").mkdir()
         leading_cd = f"cd {sibling}"
         pinned = _prefixed(env, tmp_path, root, f"{leading_cd}&& make")
-        assert pinned.startswith(f"builtin cd -- '{sibling}' || exit 1\n")
+        assert pinned.startswith(_pin_prefix(env, sibling))
         assert self._directory_bash_enters(leading_cd, root) == str(sibling)
 
     @pytest.mark.parametrize("name", ["déjà", "ファイル"], ids=["accented", "katakana"])
     def test_a_leading_cd_into_a_root_or_a_directory_inside_one_with_a_non_ascii_name_takes_the_exception(
         self, tmp_path: Path, name: str
     ) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         first = (tmp_path / "first").resolve()
         non_ascii_root = (tmp_path / name).resolve()
         inside = first / name
@@ -3709,7 +3819,7 @@ class TestDirectoryPin:
         for target, roots in ((non_ascii_root, [first, non_ascii_root]), (inside, [first])):
             payload = shell_pre_payload(first, f"cd '{target}' && make")
             payload["workspace_roots"] = [str(root) for root in roots]
-            assert _pin(env, payload, tmp_path)["updated_input"]["command"].startswith(f"builtin cd -- '{target}' || exit 1\n")
+            assert _pin(env, payload, tmp_path)["updated_input"]["command"].startswith(_pin_prefix(env, target))
 
     @pytest.mark.parametrize(
         ("root", "target", "contained"),
@@ -3795,7 +3905,7 @@ class TestDirectoryPin:
         payload = file_tool_payload(first, tool, str(second / "src" / "target.txt"), target_key=target_key, **extra)
         payload["workspace_roots"] = [str(first), str(second)]
         script = write_hook_script(tmp_path / "hook.sh", f"pwd -P > '{tmp_path / 'where'}'\n")
-        run_shim(make_shim_env(tmp_path), payload, hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path))
+        run_shim(_walkless_env(tmp_path), payload, hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path))
         assert (tmp_path / "where").read_text().strip() == str(second)
 
     @pytest.mark.parametrize("spelling", ["//", "/.", "/..", "/../.."])
@@ -3859,7 +3969,7 @@ class TestDirectoryPin:
 
     @pytest.mark.timing
     def test_a_pin_prefixed_200_kb_command_is_recognized_within_the_payload_size_smoke_bound(self, tmp_path: Path) -> None:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = _workspace(tmp_path)
         original = "echo " + "a" * 200_000
         started = time.monotonic()
@@ -3868,10 +3978,270 @@ class TestDirectoryPin:
         assert _pin(env, payload, tmp_path) == {}
         assert time.monotonic() - started < 10.0
 
+    # --- the environment line and its host-PID part ---
+
+    def _walk_calls(self, tmp_path: Path) -> list[str]:
+        calls = tmp_path / "walk-calls"
+        return calls.read_text().splitlines() if calls.exists() else []
+
+    def _recording_walk_env(self, tmp_path: Path, printed: bytes = b"4242\n") -> ShimEnv:
+        """A record whose bash is a stand-in that logs its start, its arguments and its directory, then prints `printed`."""
+        printed_file = tmp_path / "walk-printed"
+        printed_file.write_bytes(printed)
+        body = (
+            f"echo started >> '{tmp_path / 'walk-calls'}'\n"
+            f"printf '%s\\n' \"$@\" > '{tmp_path / 'walk-arguments'}'\n"
+            f"pwd -P > '{tmp_path / 'walk-directory'}'\n"
+            f"exec cat '{printed_file}'\n"
+        )
+        return _stand_in_bash_env(tmp_path, body)
+
+    def test_pin_mode_exports_the_pid_its_host_walk_prints(self, tmp_path: Path) -> None:
+        env = self._recording_walk_env(tmp_path)
+        root = _workspace(tmp_path)
+        command = _prefixed(env, tmp_path, root, "make")
+        assert command == (
+            f"unset CLAUDECODE; export CLAUDE_CONFIG_DIR='{env.config_dir}' "
+            f"CLAUDE_CONFIG_ADAPTER_SESSION_ID='{CONVERSATION_ID}' CLAUDE_CONFIG_ADAPTER_HOST_PID=4242\n"
+            f"builtin cd -- '{root}' || exit 1\nmake"
+        )
+        walk_arguments = (tmp_path / "walk-arguments").read_text().splitlines()
+        assert walk_arguments == ["-c", '. "$1" && _lib_cursor_host_pid', "walk", str(LIB_SH)]
+        assert (tmp_path / "walk-directory").read_text().strip() == str(root)
+
+    def test_a_pin_prefix_of_a_subagent_call_carries_its_parents_session_id(self, tmp_path: Path) -> None:
+        env = _walkless_env(tmp_path)
+        root = _workspace(tmp_path)
+        payload = build_spec("shell_pre_child", root).cursor
+        payload["tool_input"] = {"command": "make"}
+        command = _pin(env, payload, tmp_path)["updated_input"]["command"]
+        assert command == _pin_prefix(env, root, session_id=PARENT_CONVERSATION_ID) + "make"
+        assert CHILD_CONVERSATION_ID not in command
+
+    @pytest.mark.parametrize("row", [row for row in PID_GRAMMAR_EDGE_TABLE if row.accepted], ids=lambda row: row.row_id)
+    def test_the_walks_output_is_exported_when_the_pid_grammar_accepts_it(self, tmp_path: Path, row) -> None:
+        env = self._recording_walk_env(tmp_path, (row.value + "\n").encode())
+        root = _workspace(tmp_path)
+        assert _prefixed(env, tmp_path, root, "make") == _pin_prefix(env, root, row.value) + "make"
+        assert len(self._walk_calls(tmp_path)) == 1
+
+    @pytest.mark.parametrize("row", REJECTED_PID_GRAMMAR_ROWS, ids=lambda row: row.row_id)
+    def test_a_walk_output_the_pid_grammar_rejects_is_never_exported_and_still_pins(self, tmp_path: Path, row) -> None:
+        env = self._recording_walk_env(tmp_path, (row.value + "\n").encode())
+        root = _workspace(tmp_path)
+        assert _prefixed(env, tmp_path, root, "make") == _pin_prefix(env, root) + "make"
+        assert len(self._walk_calls(tmp_path)) == 1
+
+    def _walk_failure_env(self, tmp_path: Path, failure: str) -> ShimEnv:
+        if failure == "no-bash":
+            return _walkless_env(tmp_path)
+        if failure == "start-error":
+            tool_paths = recorded_tool_paths()
+            tool_paths.pop("gtimeout", None)
+            tool_paths["timeout"] = str(tmp_path / "no-such-wrapper")
+            return make_shim_env(tmp_path, tool_paths=tool_paths)
+        body = {
+            "nonzero-status": "exit 3\n",
+            "hook-output-cap": f"head -c {SHIM_MODULE.HOOK_OUTPUT_CAP_BYTES * 2} /dev/zero\n",
+            "signal": "kill -TERM $$\n",
+        }[failure]
+        return _stand_in_bash_env(tmp_path, body)
+
+    @pytest.mark.parametrize("failure", ["no-bash", "start-error", "nonzero-status", "hook-output-cap", "signal"])
+    def test_each_walk_failure_unsets_the_variable_exports_none_and_still_pins(self, tmp_path: Path, failure: str) -> None:
+        env = self._walk_failure_env(tmp_path, failure)
+        root = _workspace(tmp_path)
+        command = _prefixed(env, tmp_path, root, "make")
+        assert command == _pin_prefix(env, root) + "make"
+        assert "CLAUDE_CONFIG_ADAPTER_HOST_PID=" not in command
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
+
+    def test_a_walk_whose_time_is_already_spent_unsets_the_variable(self, tmp_path: Path) -> None:
+        root = _workspace(tmp_path)
+        record = {"tool_paths": recorded_tool_paths(), "routed_config_dir": str(tmp_path)}
+        assert SHIM_MODULE.host_walk_pid(record, str(root), SHIM_MODULE.time.monotonic()) is None
+
+    @pytest.mark.parametrize(
+        ("kind", "fault_class"),
+        [("oserror", "OSError"), ("subprocess-error", "SubprocessError")],
+        ids=["oserror", "subprocess-error"],
+    )
+    def test_a_walk_run_that_raises_an_exception_that_is_no_refusal_is_a_shim_fault_and_no_pin_outcome(
+        self, tmp_path: Path, kind: str, fault_class: str
+    ) -> None:
+        root = _workspace(tmp_path)
+        result, env = _run_fault_program(
+            tmp_path,
+            {"function": "run_wrapped_hook", "raise": kind},
+            shell_pre_payload(root, "make"),
+            hook_args("PreToolUse", mode="pin"),
+        )
+        assert (result.returncode, result.stdout, result.stderr) == (1, b"", b"")
+        assert [(line["out"], line["fault"]) for line in read_log_lines(env)] == [("shim-fault", fault_class)]
+
+    def test_a_walk_run_that_raises_a_refusal_unsets_the_variable_and_still_pins(self, tmp_path: Path) -> None:
+        root = _workspace(tmp_path)
+        result, env = _run_fault_program(
+            tmp_path,
+            {"function": "run_wrapped_hook", "raise": "refusal"},
+            shell_pre_payload(root, "make"),
+            hook_args("PreToolUse", mode="pin"),
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["updated_input"]["command"] == _pin_prefix(env, root) + "make"
+        assert read_log_lines(env)[-1]["out"] == "pin-no-host"
+
+    def test_a_second_fire_over_a_prefixed_command_runs_no_walk(self, tmp_path: Path) -> None:
+        env = self._recording_walk_env(tmp_path)
+        root = _workspace(tmp_path)
+        prefixed = _prefixed(env, tmp_path, root, "make")
+        assert len(self._walk_calls(tmp_path)) == 1
+        assert _pin(env, shell_pre_payload(root, prefixed), tmp_path) == {}
+        assert len(self._walk_calls(tmp_path)) == 1
+        assert read_log_lines(env)[-1]["out"] == "pin-unchanged"
+
+    @staticmethod
+    def _ps_stub_env(tmp_path: Path, ps_body: str) -> ShimEnv:
+        """A record that puts a `ps` stub first on the PATH the shim fixes, so the real walk reads the stub's answers."""
+        stub = write_stub_tool_directory(tmp_path, "walk-ps", "ps", ps_body) / "ps"
+        return make_shim_env(tmp_path, tool_paths={"ps": str(stub), **recorded_tool_paths()})
+
+    def test_the_real_walk_under_a_ps_stub_that_shows_a_cursor_host_exports_that_hosts_pid(self, tmp_path: Path) -> None:
+        env = self._ps_stub_env(tmp_path, HOST_SHOWING_PS_BODY)
+        root = _workspace(tmp_path)
+        assert _prefixed(env, tmp_path, root, "make") == _pin_prefix(env, root, HOST_PROCESS_ID) + "make"
+        assert read_log_lines(env)[-1]["out"] == "pin"
+
+    @pytest.mark.timing
+    def test_a_ps_that_stalls_past_the_walks_time_still_pins_with_the_unset_form_and_returns_before_the_deadline(
+        self, tmp_path: Path
+    ) -> None:
+        deadline = 6
+        started_file = tmp_path / "ps-started"
+        env = self._ps_stub_env(tmp_path, f"echo started >> '{started_file}'\nexec sleep 30\n")
+        root = _workspace(tmp_path)
+        walk_time_left = deadline - SHIM_MODULE.GRACE_PERIOD_SECONDS - SHIM_MODULE.DRAIN_BOUND_SECONDS
+        began = time.monotonic()
+        result = run_shim(
+            env,
+            shell_pre_payload(root, "make"),
+            hook_args("PreToolUse", mode="pin", deadline=deadline),
+            cwd=_scratch(tmp_path),
+        )
+        elapsed = time.monotonic() - began
+        assert result.returncode == 0, result.stderr
+        assert started_file.exists(), "the walk never reached the ps stub"
+        assert elapsed >= walk_time_left - 0.5
+        assert elapsed < deadline
+        assert shim_json(result)["updated_input"]["command"] == _pin_prefix(env, root) + "make"
+        line = read_log_lines(env)[-1]
+        assert line["out"] == "pin-no-host"
+        assert int(line["ms"]) >= (walk_time_left - 0.5) * 1000
+
+    def _stripped_command(self, tmp_path: Path, env: ShimEnv, root: Path, command: str) -> str:
+        saved = tmp_path / "saved.json"
+        saved.unlink(missing_ok=True)
+        script = recording_probe_script(tmp_path / "hook.sh", saved)
+        run_shim(env, shell_pre_payload(root, command), hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path))
+        return json.loads(saved.read_text())["tool_input"]["command"]
+
+    @pytest.mark.parametrize("host_pid", ["4242", None], ids=["export-form", "unset-form"])
+    def test_pin_check_passes_and_the_strip_removes_either_form(self, tmp_path: Path, host_pid: str | None) -> None:
+        env = _walkless_env(tmp_path)
+        root = _workspace(tmp_path)
+        assert _pin_check(env, _pin_prefix(env, root, host_pid) + "make", root, tmp_path) == {}
+        assert self._stripped_command(tmp_path, env, root, _pin_prefix(env, root, host_pid) + "make") == "make"
+
+    @pytest.mark.parametrize(
+        "row", [row for row in PID_GRAMMAR_EDGE_TABLE if row.applies_to_line_forms], ids=lambda row: row.row_id
+    )
+    def test_pin_check_and_the_strip_take_an_export_line_only_when_its_value_fits_the_grammar(self, tmp_path: Path, row) -> None:
+        env = _walkless_env(tmp_path)
+        root = _workspace(tmp_path)
+        command = _pin_prefix(env, root, row.value) + "make"
+        verdict = _pin_check(env, command, root, tmp_path)
+        pinned = _pin(env, shell_pre_payload(root, command), tmp_path)
+        stripped = self._stripped_command(tmp_path, env, root, command)
+        if row.accepted:
+            assert (verdict, pinned, stripped) == ({}, {}, "make")
+        else:
+            assert verdict["permission"] == "deny"
+            assert pinned["updated_input"]["command"] == _pin_prefix(env, root) + command
+            assert stripped == command
+
+    def test_an_export_line_that_fits_the_grammar_under_a_pin_line_naming_another_directory_is_still_denied(
+        self, tmp_path: Path
+    ) -> None:
+        env = _walkless_env(tmp_path)
+        root = _workspace(tmp_path)
+        other = (tmp_path / "other").resolve()
+        other.mkdir()
+        output = _pin_check(env, _pin_prefix(env, other, "4242") + "make", root, tmp_path)
+        assert output["permission"] == "deny"
+        assert "pin-check" in output["agent_message"]
+
+    @pytest.mark.parametrize("which", ["session-id", "config-dir"])
+    def test_an_environment_line_naming_another_session_id_or_config_dir_is_agent_text(self, tmp_path: Path, which: str) -> None:
+        env = _walkless_env(tmp_path)
+        root = _workspace(tmp_path)
+        if which == "session-id":
+            command = _pin_prefix(env, root, "4242", session_id="other-session") + "make"
+        else:
+            command = _pin_prefix(env, root, "4242").replace(str(env.config_dir), str(tmp_path / "elsewhere")) + "make"
+        assert _pin_check(env, command, root, tmp_path)["permission"] == "deny"
+        assert self._stripped_command(tmp_path, env, root, command) == command
+
+    def test_the_strip_leaves_a_later_host_pid_export_in_the_agents_own_command_untouched(self, tmp_path: Path) -> None:
+        env = _walkless_env(tmp_path)
+        root = _workspace(tmp_path)
+        agent_command = "export CLAUDE_CONFIG_ADAPTER_HOST_PID=7\nmake"
+        assert self._stripped_command(tmp_path, env, root, _pin_prefix(env, root, "4242") + agent_command) == agent_command
+
+    @pytest.mark.parametrize("shell", [pytest.param(name, id=name) for name, ok in SHELL_PROBES.items() if ok is True])
+    @pytest.mark.parametrize("host_pid", ["4242", None], ids=["export-form", "unset-form"])
+    def test_the_prefix_sets_the_routed_environment_and_the_host_variable_under_each_shell(
+        self, tmp_path: Path, shell: str, host_pid: str | None
+    ) -> None:
+        env = _walkless_env(tmp_path)
+        root = (tmp_path / "pinned").resolve()
+        root.mkdir()
+        probe = (
+            'printf "%s|%s|%s|%s" "${CLAUDECODE-unset}" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_ADAPTER_SESSION_ID" '
+            '"${CLAUDE_CONFIG_ADAPTER_HOST_PID-unset}"'
+        )
+        inherited = {"CLAUDECODE": "1", "CLAUDE_CONFIG_ADAPTER_HOST_PID": "9999", "CLAUDE_CONFIG_DIR": "/inherited"}
+        result = self._run_in(shell, _pin_prefix(env, root, host_pid) + probe, tmp_path, inherited)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.decode() == f"unset|{env.config_dir}|{CONVERSATION_ID}|{host_pid or 'unset'}"
+
+    def test_zsh_is_a_candidate_shell_here_or_the_rows_that_need_it_fail_in_ci(self) -> None:
+        require_zsh()
+        assert SHELL_PROBES.get("zsh") is True
+
+    @pytest.mark.parametrize(
+        ("github_actions", "expected"),
+        [("true", pytest.fail.Exception), (None, pytest.skip.Exception)],
+        ids=["in-ci-it-fails", "elsewhere-it-skips"],
+    )
+    def test_require_zsh_fails_in_ci_and_skips_elsewhere_when_zsh_is_absent(
+        self, monkeypatch: pytest.MonkeyPatch, github_actions: str | None, expected: type
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _: None)
+        if github_actions is None:
+            monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        else:
+            monkeypatch.setenv("GITHUB_ACTIONS", github_actions)
+        with pytest.raises(expected):
+            require_zsh()
+
+    def test_require_zsh_returns_none_when_zsh_is_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/zsh")
+        assert require_zsh() is None
+
     # --- behaviour under each shell that has `builtin` ---
 
     def _pinned_command(self, tmp_path: Path, command: str) -> tuple[str, Path]:
-        env = make_shim_env(tmp_path)
+        env = _walkless_env(tmp_path)
         root = (tmp_path / "pinned").resolve()
         root.mkdir(exist_ok=True)
         return _prefixed(env, tmp_path, root, command), root

@@ -104,7 +104,7 @@ LOG_OVERFLOW_TOKEN = "overflow"
 LOG_VALUE_PATTERN = r"[0-9A-Za-z._:+-]+"
 # One line is at most this many bytes with its newline. A project choice with no documented source.
 LOG_LINE_MAX_BYTES = 1024
-# Field order and maxima. `runmode` is written by cursor-adapter.py.
+# Field order and maxima. `runmode`, `hostwalk` and `cursorver` are written by cursor-adapter.py.
 LOG_FIELDS = (
     ("ts", 12),
     ("reg", 64),
@@ -119,6 +119,8 @@ LOG_FIELDS = (
     ("fault", 64),
     ("py", 8),
     ("runmode", 32),
+    ("hostwalk", 16),
+    ("cursorver", 64),
 )
 
 # The grammar of a payload id used as a path component, the same as _lib_valid_session_id_component in hooks/_lib.sh.
@@ -130,11 +132,21 @@ _DEADLINE_RE = re.compile(r"[0-9]{1,3}", re.ASCII)
 
 # --- the directory pin ---
 
-# The pin prefix is the line `builtin cd -- '<dir>' || exit 1` and a newline.
+# The pin prefix is an environment line and a newline, then the line `builtin cd -- '<dir>' || exit 1` and a newline.
 # `builtin` stops a `cd` function or alias from turning a failed cd into a success.
 # `exit` stays plain because `builtin exit` fails on a shell with no `builtin`.
 PIN_LINE_HEAD = "builtin cd -- '"
 PIN_LINE_TAIL = "' || exit 1"
+# The environment line unsets CLAUDECODE, exports the routed config dir and the call's session id, and either exports the
+# host PID its walk found or unsets the variable. The host PID value runs to the line's end.
+HOST_PID_VARIABLE = "CLAUDE_CONFIG_ADAPTER_HOST_PID"
+SESSION_ID_VARIABLE = "CLAUDE_CONFIG_ADAPTER_SESSION_ID"
+# 1 to 10 digits with no leading zero and a value above 1, which holds every 32-bit pid_t. Pid 1 is init, never a host.
+HOST_PID_PATTERN = r"[1-9][0-9]{0,9}"
+HOST_PID_LOWEST = 2
+# The walk's program: the hook-side host walk, run by the recorded bash with the lib path as its first argument.
+HOST_WALK_PROGRAM = '. "$1" && _lib_cursor_host_pid'
+_HOST_PID_RE = re.compile(HOST_PID_PATTERN, re.ASCII)
 # A project choice: the most newlines the recognition tries as the end of a pin line, which bounds the work a long
 # command can cost while allowing a directory name that holds a few newlines.
 PIN_MAX_NEWLINES = 64
@@ -337,6 +349,27 @@ def shell_quote(text):
 
 def pin_line(directory):
     return f"builtin cd -- {shell_quote(directory)} || exit 1"
+
+
+def is_valid_host_pid(text):
+    return _HOST_PID_RE.fullmatch(text) is not None and int(text) >= HOST_PID_LOWEST
+
+
+def environment_line(routed_config_dir, session_id, host_pid=None):
+    """The pin prefix's first line. A None host PID gives the unset form, a string the export form."""
+    exports = f"export CLAUDE_CONFIG_DIR={shell_quote(routed_config_dir)} {SESSION_ID_VARIABLE}={shell_quote(session_id)}"
+    if host_pid is None:
+        return f"unset CLAUDECODE {HOST_PID_VARIABLE}; {exports}"
+    return f"unset CLAUDECODE; {exports} {HOST_PID_VARIABLE}={host_pid}"
+
+
+def is_environment_line(line, routed_config_dir, session_id):
+    """Whether `line` is the unset form or the export form of the expected environment line, by exact text apart from the
+    host PID, which is compared by shape."""
+    if line == environment_line(routed_config_dir, session_id):
+        return True
+    export_head = environment_line(routed_config_dir, session_id, "")
+    return line.startswith(export_head) and is_valid_host_pid(line[len(export_head) :])
 
 
 def path_within(root, target):
@@ -545,8 +578,14 @@ def read_install_record(call, require_wrapper=False):
 
 
 def hook_environment(record):
-    """The hook's environment: the shim's own, minus the Claude process markers, with the recorded PATH and config dir."""
-    environment = {name: value for name, value in os.environ.items() if name not in CLAUDE_PROCESS_ENV_NAMES}
+    """The hook's environment: the shim's own, minus the Claude process markers and the host PID variable, with the recorded
+    PATH and config dir. A hook walks to its own host, so a host PID the shim inherited from an IDE agent's Shell call is
+    never passed on."""
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in CLAUDE_PROCESS_ENV_NAMES and name != HOST_PID_VARIABLE
+    }
     directories = []
     for path in (record.get("tool_paths") or {}).values():
         directory = os.path.dirname(path)
@@ -757,6 +796,18 @@ def recognize_pin(command, roots):
         if directory is not None and head == pin_line(directory):
             return rest, True
     return command, False
+
+
+def recognize_pin_prefix(command, roots, record, session_id):
+    """Returns (the agent's command, whether `command` started with exactly the pin prefix its own remainder would get).
+
+    The prefix is the environment line, compared by exact text apart from its host PID, then the pin line.
+    A prefix with no environment line, or of any other shape, is agent text."""
+    line_end = command.find("\n")
+    if line_end < 0 or not is_environment_line(command[:line_end], record["routed_config_dir"], session_id):
+        return command, False
+    rest, recognized = recognize_pin(command[line_end + 1 :], roots)
+    return (rest, True) if recognized else (command, False)
 
 
 def unenterable_refusal(directory, roots):
@@ -1429,15 +1480,17 @@ def _pump(process, payload_bytes, bound_at):
     return bytes(collected["out"]), bytes(collected["err"])
 
 
-def run_wrapped_hook(wrapper, script, payload_bytes, directory, environment, deadline_at, roots=None):
-    """Starts `<wrapper> -k <grace> <time left> <script>` in `directory`, feeds it the payload and reads its output.
+def run_wrapped_hook(wrapper, program, payload_bytes, directory, environment, deadline_at, roots=None):
+    """Starts `<wrapper> -k <grace> <time left> <program...>` in `directory`, feeds it the payload and reads its output.
+
+    `program` is the argv list the wrapper runs: the hook script alone, or the host walk's shell and its arguments.
 
     Returns (exit status, stdout bytes, stderr bytes). Raises Refusal for every other outcome. The wrapper is the hook's
     parent and, with no `--foreground`, signals the hook's whole process group at the deadline."""
     time_left = deadline_at - time.monotonic()
     if time_left < TIME_LEFT_FLOOR_SECONDS:
         raise Refusal("timeout", "The shim's deadline passed before the hook could start.")
-    argv = [wrapper, "-k", str(GRACE_PERIOD_SECONDS), f"{time_left:.3f}", script]
+    argv = [wrapper, "-k", str(GRACE_PERIOD_SECONDS), f"{time_left:.3f}", *program]
     try:
         process = subprocess.Popen(
             argv,
@@ -1478,9 +1531,9 @@ def decode_text(data):
     return data.decode("utf-8", errors="replace")
 
 
-def resolve_directory(facts, roots):
+def resolve_directory(facts, roots, record):
     if facts.tool_class == "shell":
-        original, _ = recognize_pin(facts.command, roots)
+        original, _ = recognize_pin_prefix(facts.command, roots, record, facts.session_id)
         directory = roots.shell_pin_directory(original)
     elif facts.tool_class in ("read", "write", "delete", "grep") and facts.paths:
         return roots.file_tool_directory(facts.paths[0])
@@ -1496,11 +1549,33 @@ def run_classify(call):
     return {}
 
 
-def run_pin(call, facts, roots, payload):
+def host_walk_pid(record, directory, deadline_at):
+    """The PID text the hook-side host walk prints, or None when the walk fails in any way a Refusal names.
+
+    The walk is a hook-shaped child: the recorded wrapper, the recorded bash and the lib of this shim's own stow tree.
+    A Refusal, a nonzero status or output outside the PID grammar means no host. Any other exception is a shim fault."""
+    wrapper = recorded_wrapper(record)
+    bash = (record.get("tool_paths") or {}).get("bash")
+    if wrapper is None or bash is None:
+        return None
+    lib_path = os.path.join(os.path.dirname(os.path.dirname(shim_directory())), "hooks", "_lib.sh")
+    # The walk ends by the entry's deadline less the kill grace and the drain bound, so its pipes drain by the deadline.
+    walk_deadline_at = deadline_at - GRACE_PERIOD_SECONDS - DRAIN_BOUND_SECONDS
+    try:
+        status, stdout, _ = run_wrapped_hook(
+            wrapper, [bash, "-c", HOST_WALK_PROGRAM, "walk", lib_path], b"", directory, hook_environment(record), walk_deadline_at
+        )
+    except Refusal:
+        return None
+    text = decode_text(stdout).removesuffix("\n")
+    return text if status == 0 and is_valid_host_pid(text) else None
+
+
+def run_pin(call, facts, roots, payload, record, deadline_at):
     if facts.tool_class != "shell" or facts.event != "preToolUse":
         call.outcome = "not-shell"
         return {}
-    original, recognized = recognize_pin(facts.command, roots)
+    original, recognized = recognize_pin_prefix(facts.command, roots, record, facts.session_id)
     directory = roots.shell_pin_directory(original)
     if directory is None:
         raise Refusal("no-absolute-dir", NO_ABSOLUTE_DIR_DETAIL)
@@ -1516,17 +1591,23 @@ def run_pin(call, facts, roots, payload):
     if recognized:
         call.outcome = "pin-unchanged"
         return {}
-    call.outcome = "pin"
     updated = dict(payload["tool_input"])
-    updated["command"] = pin_line(directory) + "\n" + original
+    host_pid = host_walk_pid(record, directory, deadline_at)
+    # `pin-no-host` is the pin whose host walk found none, so it wrote the unset form of the host variable.
+    if host_pid is None:
+        call.outcome = "pin-no-host"
+    else:
+        call.outcome = "pin"
+    environment = environment_line(record["routed_config_dir"], facts.session_id, host_pid)
+    updated["command"] = environment + "\n" + pin_line(directory) + "\n" + original
     return {"updated_input": updated}
 
 
-def run_pin_check(call, facts, roots):
+def run_pin_check(call, facts, roots, record):
     if facts.tool_class != "shell":
         call.outcome = "not-shell"
         return {}
-    _, recognized = recognize_pin(facts.command, roots)
+    _, recognized = recognize_pin_prefix(facts.command, roots, record, facts.session_id)
     if recognized:
         call.outcome = "pin-check-ok"
         return {}
@@ -1534,12 +1615,12 @@ def run_pin_check(call, facts, roots):
 
 
 def run_hook(call, arguments, record, facts, roots, payload, spec, deadline_at):
-    directory = resolve_directory(facts, roots)
+    directory = resolve_directory(facts, roots, record)
     require_enterable(directory, roots)
     tool = facts.tool
     original = facts.command
     if facts.tool_class == "shell":
-        original, _ = recognize_pin(facts.command, roots)
+        original, _ = recognize_pin_prefix(facts.command, roots, record, facts.session_id)
     overwrites = write_overwrites(facts, arguments)
     claude_name = ("Edit" if overwrites else tool["claude"]) if tool["kind"] in ("mapped", "mcp") else None
     if (
@@ -1552,8 +1633,10 @@ def run_hook(call, arguments, record, facts, roots, payload, spec, deadline_at):
     claude_payload = build_claude_payload(payload, facts, spec, claude_name, directory, original)
     document = serialize(claude_payload)
     check_script(arguments.script)
+    # A hook's identity helpers read the call's session id from here when the payload they get carries no Cursor key.
+    environment = {**hook_environment(record), SESSION_ID_VARIABLE: facts.session_id}
     status, stdout, stderr = run_wrapped_hook(
-        recorded_wrapper(record), arguments.script, document, directory, hook_environment(record), deadline_at, roots
+        recorded_wrapper(record), [arguments.script], document, directory, environment, deadline_at, roots
     )
     call.hook_exit = str(status)
     meta = {
@@ -1652,9 +1735,9 @@ def serve(call, arguments):
         return emit(call, run_classify(call))
     roots = Roots(facts.roots, os.environ.get("HOME", ""))
     if arguments.mode == "pin":
-        return emit(call, run_pin(call, facts, roots, payload))
+        return emit(call, run_pin(call, facts, roots, payload, record, deadline_at))
     if arguments.mode == "pin-check":
-        return emit(call, run_pin_check(call, facts, roots))
+        return emit(call, run_pin_check(call, facts, roots, record))
     return emit(call, run_hook(call, arguments, record, facts, roots, payload, spec, deadline_at))
 
 
@@ -1787,7 +1870,7 @@ def self_check(wrapper):
         payload = _self_check_payload()
         facts = examine_payload(payload, arguments, record, state["spec"], None)
         roots = Roots(facts.roots, "/")
-        directory = resolve_directory(facts, roots)
+        directory = resolve_directory(facts, roots, record)
         built = build_claude_payload(payload, facts, state["spec"], facts.tool["claude"], directory, facts.command)
         if built.get("tool_name") != shell_entry["claude"]:
             raise SelfCheckMismatch("translation")
@@ -1795,7 +1878,7 @@ def self_check(wrapper):
     def check_hook_run():
         deadline_at = time.monotonic() + MIN_DEADLINE_SECONDS
         status, stdout, stderr = run_wrapped_hook(
-            wrapper, SELF_CHECK_SHELL, SELF_CHECK_PROGRAM, "/", dict(os.environ), deadline_at
+            wrapper, [SELF_CHECK_SHELL], SELF_CHECK_PROGRAM, "/", dict(os.environ), deadline_at
         )
         if status != SELF_CHECK_EXIT_STATUS:
             raise SelfCheckMismatch("hook-run", "status", str(status))

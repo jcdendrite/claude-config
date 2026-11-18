@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import uuid
@@ -32,6 +33,7 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    CLAUDE_DIR,
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
@@ -43,6 +45,10 @@ from helpers import (
 from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, redaction, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
+
+# claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_cursor_adapter_shim.py.
+sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests._cursor_identity_fixtures import clear_adapter_environment  # noqa: E402
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -137,6 +143,19 @@ def require_direnv() -> None:
         if os.environ.get("GITHUB_ACTIONS"):
             pytest.fail("direnv missing in CI — .github/workflows/tests.yml must install it")
         pytest.skip("direnv not installed")
+
+
+def require_zsh() -> None:
+    """Guard for a test that needs a real zsh: skip locally when zsh isn't
+    installed, but hard-fail in this repo's own CI.
+
+    Checks only that a zsh is on PATH. It does not show that the workflow's
+    pinned-zsh step ran, which a runner image that ships zsh would hide.
+    """
+    if not shutil.which("zsh"):
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("zsh missing in CI — .github/workflows/tests.yml must install it")
+        pytest.skip("zsh not installed")
 
 
 def _curated_path_without_direnv(tmp_path: Path) -> str:
@@ -1635,6 +1654,17 @@ def _guard_shell_exec(monkeypatch, tmp_path_factory):
     It also fails a launch under the scaled timeout shim whose PATH holds a stub write_prewarmed_stub did not write."""
     install_shell_exec_guard(monkeypatch)
     install_unwarmed_stub_guard(monkeypatch, tmp_path_factory.getbasetemp())
+
+
+@pytest.fixture(autouse=True)
+def _clear_adapter_env(monkeypatch):
+    """_lib_adapter_session_pair reads CLAUDE_CONFIG_ADAPTER_SESSION_ID and
+    CLAUDE_CONFIG_ADAPTER_HOST_PID from its own environment. A suite run from a
+    Cursor agent's Shell call inherits both, and the builders that copy the
+    parent environment would pass a real value to the scripts under test.
+    test_cursor_adapter_scripts_env_scrub.py runs this fixture's own test.
+    """
+    clear_adapter_environment(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
