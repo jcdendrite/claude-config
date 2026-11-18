@@ -403,7 +403,7 @@ A blocked `claude -p` prompt exits `0` and makes no model turn, so an instrument
 - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate abort with a nonzero exit and lose the results not yet written.
 - Review bench records a blocked run as missing, with the hook's reason. It stops on the same all-missing condition as any other missing run.
 - The main session rule adherence gate pauses on a blocked prompt, and `--resume` reruns it.
-- `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`. Another hook's block goes unrecognized there.
+- `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`. Another hook's block goes unrecognized there, and the description fidelity check can read its echoed prompt as a skill hit.
 
 ## Linting
 
