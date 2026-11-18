@@ -1290,7 +1290,7 @@ class TestRaiseIfBlockedPromptStdout:
             raise_if_blocked_prompt_stdout(BLOCKED_PROMPT_STDOUT.encode())
 
     def test_raises_on_a_model_reply_that_quotes_the_prefix(self) -> None:
-        """The plain-text recognizer matches the prefix anywhere, as evals/README.md documents."""
+        """Documented limitation, not a requirement: the plain-text recognizer matches the prefix anywhere (see evals/README.md)."""
         quoting_reply = "Here is the review.\nThe hook printed main-session-rules: prompt blocked earlier.\n"
         with pytest.raises(BlockedPromptError):
             raise_if_blocked_prompt_stdout(quoting_reply)
@@ -1389,6 +1389,7 @@ class TestPlainTextCallsPassOrdinaryAnswers:
         self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
     ) -> None:
         def reply_for_prompt(prompt: str) -> str:
+            # Keys on production prompt wording: "You are classifying" and "<governing_rule>".
             if prompt.startswith("You are classifying"):
                 return "BLOCKING\n" if "treatment review text" in prompt else "PERMISSIVE\n"
             return "treatment review text\n" if "<governing_rule>" in prompt else "baseline review text\n"

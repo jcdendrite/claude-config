@@ -399,9 +399,9 @@ in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 
 A blocked `claude -p` prompt exits `0` and makes no model turn, so an instrument that scored it would count a miss.
 
-- No instrument here scores a blocked prompt as a model miss.
+- No instrument here scores a blocked prompt as a model miss, except a plain-text block that carries no recognized prefix (last bullet).
 - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate abort with a nonzero exit and lose the results not yet written.
-- Review bench records a blocked run as missing, with the hook's reason. It stops only when every run in a block is blocked.
+- Review bench records a blocked run as missing, with the hook's reason. It stops on the same all-missing condition as any other missing run.
 - The main session rule adherence gate pauses on a blocked prompt, and `--resume` reruns it.
 - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`. Another hook's block goes unrecognized there.
 

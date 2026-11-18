@@ -92,7 +92,7 @@ TRIGGER_TOOL_NAMES = frozenset(("Skill",))
 DISPATCH_TOOL_NAMES = frozenset(("Agent", "Task"))
 
 # Plain-text output carries no structured block field, so a prompt-blocking hook
-# must open its reason with this line to be recognized there.
+# must print this line in its reason to be recognized there.
 PROMPT_BLOCK_PREFIX = "main-session-rules: prompt blocked"
 
 
