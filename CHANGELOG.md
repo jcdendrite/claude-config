@@ -9,7 +9,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`transcript-analysis.py review-cost-by-size` now reads the pr-cost ledger's `review_rounds` cells instead of transcripts, so a PR's round series outlives transcript retention.**
   - It keeps each PR's one current ledger row for this checkout's origin repository, re-prices each round's stored token splits at this checkout's rate table, and excludes and counts the PRs it cannot trust. See `docs/transcript-analysis.md` § "review-cost-by-size".
   - **Migration:** `gh` is no longer required, and transcripts are no longer read.
-  - **Migration:** the report shows recorded PRs only, so it is empty until `pr-cost --record` runs. A row recorded before the `review_rounds` column stays excluded.
+  - **Migration:** the report shows recorded PRs only, so it is empty until `pr-cost --record` runs, which needs the `pr_cost_recording` config key. A row recorded before the `review_rounds` column stays excluded.
   - **Migration:** rounds opened at or after a PR's merge no longer count, so figures differ from earlier runs.
   - **Migration:** a PR with more than one row that carries a `review_rounds` cell is excluded and counted, in default mode as well as under `--all-accounts`. The merged scan summed the rounds. See `docs/transcript-analysis.md` § "review-cost-by-size".
   - **Migration:** an exported non-empty `PR_COST_LEDGER_PATH` now changes this command's runs, where the variable was ignored. A default-mode run reads that one file in place of the account's own ledger, and the header then reads `PR_COST_LEDGER_PATH file, account scope unverified`. `--all-accounts` honors the variable at one root and exits 2 at two or more.

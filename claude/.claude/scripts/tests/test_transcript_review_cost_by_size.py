@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
-from transcript_analysis import cli, ledger_rounds, pr_cost_ledger, review_cost_by_size, review_rounds, scope
+from transcript_analysis import cli, ledger_rounds, pr_cost_ledger, pricing, review_cost_by_size, review_rounds, scope
 
 from ._pr_cost_helpers import (
     _LEDGER_DIR_MARKER,
@@ -72,8 +72,8 @@ _UNKNOWN_SKILL_SENTINEL = "zzunknownskillsentinel"
 _UNKNOWN_ROUND_KEY_SENTINEL = "zzunknownroundkeysentinel"
 _OVERRIDE_BASENAME = "zzoverridesentinel.tsv"
 _PROJECTS_SENTINEL = "zzprojectsglobsentinel*"
-# 100_000 input tokens on _REPRICED_ROUND_MODEL at its base input rate of $2.00 per million (pricing._MODEL_BASE_INPUT_RATES).
-_DOLLARS_PER_100K_INPUT_TOKENS = 0.20
+# 100_000 input tokens on _REPRICED_ROUND_MODEL at its base input rate per million tokens.
+_DOLLARS_PER_100K_INPUT_TOKENS = pricing._MODEL_BASE_INPUT_RATES[_REPRICED_ROUND_MODEL] * 100_000 / 1_000_000
 
 
 def _dollars_text(input_tokens_in_100k: float) -> str:

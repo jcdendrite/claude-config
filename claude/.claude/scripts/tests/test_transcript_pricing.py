@@ -672,9 +672,6 @@ class TestCacheMissReason:
 
 
 class TestRepriceTokenSplits:
-    """_reprice_token_splits prices a ledger round's stored `{model: {variant: {class: int}}}` token object at the
-    current rate table, through the unchanged _price_turn."""
-
     # Unequal class counts, so a swapped class mapping changes the total.
     _SOURCE_USAGE_BY_VARIANT = {
         "standard": {

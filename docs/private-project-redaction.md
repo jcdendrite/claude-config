@@ -124,14 +124,21 @@ re-run and check.
   repository's own account. It is built for private delivery to the owner
   of the projects that account works on.
 - `transcript-analysis.py review-cost-by-size --this-repo` is not a
-  publication instrument. It reads pr-cost ledger rows, which do not
-  record the project scope their rounds were read from, so it refuses
-  no wider corpus. Route a figure from it to "The owner can authorize
-  one figure, case by case" below. The proposal for a default-mode
-  figure quotes the report's scope-unverified notice and states that
-  the output cannot show whether a round came from another
-  repository. Its `--all-accounts` output is never
-  proposed for publication — see the next section.
+  publication instrument.
+  - Route a figure from it to "The owner can authorize one figure, case
+    by case" below.
+  - A proposal for a default-mode figure quotes the report's
+    scope-unverified notice.
+  - A proposal for a default-mode figure states that the output cannot
+    show whether a round came from another repository.
+  - A proposal for a default-mode figure states which checkout's
+    `origin` the command ran from, because the report cannot identify
+    its repository itself.
+  - Its `--all-accounts` output is never proposed for publication — see
+    the next section.
+  - The reason: it reads pr-cost ledger rows, which do not record the
+    project scope their rounds were read from, so it refuses no wider
+    corpus.
 - `transcript-analysis.py read-cost --this-repo`, run from this
   repository's checkout, refuses `--projects` and a top-level
   `--config-dir` and reads the active config directory alone, without

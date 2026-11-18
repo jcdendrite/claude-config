@@ -40,7 +40,6 @@ class LedgerRead(NamedTuple):
 
 
 class _PricedRounds(NamedTuple):
-    """A PR's rounds less the after-merge ones, with their dollars and the after-merge count per skill."""
     rounds_by_skill: dict[str, list[dict]]
     usd_by_skill: dict[str, list[float]]
     after_merge_rounds: dict[str, int]
@@ -51,8 +50,6 @@ def _round_is_after_merge(review_round: dict) -> bool:
 
 
 def _round_usd(review_round: dict) -> float | None:
-    """The round's main and agent token splits re-priced at the current rate table, or None when either is
-    unpriceable."""
     main_usd = pricing._reprice_token_splits(review_round["main_tokens"])
     agent_usd = pricing._reprice_token_splits(review_round["agent_tokens"])
     if main_usd is None or agent_usd is None:
@@ -61,8 +58,7 @@ def _round_usd(review_round: dict) -> float | None:
 
 
 def _price_rounds_before_merge(rounds_by_skill: dict[str, list[dict]]) -> _PricedRounds | None:
-    """Removes the after-merge rounds and prices the rest in one pass, or returns None when a round that is not
-    after-merge cannot be priced."""
+    # An after-merge round is dropped before pricing, so an unpriceable one never excludes the PR.
     kept_rounds_by_skill: dict[str, list[dict]] = {}
     usd_by_skill: dict[str, list[float]] = {}
     after_merge_rounds: dict[str, int] = {}

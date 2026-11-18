@@ -1,6 +1,5 @@
 """Tests for pr-cost read mode's per-skill round-count columns: pr_cost._review_round_counts and the
-`<skill>-rounds` columns _print_pr_cost_ledger_rows appends. Split from test_transcript_pr_cost.py, which is past the
-file-size limit."""
+`<skill>-rounds` columns _print_pr_cost_ledger_rows appends."""
 import re
 import subprocess
 from datetime import UTC, datetime

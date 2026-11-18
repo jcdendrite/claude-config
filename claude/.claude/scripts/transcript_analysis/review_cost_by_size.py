@@ -223,8 +223,6 @@ class _ReportedRoundSums(NamedTuple):
 
 
 def _sum_reported_round_fields(ledger_prs: Sequence[ledger_rounds.LedgerPr]) -> _ReportedRoundSums:
-    """Unpriced turns, dangling dispatches and malformed-usage turns, summed over the code-review rounds before merge of
-    `ledger_prs`."""
     rounds = [each for pr in ledger_prs for each in pr.rounds_by_skill.get(_SIZED_REVIEW_SKILL, [])]
     return _ReportedRoundSums(
         unpriced_turns=sum(each["unpriced_turns"] for each in rounds),
