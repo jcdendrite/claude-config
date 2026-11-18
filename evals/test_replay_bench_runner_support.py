@@ -228,11 +228,19 @@ def default_edit(fixture_dir: Path) -> None:
     (fixture_dir / "src" / "new_module.py").write_text('"""Module doc."""\n# a comment here\nvalue = 1\nother = 2\n')
 
 
+def stub_session_store(projects_root: Path, session_id: str) -> Path:
+    """One directory per attempt, as a real session store follows its attempt's unique fixture directory.
+
+    A shared one lets a finishing attempt's cleanup delete a parallel attempt's session.
+    """
+    return projects_root / f"synthetic-project-{session_id}"
+
+
 def write_transcripts(
     projects_root: Path, call: LaunchCall, scenario: Scenario, *, tool_calls: list[tuple[str, dict, bool]],
     first_turn_size: int,
 ) -> None:
-    session_jsonl = projects_root / "synthetic-project" / f"{call.session_id}.jsonl"
+    session_jsonl = stub_session_store(projects_root, call.session_id) / f"{call.session_id}.jsonl"
     subagent_dir = session_jsonl.parent / call.session_id / "subagents"
     subagent_dir.mkdir(parents=True)
     dispatch = {
@@ -403,7 +411,7 @@ def leaking_log_lines(world: ReplayWorld):
 
 
 def validity_of(world: ReplayWorld, call: LaunchCall, cost: float | None = 0.5) -> review_runner.RunValidity:
-    session_jsonl = world.config_dir / "projects" / "synthetic-project" / f"{call.session_id}.jsonl"
+    session_jsonl = stub_session_store(world.config_dir / "projects", call.session_id) / f"{call.session_id}.jsonl"
     own_session_paths = review_runner.own_session_paths_for(session_jsonl)
     return review_runner.evaluate_run_validity(
         dispatcher_session_jsonl=session_jsonl, stream_lines=stream_lines(cost), timed_out=False,

@@ -43,6 +43,7 @@ from test_replay_bench_runner_support import (
     make_ignored_local_dir,
     make_settings,
     spend_lines,
+    stub_session_store,
     validity_of,
     write_executable,
 )
@@ -64,7 +65,7 @@ def without_account_evidence(**scenario_fields) -> Scenario:
 
 
 def delete_session_transcript(call) -> None:
-    (call.config_dir / "projects" / "synthetic-project" / f"{call.session_id}.jsonl").unlink()
+    (stub_session_store(call.config_dir / "projects", call.session_id) / f"{call.session_id}.jsonl").unlink()
 
 
 def leftovers(world, launch_stub) -> list[Path]:
@@ -120,11 +121,12 @@ class TestAValidRun:
         sibling_transcript = sibling_store / "another-session.jsonl"
         sibling_transcript.write_text("{}\n")
 
-        outcome, _launch_stub, _settings = run(world, arms.TOOLKIT.name)
+        outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name)
 
+        own_store = stub_session_store(world.config_dir / "projects", launch_stub.calls[0].session_id)
         assert outcome.record.status == "ok", "the run reached cleanup with its own store written"
         assert sibling_transcript.is_file(), "another session's store under the projects dir survives"
-        assert not (world.config_dir / "projects" / "synthetic-project").exists(), "the run's own store is gone"
+        assert not own_store.exists(), "the run's own store is gone"
 
 
 class TestForgedLog:
@@ -505,15 +507,29 @@ class TestGuardedLocationsThroughAnAttempt:
         assert unrelated in outcome.record.other_outside_fixture_tokens
 
     def test_only_the_runs_own_session_files_are_exempt(self, world):
-        projects = world.config_dir / "projects" / "synthetic-project"
+        projects_root = world.config_dir / "projects"
 
         own, _stub, _settings = run(
             world, arms.BARE.name, lambda _n, _a: Scenario(
-                tool_calls=lambda call: [("Bash", {"command": f"cat {projects / call.session_id}.jsonl"}, False)],
+                tool_calls=lambda call: [(
+                    "Bash",
+                    {"command": f"cat {stub_session_store(projects_root, call.session_id) / call.session_id}.jsonl"},
+                    False,
+                )],
             ),
         )
-        sibling_path = str(projects / "another-session.jsonl")
-        sibling, _stub, _settings = run(world, arms.BARE.name, self.bash(f"cat {sibling_path}"))
+        sibling_paths: list[str] = []
+
+        def read_a_sibling_file_in_the_runs_own_store(call):
+            sibling_path = str(stub_session_store(projects_root, call.session_id) / "another-session.jsonl")
+            sibling_paths.append(sibling_path)
+            return [("Bash", {"command": f"cat {sibling_path}"}, False)]
+
+        sibling, launch_stub, _settings = run(
+            world, arms.BARE.name, lambda _n, _a: Scenario(tool_calls=read_a_sibling_file_in_the_runs_own_store),
+        )
+        assert len(sibling_paths) == len(launch_stub.calls), "every launch read a sibling file in its own store"
+        sibling_path = sibling_paths[-1]
 
         assert own.record.missing_reason is None
         assert sibling.record.missing_reason == checks.REASON_OUT_OF_FIXTURE_PATH
