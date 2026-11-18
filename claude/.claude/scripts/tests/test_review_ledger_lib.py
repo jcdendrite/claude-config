@@ -15,13 +15,19 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 from helpers import (
     CLAUDE_DIR,
     SCRIPTS_DIR,
+    _make_git_blocking_on_arg,
     _make_git_exiting_with_status,
+    _make_git_recording_argv,
+    _timeout_binary_present,
+    add_linked_worktree,
+    build_conflicted_merge,
     ignore_agent_reviews,
     init_git_repo,
     isolated_git_config_env,
@@ -37,8 +43,14 @@ from hooks.tests.test_config_lib import _locale_that_widens_ascii_ranges  # noqa
 from hooks.tests.test_review_ledger_script import (  # noqa: E402
     _DEDUP_KEY_CHANGES,
     _DEDUP_KEY_EXEMPT_CHANGES,
+    _PIN_NOTE,
+    _STATE_NOTE,
+    _git_output,
+    _lines_containing,
     _utf8_locale,
 )
+
+from .conftest import _clean_env
 
 _HOOKS_LIB = CLAUDE_DIR / "hooks" / "_lib.sh"
 _LIB = SCRIPTS_DIR / "_review-ledger-lib.sh"
@@ -603,11 +615,12 @@ class TestSiteHash:
 
 def _row(**fields) -> dict:
     row = {
-        "schema_version": 5, "round": 1, "finding": "a finding", "disposition": "DEFER", "rationale": "why",
+        "schema_version": 6, "round": 1, "finding": "a finding", "disposition": "DEFER", "rationale": "why",
         "source": "a.py:1-2", "authoring_agent": "", "authoring_effort": "", "reviewers": ["staff-sdet"],
         "session_id": _SESSION_ID_LIKE,
         "decided_by": "", "engineer_quote": "", "enforcement_invariant": False, "carry_forward": False,
-        "defer_criterion": "", "ref": "", "cited_line": "", "site_hash": "", "event_time": "2026-09-01T10:00:00Z",
+        "defer_criterion": "", "ref": "", "cited_line": "", "site_hash": "",
+        "reviewed_head": "4" * 40, "reviewed_tree": "5" * 40, "event_time": "2026-09-01T10:00:00Z",
     }
     row.update(fields)
     return row
@@ -680,6 +693,600 @@ class TestRowIdPredicate:
 
         assert result.returncode != premise_failed, "the range form rejects the probe, so this locale does not widen it"
         assert result.returncode == 1
+
+
+class TestObjectIdPredicate:
+    """Every id is built at runtime, because a literal run of 32 or more hex digits in a test source trips the redaction gate."""
+
+    @pytest.mark.parametrize("digit_count", [40, 64])
+    def test_a_lowercase_hex_id_of_either_object_id_width_is_accepted(self, digit_count):
+        assert _call("_review_ledger_is_object_id", "a" * digit_count).returncode == 0
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("a" * 39, id="39 digits"),
+            pytest.param("a" * 41, id="41 digits"),
+            pytest.param("a" * 63, id="63 digits"),
+            pytest.param("a" * 65, id="65 digits"),
+            pytest.param("", id="empty"),
+            pytest.param("a" * 39 + "g", id="40 characters with one g"),
+        ],
+    )
+    def test_a_value_of_another_width_or_with_a_non_hex_character_is_rejected(self, value):
+        assert _call("_review_ledger_is_object_id", value).returncode == 1
+
+    def test_an_uppercase_id_is_rejected_under_a_widening_locale_with_ascii_ranges_off(self):
+        """The case first proves that the range form would accept the probe, as TestRowIdPredicate does."""
+        premise_failed = 3
+        result = _bash(
+            "shopt -u globasciiranges\n"
+            'probe=$(printf "%40s" "" | tr " " A)\n'
+            f"case \"$probe\" in *[!0-9a-f]*) exit {premise_failed} ;; esac\n"
+            '_review_ledger_is_object_id "$probe"',
+            env={"LC_ALL": _locale_that_widens_ascii_ranges()},
+        )
+
+        assert result.returncode != premise_failed, "the range form rejects the probe, so this locale does not widen it"
+        assert result.returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# Reviewed state capture and pin
+# ---------------------------------------------------------------------------
+
+_CAP_KILL_STATUSES = (124, 137, 143)
+_OBJECT_ID_PATTERN = r"[0-9a-f]{40}|[0-9a-f]{64}"
+
+
+def _commit_seed_file(repo: Path) -> None:
+    _write(repo, "tracked.txt", "one\n")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-q", "-m", "seed")
+
+
+def _stage_change(repo: Path, name: str = "tracked.txt", content: str = "one\ntwo\n") -> None:
+    _write(repo, name, content)
+    _git(repo, "add", name)
+
+
+def _shim_env(bin_dir: Path) -> dict[str, str]:
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+
+
+def _git_exiting_with_status_shim(arg_pattern: str, status: int):
+    def build(bin_dir: Path) -> dict[str, str]:
+        _make_git_exiting_with_status(bin_dir, arg_pattern, status)
+        return _shim_env(bin_dir)
+
+    return build
+
+
+def _git_action_shim(action: str):
+    def build(bin_dir: Path) -> dict[str, str]:
+        _make_git_recording_argv(bin_dir, bin_dir.parent / "argv.log", action)
+        return _shim_env(bin_dir)
+
+    return build
+
+
+def _failing_cp_shim(status: int):
+    def build(bin_dir: Path) -> dict[str, str]:
+        return {"PATH": path_with_failing_tool_shim(bin_dir, "cp", exit_status=status)}
+
+    return build
+
+
+def _action_on_argument(argument: str, action: str) -> str:
+    """A recording-shim action that runs `action` when `argument` is one of git's arguments."""
+    return f'for arg in "$@"; do if [ "$arg" = {shlex.quote(argument)} ]; then {action}; fi; done'
+
+
+def _note_lines(result: subprocess.CompletedProcess, note: str = _STATE_NOTE) -> list[str]:
+    """Counts lines instead of comparing stderr, because a host with no timeout binary also prints an uncapped notice."""
+    return _lines_containing(result.stderr, note)
+
+
+@pytest.fixture
+def scratch_tmp(tmp_path) -> Path:
+    """An empty TMPDIR for the capture, so a leaked work directory shows."""
+    scratch = tmp_path / "scratch-tmp"
+    scratch.mkdir()
+    return scratch
+
+
+@pytest.fixture
+def staged_repo(repo) -> Path:
+    """`repo` with one commit and one staged change on top of it."""
+    _commit_seed_file(repo)
+    _stage_change(repo)
+    return repo
+
+
+def _capture(
+    function: str, repo_root: Path, scratch: Path, *, env: dict | None = None, cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
+    """Runs a capture function with TMPDIR at `scratch`, then asserts it holds nothing."""
+    git_config_env = isolated_git_config_env(scratch.parent / "git-config-home")
+    result = _call(function, str(repo_root), env={**git_config_env, "TMPDIR": str(scratch), **(env or {})}, cwd=cwd)
+    assert list(scratch.iterdir()) == [], "the capture left its work directory behind"
+    return result
+
+
+class TestReviewedHead:
+    def test_head_is_the_commits_id_with_no_note(self, staged_repo, scratch_tmp):
+        result = _capture("_review_ledger_reviewed_head", staged_repo, scratch_tmp)
+
+        assert (result.returncode, result.stdout) == (0, _git_output(staged_repo, "rev-parse", "HEAD"))
+        assert _note_lines(result) == []
+
+    def test_head_on_a_branch_with_no_commit_is_empty_with_no_note(self, repo, scratch_tmp):
+        result = _capture("_review_ledger_reviewed_head", repo, scratch_tmp)
+
+        assert (result.returncode, result.stdout) == (0, "")
+        assert _note_lines(result) == []
+
+    def test_a_foreign_git_dir_environment_does_not_change_head(self, tmp_path, scratch_tmp):
+        """The foreign repository has a commit on the branch this one has checked out."""
+        repo = init_git_repo(tmp_path / "own", branch="feature")
+        _commit_seed_file(repo)
+        foreign = init_git_repo(tmp_path / "foreign", branch="feature")
+        _write(foreign, "tracked.txt", "different content\n")
+        _git(foreign, "add", "tracked.txt")
+        _git(foreign, "commit", "-q", "-m", "a different message")
+        foreign_env = {"GIT_DIR": str(foreign / ".git")}
+        unscrubbed = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD^{commit}"],
+            capture_output=True, text=True, env={**os.environ, **foreign_env}, check=False,
+        )
+        assert unscrubbed.stdout.strip() == _git_output(foreign, "rev-parse", "HEAD"), (
+            "the premise: the variable redirects git"
+        )
+
+        result = _capture("_review_ledger_reviewed_head", repo, scratch_tmp, env=foreign_env)
+
+        assert (result.returncode, result.stdout) == (0, _git_output(repo, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize(
+        ("make_shim", "shim_status", "expected_status"),
+        [
+            pytest.param(
+                _git_action_shim(_action_on_argument("HEAD^{commit}", "printf partialline; exit 0")), 0, 0,
+                id="output that is not an object id",
+            ),
+            pytest.param(_git_exiting_with_status_shim("HEAD^{commit}", 124), 124, 1, id="cap kill 124"),
+            pytest.param(_git_exiting_with_status_shim("HEAD^{commit}", 137), 137, 1, id="cap kill 137"),
+        ],
+    )
+    def test_a_failed_head_look_up_is_empty_with_one_note(
+        self, staged_repo, scratch_tmp, tmp_path, make_shim, shim_status, expected_status
+    ):
+        result = _capture("_review_ledger_reviewed_head", staged_repo, scratch_tmp, env=make_shim(tmp_path / "bin"))
+
+        assert (result.returncode, result.stdout) == (expected_status, "")
+        (note,) = _note_lines(result)
+        assert "HEAD look-up" in note
+        assert ("timed out" in note) == (shim_status in _CAP_KILL_STATUSES)
+
+
+class TestReviewedTree:
+    def test_tree_is_the_index_tree_and_the_live_index_and_its_lock_are_untouched(self, staged_repo, scratch_tmp):
+        live_index = staged_repo / ".git" / "index"
+        index_before = live_index.read_bytes()
+
+        result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp)
+
+        assert live_index.read_bytes() == index_before
+        assert not (staged_repo / ".git" / "index.lock").exists()
+        assert result.returncode == 0 and _note_lines(result) == []
+        assert result.stdout == _git_output(staged_repo, "write-tree")
+        assert _git_output(staged_repo, "cat-file", "-t", result.stdout) == "tree"
+
+    def test_a_held_index_lock_neither_blocks_the_capture_nor_is_released(self, staged_repo, scratch_tmp):
+        live_index = staged_repo / ".git" / "index"
+        lock_file = staged_repo / ".git" / "index.lock"
+        lock_file.write_text("")
+        index_before = live_index.read_bytes()
+
+        result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp)
+
+        assert re.fullmatch(_OBJECT_ID_PATTERN, result.stdout), result.stderr
+        assert lock_file.exists()
+        assert live_index.read_bytes() == index_before
+
+    def test_a_linked_worktree_records_its_own_index_not_the_main_worktrees(self, repo, scratch_tmp, tmp_path):
+        _commit_seed_file(repo)
+        linked = add_linked_worktree(repo, tmp_path / "linked", branch="linked-branch")
+        _stage_change(linked, "linked-only.txt", "linked\n")
+        _stage_change(repo, "main-only.txt", "main\n")
+        assert _git_output(linked, "write-tree") != _git_output(repo, "write-tree"), "the two indexes must differ"
+
+        result = _capture("_review_ledger_reviewed_tree", linked, scratch_tmp)
+
+        assert result.stdout == _git_output(linked, "write-tree")
+
+    def test_an_unmerged_index_is_empty_with_no_note(self, repo, scratch_tmp):
+        build_conflicted_merge(repo)
+
+        result = _capture("_review_ledger_reviewed_tree", repo, scratch_tmp)
+
+        assert (result.returncode, result.stdout) == (0, "")
+        assert _note_lines(result) == []
+
+    @pytest.mark.parametrize(
+        ("probe_status", "expected_status", "note_words", "absent_words"),
+        [
+            pytest.param(3, 0, ["write-tree"], ["timed out", "exit 3"], id="a failed probe"),
+            pytest.param(124, 1, ["write-tree", "ls-files -u", "timed out"], [], id="a probe killed by the cap"),
+        ],
+    )
+    def test_a_probe_that_cannot_list_unmerged_entries_leaves_one_note(
+        self, repo, scratch_tmp, tmp_path, probe_status, expected_status, note_words, absent_words
+    ):
+        build_conflicted_merge(repo)
+        write_tree_status = subprocess.run(
+            ["git", "write-tree", "--missing-ok"], cwd=repo, capture_output=True, check=False
+        ).returncode
+        assert write_tree_status != 0, "the premise: write-tree rejects an unmerged index"
+        shim_env = _git_exiting_with_status_shim("ls-files", probe_status)(tmp_path / "bin")
+
+        result = _capture("_review_ledger_reviewed_tree", repo, scratch_tmp, env=shim_env)
+
+        assert (result.returncode, result.stdout) == (expected_status, "")
+        (note,) = _note_lines(result)
+        assert all(word in note for word in note_words)
+        assert f"exit {write_tree_status}" in note
+        assert not any(word in note for word in absent_words)
+
+    def test_a_branch_with_no_index_file_is_empty_with_no_note(self, repo, scratch_tmp):
+        assert not (repo / ".git" / "index").exists()
+
+        result = _capture("_review_ledger_reviewed_tree", repo, scratch_tmp)
+
+        assert (result.returncode, result.stdout) == (0, "")
+        assert _note_lines(result) == []
+
+    @pytest.mark.parametrize(
+        ("path_status", "expected_status", "timed_out"),
+        [
+            pytest.param(1, 0, False, id="a failed look-up"),
+            pytest.param(124, 1, True, id="a look-up killed by the cap"),
+            pytest.param(0, 0, False, id="an empty path"),
+        ],
+    )
+    def test_an_index_path_look_up_that_gives_no_path_leaves_one_note(
+        self, staged_repo, scratch_tmp, tmp_path, path_status, expected_status, timed_out
+    ):
+        shim_env = _git_exiting_with_status_shim("--git-path", path_status)(tmp_path / "bin")
+
+        result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp, env=shim_env)
+
+        assert (result.returncode, result.stdout) == (expected_status, "")
+        (note,) = _note_lines(result)
+        assert "index path look-up" in note
+        assert ("timed out" in note) == timed_out
+
+    @pytest.mark.parametrize(
+        ("make_shim", "expected_status", "note_words", "timed_out"),
+        [
+            pytest.param(_failing_cp_shim(1), 0, ["index copy"], False, id="a failed copy"),
+            pytest.param(_failing_cp_shim(124), 1, ["index copy"], True, id="a copy killed by the cap"),
+            pytest.param(
+                _git_action_shim(_action_on_argument("write-tree", 'touch "$GIT_INDEX_FILE.lock"; exit 137')),
+                1, ["write-tree"], True, id="a write-tree killed by the cap that strands its lock",
+            ),
+            pytest.param(
+                _git_action_shim(_action_on_argument("write-tree", "printf partialline; exit 0")),
+                0, ["write-tree"], False, id="a write-tree printing no object id",
+            ),
+        ],
+    )
+    def test_a_failed_tree_step_is_empty_with_one_note(
+        self, staged_repo, scratch_tmp, tmp_path, make_shim, expected_status, note_words, timed_out
+    ):
+        result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp, env=make_shim(tmp_path / "bin"))
+
+        assert (result.returncode, result.stdout) == (expected_status, "")
+        (note,) = _note_lines(result)
+        assert all(word in note for word in note_words)
+        assert ("timed out" in note) == timed_out
+
+    def test_a_missing_temporary_directory_is_empty_with_one_note_and_is_not_created(self, staged_repo, tmp_path):
+        missing_tmp = tmp_path / "no-such-tmp"
+
+        result = _call(
+            "_review_ledger_reviewed_tree", str(staged_repo),
+            env={**isolated_git_config_env(tmp_path / "git-config-home"), "TMPDIR": str(missing_tmp)},
+        )
+
+        assert (result.returncode, result.stdout) == (0, "")
+        (note,) = _note_lines(result)
+        assert "temporary directory" in note
+        assert not missing_tmp.exists()
+
+    def test_a_relative_temporary_directory_still_yields_the_index_tree(self, tmp_path):
+        """The working directory sits outside the repository, because one inside it would resolve the copy either way."""
+        repo = init_git_repo(tmp_path / "repo", branch="feature")
+        _commit_seed_file(repo)
+        _stage_change(repo)
+        relative_tmp = tmp_path / "relative-tmp"
+        relative_tmp.mkdir()
+        expected_tree = _git_output(repo, "write-tree")
+        empty_tree = _git_output(repo, "hash-object", "-t", "tree", "/dev/null")
+        assert expected_tree != empty_tree, "a missing copy would give the empty tree"
+
+        result = _call(
+            "_review_ledger_reviewed_tree", str(repo), cwd=tmp_path,
+            env={**isolated_git_config_env(tmp_path / "git-config-home"), "TMPDIR": "relative-tmp"},
+        )
+
+        assert (result.returncode, result.stdout) == (0, expected_tree)
+        assert list(relative_tmp.iterdir()) == []
+
+    def test_a_path_holding_a_space_still_yields_the_head_and_the_index_tree(self, tmp_path):
+        repo = init_git_repo(tmp_path / "repo with space", branch="feature")
+        _commit_seed_file(repo)
+        _stage_change(repo)
+        spaced_tmp = tmp_path / "tmp with space"
+        spaced_tmp.mkdir()
+
+        head = _capture("_review_ledger_reviewed_head", repo, spaced_tmp)
+        tree = _capture("_review_ledger_reviewed_tree", repo, spaced_tmp)
+
+        assert (head.returncode, head.stdout) == (0, _git_output(repo, "rev-parse", "HEAD"))
+        assert (tree.returncode, tree.stdout) == (0, _git_output(repo, "write-tree"))
+        assert _note_lines(head) == [] and _note_lines(tree) == []
+
+    def test_an_entry_whose_blob_is_absent_still_yields_a_tree(self, staged_repo, scratch_tmp):
+        """A partial clone can stage an entry whose blob it never fetched, so write-tree must skip the existence check."""
+        absent_blob = subprocess.run(
+            ["git", "hash-object", "--stdin"], cwd=staged_repo, input="content unique to the absent-blob case\n",
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        _git(staged_repo, "update-index", "--add", "--cacheinfo", f"100644,{absent_blob},absent.txt")
+        assert subprocess.run(["git", "cat-file", "-e", absent_blob], cwd=staged_repo).returncode != 0
+        assert subprocess.run(["git", "write-tree"], cwd=staged_repo, capture_output=True).returncode != 0
+
+        result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp)
+
+        assert result.returncode == 0 and _note_lines(result) == [], result.stderr
+        assert _git_output(staged_repo, "cat-file", "-t", result.stdout) == "tree"
+
+    def test_a_foreign_git_index_file_does_not_change_the_recorded_tree(self, staged_repo, scratch_tmp, tmp_path):
+        decoy_index = tmp_path / "decoy-index"
+        unscrubbed = subprocess.run(
+            ["git", "-C", str(staged_repo), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+            capture_output=True, text=True, env={**os.environ, "GIT_INDEX_FILE": str(decoy_index)}, check=False,
+        )
+        assert unscrubbed.stdout.strip() == str(decoy_index), "the premise: the variable redirects git"
+
+        result = _capture(
+            "_review_ledger_reviewed_tree", staged_repo, scratch_tmp, env={"GIT_INDEX_FILE": str(decoy_index)},
+        )
+
+        assert (result.returncode, result.stdout) == (0, _git_output(staged_repo, "write-tree"))
+        assert not decoy_index.exists()
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap")
+    def test_a_write_tree_that_blocks_is_killed_by_the_cap(self, staged_repo, scratch_tmp, tmp_path):
+        """Every capture git call shares _review_ledger_repo_git, so this pins that wrapper's cap."""
+        bin_dir = tmp_path / "bin"
+        _make_git_blocking_on_arg(bin_dir, "write-tree")
+        started = time.monotonic()
+
+        result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp, env=_shim_env(bin_dir))
+
+        assert time.monotonic() - started < 15
+        assert (result.returncode, result.stdout) == (1, "")
+        (note,) = _note_lines(result)
+        assert "write-tree" in note and "timed out" in note
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap")
+    def test_an_index_copy_that_blocks_is_killed_by_the_cap(self, staged_repo, scratch_tmp, tmp_path):
+        """The copy has its own _lib_capped site, so the write-tree case does not cover it."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        blocking_cp = bin_dir / "cp"
+        blocking_cp.write_text("#!/bin/bash\nsleep 20\n")
+        blocking_cp.chmod(0o755)
+        started = time.monotonic()
+
+        result = _capture(
+            "_review_ledger_reviewed_tree", staged_repo, scratch_tmp,
+            env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert time.monotonic() - started < 15
+        assert (result.returncode, result.stdout) == (1, "")
+        (note,) = _note_lines(result)
+        assert "index copy" in note and "timed out" in note
+
+
+class TestPinTree:
+    """Each case pins into month 2000-01 and counts the pin note's lines on stderr."""
+
+    _MONTH = "2000-01"
+
+    @pytest.fixture
+    def git_config_env(self, tmp_path) -> dict[str, str]:
+        return isolated_git_config_env(tmp_path / "git-config-home")
+
+    def _pin(self, repo: Path, tree_id: str, env: dict) -> subprocess.CompletedProcess:
+        return _call("_review_ledger_pin_tree", str(repo), tree_id, self._MONTH, env=env)
+
+    def test_pinning_the_same_tree_twice_leaves_one_ref_and_no_note(self, staged_repo, git_config_env):
+        tree_id = _git_output(staged_repo, "write-tree")
+        pin_ref = f"refs/review-ledger/{self._MONTH}/{tree_id}"
+
+        results = [self._pin(staged_repo, tree_id, git_config_env) for _ in range(2)]
+
+        assert [result.returncode for result in results] == [0, 0]
+        assert [_note_lines(result, _PIN_NOTE) for result in results] == [[], []]
+        assert _git_output(staged_repo, "for-each-ref", "--format=%(refname)", "refs/review-ledger/") == pin_ref
+        assert _git_output(staged_repo, "rev-parse", "--verify", pin_ref) == tree_id
+
+    @pytest.mark.parametrize(
+        "redirecting_variable", ["GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"],
+    )
+    def test_a_redirecting_variable_does_not_move_the_tree_or_the_pin_out_of_the_owning_repository(
+        self, staged_repo, scratch_tmp, git_config_env, tmp_path, redirecting_variable,
+    ):
+        foreign_root = tmp_path / "foreign-root"
+        if redirecting_variable == "GIT_COMMON_DIR":
+            subprocess.run(["git", "init", "-q", "--bare", str(foreign_root)], check=True, capture_output=True)
+        else:
+            foreign_root.mkdir()
+        redirected_path = foreign_root
+        if redirecting_variable == "GIT_ALTERNATE_OBJECT_DIRECTORIES":
+            redirected_path = foreign_root / "objects"
+            redirected_path.mkdir()
+            # A copy of the index keeps write-tree's cache-tree update out of the owning repository's own index.
+            index_copy = tmp_path / "index-copy"
+            shutil.copy(staged_repo / ".git" / "index", index_copy)
+            foreign_write = subprocess.run(
+                ["git", "write-tree"], cwd=staged_repo, check=True, capture_output=True, text=True,
+                env={
+                    **os.environ, **git_config_env,
+                    "GIT_INDEX_FILE": str(index_copy),
+                    "GIT_OBJECT_DIRECTORY": str(redirected_path),
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(staged_repo / ".git" / "objects"),
+                },
+            )
+            premise = subprocess.run(
+                ["git", "cat-file", "-e", foreign_write.stdout.strip()], cwd=staged_repo, capture_output=True,
+            )
+            assert premise.returncode != 0, "the premise: only the foreign store holds the tree"
+        foreign_listing_before = sorted(path.relative_to(foreign_root) for path in foreign_root.rglob("*"))
+        redirected_env = {**git_config_env, redirecting_variable: str(redirected_path)}
+
+        tree_result = _capture("_review_ledger_reviewed_tree", staged_repo, scratch_tmp, env=redirected_env)
+        tree_id = tree_result.stdout
+        assert tree_result.returncode == 0 and re.fullmatch(_OBJECT_ID_PATTERN, tree_id), tree_result.stderr
+        pin_result = self._pin(staged_repo, tree_id, redirected_env)
+
+        assert (pin_result.returncode, _note_lines(pin_result, _PIN_NOTE)) == (0, [])
+        assert _git_output(staged_repo, "cat-file", "-t", tree_id) == "tree"
+        assert _git_output(staged_repo, "rev-parse", "--verify", f"refs/review-ledger/{self._MONTH}/{tree_id}") == tree_id
+        assert sorted(path.relative_to(foreign_root) for path in foreign_root.rglob("*")) == foreign_listing_before
+
+    @pytest.mark.parametrize(
+        ("update_ref_status", "probe_status", "ref_state", "note_words", "absent_words", "argv_absent"),
+        [
+            pytest.param(1, None, "names the tree", None, [], [], id="a lost race that left the ref naming the tree"),
+            pytest.param(1, None, "absent", ["update-ref", "exit 1"], ["timed out"], [], id="a failed write with no ref"),
+            pytest.param(
+                1, None, "names another tree", ["update-ref", "exit 1"], ["timed out"], [],
+                id="a failed write while the ref names another tree",
+            ),
+            pytest.param(
+                124, None, "absent", ["update-ref", "timed out"], [], ["rev-parse --verify"],
+                id="a write killed by the cap runs no probe",
+            ),
+            pytest.param(
+                1, 124, "absent", ["exit 1", "rev-parse", "timed out"], [], [],
+                id="a probe killed by the cap",
+            ),
+        ],
+    )
+    def test_a_failed_write_prints_the_note_unless_the_ref_already_names_the_tree(
+        self, staged_repo, git_config_env, tmp_path,
+        update_ref_status, probe_status, ref_state, note_words, absent_words, argv_absent,
+    ):
+        tree_id = _git_output(staged_repo, "write-tree")
+        pin_ref = f"refs/review-ledger/{self._MONTH}/{tree_id}"
+        if ref_state == "names the tree":
+            _git(staged_repo, "update-ref", pin_ref, tree_id)
+        elif ref_state == "names another tree":
+            _stage_change(staged_repo, "another.txt", "another\n")
+            _git(staged_repo, "update-ref", pin_ref, _git_output(staged_repo, "write-tree"))
+        probe_action = _action_on_argument("--verify", f"exit {probe_status}") if probe_status is not None else ""
+        action = "\n".join([_action_on_argument("update-ref", f"exit {update_ref_status}"), probe_action])
+        shim_env = _git_action_shim(action)(tmp_path / "bin")
+
+        result = self._pin(staged_repo, tree_id, {**git_config_env, **shim_env})
+
+        assert result.returncode == 0
+        pin_notes = _note_lines(result, _PIN_NOTE)
+        if note_words is None:
+            assert pin_notes == []
+        else:
+            (note,) = pin_notes
+            assert all(word in note for word in note_words)
+            assert not any(word in note for word in absent_words)
+        argv_log = (tmp_path / "argv.log").read_text()
+        assert not any(word in argv_log for word in argv_absent)
+
+    def test_a_pin_keeps_its_tree_through_gc_across_worktrees_and_deleting_it_lets_gc_free_the_tree(self, tmp_path):
+        """Real objects, never a shim: gc deletes what no ref reaches, a pin is such a ref, and a month deletion releases it."""
+        git_env = _clean_env(**isolated_git_config_env(tmp_path / "git-home"))
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=cwd, env=git_env, capture_output=True, text=True, check=True
+            ).stdout.strip()
+
+        def resolves(cwd: Path, object_id: str) -> bool:
+            return subprocess.run(
+                ["git", "cat-file", "-e", object_id], cwd=cwd, env=git_env, capture_output=True, check=False
+            ).returncode == 0
+
+        main = init_git_repo(tmp_path / "main", branch="main", env=git_env)
+        git(main, "config", "core.logAllRefUpdates", "always")
+        git(main, "config", "gc.cruftPacks", "false")
+        _write(main, "base.txt", "base\n")
+        git(main, "add", "base.txt")
+        git(main, "commit", "-q", "-m", "base")
+        worktrees = {}
+        for branch in ("pin-kept", "pin-control"):
+            worktrees[branch] = tmp_path / branch
+            git(main, "worktree", "add", "-q", "-b", branch, str(worktrees[branch]))
+            _write(worktrees[branch], f"{branch}.txt", f"content unique to {branch}\n")
+            git(worktrees[branch], "add", f"{branch}.txt")
+        for path_arguments in (["--git-common-dir"], ["--git-path", "objects"]):
+            resolved_path = Path(git(main, "rev-parse", "--path-format=absolute", *path_arguments)).resolve()
+            assert resolved_path.is_relative_to(tmp_path.resolve()), (
+                "the premise: git works inside this test's directory, not an ambient repository"
+            )
+        capture_env = isolated_git_config_env(tmp_path / "git-home")
+        trees, blobs = {}, {}
+        for branch, worktree in worktrees.items():
+            captured = _call("_review_ledger_reviewed_tree", str(worktree), env=capture_env)
+            assert captured.returncode == 0, captured.stderr
+            trees[branch] = captured.stdout
+            blobs[branch] = git(worktree, "rev-parse", f":{branch}.txt")
+        pinned = _call("_review_ledger_pin_tree", str(main), trees["pin-kept"], self._MONTH, env=capture_env)
+        assert pinned.returncode == 0 and _note_lines(pinned, _PIN_NOTE) == []
+        pin_ref = f"refs/review-ledger/{self._MONTH}/{trees['pin-kept']}"
+        assert all(resolves(main, object_id) for object_id in (*trees.values(), *blobs.values()))
+
+        for worktree in worktrees.values():
+            git(main, "worktree", "remove", "--force", str(worktree))
+        git(main, "gc", "--prune=now", "--quiet")
+
+        assert resolves(main, trees["pin-kept"]) and resolves(main, blobs["pin-kept"])
+        assert git(main, "rev-parse", "--verify", pin_ref) == trees["pin-kept"]
+        assert not resolves(main, trees["pin-control"]) and not resolves(main, blobs["pin-control"]), (
+            "gc must delete the unpinned objects, or the kept ones prove nothing"
+        )
+        common_dir = Path(git(main, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        if not (common_dir / "reftable").exists():
+            assert (common_dir / "logs" / pin_ref).exists(), "the premise: core.logAllRefUpdates=always gave the pin a reflog"
+
+        deletion = subprocess.run(
+            [
+                "bash", "-c",
+                "set -o pipefail; git for-each-ref --format='delete %(refname)' "
+                f"refs/review-ledger/{self._MONTH}/ | git update-ref --stdin",
+            ],
+            cwd=main, env=git_env, capture_output=True, text=True, check=False,
+        )
+        assert deletion.returncode == 0, deletion.stderr
+        git(main, "gc", "--prune=now", "--quiet")
+
+        assert not resolves(main, trees["pin-kept"]) and not resolves(main, blobs["pin-kept"])
+        assert git(main, "for-each-ref", "refs/review-ledger/") == ""
 
 
 _PERSONA_AGENTS = reviewer_persona_agents()
@@ -1369,15 +1976,19 @@ class TestCheckNotRetired:
     def test_the_differing_field_cases_name_every_dedup_key_field(self):
         assert set(_RETIRER_KEY_FIELD_CHANGES) == set(_DEDUP_KEY_CHANGES)
 
-    def test_a_row_identical_to_the_retirer_outside_id_time_and_schema_version_is_a_retry(self, ledger):
+    def test_a_row_identical_to_the_retirer_outside_its_per_attempt_fields_is_a_retry(self, ledger):
         retirer = _address(_SUCCESSOR_ID, ref=_DECISION_ID)
         _write_ledger(ledger, [_defer(_DECISION_ID), retirer])
-        retry = {
-            **retirer,
-            "id": "dddddddddddd",
-            "event_time": "2026-09-09T09:09:09Z",
-            "schema_version": retirer["schema_version"] + 1,
-        }
+        retry = {**retirer, **{field: value for field, value in _DEDUP_KEY_EXEMPT_CHANGES.items() if field != "id"}}
+        retry["id"] = "dddddddddddd"
+
+        assert _retry_check(ledger, retry).returncode == 0
+
+    def test_a_retry_carrying_reviewed_state_matches_a_retirer_written_before_schema_6(self, ledger):
+        retirer = _address(_SUCCESSOR_ID, ref=_DECISION_ID, schema_version=5)
+        del retirer["reviewed_head"], retirer["reviewed_tree"]
+        _write_ledger(ledger, [_defer(_DECISION_ID), retirer])
+        retry = {**retirer, "id": "dddddddddddd", "schema_version": 6, "reviewed_head": "6" * 40, "reviewed_tree": "7" * 40}
 
         assert _retry_check(ledger, retry).returncode == 0
 
@@ -2022,6 +2633,7 @@ class TestRenderBlock:
 
         assert _SESSION_ID_LIKE not in output
         assert "1" * 12 not in output and "2" * 12 not in output
+        assert "4" * 40 not in output and "5" * 40 not in output
         assert "session_id" not in output
 
     def test_the_quote_renders_as_a_code_span_with_a_fence_longer_than_its_longest_backtick_run(self, ledger):
@@ -2697,15 +3309,18 @@ class TestCheckOut:
         assert f"timed out, exit {cap_kill_status}" in result.stderr
         assert "a retry may clear it" in result.stderr
 
-    def test_a_foreign_git_dir_environment_does_not_launder_the_check(
-        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name
+    @pytest.mark.parametrize("redirect_variable", ["GIT_DIR", "GIT_WORK_TREE"])
+    def test_a_foreign_git_environment_does_not_launder_the_check(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name, redirect_variable
     ):
-        """A GIT_DIR naming another repository whose info/exclude ignores agent-reviews/ must not
+        """A GIT_DIR or GIT_WORK_TREE naming another repository that ignores agent-reviews/ must not
         make this repository's target look ignored."""
         self._remove_ignore_entry(repo)
         foreign = init_git_repo(tmp_path / "foreign")
         ignore_agent_reviews(foreign)
-        foreign_env = {**git_config_env, "GIT_DIR": str(foreign / ".git")}
+        (foreign / ".gitignore").write_text("agent-reviews/\n")
+        redirect_value = str(foreign / ".git") if redirect_variable == "GIT_DIR" else str(foreign)
+        foreign_env = {**git_config_env, redirect_variable: redirect_value}
         assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", foreign_env) == 0
 
         result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=foreign_env)

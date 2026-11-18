@@ -20,8 +20,12 @@ from helpers import (
     SCRIPTS_DIR,
     SKILLS_DIR,
     TRAVERSAL_SESSION_ID,
+    _make_git_recording_argv,
+    ambient_umask,
+    file_mode,
     git_toplevel,
     ignore_agent_reviews,
+    init_git_repo,
     isolated_git_config_env,
     path_with_failing_tool_shim,
     plant_traversal_canary,
@@ -125,6 +129,10 @@ def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
 
 
+def _git_output(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
 def _rename_branch(repo: Path, name: str) -> None:
     _git(repo, "branch", "-M", name)
 
@@ -145,23 +153,35 @@ def _shown_rows(result: subprocess.CompletedProcess) -> list[dict]:
 _ROW_FIELD_CAPS = (200, 300, 200)
 
 
-def _row_envelope_bytes(session_id: str, **row_overrides) -> int:
+def _object_id_digits(repo: Path) -> int:
+    """The width of a git object id in `repo`, 40 for SHA-1 and 64 for SHA-256."""
+    head_id = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return len(head_id)
+
+
+def _row_envelope_bytes(session_id: str, *, object_id_digits: int, **row_overrides) -> int:
     """Bytes of a built row with empty finding/rationale/source, in jq -c key
     order, for a round-1 ADDRESS append with no authoring flags. row_overrides
-    replace fields, for a row of another disposition."""
+    replace fields, for a row of another disposition. The two reviewed-state
+    ids are as wide as the repository's object ids."""
     row = {
-        "schema_version": 5, "round": 1, "finding": "", "disposition": "ADDRESS", "rationale": "",
+        "schema_version": 6, "round": 1, "finding": "", "disposition": "ADDRESS", "rationale": "",
         "source": "", "authoring_agent": "", "authoring_effort": "", "reviewers": ["staff-sdet"],
         "session_id": session_id,
         "decided_by": "", "engineer_quote": "", "enforcement_invariant": False, "carry_forward": False,
         "defer_criterion": "", "ref": "", "cited_line": "", "site_hash": "",
+        "reviewed_head": "0" * object_id_digits, "reviewed_tree": "0" * object_id_digits,
         "event_time": "2026-01-01T00:00:00Z", "id": "0" * 12,
     }
     row.update(row_overrides)
     return len(json.dumps(row, separators=(",", ":")).encode())
 
 
-def _fields_for_row_of_bytes(row_bytes: int, session_id: str = SID, **row_overrides) -> tuple[str, str, str]:
+def _fields_for_row_of_bytes(
+    row_bytes: int, session_id: str = SID, *, repo: Path, **row_overrides
+) -> tuple[str, str, str]:
     """(finding, rationale, third) within the per-field character caps whose
     built row is exactly `row_bytes` long. U+0001 costs six bytes in a jq
     string (\\u0001) and `x` one, so a mix reaches any size the caps allow.
@@ -169,7 +189,9 @@ def _fields_for_row_of_bytes(row_bytes: int, session_id: str = SID, **row_overri
     row_overrides describe one (both cap at 200 characters). A source is a
     normalized path and rejects a control character, so a mix that needs the
     control characters must size an engineer SETTLED's quote."""
-    field_bytes = row_bytes - _row_envelope_bytes(session_id, **row_overrides)
+    field_bytes = row_bytes - _row_envelope_bytes(
+        session_id, object_id_digits=_object_id_digits(repo), **row_overrides
+    )
     assert field_bytes > 0
     # The mix has to fit the total per-field character budget: 6k + m == field_bytes, k + m <= budget.
     control_count = max(0, -(-(field_bytes - sum(_ROW_FIELD_CAPS)) // 5))
@@ -324,8 +346,10 @@ class TestReviewLedgerAppendHappyPath:
         record = json.loads(lines[0])
         event_time = record.pop("event_time")
         id_ = record.pop("id")
+        reviewed_head = record.pop("reviewed_head")
+        reviewed_tree = record.pop("reviewed_tree")
         assert record == {
-            "schema_version": 5,
+            "schema_version": 6,
             "round": 1,
             "finding": "Missing error handling in foo()",
             "disposition": "ADDRESS",
@@ -347,6 +371,13 @@ class TestReviewLedgerAppendHappyPath:
         assert re.fullmatch(r"[0-9a-f]{12}", id_)
         # UTC, second-resolution, Z-suffixed -- e.g. 2026-08-01T10:00:00Z.
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time), event_time
+        assert reviewed_head == _git_output(git_repo, "rev-parse", "HEAD")
+        assert reviewed_tree == _git_output(git_repo, "write-tree")
+        # git_repo holds a staged change, so the index tree is not HEAD's tree.
+        assert reviewed_tree != _git_output(git_repo, "rev-parse", "HEAD^{tree}")
+        # The pin is a ref named by the row's own month and tree, pointing at the tree.
+        pin_ref = f"refs/review-ledger/{event_time[:7]}/{reviewed_tree}"
+        assert _git_output(git_repo, "rev-parse", "--verify", pin_ref) == reviewed_tree
 
     def test_an_address_append_without_source_exits_2_naming_the_flag_and_disposition(self, isolated_home, git_repo):
         """An ADDRESS row's source is what the contradiction route's two-rewrites count reads."""
@@ -357,6 +388,16 @@ class TestReviewLedgerAppendHappyPath:
         assert result.returncode == 2
         assert "--source" in result.stderr and "--disposition ADDRESS" in result.stderr
         assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_an_append_rejected_by_flag_validation_pins_no_tree(self, isolated_home, git_repo):
+        """The capture runs after validation, so a rejected retry loop leaves no pin behind."""
+        _seed_session(isolated_home, SID)
+
+        result = _run(_without_source(_append_args()), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert _pin_refs(git_repo) == []
 
     def test_an_address_source_naming_an_absent_file_is_stored_repo_relative_with_no_site_hash(
         self, isolated_home, git_repo
@@ -524,6 +565,168 @@ class TestReviewLedgerAppendHappyPath:
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
         assert not _ledger_path(isolated_home, git_repo).exists()
+
+
+_STATE_NOTE = "the reviewed state was not fully recorded"
+_PIN_NOTE = "the reviewed tree was recorded but not pinned"
+
+
+def _lines_containing(text: str, needle: str) -> list[str]:
+    return [line for line in text.splitlines() if needle in line]
+
+
+def _pin_refs(repo: Path) -> list[str]:
+    return _git_output(repo, "for-each-ref", "--format=%(refname)", "refs/review-ledger/").splitlines()
+
+
+def _readable_by_group_and_other(path: Path) -> bool:
+    return file_mode(path) & 0o044 == 0o044
+
+
+def _pin_ref_for(row: dict) -> str:
+    return f"refs/review-ledger/{row['event_time'][:7]}/{row['reviewed_tree']}"
+
+
+class TestReviewLedgerReviewedState:
+    """Each row records the HEAD commit and the index tree it was appended against, and pins the tree."""
+
+    def test_a_clean_row_records_the_head_and_the_staged_index_tree(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        result = _run(["append", "code-review", "--disposition", "CLEAN", "--round", "1"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert row["reviewed_head"] == _git_output(git_repo, "rev-parse", "HEAD")
+        assert row["reviewed_tree"] == _git_output(git_repo, "write-tree")
+        assert row["reviewed_tree"] != _git_output(git_repo, "rev-parse", "HEAD^{tree}")
+
+    def test_show_out_prints_each_rows_reviewed_head_and_tree(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
+        assert _run(_append_args(), cwd=git_repo, home=isolated_home).returncode == 0
+        (stored_row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        out_path = git_repo / "agent-reviews" / "review-history-state.md"
+
+        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        (shown_row,) = [json.loads(line) for line in out_path.read_text().splitlines()]
+        assert shown_row["reviewed_head"] == stored_row["reviewed_head"] == _git_output(git_repo, "rev-parse", "HEAD")
+        assert shown_row["reviewed_tree"] == stored_row["reviewed_tree"]
+
+    def test_a_branch_with_no_commit_records_an_empty_head_and_still_records_and_pins_the_tree(
+        self, isolated_home, tmp_path
+    ):
+        """An unborn branch has no HEAD commit, which git reports as an expected state, not a fault."""
+        unborn_repo = init_git_repo(tmp_path / "unborn", branch="feature")
+        (unborn_repo / "staged.txt").write_text("staged\n")
+        _git(unborn_repo, "add", "staged.txt")
+        _seed_session(isolated_home, SID)
+
+        result = _run(["append", "code-review", "--disposition", "CLEAN", "--round", "1"], cwd=unborn_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, unborn_repo))
+        assert row["reviewed_head"] == ""
+        assert row["reviewed_tree"] == _git_output(unborn_repo, "write-tree")
+        assert _lines_containing(result.stderr, _STATE_NOTE) == []
+        assert _pin_refs(unborn_repo) == [_pin_ref_for(row)]
+
+    def test_a_failing_write_tree_stores_an_empty_tree_with_one_note_and_pins_nothing(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        failing_path = path_with_failing_tool_shim(tmp_path / "bin", "git", "write-tree")
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home, extra_env={"PATH": failing_path})
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert row["reviewed_tree"] == ""
+        assert row["reviewed_head"] == _git_output(git_repo, "rev-parse", "HEAD")
+        (note,) = _lines_containing(result.stderr, _STATE_NOTE)
+        assert "write-tree" in note and "exit 1" in note
+        assert _pin_refs(git_repo) == []
+
+    def test_a_failing_update_ref_keeps_both_fields_and_prints_only_the_pin_note(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        failing_path = path_with_failing_tool_shim(tmp_path / "bin", "git", "update-ref")
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home, extra_env={"PATH": failing_path})
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert row["reviewed_head"] and row["reviewed_tree"]
+        assert _pin_refs(git_repo) == []
+        (pin_note,) = _lines_containing(result.stderr, _PIN_NOTE)
+        assert "update-ref" in pin_note and "exit 1" in pin_note
+        assert _lines_containing(result.stderr, _STATE_NOTE) == []
+
+    def test_a_timed_out_head_look_up_stores_both_fields_empty_and_skips_the_tree_capture(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A hung HEAD look-up costs one cap: the tree capture and the pin never run."""
+        _seed_session(isolated_home, SID)
+        argv_log = tmp_path / "git-argv.log"
+        bin_dir = tmp_path / "bin"
+        _make_git_recording_argv(
+            bin_dir, argv_log,
+            action='for arg in "$@"; do if [ "$arg" = "HEAD^{commit}" ]; then exit 124; fi; done',
+        )
+
+        result = _run(
+            _append_args(), cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "REAL_GIT": shutil.which("git")},
+        )
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert (row["reviewed_head"], row["reviewed_tree"]) == ("", "")
+        (note,) = _lines_containing(result.stderr, _STATE_NOTE)
+        assert "HEAD look-up" in note
+        recorded_calls = argv_log.read_text()
+        assert not any(skipped in recorded_calls for skipped in ("write-tree", "--git-path", "update-ref"))
+
+    def test_a_deduped_retry_after_the_index_moved_keeps_the_first_rows_state_and_pins_its_own_tree(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, SID)
+        assert _run(_append_args(), cwd=git_repo, home=isolated_home).returncode == 0
+        (first_row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        (git_repo / "second.txt").write_text("second\n")
+        _git(git_repo, "add", "second.txt")
+        assert _git_output(git_repo, "write-tree") != first_row["reviewed_tree"], "the index must have moved"
+
+        retry = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert retry.returncode == 0, retry.stderr
+        (kept_row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert kept_row["reviewed_tree"] == first_row["reviewed_tree"]
+        assert len(_pin_refs(git_repo)) == 2
+
+    def test_the_recorded_tree_and_its_pin_are_group_and_other_readable_under_a_022_umask(
+        self, isolated_home, git_repo
+    ):
+        """The capture and the pin run before the append's umask 077, so a repository other accounts share stays readable."""
+        _seed_session(isolated_home, SID)
+
+        with ambient_umask(0o022):
+            result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        git_dir = git_repo / ".git"
+        tree_id = row["reviewed_tree"]
+        assert _readable_by_group_and_other(git_dir / "objects" / tree_id[:2] / tree_id[2:])
+        if (git_dir / "reftable").exists():
+            pytest.skip("the tree's mode was asserted; a reftable repository keeps no loose ref file for the pin half")
+        pin_file = git_dir / _pin_ref_for(row)
+        assert _readable_by_group_and_other(pin_file)
+        assert file_mode(pin_file.parent) & 0o055 == 0o055
 
 
 class TestReviewLedgerAuthoringAgentEnum:
@@ -778,7 +981,7 @@ class TestReviewLedgerRoundScopedDedup:
 
         assert result.returncode == 0, result.stderr
         rows = [json.loads(line) for line in ledger.read_text().splitlines()]
-        assert [row["schema_version"] for row in rows] == [2, 5]
+        assert [row["schema_version"] for row in rows] == [2, 6]
 
     def test_clean_row_matching_an_existing_v4_row_on_every_other_field_lands_as_a_second_row(
         self, isolated_home, git_repo
@@ -790,14 +993,14 @@ class TestReviewLedgerRoundScopedDedup:
         assert _run(clean_args, cwd=git_repo, home=isolated_home).returncode == 0
         ledger = _ledger_path(isolated_home, git_repo)
         (row,) = _ledger_rows(ledger)
-        del row["reviewers"]
+        del row["reviewers"], row["reviewed_head"], row["reviewed_tree"]
         row["schema_version"] = 4
         ledger.write_text(json.dumps(row) + "\n")
 
         result = _run(clean_args, cwd=git_repo, home=isolated_home)
 
         assert result.returncode == 0, result.stderr
-        assert [stored.get("schema_version") for stored in _ledger_rows(ledger)] == [4, 5]
+        assert [stored.get("schema_version") for stored in _ledger_rows(ledger)] == [4, 6]
 
     def test_retried_identical_call_within_same_round_still_dedups(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -1341,7 +1544,7 @@ class TestReviewLedgerRoundCapVerdictAppend:
         (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
         assert (row["disposition"], row["rationale"], row["round"]) == ("CONSULT", "noise", 2)
         assert (row["finding"], row["source"], row["reviewers"], row["site_hash"]) == ("", "n/a", [], "")
-        assert row["schema_version"] == 5
+        assert row["schema_version"] == 6
 
     def test_show_counts_the_verdicts_round_in_max_round(self, isolated_home, git_repo):
         _git(git_repo, "checkout", "-q", "-b", "feature")
@@ -1639,12 +1842,10 @@ class TestReviewLedgerSettledAndDeferAppend:
 
         assert [row["session_id"] for row in rows] == ["session-a", "session-b"]
 
-    def test_a_row_with_every_free_text_field_at_its_cap_in_four_byte_characters_is_accepted(
-        self, isolated_home, git_repo
-    ):
-        """finding, rationale, quote and source at their caps, four bytes a
-        character. A source is a real path, and one path component holds at
-        most 255 bytes, so the source spreads its emoji over four nested names."""
+    def test_a_row_of_four_byte_characters_filling_the_line_limit_is_accepted(self, isolated_home, git_repo):
+        """finding, quote and source at their caps, and the rationale as long as the line limit leaves room for, four
+        bytes a character. A source is a real path, and one path component holds at most 255 bytes, so the source
+        spreads its emoji over four nested names."""
         _seed_session(isolated_home, SID)
         emoji = "\U0001F600"
         finding_cap, rationale_cap, source_cap = _ROW_FIELD_CAPS
@@ -1659,17 +1860,22 @@ class TestReviewLedgerSettledAndDeferAppend:
         (nested_dir / names[-1]).write_text("first\nsecond\n")
         source = "/".join(names) + range_suffix
         assert len(source) == source_cap
+        # The envelope is sized with an empty source and quote, which keep it ASCII, so json.dumps escapes nothing.
+        envelope_bytes = _row_envelope_bytes(
+            SID, object_id_digits=_object_id_digits(git_repo), **{**_ENGINEER_SETTLED_ROW_OVERRIDES, "source": ""}
+        )
+        rationale_chars = (4095 - envelope_bytes - 4 * (finding_cap + quote_cap) - len(source.encode())) // 4
+        assert 0 < rationale_chars <= rationale_cap
         args = _engineer_args(
-            finding=emoji * finding_cap, rationale=emoji * rationale_cap,
+            finding=emoji * finding_cap, rationale=emoji * rationale_chars,
             engineer_quote=emoji * quote_cap, source=source,
         )
-        free_text_bytes = 4 * (finding_cap + rationale_cap + quote_cap) + len(source.encode())
 
         result = _run(args, cwd=git_repo, home=isolated_home, extra_env={"LC_ALL": _utf8_locale()})
 
         assert result.returncode == 0, result.stderr
         written_line = _ledger_path(isolated_home, git_repo).read_text().splitlines()[0]
-        assert free_text_bytes < len(written_line.encode()) <= 4095
+        assert 4095 - 4 < len(written_line.encode()) <= 4095, "the row must fill the limit, within one character"
 
     @pytest.mark.parametrize(("final_row_bytes", "accepted"), [(4095, True), (4096, False)])
     def test_the_size_check_counts_the_final_line_including_id_and_site_hash(
@@ -1679,7 +1885,9 @@ class TestReviewLedgerSettledAndDeferAppend:
         and id, so a row one byte over the bound only counts as over when the
         check runs on the final line."""
         _seed_session(isolated_home, SID)
-        finding, rationale, quote = _fields_for_row_of_bytes(final_row_bytes, **_ENGINEER_SETTLED_ROW_OVERRIDES)
+        finding, rationale, quote = _fields_for_row_of_bytes(
+            final_row_bytes, repo=git_repo, **_ENGINEER_SETTLED_ROW_OVERRIDES
+        )
 
         result = _run(
             _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
@@ -2821,7 +3029,7 @@ class TestReviewLedgerLanes:
         _seed_session(isolated_home, SID)
         lanes = _accepted_lanes()
         finding, rationale, quote = _fields_for_row_of_bytes(
-            final_row_bytes, reviewers=lanes, **_ENGINEER_SETTLED_ROW_OVERRIDES,
+            final_row_bytes, repo=git_repo, reviewers=lanes, **_ENGINEER_SETTLED_ROW_OVERRIDES,
         )
 
         result = _run(
@@ -2851,7 +3059,10 @@ _DEDUP_KEY_CHANGES = {
     "site_hash": "f" * 12,
 }
 # The fields the dedup key leaves out, because they vary on every attempt.
-_DEDUP_KEY_EXEMPT_CHANGES = {"id": "f" * 12, "event_time": "2001-01-01T00:00:00Z", "schema_version": 3}
+_DEDUP_KEY_EXEMPT_CHANGES = {
+    "id": "f" * 12, "event_time": "2001-01-01T00:00:00Z", "schema_version": 3,
+    "reviewed_head": "f" * 40, "reviewed_tree": "f" * 40,
+}
 
 
 class TestReviewLedgerRefRetry:
@@ -2955,21 +3166,27 @@ class TestReviewLedgerRefRetry:
         assert "no longer live" in result.stderr
         assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 2
 
-    def _retry_after_changing_one_field(self, isolated_home, git_repo, field: str, value) -> tuple:
+    def _retry_against_rewritten_retirer(self, isolated_home, git_repo, rewrite) -> tuple:
         """Logs a DEFER and an engineer SETTLED that retires it, then rewrites the
-        ledger to hold the DEFER, a different retirer that keeps it retired, and a
-        copy of the first retirer that differs in `field` alone. Returns the result
-        of repeating the first retirer's append, and the ledger path."""
+        ledger to hold the DEFER, a different retirer that keeps it retired, and
+        `rewrite(retirer)`, the copy of the first retirer the ledger keeps. Returns
+        the result of repeating the first retirer's append, and the ledger path."""
         decision_id = self._log_decision(isolated_home, git_repo)
         ledger = _ledger_path(isolated_home, git_repo)
         retirer_args = _engineer_args(ref=decision_id, round="2")
         assert _run(retirer_args, cwd=git_repo, home=isolated_home).returncode == 0
         decision, retirer = _ledger_rows(ledger)
         other_retirer = {**retirer, "id": "e" * 12, "finding": "a different retiring row"}
-        rewritten = [decision, other_retirer, {**retirer, field: value}]
+        rewritten = [decision, other_retirer, rewrite(retirer)]
         ledger.write_text("".join(json.dumps(row) + "\n" for row in rewritten))
 
         return _run(retirer_args, cwd=git_repo, home=isolated_home), ledger
+
+    def _retry_after_changing_one_field(self, isolated_home, git_repo, field: str, value) -> tuple:
+        """The retry against a stored retirer that differs from the first in `field` alone."""
+        return self._retry_against_rewritten_retirer(
+            isolated_home, git_repo, lambda row: {**row, field: value}
+        )
 
     def test_the_dedup_key_field_tables_name_every_field_of_a_row_the_append_writes(self, isolated_home, git_repo):
         decision_id = self._log_decision(isolated_home, git_repo)
@@ -2996,6 +3213,21 @@ class TestReviewLedgerRefRetry:
         result, ledger = self._retry_after_changing_one_field(
             isolated_home, git_repo, field, _DEDUP_KEY_EXEMPT_CHANGES[field],
         )
+
+        assert result.returncode == 0, result.stderr
+        assert len(_ledger_rows(ledger)) == 3
+
+    def test_a_retry_against_a_pre_schema_6_retirer_that_has_no_reviewed_state_adds_no_row(
+        self, isolated_home, git_repo
+    ):
+        """A retirer landed before the upgrade carries neither reviewed-state key, and the retry's own two keys
+        must pass both the retry check's deny-list and the dedup key."""
+
+        def as_schema_5_row(retirer: dict) -> dict:
+            pre_upgrade = {key: value for key, value in retirer.items() if not key.startswith("reviewed_")}
+            return {**pre_upgrade, "schema_version": 5}
+
+        result, ledger = self._retry_against_rewritten_retirer(isolated_home, git_repo, as_schema_5_row)
 
         assert result.returncode == 0, result.stderr
         assert len(_ledger_rows(ledger)) == 3
@@ -3344,7 +3576,9 @@ class TestReviewLedgerRowSizeBound:
 
     def test_row_of_exactly_4095_bytes_is_accepted(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
-        finding, rationale, quote = _fields_for_row_of_bytes(4095, **_ENGINEER_SETTLED_ROW_OVERRIDES)
+        finding, rationale, quote = _fields_for_row_of_bytes(
+            4095, repo=git_repo, **_ENGINEER_SETTLED_ROW_OVERRIDES
+        )
 
         result = _run(
             _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
@@ -3358,7 +3592,9 @@ class TestReviewLedgerRowSizeBound:
 
     def test_row_of_4096_bytes_is_rejected_naming_the_fields_to_shorten(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
-        finding, rationale, quote = _fields_for_row_of_bytes(4096, **_ENGINEER_SETTLED_ROW_OVERRIDES)
+        finding, rationale, quote = _fields_for_row_of_bytes(
+            4096, repo=git_repo, **_ENGINEER_SETTLED_ROW_OVERRIDES
+        )
 
         result = _run(
             _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
@@ -3651,7 +3887,7 @@ class TestReviewLedgerShow:
         result = _run(["show"], cwd=git_repo, home=isolated_home)
 
         rows = _shown_rows(result)
-        assert [(row["schema_version"], row["finding"]) for row in rows] == [(2, "v2 row"), (5, "current row")]
+        assert [(row["schema_version"], row["finding"]) for row in rows] == [(2, "v2 row"), (6, "current row")]
         assert "session_id" not in rows[0]
         assert rows[1]["session_id"] == SID
         assert _show_header(result)["rows"] == "2"
@@ -4238,15 +4474,19 @@ class TestReviewLedgerLocking:
         assert findings == {"Finding A", "Finding B"}
 
     def _append_near_limit_rows_from_distinct_sessions(
-        self, isolated_home, git_repo, session_count: int
+        self, isolated_home, git_repo, session_count: int, *, assert_capture: bool = False
     ) -> tuple[list[str], list[str]]:
         """Runs one 4,095-byte append per session id, all at once, against
         the one branch file, and returns the file's lines and each
-        appender's stderr."""
+        appender's stderr. A capture failure fails every caller with the
+        note's message, and assert_capture adds only the tree and pin checks,
+        which only a timing case should request."""
         procs = []
         for index in range(session_count):
             session_id = f"session-{index}"
-            finding, rationale, quote = _fields_for_row_of_bytes(4095, session_id, **_ENGINEER_SETTLED_ROW_OVERRIDES)
+            finding, rationale, quote = _fields_for_row_of_bytes(
+                4095, session_id, repo=git_repo, **_ENGINEER_SETTLED_ROW_OVERRIDES
+            )
             procs.append(_popen_as_session(
                 _engineer_args(finding=finding, rationale=rationale, engineer_quote=quote),
                 cwd=git_repo, home=isolated_home, session_id=session_id,
@@ -4256,11 +4496,28 @@ class TestReviewLedgerLocking:
             _stdout, stderr = proc.communicate(timeout=30)
             assert proc.returncode == 0, stderr
             stderrs.append(stderr)
+        # A failed capture reads here under its own message, not as a row-size failure.
+        assert not [stderr for stderr in stderrs if _STATE_NOTE in stderr], stderrs
         lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        if assert_capture:
+            rows = [json.loads(line) for line in lines]
+            assert all(row["reviewed_head"] and row["reviewed_tree"] for row in rows)
+            recorded_trees = {row["reviewed_tree"] for row in rows}
+            assert len(recorded_trees) == 1
+            pinned_trees = _git_output(
+                git_repo, "for-each-ref", "--format=%(objectname)", "refs/review-ledger/"
+            ).splitlines()
+            assert pinned_trees and set(pinned_trees) == recorded_trees
         assert [len(line.encode()) for line in lines] == [4095] * session_count, (
             "each row must sit at the bound, or the single-write append boundary is not exercised"
         )
         return lines, stderrs
+
+    @pytest.mark.timing
+    def test_concurrent_near_limit_appends_record_and_pin_one_reviewed_tree(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+
+        self._append_near_limit_rows_from_distinct_sessions(isolated_home, git_repo, 2, assert_capture=True)
 
     def test_parallel_near_limit_appends_from_distinct_sessions_land_as_intact_rows(
         self, isolated_home, git_repo
