@@ -20,7 +20,7 @@ A command-group module may import another by module (attribute access). Among th
 `turn_shape.py` imports `denials.py` (for `_drop_denial_command_flag_values`).
 `context_composition.py` imports `read_scope.py` (for `_READ_SCOPE_CHARS_PER_TOKEN`) and `subagents.py` (for `_MCP_TOOL_BUCKET_LABEL`).
 `build_parser()` registers every subcommand by calling its owning module's `_add_<command>_subparser` from
-`cli.py` at that command's place in registration order, except the five the `cli.py` section below names.
+`cli.py` at that command's place in registration order.
 Each module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
 handler reads at call time, not `cli.py`.
@@ -56,7 +56,8 @@ The rule itself is documented in `docs/transcript-analysis.md` under "Subagent a
 
 `scope.py` also owns `_add_project_scope_args`, which registers the mutually exclusive
 `--projects`/`--this-repo` flags on a subparser. `_resolve_project_scope` reads the `this_repo`
-attribute that function defines.
+attribute that function defines. `_add_extra_config_dirs_arg` registers the repeatable subcommand-level
+`--config-dir`, whose `extra_config_dirs` values `_resolve_cost_roots` reads.
 
 `scope.py` also owns `_iso_date`, the argparse `type=` validator for every YYYY-MM-DD flag, which
 `_parse_absolute_window_args` relies on.
@@ -223,6 +224,7 @@ is the one public (non-underscore-prefixed) name here, read by `cost_ledger.py`'
 `_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read.
 `cli.py` imports no public (non-underscore, non-`cmd_`) name from `cost.py` by name;
 `test_transcript_analysis_cost_import_direction.py` pins that.
+`_add_cost_subparser` and `_add_cost_trend_subparser` are the two names `build_parser()` reaches bare.
 
 ### `reviewer_yield.py`
 
@@ -259,7 +261,6 @@ miner's round filter and `routing_guard.py`'s per-round `spawn_open` flag are it
 
 - `judgment_pair.py`: judgment-pair's `--skills` default.
 - `pr_cost.py` and `pr_cost_export.py`: the skills a `review_rounds` cell holds.
-- `cli.py`'s `build_parser()`: review-round-cost's `--skill` choices.
 - `subagent_mix.py`: its round filter and the round-count table keys.
 
 `_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
@@ -270,6 +271,7 @@ miner's round filter and `routing_guard.py`'s per-round `spawn_open` flag are it
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`. `review_trace.py` and `routing_guard.py` are further ones.
+`_add_review_round_cost_subparser` is the one name `build_parser()` reaches bare.
 
 ### `review_cost_by_size.py`
 
@@ -431,8 +433,7 @@ stdout/stderr path routes branch and repo values through `redaction._assign_root
 never raw. Imports `corpus`, `cost`, `gh_cli`, `ledger_common`, `pr_cost_ledger`, `pricing`,
 `redaction`, `render`, `review_rounds`, and `scope` all by module. The `cost` import reaches `cost.py`'s own
 `_compute_pr_cost_branch_totals` and `_new_pr_cost_agg` — the pr-cost command group depending on the
-cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT`, and
-`_DEFAULT_PR_COST_PLAN_FILE_GLOB` are the three names reached bare from `cli.py`.
+cost command group, not the reverse. `_add_pr_cost_subparser` is the one name `build_parser()` reaches bare.
 
 ### `pr_cost_export.py`
 
@@ -615,7 +616,7 @@ access), matching `cost.py`'s convention; the `cost` import reaches only `_LIST_
 as `scope.config_dir` by attribute access, per the rule under `scope.py` above, and registers no
 `--config-dir` flag. Its subprocess calls are listed in
 `docs/transcript-analysis.md` § "period-cost".
-`cmd_period_cost` is the one name reached bare from `cli.py`, from `build_parser()`.
+`_add_period_cost_subparser` is the one name `build_parser()` reaches bare.
 
 ### `buckets.py`
 
@@ -765,10 +766,7 @@ The routing-guard command: `cmd_routing_guard` and the `_add_routing_guard_subpa
 `build_parser()`, which composes every subcommand's parser, and `main()`, which parses the command line,
 handles the top-level `--config-dir`, and calls the chosen subcommand's handler. `main()` refuses the
 top-level `--config-dir` for every subcommand in `scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR`, and
-otherwise reassigns `scope.PROJECTS_DIR`. `build_parser()` registers five subcommands inline: cost,
-cost-trend, pr-cost, review-round-cost, and period-cost. Every other
-subcommand registers through its owning module's `_add_<command>_subparser`, the form a new subcommand
-uses. `transcript-analysis.py` re-exports both functions.
+otherwise reassigns `scope.PROJECTS_DIR`. `transcript-analysis.py` re-exports both functions.
 
 ## Sibling scripts
 

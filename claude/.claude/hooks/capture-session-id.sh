@@ -35,9 +35,13 @@
 # is the upstream signal explaining why. If both the $PPID and $CLAUDE_PID
 # candidates are unusable, no lookup file is written at all.
 #
+# Cursor decline: the hook writes no lookup file for an untranslated Cursor payload, as
+# _lib_declines_untranslated_cursor_payload decides.
+#
 # No self-sweep, unlike other retired-destructor replacements: this file is
-# rewritten at every SessionStart and SubagentStart under the resolved PID,
-# so a session alive past any time-based watermark would still need its own
+# rewritten at every SessionStart and SubagentStart under the resolved PID
+# (except under the Cursor decline above), so a session alive past any
+# time-based watermark would still need its own
 # entry — an mtime sweep can't distinguish "stale" from "long-lived but
 # live." Growth is bounded only by PID reuse, not a time watermark.
 
@@ -63,6 +67,12 @@ fi
 # empty id already does rather than sanitizing further.
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   echo "[capture-session-id] session_id is not a valid path component; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
+
+# A Cursor process must never become a registered live ancestor, so an import copy of this hook declines.
+if _lib_declines_untranslated_cursor_payload "$INPUT"; then
+  echo "[capture-session-id] untranslated Cursor payload declined; lookup file not written" >&2
   exit 0
 fi
 

@@ -371,6 +371,9 @@ def _spawn_counts_by_agent_type(
     return dict(counts)
 
 
+# Regex, not PyYAML, because install.sh adds no packages to python3.
+# A trailing comment after the value makes the line not match, so the model is missed.
+# A quoted value keeps its quotes in the captured group.
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
 
 
@@ -692,15 +695,11 @@ def _add_subagent_mix_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_mix.add_argument("--branches", metavar="B1,B2,...")
     scope._add_project_scope_args(p_mix)
-    p_mix.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --per-session."
-            " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
-            " one root is in scope."
-        ),
+    scope._add_extra_config_dirs_arg(
+        p_mix,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Refused together with --per-session."
+        " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
+        " one root is in scope.",
     )
     p_mix.add_argument(
         "--since", metavar="Nd",

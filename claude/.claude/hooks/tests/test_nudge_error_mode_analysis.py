@@ -36,6 +36,8 @@ from helpers import (
     assert_cap_engaged,
     assert_cap_not_engaged,
     build_path_without,
+    fake_bin_dir,
+    fake_python3,
     link_bash_into,
     scaled_shim_sleep,
     scaled_under_cap_sleep,
@@ -152,12 +154,6 @@ def _sandboxed_env(tmp_path: Path) -> dict:
     return env
 
 
-def _fake_bin_dir(tmp_path: Path, name: str) -> Path:
-    d = tmp_path / f"fakebin-{name}"
-    d.mkdir(exist_ok=True)
-    return d
-
-
 def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
@@ -174,15 +170,6 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
         (fake_bin / tool).symlink_to(real)
     link_bash_into(fake_bin)
     return str(fake_bin)
-
-
-def _fake_python3(fake_bin: Path, script_body: str) -> str:
-    """Write a fake `python3` shim into fake_bin and return a PATH that finds
-    it ahead of the real python3."""
-    shim = fake_bin / "python3"
-    shim.write_text(script_body)
-    shim.chmod(0o755)
-    return f"{fake_bin}:{os.environ['PATH']}"
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +210,7 @@ class TestNudgeErrorModeAnalysis:
         degrading — the nudge must still fire at threshold under this PATH."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "no-timeout-no-gtimeout")
+        fake_bin = fake_bin_dir(tmp_path, "no-timeout-no-gtimeout")
         restricted_path = _path_without_timeout_or_gtimeout(fake_bin)
         result = _run_hook(
             _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
@@ -263,9 +250,9 @@ class TestNudgeErrorModeAnalysis:
         fired-marker and opt-in gates do."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "unresolvable-config-dir")
+        fake_bin = fake_bin_dir(tmp_path, "unresolvable-config-dir")
         spawn_counter = tmp_path / "python3-spawn-count"
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
         )
@@ -306,9 +293,9 @@ class TestNudgeErrorModeAnalysis:
         marker_dir.mkdir(parents=True)
         _marker_path(tmp_path).touch()
 
-        fake_bin = _fake_bin_dir(tmp_path, "spawn-check")
+        fake_bin = fake_bin_dir(tmp_path, "spawn-check")
         spawn_counter = tmp_path / "python3-spawn-count"
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
         )
@@ -328,9 +315,9 @@ class TestNudgeErrorModeAnalysis:
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
 
-        fake_bin = _fake_bin_dir(tmp_path, "opt-in-spawn-check")
+        fake_bin = fake_bin_dir(tmp_path, "opt-in-spawn-check")
         spawn_counter = tmp_path / "python3-spawn-count"
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
         )
@@ -397,7 +384,7 @@ class TestNudgeErrorModeAnalysis:
         hook reaches step 7 on hosts whose /usr/bin lacks `cat` or `mkdir`."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "no-python3")
+        fake_bin = fake_bin_dir(tmp_path, "no-python3")
         path_without_python3 = build_path_without("python3", fake_bin)
         result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": path_without_python3})
         assert result.returncode == 0
@@ -408,8 +395,8 @@ class TestNudgeErrorModeAnalysis:
         """python3 present but exiting 1 on every call: hook exits 0 with no stdout."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "failing-python3")
-        shim_path = _fake_python3(
+        fake_bin = fake_bin_dir(tmp_path, "failing-python3")
+        shim_path = fake_python3(
             fake_bin,
             '#!/bin/bash\nexit 1\n',
         )
@@ -426,9 +413,9 @@ class TestNudgeErrorModeAnalysis:
         exercised on the common, every-prompt path."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD - 1)
-        fake_bin = _fake_bin_dir(tmp_path, "checkpoint-args")
+        fake_bin = fake_bin_dir(tmp_path, "checkpoint-args")
         invocation_log = tmp_path / "python3-invocation-args"
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f'#!/bin/bash\n'
             f'echo "$@" >> {invocation_log}\n'
@@ -484,8 +471,8 @@ class TestNudgeErrorModeAnalysis:
         shim that emits garbage): hook exits 0 with no stdout."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "garbage-output")
-        shim_path = _fake_python3(
+        fake_bin = fake_bin_dir(tmp_path, "garbage-output")
+        shim_path = fake_python3(
             fake_bin,
             '#!/bin/bash\necho "not-a-number"\nexit 0\n',
         )
@@ -502,9 +489,9 @@ class TestNudgeErrorModeAnalysis:
             pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "hangs")
+        fake_bin = fake_bin_dir(tmp_path, "hangs")
         write_scaled_timeout_shim(fake_bin)
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f'#!/bin/bash\nsleep {scaled_shim_sleep(15)}\necho 99\n',
         )
@@ -524,9 +511,9 @@ class TestNudgeErrorModeAnalysis:
             pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "slow-but-under-cap")
+        fake_bin = fake_bin_dir(tmp_path, "slow-but-under-cap")
         write_scaled_timeout_shim(fake_bin)
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f'#!/bin/bash\nsleep {scaled_under_cap_sleep(3.5)}\necho {FRICTION_THRESHOLD}\n',
         )
@@ -643,9 +630,9 @@ class TestNudgeErrorModeAnalysis:
         pins for the fired-marker gate."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "traversal-spawn-check")
+        fake_bin = fake_bin_dir(tmp_path, "traversal-spawn-check")
         spawn_counter = tmp_path / "python3-spawn-count"
-        shim_path = _fake_python3(
+        shim_path = fake_python3(
             fake_bin,
             f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
         )

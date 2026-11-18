@@ -38,7 +38,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   - The skills loaded this session, each with its SKILL.md path, most recently loaded first.
   - The branch's plan file.
-  - The engineer's five newest prompts, quoted from the transcript, oldest first. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
+  - The five newest prompts, quoted from the transcript, oldest first. A prompt sent headless through `claude -p` is preceded by a label line saying so. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
 
   The plan line names the absolute `<checkout root>/.claude/plans/<slug>.md`. It carries a sentence saying the block does not check who wrote the file or whether the session used it. The script reads the file `PATH` names and checks the checkout's `.git` and plan file on disk. It makes no network call and writes nothing.
 
@@ -46,7 +46,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   - the plan file does not exist;
   - the plan path, which holds the checkout root and the branch slug, has a character outside `[A-Za-z0-9._/@+-]` or a `..` segment;
-  - the recorded `cwd` is relative or has no `.git` ancestor;
+  - the recorded `cwd` is relative, longer than 4,096 characters, or has no `.git` ancestor;
   - the plan file is a symlink;
   - `.claude` or `plans` is a symlink, or the plan otherwise resolves outside `<root>/.claude/plans`;
   - no main-thread record carries both a branch and a cwd, or the branch is detached HEAD;
@@ -58,7 +58,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
   Limits and omissions:
 
-  - **Output limits:** the block stays within 9,000 characters. Over that it drops older prompts first, then the least recently loaded skills, and never drops the newest prompt or the plan line. The one exception is a block whose framing text, plan line and newest prompt alone exceed 9,000 characters. That takes a newest prompt made almost entirely of `~` characters, whose fences grow with it, together with a plan path near the longest the filesystem accepts. Each prompt is also cut to the per-message limit above.
+  - **Output limits:** the block stays within 9,000 code points. Over that it drops older prompts first, then the least recently loaded skills, and never drops the newest prompt or the plan line. The one exception is a block whose framing text, plan line and newest prompt alone exceed 9,000 code points. That takes a newest prompt made almost entirely of `~` characters, whose fences grow with it, together with a plan path near the longest the filesystem accepts. Each prompt is also cut to the per-message limit above.
   - **Exit codes:** it prints nothing and exits 0 when the transcript holds no skill, prompt or plan file. It exits 1 with one stderr line when the file cannot be opened. Exit 1 is also the interpreter's default code for an import-time or other uncaught failure outside `main`, with a traceback and no `compaction-context:` stderr line, so exit 1 alone does not show the transcript was the problem. An argparse usage error exits 2. It exits 3 with one stderr line naming the exception type on an unexpected internal error, a failed write of the block included. A record or line it cannot interpret costs that record or line, not the block.
   - **Silent omissions:** a skill directory holding a space, a non-ASCII letter, another character outside `[A-Za-z0-9._/@+-]` or a `..` segment yields no skill line. The plan line has its own omission list above. The block also omits AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token.
   - **Redaction limit:** do not paste a hand-run block into a PR, issue or channel: it carries the engineer's prompts and absolute paths and is not safe to publish, whatever the channel.
@@ -513,7 +513,8 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
       A NUL, U+001F or U+001E inside a payload string reaches the hook as the JSON escape.
     - Hook run:
       - The shim runs the hook under the recorded `timeout` wrapper in the resolved directory, with the translated payload on stdin.
-      - The hook gets `CLAUDE_CONFIG_DIR` set to the routed dir, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID` removed, and a `PATH` of the recorded tool directories followed by `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`.
+      - The hook gets `CLAUDE_CONFIG_DIR` set to the routed dir, `CLAUDE_CONFIG_ADAPTER_SESSION_ID` set to the call's session id, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID` removed, and a `PATH` of the recorded tool directories followed by `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`.
+      - The hook never receives `CLAUDE_CONFIG_ADAPTER_HOST_PID`, because it walks to its own host.
       - The shim opens no file the agent names.
       - Under Cursor, a whole-file overwrite of an existing plan file reaches the plan-writer gate as `Edit` and passes it. Claude Code names it a Write and denies it. See the Limitations bullet on subagent bars.
       - A hook output stream past 1 MiB takes the output-cap refusal at once. The hook keeps running until it ends or its time left runs out.
@@ -524,7 +525,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
     - `field-table.json` holds the payload fields and required key paths. Each carries a `status`: `observed` (seen in a recorded Cursor payload), `doc-only` (listed in Cursor's hooks documentation and not yet seen in a recorded payload) or `unverified` (neither).
     - `parity-exceptions.json` lists each `settings.json` registration, permission deny, adapter gate or Cursor tool name that the adapter does not carry, declines, or delivers later, with a reason (`unsupported`, `declined`, `pending-phase` or `withheld-premise`).
     - A `pending-phase` row also names a `phase` of `.claude/plans/cursor-adapter.md`.
-  - `classify` mode runs the facts step only. It denies a Cursor tool name that neither the recorded tool map (its `MCP:` prefix class included) nor a `cursor-tool` entry in `parity-exceptions.json` lists. `pin` mode rewrites an agent Shell command to start with `builtin cd -- '<dir>' || exit 1`, so every Shell call starts in the directory the gates evaluate, and `pin-check` mode denies a command that lacks that prefix.
+  - `classify` mode runs the facts step only. It denies a Cursor tool name that neither the recorded tool map (its `MCP:` prefix class included) nor a `cursor-tool` entry in `parity-exceptions.json` lists. `pin` mode rewrites an agent Shell command to start with an environment line (`unset CLAUDECODE`, then the routed `CLAUDE_CONFIG_DIR` and `CLAUDE_CONFIG_ADAPTER_SESSION_ID` exports, and the host-PID export or unset) and then `builtin cd -- '<dir>' || exit 1`, so every Shell call starts in the directory the gates evaluate, and `pin-check` mode denies a command that lacks that two-line prefix or whose environment line differs in routed dir or session id.
   - Log: each call with a usable `cursor-adapter-state` directory in the routed config dir appends one line to `shim.log`. The line grammar and the field maxima are the log-field table in `hook-shim.py`. A call writes no line when the state directory is missing, a link or unwritable, and the `install-record` deny is always such a call. The call that wins the conversation's first-call mark also records the interpreter's `major.minor` in a `py` field, and a subagent's calls find their parent's mark.
     - The sessionStart check entry owns the 16 MiB log rotation and the 7-day sweep of first-call marks. The shim does neither.
   - Limitations:

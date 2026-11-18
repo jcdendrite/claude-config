@@ -390,12 +390,15 @@ class TestCheckSkillLength:
             ".claude/skills/code-review-example/SKILL.md",
             "plugins/example-plugin/skills/plan-review/SKILL.md",
             "plugins/example-plugin/skills/pr-description/SKILL.md",
+            "plugins/example-plugin/skills/subagent-delegation/SKILL.md",
             "claude-skills/skills/code-review-example/SKILL.md",
             "claude-skills/skills/plan-review-example/SKILL.md",
             "claude-skills/skills/pr-description-example/SKILL.md",
+            "claude-skills/skills/subagent-delegation-example/SKILL.md",
             "vendor/claude-skills/skills/code-review/SKILL.md",
             "vendor/claude-skills/skills/plan-review/SKILL.md",
             "vendor/claude-skills/skills/pr-description/SKILL.md",
+            "vendor/claude-skills/skills/subagent-delegation/SKILL.md",
         ],
     )
     def test_override_caps_do_not_apply_to_sibling_paths(
@@ -710,6 +713,41 @@ class TestCheckSkillLength:
         assert pr_path in reason
         assert "251 lines" in reason
         assert "limit 250" in reason
+
+    def test_subagent_delegation_at_override_cap_allows(
+        self, isolated_home, tmp_path
+    ):
+        """subagent-delegation/SKILL.md gets a 218-line cap; exactly 218 lines (over 200) → allow."""
+        sd_path = "claude-skills/skills/subagent-delegation/SKILL.md"
+        # The committed size must stay below the cap: the gate denies only when the staged
+        # file also grew, so a base at or above 218 would pass without exercising the cap arm.
+        repo = make_repo_with_skill_at(tmp_path, sd_path, 201)
+        (repo / sd_path).write_text(make_skill_content(218))
+        subprocess.run(["git", "add", sd_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_subagent_delegation_over_override_denies(self, isolated_home, tmp_path):
+        """subagent-delegation/SKILL.md over the 218-line override and growing → deny."""
+        sd_path = "claude-skills/skills/subagent-delegation/SKILL.md"
+        repo = make_repo_with_skill_at(tmp_path, sd_path, 210)
+        (repo / sd_path).write_text(make_skill_content(219))
+        subprocess.run(["git", "add", sd_path], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_SKILL_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert sd_path in reason
+        assert "219 lines" in reason
+        assert "limit 218" in reason
 
     def test_byte_limit_never_fires_for_this_caller(self, isolated_home, new_skill_repo):
         """check-skill-length.sh calls _lib_staged_length_gate in its 2-arg

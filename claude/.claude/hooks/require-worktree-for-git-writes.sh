@@ -103,11 +103,12 @@
 #     "retry", which is permanently wrong advice in that case.
 #   - The collision guard makes a write into a linked worktree a
 #     conditional allow: it depends on _lib_resolve_claude_pid resolving
-#     this session's own live pid, which in turn depends on
-#     capture-session-id.sh's SessionStart hook having already written a
-#     session file. SessionStart necessarily precedes any PreToolUse in the
-#     same session, so this holds by construction. Reads stay an
-#     unconditional allow regardless of collision state.
+#     this session's own live pid. Its header in `_lib.sh` names its two
+#     sources: a registered ancestor's session file, and the Cursor adapter's
+#     session pair. For Claude Code the session file comes from
+#     capture-session-id.sh's SessionStart hook, and SessionStart necessarily
+#     precedes any PreToolUse in the same session.
+#     Reads stay an unconditional allow regardless of collision state.
 #   - A fast-path collision denial falls through to full parsing rather
 #     than denying directly, so a denied write now costs roughly double
 #     the collision guard's git-subprocess calls plus a python3 spawn

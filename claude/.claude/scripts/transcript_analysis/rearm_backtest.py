@@ -18,6 +18,7 @@ from pathlib import Path
 from transcript_analysis import handoff_nudge, render, scope
 
 _REARM_BACKTEST_DEFAULT_SPACINGS: tuple[int, ...] = (40_000, 80_000, 120_000)
+_REARM_BACKTEST_DEFAULT_SPACINGS_ARG: str = ",".join(str(spacing) for spacing in _REARM_BACKTEST_DEFAULT_SPACINGS)
 
 
 def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
@@ -253,7 +254,7 @@ def _parse_rearm_spacings_arg(args: argparse.Namespace) -> list[int]:
     """Parse --spacings' comma-separated token list into a list of positive
     ints, defaulting to _REARM_BACKTEST_DEFAULT_SPACINGS. Exits 2 on a
     non-integer or non-positive value."""
-    raw: str = getattr(args, "spacings", None) or ",".join(str(s) for s in _REARM_BACKTEST_DEFAULT_SPACINGS)
+    raw: str = getattr(args, "spacings", None) or _REARM_BACKTEST_DEFAULT_SPACINGS_ARG
     spacings: list[int] = []
     for token in raw.split(","):
         token = token.strip()
@@ -569,15 +570,11 @@ def _add_rearm_backtest_subparser(subparsers: argparse._SubParsersAction) -> Non
         ),
     )
     scope._add_project_scope_args(p_rearm_backtest)
-    p_rearm_backtest.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root; --no-redact is refused once this puts more than one"
-            " root in scope."
-        ),
+    scope._add_extra_config_dirs_arg(
+        p_rearm_backtest,
+        f"{scope._EXTRA_CONFIG_DIRS_HELP_PREAMBLE} Composes with --this-repo, scoping to this repo"
+        " across every resulting root; --no-redact is refused once this puts more than one"
+        " root in scope.",
     )
     p_rearm_backtest.add_argument(
         "--since", metavar="Nd",
@@ -599,7 +596,7 @@ def _add_rearm_backtest_subparser(subparsers: argparse._SubParsersAction) -> Non
         ),
     )
     p_rearm_backtest.add_argument(
-        "--spacings", metavar="N1,N2,...", default="40000,80000,120000",
-        help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: 40000,80000,120000).",
+        "--spacings", metavar="N1,N2,...", default=_REARM_BACKTEST_DEFAULT_SPACINGS_ARG,
+        help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: %(default)s).",
     )
     p_rearm_backtest.set_defaults(func=cmd_rearm_backtest)

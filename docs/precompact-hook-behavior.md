@@ -75,7 +75,9 @@ Deferred; no data collected.
 
 `PostCompact`'s input carries the full `compact_summary` Claude Code just generated during compaction. A `PostCompact` hook can't feed anything back to Claude (per the `additionalContext` refutation above), but it can **archive** that summary to disk — a cheap, no-synthesis-required complement to an incremental review-narrative ledger, useful as a raw safety net for whatever the ledger didn't anticipate capturing.
 
-Combined with the `additionalContext` refutation above, the next implementation phase no longer needs a `PreCompact` hook at all, and needs a `PostCompact` hook only for archival (not for reminding Claude of anything — it structurally cannot). The reminder-to-check-the-ledger piece has to be a static, always-loaded CLAUDE.md instruction, not an event-driven injection.
+With no event-driven injection path found in this spike, the reminder to check the ledger had to be a static, always-loaded CLAUDE.md instruction. Two later sections each record a channel this spike did not test:
+- a `SessionStart` hook with matcher `compact`, whose `additionalContext` reaches the resumed agent ("Post-compact hook end-to-end findings");
+- a `PreCompact` hook's plain stdout on exit 0, which steers the summary as model behavior rather than a guarantee ("Steering probe").
 
 ## What survives compaction — survival probe findings
 
@@ -204,4 +206,78 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
 - **Not exercised:** the answer, `!`-record and interrupt-key exclusions are not exercised on real no-`origin` `cli` records, because the no-`origin` exclusion drops each such record first. The script's unit tests cover them with `sdk-cli` copies.
 - **Invocation:** `python3 -I compaction-context.py` exits 1 with `ModuleNotFoundError` for `transcript_analysis`, because `-I` removes the script's directory from `sys.path`. `transcript-analysis.py` imports its package the same way. Callers must run it without `-I`.
 - **Admission and plan line:** the quoted `claude -p` load prompts pass the three-field no-`origin` rule, because the recorded records carry `entrypoint` `sdk-cli` with `promptSource` and `turnOrigin` both `"sdk"`. Every plan line names an absolute path that exists on disk, and the scratch checkout root passes the path allow-list.
-- **Script attested:** the script blob whose git SHA begins `0a2f3e7ec6c8` reproduces, byte for byte, the output scored for each of the 62 cuts above (`git hash-object` prefix, script alone, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.
+- **Script versions:** two versions of `compaction-context.py` are named below by the first 12 hex digits of `git hash-object` on the script alone. The prefix is shortened to stay under the repository's long-hex redaction detector.
+  - `0a2f3e7ec6c8` is the version the 62 cuts above were scored against. It reproduces the output scored for each cut byte for byte, with the `transcript_analysis` package read from the working tree. The scratch transcripts were not kept, so the cuts cannot be re-scored against a later script.
+  - `ade5a498ade7` is the shipped version. Refresh this prefix on every script edit. It differs from `0a2f3e7ec6c8` in these ways:
+    - The block's first framing line.
+    - The headless label and the helper that adds it to a quoted message.
+    - NUL removal. The task-notification closer check, the tag-opening check, the command-name check and the empty-text check all judge text with NUL already removed, which is the text the block emits. `_quoted_text` drops a prompt with no text left. The shared render and user-input predicates still run on the raw text.
+    - Two per-record input bounds: the longest accepted `cwd` is 4,096 characters, and `<command-args>` is matched with `str.find`.
+    - The module docstring.
+  - The 62 cuts are real-transcript evidence for `0a2f3e7ec6c8` only. For the shipped version the evidence is the unit tests and the end-to-end run below.
+  - The shipped version keeps the cap loop and the ordering.
+  - It admits the same prompts as `0a2f3e7ec6c8` except one that holds NUL.
+  - The unit tests cover the differences:
+    - They pin the first framing line and the label as literals.
+    - They keep every admission row written for `0a2f3e7ec6c8`.
+    - They add rows for NUL-bearing prompts.
+  - The end-to-end findings below ran a version that differs from the shipped one only in NUL handling, the empty-text check after it, the two per-record input bounds, and a docstring and comment edit.
+
+## Post-compact hook end-to-end findings
+
+Run on claude 2.1.323, 2026-11-13, in a scratch repository on a branch named `probe/scratch`. Its project settings registered `restore-session-state-on-compact.sh` by absolute path, pointing at a checkout of this repository, so the script was the version the last bullet under "Script versions" describes. Build 2.1.323 is a probe build for these findings only. It does not replace 2.1.322, the build "What survives compaction" verifies, and that section's re-verify date is unchanged. The prompts were synthetic sentinels. The results below name shapes and enum values only.
+
+- **Manual compaction.** After a bare `/compact`, the hook fired and its block arrived as a `SessionStart` additional-context record. The resumed agent named the skill and its `SKILL.md` path and the plan path. It quoted the newest sentinel prompt word for word, and gave the right step number without re-reading the skill.
+- **Automatic compaction.** One session compacted twice on its own (`--autocompact 100k`, filled by large file reads). The hook fired each time.
+  - The newest five prompts were quoted. An older sentinel prompt was not, and the resumed agent still answered it from the summary.
+  - At the second compaction the prompt that triggered it was not yet in the transcript, so the block ends at the prompt before it. The harness carried that prompt forward itself.
+- **Headless automatic compaction.** One `claude -p` run compacted three times and the hook fired at each. The block held the framing lines, the plan line, and the task prompt under the headless label. It held no skills section, because none had loaded. The agent finished the task without stopping to ask. This is one run, and a headless run has no one to ask.
+- **Resumes into this session's transcript.** A `claude -p --resume` run from a terminal, and a `claude -p --continue` run by the agent through its Bash tool, both appended to the same transcript file. Both were plain-text `claude -p "<prompt>"` invocations on one build. Each user record carried no `origin`, `entrypoint` `sdk-cli`, and `promptSource` and `turnOrigin` both `sdk`. The script admitted both and quoted them under the label. The harness also wrote a `[Tool call interrupted…]` user record, which carries `entrypoint` `sdk-cli` and no `promptSource`, so `_passes_origin_rule` excluded it.
+- **Agent-caused request.** A request to delete a branch on a scratch remote was sent as a labelled headless record in one run and as an unlabelled typed prompt in another, each asking the agent not to act yet. After a compaction and a neutral "continue", the agent asked before acting in both runs and ran no delete. Each variant ran once. Because each request itself said not to act yet, the result cannot be credited to the framing lines, and the probe does not show how the agent treats a quoted request that says to act now. An earlier attempt used a plain push, which the machine's own shipping policy authorizes, so it is not counted.
+- **Prompt shapes.**
+  - A prompt holding the closing tag of the `pasted_content` wrapper and a long tilde run: the harness escaped that closing tag in the stored user record, and the fence grew past the longest tilde run in the text. The closing tag of the wrapper the harness puts around hook `additionalContext` was not run.
+  - A queued prompt (`promptSource` `queued`, human `origin`) was quoted in order.
+  - A prompt rewound away stayed in the transcript and was quoted, as the docs disclose.
+  - A custom slash command and an MCP prompt: the invocation record opens with a command tag and its body is a meta record, so neither was quoted.
+  - Stop-hook feedback was a meta record with no `origin`, and a looped prompt was a meta record with `promptSource` `system` and `turnOrigin` `scheduled`. Neither was quoted.
+- **Origin kinds.** The local transcripts held `human`, `task-notification`, `coordinator` and `peer`. `_passes_origin_rule` admits only `human`. The list comes from one machine's transcripts and cannot show a kind the build writes that this machine never recorded.
+- **Cap unit.** A block of emoji prompts measured 13,299 UTF-16 units. The harness stored it in a file and injected a preview of about 3,950 characters, which lost the newest prompts. The block's code-point count was not recorded reliably, so none is stated. The survival probe's 9,000-character block of mixed non-ASCII text was 10,410 UTF-8 bytes and arrived intact. If the harness limit is 10,000 as relayed (not verified against harness documentation), that rules out UTF-8 bytes and code points as the unit, and UTF-16 units fit both observations. A block of N code points holding A characters outside the Basic Multilingual Plane measures N + A UTF-16 units, so at the 9,000 cap it overflows only with more than 1,000 such characters. The script keeps counting code points, and the docs state the limit.
+- **Timing.** On a synthetic copy of about 64 MB, made by repeating one probe transcript's records, one `state` run took 0.9 to 1.2 seconds and peaked at about 190 MB resident, on one machine. That is inside the 6-second cap. The records were string-heavy. In a later measurement on one machine, a 64 MB file of key-dense records (40 keys and a 60-element list each) took 3.8 to 8.4 seconds over three runs and peaked at about 390 MB, so it can pass the cap. On a one-line transcript the script alone took 0.25 to 0.7 seconds warm and about 1 second with no cached bytecode, and the whole hook took 0.5 to 0.9 seconds warm, on one machine.
+- **Not run.** A resumed interactive session, an interrupt inside a `claude -p` run, a `claude -p "/skill args"` invocation, and `claude -p --input-format stream-json` stay unexercised. Two carriers were also never probed: a quoted closing tag for the wrapper the harness puts around hook `additionalContext`, and a custom slash command or MCP prompt body whose first line is `Base directory for this skill: <path>` with an allowed path, which the script would list as a skill line. How the harness shows `additionalContext` in the engineer's terminal was also never probed, so whether a quoted control or escape character reaches the terminal raw, where it would be interpreted as an escape sequence, is unknown.
+
+## Steering probe — does `PreCompact` stdout steer the summary?
+
+Result: yes, in the runs below, all on one build. A `PreCompact` hook's stdout on exit 0 steered the summary on both the manual and automatic triggers. Compaction also proceeded when the hook timed out or exited 1.
+
+- **Build:** `claude --version` **2.1.326**. Probe date 2026-11-16 (UTC). Re-verify by 2027-02-16, the three-month interval `docs/handoff-nudge.md` uses for vendor behavior. Nothing raises this date when it lapses.
+- **Scope:** shapes, counts and booleans only. The sentinels are synthetic strings planted for the probe.
+
+### Method
+
+- A scratch git repository outside this repo, with one scratch project skill of eight numbered steps. No other hooks beyond the stowed ones.
+- A `PreCompact` hook with no matcher logged its stdin, then printed three instructions on exit 0:
+  - include a literal `PRECOMPACT-SENTINEL-<token>` line;
+  - write `CONTROL-<token>` backwards on its own line. An echo of the hook's stdout cannot produce it, because the echo carries only the forward form;
+  - under a "Continuity" heading, name the skill's current step number and quote the decision sentence the prompt typed, which held `DECISION-SENTINEL`.
+- A `PostCompact` hook archived stdin, whose `compact_summary` field holds the summary.
+- `<token>` is 8 random uppercase letters with no repeats. A first feasibility run used 8 hex digits and mis-reversed the token by dropping one of two adjacent equal digits. That run is not scored.
+- Each item is scored only against the text outside the `<analysis>` block of `compact_summary`. The `isCompactSummary` transcript record the next model sees holds no `<analysis>` block.
+- A run steers when its scored text holds the reversed control exactly and passes the Continuity check. The exact bar stays even though a model can mis-reverse a token.
+- Manual runs ran as `claude -p` turns, then `claude -p "/compact" --continue`. `/compact` works in `-p` mode and fires both hooks. Automatic runs used `--autocompact 100k` and a prompt that read ten large files.
+
+### Results
+
+- **Manual, three bare `/compact` runs:** the sentinel, the Continuity heading, the step number and the decision sentence held in all three. The exact reversed control held in two. In the third the model mis-reversed the token, dropping one letter and reordering two others.
+- **Automatic, one run:** it compacted more than once and every compaction passed every check, the exact reversed control included. Only the first compaction is independent evidence, because later ones summarize a context that already holds the earlier steered summary.
+- **Typed focus:** a manual `/compact <focus>` run set `custom_instructions`, and the summary held both the focus sentinel and the hook's sentinel. Its reversed control had two letters swapped, so it does not steer under the exact bar.
+- **Failure, hook sleeps past its timeout** (hook timeout 10 s): manual and automatic compactions both proceeded. No summary held the sentinel.
+- **Failure, hook exits 1:** the manual compaction proceeded and its summary held no sentinel. The automatic run steered nothing and ended with the harness's "Autocompact is thrashing" stop (`is_error` true). The probe did not isolate the cause, so this run neither shows nor rules out that a failing hook causes thrashing.
+
+### Implications for a `PreCompact` hook
+
+Designing a `PreCompact` hook that prints summary instructions as plain stdout is worth pursuing. The `additionalContext` JSON shape was refuted above on build 2.1.233 and not re-tested on 2.1.326.
+
+Constraints any such hook inherits from these results:
+
+- A hook must not rely on steering to carry a constraint, because steering is model behavior, not a guarantee.
+- The stdout is followed as instructions and re-summarized into later compactions, so it must never be built from prompt, transcript or other untrusted text.

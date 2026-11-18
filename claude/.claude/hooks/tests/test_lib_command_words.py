@@ -19,6 +19,7 @@ from helpers import (
     assert_cap_engaged,
     build_path_without,
     scaled_shim_sleep,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
     xargs_is_gnu,
 )
@@ -667,8 +668,7 @@ def test_command_words_python3_hang_is_capped_and_returns_the_killed_status(tmp_
     stub_dir.mkdir()
     write_scaled_timeout_shim(stub_dir)
     stub_python3 = stub_dir / "python3"
-    stub_python3.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_python3} "$@"\n')
-    stub_python3.chmod(0o755)
+    write_prewarmed_stub(stub_python3, f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_python3} "$@"\n')
 
     env = dict(os.environ)
     env["PATH"] = f"{stub_dir}:{os.environ['PATH']}"

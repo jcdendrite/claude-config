@@ -17,6 +17,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+import yaml
 from review_bench import adjudicate, arms, defects, fixture_repo, local_git
 from review_bench.defects import ConfirmedDefect
 from test_review_bench_mining import (
@@ -1254,6 +1255,58 @@ class TestSharedGitTimeoutDefault:
         assert run_git_timeouts == extract_timeouts == snapshot_timeouts == {fixture_repo._LOCAL_GIT_TIMEOUT_S}
 
 
+def _trace_events(trace_path: Path) -> list[dict]:
+    return [json.loads(line) for line in trace_path.read_text().splitlines()]
+
+
+def _maintenance_child_argvs(trace_path: Path) -> list[list[str]]:
+    trace_events = _trace_events(trace_path)
+    child_argvs = [event["argv"] for event in trace_events if event["event"] == "child_start"]
+    return [argv for argv in child_argvs if "maintenance" in argv]
+
+
+class TestCommitSnapshotAutoMaintenance:
+    def test_the_fixture_commit_starts_no_git_maintenance_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Pins that git starts no maintenance child after the fixture commit, whether or not that child detaches.
+        It guards the `.git`-copy ENOENT recorded at the `maintenance.auto=false` comment in `_commit_snapshot`."""
+        # Control: without the flag this git must start a maintenance child, or the absence asserted below is vacuous.
+        control_dir = tmp_path / "control"
+        control_dir.mkdir()
+        _git(control_dir, "init", "-q")
+        control_trace_path = tmp_path / "control-trace2-events.json"
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+             "commit", "-q", "--allow-empty", "-m", "control"], cwd=control_dir, check=True,
+            timeout=fixture_repo._LOCAL_GIT_TIMEOUT_S, capture_output=True,
+            env={**local_git.isolated_git_environment(), **fixture_repo._git_commit_env(),
+                 "GIT_TRACE2_EVENT": str(control_trace_path)},
+        )
+        if not _maintenance_child_argvs(control_trace_path):
+            git_version = _git(control_dir, "--version").strip()
+            pytest.skip(f"{git_version} starts no maintenance child after a commit, so the fixture commit cannot regress")
+
+        extracted = tmp_path / "extracted"
+        extracted.mkdir()
+        _git(extracted, "init", "-q")
+        _write(extracted, "src/app.py", "x = 0\n")
+        trace_path = tmp_path / "trace2-events.json"
+        real_isolated_git_environment = fixture_repo.isolated_git_environment
+        # `isolated_git_environment` strips every `GIT_*` variable, so the trace variable has to be added after it.
+        monkeypatch.setattr(
+            fixture_repo, "isolated_git_environment",
+            lambda: {**real_isolated_git_environment(), "GIT_TRACE2_EVENT": str(trace_path)},
+        )
+
+        fixture_repo._commit_snapshot(extracted, "snapshot")
+
+        assert any(
+            event["event"] == "cmd_name" and event.get("name") == "commit" for event in _trace_events(trace_path)
+        ), "the fixture commit was not traced, so the absence asserted below would be vacuous"
+        assert not _maintenance_child_argvs(trace_path)
+
+
 class TestBuildSingleCommitRepo:
     def test_a_commit_that_is_not_a_full_sha_is_refused_before_any_git_call(self, tmp_path: Path) -> None:
         dest_dir = tmp_path / "dest"
@@ -1292,13 +1345,23 @@ class TestRenderArmAgent:
         rendered = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
 
         frontmatter, body = arms._split_frontmatter(rendered)
-        assert f"name: bench-{_LENS}" in frontmatter
-        assert f"model: {arms.ARM_MODEL_FRONTMATTER_VALUE}" in frontmatter
+        parsed_frontmatter = yaml.safe_load(frontmatter)
+        assert parsed_frontmatter["name"] == f"bench-{_LENS}"
+        assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
+        # Literal, so adding a tool to ARM_TOOLS cannot pass by moving both sides together.
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
         # A field render_arm_agent never touches survives byte-identical.
         assert "description: A test lens." in frontmatter
         # Body is untouched for the current-rule arm -- no clause substitution.
         assert body == original_body
+        # Literal replacement, so the rendered bytes are checked without the splitter both sides share.
+        assert rendered == (
+            original_text
+            .replace(f"name: {_LENS}\n", f"name: bench-{_LENS}\n", 1)
+            .replace("model: sonnet\n", "model: inherit\n", 1)
+            .replace("tools: Read, Grep, Glob, Bash, Write\n", "tools: Read, Grep, Glob\n", 1)
+        )
 
     def test_function_context_arm_differs_from_production_only_in_name_model_tools_and_clause(self, tmp_path: Path) -> None:
         agents_dir = tmp_path / "agents"
@@ -1312,9 +1375,12 @@ class TestRenderArmAgent:
         rendered = arms.render_arm_agent(arms.ARM_FUNCTION_CONTEXT, _LENS, agents_dir=agents_dir)
         frontmatter, body = arms._split_frontmatter(rendered)
 
-        assert f"name: bench-{_LENS}" in frontmatter
-        assert f"model: {arms.ARM_MODEL_FRONTMATTER_VALUE}" in frontmatter
+        parsed_frontmatter = yaml.safe_load(frontmatter)
+        assert parsed_frontmatter["name"] == f"bench-{_LENS}"
+        assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
+        # A field render_arm_agent never touches survives byte-identical.
         assert "description: A test lens." in frontmatter
         assert body == original_body.replace(_READ_CLAUSE, arms.FUNCTION_CONTEXT_CLAUSE, 1)
         assert _READ_CLAUSE not in body
@@ -1362,6 +1428,141 @@ class TestRenderArmAgent:
         with pytest.raises(arms.ArmSnapshotError):
             arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
 
+    @pytest.mark.parametrize(
+        "tools_lines",
+        [
+            pytest.param("", id="no tools line"),
+            pytest.param("tools:\n", id="null tools"),
+            pytest.param('tools: ""\n', id="empty tools"),
+        ],
+    )
+    def test_fails_loudly_when_production_tools_is_absent_or_blank(self, tmp_path: Path, tools_lines: str) -> None:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        production_text = (
+            f"---\nname: {_LENS}\nmodel: sonnet\n{tools_lines}---\n"
+            f"You are `{_LENS}`.\n\n{_READ_CLAUSE} and check style.\n"
+        )
+        (agents_dir / f"{_LENS}.md").write_text(production_text, encoding="utf-8")
+
+        with pytest.raises(arms.ArmSnapshotError, match="is missing"):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    def test_invalid_yaml_production_frontmatter_raises_an_arm_snapshot_error_naming_the_lens(
+        self, tmp_path: Path,
+    ) -> None:
+        agents_dir = tmp_path / "agents"
+        _write_production_agent(
+            agents_dir, lens=_LENS, tools="Read, Grep, Glob, Bash, Write", extra_frontmatter="description: a: b\n",
+        )
+
+        with pytest.raises(arms.ArmSnapshotError, match=f"^{_LENS}: .*not valid YAML"):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    def test_a_quoted_production_tools_value_is_read(self, tmp_path: Path) -> None:
+        agents_dir = tmp_path / "agents"
+        _write_production_agent(agents_dir, lens=_LENS, tools='"Read, Grep, Glob, Bash, Write"')
+
+        rendered = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+        frontmatter, _ = arms._split_frontmatter(rendered)
+        assert yaml.safe_load(frontmatter)["tools"] == "Read, Grep, Glob"
+
+    def test_a_mid_line_triple_dash_in_production_frontmatter_raises_an_arm_snapshot_error_naming_the_lens(
+        self, tmp_path: Path,
+    ) -> None:
+        """The --- follows name:, model: and tools:, so only the closer-must-start-a-line check catches it."""
+        agents_dir = tmp_path / "agents"
+        _write_production_agent(
+            agents_dir, lens=_LENS, tools="Read, Grep, Glob, Bash, Write", extra_frontmatter="description: a---b\n",
+        )
+
+        with pytest.raises(arms.ArmSnapshotError, match=f"^{_LENS}: .*does not start a line"):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+    def test_a_production_file_with_a_leading_byte_order_mark_renders_the_same_arm_without_it(
+        self, tmp_path: Path,
+    ) -> None:
+        agents_dir_without_mark = tmp_path / "without-mark"
+        agents_dir_with_mark = tmp_path / "with-mark"
+        _write_production_agent(agents_dir_without_mark, lens=_LENS, tools="Read, Grep, Glob, Bash, Write")
+        production_text = (agents_dir_without_mark / f"{_LENS}.md").read_text(encoding="utf-8")
+        agents_dir_with_mark.mkdir()
+        (agents_dir_with_mark / f"{_LENS}.md").write_text("\ufeff" + production_text, encoding="utf-8")
+
+        rendered_with_mark = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir_with_mark)
+
+        rendered_without_mark = arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir_without_mark)
+        assert rendered_with_mark == rendered_without_mark
+        assert rendered_with_mark.startswith("---")
+
+    def test_a_production_file_that_is_not_valid_utf8_raises_an_arm_snapshot_error_naming_the_lens(
+        self, tmp_path: Path,
+    ) -> None:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / f"{_LENS}.md").write_bytes(b"\xff\xfe---\nname: x\n---\nbody\n")
+
+        with pytest.raises(arms.ArmSnapshotError, match=f"^{_LENS}: .*not valid UTF-8: .*0xff") as raised:
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+        assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+
+    @pytest.mark.parametrize(
+        ("production_frontmatter", "match"),
+        [
+            # Renders `tools: Read, Grep, Glob` with the `  - X` items left behind, which fold into the tools scalar.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools:\n  - Read\n  - Grep\n  - Glob\n  - Bash\n  - Write\n",
+                "read back as the arm's name, model and tools: tools read back as",
+                id="list-form tools",
+            ),
+            # Renders `model: inherit` then the second `model: opus`, which wins as the last duplicate key.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob, Bash, Write\nmodel: opus\n",
+                "read back as the arm's name, model and tools: model read back as 'opus', expected 'inherit'$",
+                id="repeated model key",
+            ),
+            # Renders `name: bench-<lens>` then the second `name: other`, which wins as the last duplicate key.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob, Bash, Write\nname: other\n",
+                f"read back as the arm's name, model and tools: name read back as 'other', expected 'bench-{_LENS}'$",
+                id="repeated name key",
+            ),
+            # Renders `tools: Read, Grep, Glob` then the second `tools: Read, Grep, Glob, Bash, Write`, which wins.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob, Bash, Write\ntools: Read, Grep, Glob, Bash, Write\n",
+                "read back as the arm's name, model and tools: tools read back as "
+                "'Read, Grep, Glob, Bash, Write', expected 'Read, Grep, Glob'$",
+                id="repeated tools key",
+            ),
+            # Renders `tools: Read, Grep, Glob` with `  Bash, Write` left as its continuation line.
+            pytest.param(
+                f"name: {_LENS}\nmodel: sonnet\ntools: Read, Grep, Glob,\n  Bash, Write\n",
+                "read back as the arm's name, model and tools: tools read back as",
+                id="multi-line plain-scalar tools",
+            ),
+            # Renders `model: inherit` with the `  a: b` line left under it, which is not valid YAML.
+            pytest.param(
+                f"name: {_LENS}\nmodel:\n  a: b\ntools: Read, Grep, Glob, Bash, Write\n",
+                "does not read back: frontmatter is not valid YAML",
+                id="nested-mapping model",
+            ),
+        ],
+    )
+    def test_fails_loudly_when_the_rendered_frontmatter_does_not_read_back(
+        self, tmp_path: Path, production_frontmatter: str, match: str,
+    ) -> None:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        production_text = (
+            f"---\n{production_frontmatter}---\nYou are `{_LENS}`.\n\n{_READ_CLAUSE} and check style.\n"
+        )
+        (agents_dir / f"{_LENS}.md").write_text(production_text, encoding="utf-8")
+
+        with pytest.raises(arms.ArmSnapshotError, match=match):
+            arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
 
 class TestRenderArmAgentAgainstRealProductionAgentFiles:
     """Contract test: every other TestRenderArmAgent case above renders from
@@ -1389,7 +1590,10 @@ class TestRenderArmAgentAgainstRealProductionAgentFiles:
         assert self._frontmatter_lines_other_than_name_model_tools(
             frontmatter
         ) == self._frontmatter_lines_other_than_name_model_tools(production_frontmatter)
-        assert f"name: bench-{lens}" in frontmatter
+        parsed_frontmatter = yaml.safe_load(frontmatter)
+        assert parsed_frontmatter["name"] == f"bench-{lens}"
+        assert parsed_frontmatter["model"] == arms.ARM_MODEL_FRONTMATTER_VALUE == "inherit"
+        assert parsed_frontmatter["tools"] == "Read, Grep, Glob"
         assert arms._parse_tools_field(frontmatter) == frozenset(arms.ARM_TOOLS)
 
     @pytest.mark.parametrize("lens", sorted(arms.LENS_READ_CLAUSES))

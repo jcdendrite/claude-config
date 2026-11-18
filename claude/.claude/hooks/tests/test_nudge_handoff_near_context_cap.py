@@ -52,6 +52,7 @@ from helpers import (
     run_skill_command,
     scaled_shim_sleep,
     skill_input,
+    write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
 
@@ -720,15 +721,14 @@ class TestNudgeHandoffNearContextCap:
         fake_bin = tmp_path / "fakebin-slow-tail"
         fake_bin.mkdir()
         write_scaled_timeout_shim(fake_bin)
-        slow_tail = fake_bin / "tail"
-        slow_tail.write_text(
+        write_prewarmed_stub(
+            fake_bin / "tail",
             '#!/bin/bash\n'
             'if [ "$1" = "-n" ]; then\n'
             f'  sleep {scaled_shim_sleep(3.5)}\n'
             'fi\n'
-            f'exec {real_tail} "$@"\n'
+            f'exec {real_tail} "$@"\n',
         )
-        slow_tail.chmod(0o755)
 
         # tail and jq share the same 2s cap on this pipe; command="tail"
         # isolates the tail kill from jq's.
@@ -766,15 +766,14 @@ class TestNudgeHandoffNearContextCap:
         fake_bin = tmp_path / "fakebin-slow-jq"
         fake_bin.mkdir()
         write_scaled_timeout_shim(fake_bin)
-        slow_jq = fake_bin / "jq"
-        slow_jq.write_text(
+        write_prewarmed_stub(
+            fake_bin / "jq",
             "#!/bin/bash\n"
             'case "$*" in\n'
             f'  *hookSpecificOutput*) sleep {scaled_shim_sleep(3.5)} ;;\n'
             "esac\n"
-            f'exec {real_jq} "$@"\n'
+            f'exec {real_jq} "$@"\n',
         )
-        slow_jq.chmod(0o755)
 
         with assert_cap_engaged(fake_bin, production_cap=2):
             result = _run_hook(
@@ -820,15 +819,14 @@ class TestNudgeHandoffNearContextCap:
         fake_bin = tmp_path / f"fakebin-slow-jq-{case}"
         fake_bin.mkdir()
         write_scaled_timeout_shim(fake_bin)
-        slow_jq = fake_bin / "jq"
-        slow_jq.write_text(
+        write_prewarmed_stub(
+            fake_bin / "jq",
             "#!/bin/bash\n"
             'case "$*" in\n'
             f'  *"{slow_on}"*) sleep {scaled_shim_sleep(3.5)} ;;\n'
             "esac\n"
-            f'exec {real_jq} "$@"\n'
+            f'exec {real_jq} "$@"\n',
         )
-        slow_jq.chmod(0o755)
         # HANDOFF_NUDGE_BLOCK_AT pinned above default so the cached_* branch's
         # rearmed_estimate stays on the advisory "fire" path this test's
         # assertion messages describe, instead of the hard-block path a
