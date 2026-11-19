@@ -85,6 +85,7 @@
 #   and `claude/.claude/scripts/relocate-claude-config.sh`.
 #   A PR making such an edit gets no reminder.
 #   The only modified path the gate checks is `install.sh`.
+# - A status other than 0 or 1 from `_lib_origin_names_claude_config` fails open: the hook exits 0.
 # - The origin test's own gaps are listed in _lib_origin_names_claude_config's
 #   header in _lib.sh.
 

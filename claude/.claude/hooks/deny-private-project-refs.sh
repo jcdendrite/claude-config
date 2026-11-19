@@ -26,9 +26,9 @@
 # Scope and limits:
 # - Runs its content scans only where `_lib_origin_names_claude_config` in
 #   _lib.sh accepts the origin, or in a repo with
-#   `.claude/private-projects-optin` at its toplevel.
-# - That function's header defines the origin match, which is deliberately loose.
-# - Those scans are silent in every other repo.
+#   `.claude/private-projects-optin` at its toplevel. That function's header
+#   defines the origin match, which is deliberately loose. Those scans are
+#   silent in every other repo.
 # - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
 #   unparseable tool input, a failed command-text quote-strip, fragment split, or
 #   commit-conclusion check) run before the scope test, so they apply in every repo.
@@ -487,7 +487,7 @@ STAGED_DIFF_PATHSPEC=':(top,exclude)claude/.claude/hooks/tests/**'
 _lib_origin_names_claude_config "$REPO_ROOT"
 ORIGIN_SCOPE_STATUS=$?
 if [ "$ORIGIN_SCOPE_STATUS" -ne 0 ] && [ "$ORIGIN_SCOPE_STATUS" -ne 1 ]; then
-  emit_deny "could not determine whether this repo is claude-config (status ${ORIGIN_SCOPE_STATUS}). Failing closed rather than allowing an unscanned command."
+  emit_deny "could not determine whether this repo is claude-config (status ${ORIGIN_SCOPE_STATUS}). Failing closed rather than allowing an unscanned command. The user, not the agent, re-runs ./install.sh from the claude-config checkout in a separate terminal so this hook and _lib.sh come from the same tree."
   exit 0
 fi
 if [ "$ORIGIN_SCOPE_STATUS" -eq 1 ]; then

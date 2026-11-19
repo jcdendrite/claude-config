@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -138,11 +139,10 @@ class TestLibOriginNamesClaudeConfig:
     both call."""
 
     @staticmethod
-    def _names_claude_config(repo: Path, tmp_path: Path) -> int:
-        """Return code of the helper against repo, with ambient git config isolated so a
-        contributor's global or system `remote.origin.url` value is not merged into the
-        `--get-all` result or the `git remote get-url` positive control's output."""
-        env = {**os.environ, **isolated_git_config_env(tmp_path / "home")}
+    def _names_claude_config(repo: Path, tmp_path: Path, extra_env: dict[str, str] | None = None) -> int:
+        """Return code of the helper against repo. Ambient git config is isolated so a global or system
+        `remote.origin.url` value is not merged into the `--get-all` result."""
+        env = {**os.environ, **isolated_git_config_env(tmp_path / "home"), **(extra_env or {})}
         return _run_lib_call(f'_lib_origin_names_claude_config "{repo}"', env=env).returncode
 
     @staticmethod
@@ -160,6 +160,8 @@ class TestLibOriginNamesClaudeConfig:
             "https://github.com/Someone/Workflow-Gates.git",
             "git@github.com:SOMEONE/CLAUDE-CONFIG.git",
             "git@github.com:someone/claude-config-notes.git",
+            "https://github.com/claude-config-fans/other.git",
+            "../claude-config",
         ],
         ids=[
             "claude_config",
@@ -168,6 +170,8 @@ class TestLibOriginNamesClaudeConfig:
             "mixed_case_workflow_gates",
             "upper_case_claude_config",
             "superstring_of_claude_config",
+            "owner_segment_containing_claude_config",
+            "relative_path_origin",
         ],
     )
     def test_returns_zero_when_the_origin_url_contains_either_name(self, tmp_path: Path, origin_url: str) -> None:
@@ -187,24 +191,56 @@ class TestLibOriginNamesClaudeConfig:
         repo = self._repo_with_remote(tmp_path, "origin", "git@github.com:someone/other-app.git")
         assert self._names_claude_config(repo, tmp_path) == 1
 
-    def test_returns_one_for_a_plain_directory_with_no_origin(self, tmp_path: Path) -> None:
-        not_a_repo = tmp_path / "plain-dir"
-        not_a_repo.mkdir()
-        assert self._names_claude_config(not_a_repo, tmp_path) == 1
+    def test_returns_zero_for_an_upper_case_origin_under_a_locale_that_folds_i_to_a_dotless_letter(
+        self, tmp_path: Path
+    ) -> None:
+        """Without the helper's `LC_ALL=C` pin, `${var,,}` turns `CLAUDE-CONFIG` into `claude-confıg` here."""
+        def fail_under_ci_else_skip(reason: str) -> None:
+            if os.environ.get("CI"):
+                pytest.fail(f"{reason}; CI must provide a usable tr_TR locale")
+            pytest.skip(reason)
+
+        locale_source = Path("/usr/share/i18n/locales/tr_TR")
+        if shutil.which("localedef") is None or not locale_source.is_file():
+            fail_under_ci_else_skip("localedef or /usr/share/i18n/locales/tr_TR is absent, so no locale can be built")
+        locale_dir = tmp_path / "locales"
+        locale_dir.mkdir()
+        # -c builds despite warnings in the locale source, and localedef creates the output directory even when it fails.
+        locale_build = subprocess.run(
+            ["localedef", "--no-archive", "-c", "-i", "tr_TR", "-f", "UTF-8", str(locale_dir / "tr_TR.UTF-8")],
+            capture_output=True, text=True, check=False,
+        )
+        repo = self._repo_with_remote(tmp_path, "origin", "git@github.com:SOMEONE/CLAUDE-CONFIG.git")
+        turkish_locale_env = {"LOCPATH": str(locale_dir), "LC_ALL": "tr_TR.UTF-8"}
+        premise = subprocess.run(
+            ["bash", "-c", 'v=CLAUDE-CONFIG; printf %s "${v,,}"'],
+            capture_output=True, text=True, check=False, env={**os.environ, **turkish_locale_env},
+        )
+        if "ı" not in premise.stdout:
+            fail_under_ci_else_skip(
+                "the built tr_TR locale does not fold I to a dotless letter "
+                f"(localedef exit {locale_build.returncode}, stderr: {locale_build.stderr.strip()!r}; "
+                f"bash exit {premise.returncode}, stdout: {premise.stdout!r}, stderr: {premise.stderr.strip()!r})"
+            )
+        assert self._names_claude_config(repo, tmp_path, extra_env=turkish_locale_env) == 0
+
+    def test_returns_one_when_the_origin_read_fails_for_a_nonexistent_repository_path(self, tmp_path: Path) -> None:
+        """A nonexistent path makes `git -C` exit 128 and cannot reach an enclosing repository."""
+        assert self._names_claude_config(tmp_path / "does-not-exist", tmp_path) == 1
 
     def test_returns_one_for_a_repository_with_no_remotes(self, tmp_path: Path) -> None:
         repo = init_git_repo(tmp_path / "repo")
         assert self._names_claude_config(repo, tmp_path) == 1
 
     def test_returns_one_when_only_a_non_origin_remote_names_the_repository(self, tmp_path: Path) -> None:
+        """An accepted gap listed in the helper header: only the remote name differs from the `workflow_gates`
+        row of `test_returns_zero_when_the_origin_url_contains_either_name`, which returns 0 under `origin`."""
         repo = self._repo_with_remote(tmp_path, "upstream", "git@github.com:someone/workflow-gates.git")
-        upstream_url = subprocess.run(
-            ["git", "config", "--get", "remote.upstream.url"], cwd=repo, capture_output=True, text=True, check=True
-        ).stdout
-        assert "workflow-gates" in upstream_url
         assert self._names_claude_config(repo, tmp_path) == 1
 
     def test_returns_one_for_an_instead_of_alias_origin_that_hides_the_name(self, tmp_path: Path) -> None:
+        """An accepted gap listed in the helper header: the stored URL hides the name, and the control shows
+        the rewritten URL does contain it."""
         repo = self._repo_with_remote(tmp_path, "origin", "wg:")
         subprocess.run(
             ["git", "config", "url.git@github.com:someone/workflow-gates.git.insteadOf", "wg:"],

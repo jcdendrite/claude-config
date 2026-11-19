@@ -832,8 +832,11 @@ _lib_case_insensitive_ne() {
 # The match is a substring over the whole URL, so it accepts a fork and also an
 # unrelated repository whose name merely contains either string.
 # REPO_ROOT must be non-empty, because `git -C ""` reads the caller's working directory.
+# A missing REPO_ROOT argument aborts the caller under `set -u`.
 # The function returns only 0 or 1, and a failed read of the origin counts as 1.
 # Known gaps:
+# - A failed `git config` read (git exit 128 or higher) returns 1, so the deny
+#   gate treats the repository as not claude-config.
 # - An origin written as a `url.<base>.insteadOf` alias that hides the
 #   repository name does not match, because `git config` returns the URL
 #   unrewritten.
@@ -842,7 +845,7 @@ _lib_case_insensitive_ne() {
 #   under another name, does not match; see docs/private-project-redaction.md
 #   "For fork contributors".
 _lib_origin_names_claude_config() {
-  # A Turkish or Azeri locale folds `I` to a dotless letter, so `CLAUDE-CONFIG` would miss.
+  # glibc's tr_TR and az_AZ lowercase `I` to dotless `ı`, so `CLAUDE-CONFIG` would not match.
   local LC_ALL=C
   local repo_root="$1" origin_urls
   origin_urls=$(git -C "$repo_root" config --get-all remote.origin.url 2>/dev/null)

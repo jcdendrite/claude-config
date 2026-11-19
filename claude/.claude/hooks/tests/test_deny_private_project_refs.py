@@ -652,7 +652,7 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_workflow_gates_fork_origin_gates(self, git_repo):
-        """A fork keeps the renamed slug, so the same loose substring match applies."""
+        """A fork whose origin URL contains `workflow-gates` gates under the same loose substring match."""
         subprocess.run(
             ["git", "remote", "add", "origin", "git@github.com:forker/workflow-gates.git"],
             cwd=git_repo,
@@ -702,6 +702,7 @@ class TestDenyPrivateProjectRefs:
         )
         assert reason is not None, "expected deny when the origin-scope helper fails"
         assert "whether this repo is claude-config" in reason
+        assert "The user, not the agent, re-runs ./install.sh" in reason
 
     def test_claude_config_fork_origin_still_gates(self, git_repo):
         """Substring match on `claude-config` is deliberately loose: a fork

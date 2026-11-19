@@ -42,7 +42,7 @@ EXAMPLE_BODY_LINE = (
 def stow_repo(tmp_path):
     """A repo whose origin URL carries the `workflow-gates` arm of the
     scope check (the `claude-config` arm is pinned by
-    `test_origin_with_the_pre_rename_slug_still_gates`), with `main` containing
+    `test_origin_naming_claude_config_still_gates`), with `main` containing
     one existing top-level entry under `claude/.claude/`, and a `feature`
     branch checked out for tests to add new content on top of.
 
@@ -210,8 +210,8 @@ class TestRequireStowReminder:
         commit_new_toplevel_dir(stow_repo, "agents")
         assert run_hook(STOW_REMINDER_HOOK, bash_input("git status"), cwd=stow_repo) == "allow"
 
-    def test_origin_with_the_pre_rename_slug_still_gates(self, stow_repo):
-        """A clone whose origin predates the repo rename still scopes in."""
+    def test_origin_naming_claude_config_still_gates(self, stow_repo):
+        """An origin URL containing `claude-config` scopes in."""
         subprocess.run(
             ["git", "remote", "set-url", "origin", "git@github.com:someone/claude-config.git"],
             cwd=stow_repo,
@@ -219,14 +219,35 @@ class TestRequireStowReminder:
         )
         assert_live_deny_control(stow_repo)
 
-    def test_origin_with_the_new_slug_still_gates(self, stow_repo):
-        """A clone whose origin carries the `workflow-gates` slug scopes in."""
+    def test_origin_naming_workflow_gates_still_gates(self, stow_repo):
+        """An origin URL containing `workflow-gates` scopes in."""
         subprocess.run(
             ["git", "remote", "set-url", "origin", "git@github.com:someone/workflow-gates.git"],
             cwd=stow_repo,
             check=True,
         )
         assert_live_deny_control(stow_repo)
+
+    def test_origin_scope_helper_failing_allows(self, stow_repo, tmp_path):
+        """This hook fails open when `_lib_origin_names_claude_config` returns a status other than 0 or 1,
+        here 127 from a function absent in the sourced lib. The control denies with the helper present."""
+        hooks_copy = tmp_path / "hooks"
+        shutil.copytree(HOOKS_DIR, hooks_copy, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        copied_hook = hooks_copy / "require-stow-reminder.sh"
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr create --title T --body 'no marker here'"
+        assert run_hook(copied_hook, bash_input(cmd), cwd=stow_repo) == "deny", "control: copied hook did not deny"
+        lib_copy = hooks_copy / "_lib.sh"
+        lib_source = lib_copy.read_text()
+        function_definition = "_lib_origin_names_claude_config() {"
+        assert function_definition in lib_source
+        lib_copy.write_text(lib_source.replace(function_definition, "_lib_origin_names_claude_config_absent() {"))
+        failing_run = subprocess.run(
+            [str(copied_hook)], input=json.dumps(bash_input(cmd)), capture_output=True, text=True, cwd=stow_repo,
+            check=False,
+        )
+        assert (failing_run.returncode, failing_run.stdout) == (0, "")
+        assert failing_run.stderr, "the missing helper must be observable on stderr, not silently swallowed"
 
     def test_origin_in_mixed_case_still_gates(self, stow_repo):
         """GitHub resolves a repository path in any letter case, so the origin match is case-insensitive."""
