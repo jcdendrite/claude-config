@@ -272,7 +272,7 @@ class InstructionLoad:
 
 @dataclass(frozen=True)
 class InstructionLog:
-    """`loads` is empty whenever `reason` is set: a log that fails a parse check is not read further.
+    """`loads` is empty whenever `reason` is set.
 
     `multiple_agent_ids` is True when `reason` is set because the log carries more than one subagent `agent_id`.
     """
@@ -458,8 +458,8 @@ def _first_line_matches(path: str, expected_first_line: bytes) -> bool:
 
 
 def check_account_hooks(config_dir: Path, session_id: str) -> str | None:
-    """`REASON_ACCOUNT_HOOKS_MISSING` unless the account's `sessions/` holds a non-symlink file whose
-    first line is the run's session ID."""
+    """`REASON_ACCOUNT_HOOKS_MISSING` unless the account's `sessions/` holds a regular file, not a symlink
+    to one, whose first line is the run's session ID."""
     if not session_id:
         return REASON_ACCOUNT_HOOKS_MISSING
     try:

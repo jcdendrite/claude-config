@@ -566,8 +566,10 @@ class TestExportAttributes:
             (".gitattributes", "tests export-ignore\n"),
             ("sub/.gitattributes", "*.txt export-subst\n"),
             (".gitattributes", "# export-ignore\n"),  # the deliberate over-skip: the text is matched anywhere on a line
+            (".gitattributes", "tests -export-ignore\n"),  # same over-skip for an unset form
+            (".gitattributes", "*.txt !export-subst\n"),  # same over-skip for a reset-to-unspecified form
         ],
-        ids=["root-export-ignore", "nested-export-subst", "commented-line"],
+        ids=["root-export-ignore", "nested-export-subst", "commented-line", "unset-export-ignore", "unspecified-export-subst"],
     )
     def test_a_base_tree_whose_gitattributes_holds_an_export_attribute_is_skipped(
         self, tmp_path, attributes_path, attributes_text,
@@ -975,13 +977,13 @@ class TestSourceRepos:
             _mine(partial_clone)
         assert len(_mine(full_clone).tasks) == 1
 
-    def test_a_repository_whose_info_attributes_sets_an_export_attribute_is_refused_naming_the_path(self, tmp_path):
+    def test_a_repository_whose_info_attributes_names_an_export_attribute_is_refused_naming_the_path(self, tmp_path):
         repo = _make_repo(tmp_path)
         info_attributes = repo / ".git" / "info" / "attributes"
         info_attributes.parent.mkdir(exist_ok=True)
         info_attributes.write_text("* export-ignore\n")
 
-        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(str(repo))}: .* sets an export attribute"):
+        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(str(repo))}: .* names export-ignore or export-subst"):
             _mine(repo)
 
     def test_a_git_config_failure_other_than_no_match_is_refused_rather_than_read_as_no_match(self, tmp_path):
@@ -1690,14 +1692,14 @@ class TestBuildTaskFixture:
 
         assert list((tmp_path / "fixture").iterdir()) == []
 
-    def test_a_source_repo_that_gained_an_export_attribute_after_mining_is_refused_before_anything_is_built(self, tmp_path):
+    def test_a_source_repo_whose_info_attributes_names_an_export_attribute_is_refused_before_anything_is_built(self, tmp_path):
         repo = _make_source_repo(tmp_path)
         _change(repo)
         task = _mine_one_task(repo)
         (repo / ".git" / "info").mkdir(exist_ok=True)
         (repo / ".git" / "info" / "attributes").write_text("src export-ignore\n")
 
-        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(task.source_repo)}: .* sets an export attribute"):
+        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(task.source_repo)}: .* names export-ignore or export-subst"):
             _build_fixture(tmp_path, task)
 
         assert list((tmp_path / "fixture").iterdir()) == []

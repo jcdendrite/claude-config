@@ -1520,9 +1520,11 @@ once the set changes.
   since larger trees build more slowly.
 - `tasks` refuses a partial clone, because git would fetch a missing object
   over the network with no timeout. It also refuses a repo whose
-  `info/attributes` sets `export-ignore` or `export-subst`. It skips, under the
-  reason `export-attributes`, a commit whose tree holds a `.gitattributes`
-  that sets either one, since `git archive` honors both. It skips, under the
+  `info/attributes` holds the text `export-ignore` or `export-subst`. It skips,
+  under the reason `export-attributes`, a commit whose parent tree holds a
+  `.gitattributes` file at any depth containing either text, since `git archive`
+  honors both attributes. Both checks match the text anywhere in the file, a
+  comment or an unset form included. It skips, under the
   reason `claude-dir-file`, a commit whose parent tree holds a regular file
   named `.claude` at the root, matched case-insensitively, since the fixture
   build writes `.claude/agents` beneath that name.

@@ -370,8 +370,10 @@ def build_task_fixture(
     It then copies the repository's `.git` to `baseline_git_dir`.
 
     Raises:
-    - TaskSourceError: the source repository has become a partial clone or sets an export
-      attribute in `info/attributes` since mining.
+    - TaskSourceError: the source repository has become a partial clone, or its `info/attributes`
+      holds the text `export-ignore` or `export-subst` since mining (a plain text match, comments
+      and unset forms included). It also raises when `git config` exits with a status other than 0
+      or 1, when `git rev-parse --git-path` fails, or when `info/attributes` exists but cannot be read.
     - UnsafeFixtureConfigError: a refused archive member, or a symlink resolving outside the fixture.
     - ValueError: a commit that is not a 40-hex SHA.
     - CalledProcessError, TimeoutExpired or OSError: a failed step.
@@ -585,8 +587,10 @@ def resolve_source_repo(path: Path) -> Path:
     - A non-repository path or a bare repository.
     - A partial clone: git fetches a missing object on demand, which would put untimed network
       I/O into mining and fixture builds.
-    - A repository whose `info/attributes` sets an export attribute: it would reach every
-      commit's archive."""
+    - A repository whose `info/attributes` holds the text `export-ignore` or `export-subst`, a
+      comment or an unset form included: it could reach every commit's archive.
+    - A `git config` exit other than 0 or 1, a failed `git rev-parse --git-path`, or an
+      `info/attributes` file that exists but cannot be read."""
     resolved = Path(os.path.realpath(path))
     result = subprocess.run(
         ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
@@ -634,7 +638,7 @@ def _refuse_export_attributes_in_info_file(path: Path, repo: Path, *, timeout_s:
     except OSError as exc:
         raise TaskSourceError(f"{path}: cannot read {info_attributes}: {exc}") from exc
     if _holds_export_attribute(content):
-        raise TaskSourceError(f"{path}: {info_attributes} sets an export attribute, which would reach every archive")
+        raise TaskSourceError(f"{path}: {info_attributes} names export-ignore or export-subst, which could reach every archive")
 
 
 def _holds_export_attribute(content: bytes) -> bool:
@@ -839,8 +843,8 @@ def mine_tasks(
       task set twice under two IDs.
     - An invalid or unknown `limits.rev`, or a `git log` that fails.
     - A control character in an author, committer or merged-author email.
-    - A partial clone, or a repo whose `info/attributes` sets an export attribute, as
-      `resolve_source_repo` refuses.
+    - A partial clone, or a repo whose `info/attributes` holds the text `export-ignore` or
+      `export-subst`, as `resolve_source_repo` refuses.
     - A commit whose git read or parse fails, naming the repo and commit."""
     if not trusted_authors or "" in trusted_authors:
         raise TaskSourceError("--trusted-author must name at least one non-empty author email")
