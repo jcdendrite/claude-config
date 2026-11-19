@@ -50,8 +50,6 @@ def isolate_review_bench_from_the_host(tmp_path_factory: pytest.TempPathFactory,
 
 @pytest.fixture(autouse=True)
 def refuse_network_git_transports(monkeypatch: pytest.MonkeyPatch):
-    """Allowing only the file protocol makes a `git fetch` from a remote URL fail at once instead of reaching
-    the network, whichever test or helper triggers it. `TestNetworkGitTransportsAreRefused` pins that it does."""
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
 
 
