@@ -266,6 +266,30 @@ class TestShippingStatementOnCompact:
         assert result.returncode == 0
         assert session_start_additional_context(result) == shipping_statement
 
+    @pytest.mark.parametrize(
+        "disable_stop_hook",
+        [
+            lambda config_dir: (config_dir / "claude-config.toml").write_text("commit_stall_block = false\n"),
+            lambda config_dir: (config_dir / ".commit-stall-block-disabled").touch(),
+        ],
+        ids=["config_row", "legacy_file"],
+    )
+    def test_disabling_the_stop_hook_leaves_the_compact_output_unchanged(
+        self, isolated_home, shipping_repo, shipping_statement, disable_stop_hook
+    ):
+        """`commit_stall_block` gates only the Stop hook, so the boundary text and statement both survive."""
+        unswitched_ctx = session_start_additional_context(
+            _run_hook(self._compact_payload(shipping_repo), isolated_home)
+        )
+        disable_stop_hook(isolated_home / ".claude")
+
+        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
+
+        assert result.returncode == 0
+        assert "not engineer authorization" in unswitched_ctx
+        assert shipping_statement in unswitched_ctx
+        assert session_start_additional_context(result) == unswitched_ctx
+
     def test_config_row_true_outranks_the_legacy_kill_switch_file(
         self, isolated_home, shipping_repo, shipping_statement
     ):
