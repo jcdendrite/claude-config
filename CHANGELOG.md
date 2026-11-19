@@ -18,6 +18,13 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `snapshot-arms` fails when a lens's rendered frontmatter does not read back as the arm's name, model and tools, and when a lens's frontmatter closes at a `---` that does not start a line.
   - `/skill-review`'s eval command is the plugin's only change, hence the patch bump.
   - **Migration:** in claude-config, run `claude plugin install skill-management@claude-config --scope project`, then `/reload-plugins` (or restart Claude Code). A consuming repo can skip the refresh, because the edited command runs only in claude-config.
+- **`review-ledger.sh append` now records the git state each row was appended against.**
+  - Each new row stores `reviewed_head` (HEAD's commit) and `reviewed_tree` (the index as a tree object), and `schema_version` is now 6.
+  - A field is empty when git cannot produce it, and a failed capture never stops the append. `append` prints a stderr line for an empty field unless git reported no HEAD commit, no index file or an unmerged index.
+  - Each append writes the index's tree objects into the repository's object store, from a copy of the index and under the invoking shell's umask. It pins each recorded tree under the local ref `refs/review-ledger/<YYYY-MM>/<tree id>`, so `git gc` keeps it. `reviewed_head` is not pinned, and nothing expires a pin.
+  - `/code-review` now appends a round's ledger rows before it dispatches or applies any fix.
+  - `docs/scripts.md`'s `review-ledger.sh` entry states how to compare two rounds, how long a recorded id resolves, what the pins keep, how to measure and audit them, how to delete a month's pins, and the other limits.
+  - The change is live on `git pull`. A consumer cannot turn pinning off without editing a tracked file, so reverting this change is the off-switch, and the revert leaves the pins already written.
 - **The `skill-management` structural validator now reports a frontmatter block with no closing `---` line, or one that is not a YAML mapping, as one violation line instead of exiting with a traceback.** Plugin bumped: `skill-management` 5.0.2 → 5.1.0.
   - A falsy non-mapping block such as `[]` used to pass and is now denied, hence the minor bump.
   - The corpus-budget warning skips a non-mapping file, which used to raise or count as a skill with no description.

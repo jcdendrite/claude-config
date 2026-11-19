@@ -122,6 +122,15 @@ _review_ledger_is_row_id() {
   [ "${#1}" -eq "$_REVIEW_LEDGER_HEX_LENGTH" ]
 }
 
+# _review_ledger_is_object_id VALUE: true iff VALUE is a 40- or 64-digit lowercase hex git object id.
+# The class lists its digits for the reason _review_ledger_is_row_id gives.
+_review_ledger_is_object_id() {
+  case "$1" in
+    *[!0123456789abcdef]*) return 1 ;;
+  esac
+  [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+
 # _review_ledger_validate_flags DISPOSITION DECIDED_BY QUOTE INVARIANT CARRY_FORWARD CRITERION REF CITED_LINE SOURCE [EMPTY_VALUE_FLAGS]
 # Flag-shape rules only, with no I/O. INVARIANT and CARRY_FORWARD are "1" when
 # the flag was given. An absent SOURCE is "n/a". EMPTY_VALUE_FLAGS lists, space
@@ -445,6 +454,153 @@ _review_ledger_site_hash() {
   printf '%s' "${digest:0:$_REVIEW_LEDGER_HEX_LENGTH}"
 }
 
+# _review_ledger_repo_git REPO_ROOT INDEX_FILE GIT_ARGS...
+# Runs a capped `git -C REPO_ROOT GIT_ARGS...` with its stderr discarded, and returns git's status or the cap's.
+# The subshell unsets the variables that redirect git to another repository or object store, so write-tree and update-ref act on REPO_ROOT alone.
+# A non-empty INDEX_FILE becomes that call's GIT_INDEX_FILE.
+_review_ledger_repo_git() {
+  local repo_root="$1" index_file="$2"
+  shift 2
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+    if [ -n "$index_file" ]; then
+      export GIT_INDEX_FILE="$index_file"
+    fi
+    _lib_capped git -C "$repo_root" "$@" 2>/dev/null
+  )
+}
+
+# _review_ledger_capture_note STEP CAUSE
+# Prints the one stderr line an append gives for an empty reviewed-state field that git did not report as an expected state.
+_review_ledger_capture_note() {
+  printf 'review-ledger.sh: the reviewed state was not fully recorded (%s: %s). Any row this append writes has an empty reviewed-state field.\n' "$1" "$2" >&2
+}
+
+# _review_ledger_reviewed_head REPO_ROOT
+# Prints HEAD's commit id, or nothing when git reports none, as on an unborn branch.
+# A timeout, or output that is not an object id, also prints nothing, after one stderr note.
+# Returns 1 only after a timeout, so the caller can skip the tree capture.
+_review_ledger_reviewed_head() {
+  local repo_root="$1" head_id head_status=0
+  head_id=$(_review_ledger_repo_git "$repo_root" "" rev-parse --verify -q 'HEAD^{commit}') || head_status=$?
+  if [ "$head_status" -ne 0 ]; then
+    if _lib_status_consistent_with_cap_kill "$head_status"; then
+      _review_ledger_capture_note "HEAD look-up" "timed out, exit $head_status"
+      return 1
+    fi
+    return 0
+  fi
+  if ! _review_ledger_is_object_id "$head_id"; then
+    _review_ledger_capture_note "HEAD look-up" "no object id in the output"
+    return 0
+  fi
+  printf '%s' "$head_id"
+}
+
+# _review_ledger_reviewed_tree REPO_ROOT
+# Prints the id of the index written as a tree object.
+# With no index file, or on an unmerged index, it prints nothing and no note.
+# Any other failure prints nothing after one stderr note.
+# It writes from a copy of the index, so it never takes the repository's index lock.
+# A signal that kills the append mid-capture leaves the work directory behind, as it does for render.
+# Returns 1 only after a timeout.
+_review_ledger_reviewed_tree() {
+  local repo_root="$1" index_path path_status=0 work tree_status=0
+  index_path=$(_review_ledger_repo_git "$repo_root" "" rev-parse --path-format=absolute --git-path index) || path_status=$?
+  if [ "$path_status" -ne 0 ] || [ -z "$index_path" ]; then
+    if _lib_status_consistent_with_cap_kill "$path_status"; then
+      _review_ledger_capture_note "index path look-up" "timed out, exit $path_status"
+      return 1
+    fi
+    if [ "$path_status" -ne 0 ]; then
+      _review_ledger_capture_note "index path look-up" "exit $path_status"
+    else
+      _review_ledger_capture_note "index path look-up" "empty path"
+    fi
+    return 0
+  fi
+  [ -e "$index_path" ] || return 0
+  work=$(mktemp -d "${TMPDIR:-/tmp}/review-ledger-index.XXXXXX" 2>/dev/null) || {
+    _review_ledger_capture_note "temporary directory" "mktemp failed"
+    return 0
+  }
+  case "$work" in
+    /*) ;;
+    *) work="$PWD/$work" ;;
+  esac
+  _review_ledger_reviewed_tree_in "$repo_root" "$index_path" "$work" || tree_status=$?
+  rm -f -- "$work/index" "$work/index.lock"
+  rmdir -- "$work" 2>/dev/null
+  return "$tree_status"
+}
+
+# _review_ledger_reviewed_tree_in REPO_ROOT INDEX_PATH WORK_DIR
+# The body of _review_ledger_reviewed_tree, with WORK_DIR for the index copy.
+# A failed write-tree stays silent only when ls-files lists unmerged entries, because write-tree's exit status does not tell them from an object it could not write.
+# write-tree runs with core.splitIndex off as a precaution against a split index writing a shared index into the git directory.
+_review_ledger_reviewed_tree_in() {
+  local repo_root="$1" index_path="$2" work="$3"
+  local copy_status=0 tree_id tree_status=0 unmerged_entries unmerged_status=0
+  _lib_capped cp -- "$index_path" "$work/index" 2>/dev/null || copy_status=$?
+  if [ "$copy_status" -ne 0 ]; then
+    if _lib_status_consistent_with_cap_kill "$copy_status"; then
+      _review_ledger_capture_note "index copy" "timed out, exit $copy_status"
+      return 1
+    fi
+    _review_ledger_capture_note "index copy" "exit $copy_status"
+    return 0
+  fi
+  tree_id=$(_review_ledger_repo_git "$repo_root" "$work/index" -c core.splitIndex=false write-tree --missing-ok) || tree_status=$?
+  if [ "$tree_status" -ne 0 ]; then
+    if _lib_status_consistent_with_cap_kill "$tree_status"; then
+      _review_ledger_capture_note "write-tree" "timed out, exit $tree_status"
+      return 1
+    fi
+    unmerged_entries=$(_review_ledger_repo_git "$repo_root" "$work/index" ls-files -u) || unmerged_status=$?
+    if [ "$unmerged_status" -eq 0 ] && [ -n "$unmerged_entries" ]; then
+      return 0
+    fi
+    if _lib_status_consistent_with_cap_kill "$unmerged_status"; then
+      _review_ledger_capture_note "write-tree" "exit $tree_status, then ls-files -u timed out, exit $unmerged_status"
+      return 1
+    fi
+    _review_ledger_capture_note "write-tree" "exit $tree_status"
+    return 0
+  fi
+  if ! _review_ledger_is_object_id "$tree_id"; then
+    _review_ledger_capture_note "write-tree" "no object id in the output"
+    return 0
+  fi
+  printf '%s' "$tree_id"
+}
+
+# _review_ledger_pin_tree REPO_ROOT TREE_ID MONTH
+# Points refs/review-ledger/MONTH/TREE_ID at TREE_ID, so git gc keeps the tree and everything under it.
+# The ref's name is its value, so concurrent appenders write one ref with one value.
+# A failed write stays silent when the ref already names the tree, as after another appender won the ref's lock, and otherwise prints one stderr note.
+# Returns 0.
+_review_ledger_pin_tree() {
+  local repo_root="$1" tree_id="$2" month="$3"
+  local pin_ref="refs/review-ledger/$month/$tree_id" pin_status=0 pinned_id pinned_status=0 cause
+  _review_ledger_repo_git "$repo_root" "" update-ref "$pin_ref" "$tree_id" || pin_status=$?
+  [ "$pin_status" -ne 0 ] || return 0
+  if _lib_status_consistent_with_cap_kill "$pin_status"; then
+    cause="timed out, exit $pin_status"
+  else
+    pinned_id=$(_review_ledger_repo_git "$repo_root" "" rev-parse --verify -q "$pin_ref") || pinned_status=$?
+    if [ "$pinned_status" -eq 0 ] && [ "$pinned_id" = "$tree_id" ]; then
+      return 0
+    fi
+    if _lib_status_consistent_with_cap_kill "$pinned_status"; then
+      cause="exit $pin_status, then rev-parse timed out, exit $pinned_status"
+    else
+      cause="exit $pin_status"
+    fi
+  fi
+  printf 'review-ledger.sh: the reviewed tree was recorded but not pinned (update-ref: %s). git gc can delete it once nothing else reaches it.\n' "$cause" >&2
+  return 0
+}
+
 # _review_ledger_row_id LINE
 # Prints the first _REVIEW_LEDGER_HEX_LENGTH hex digits of LINE's sha256.
 _review_ledger_row_id() {
@@ -715,7 +871,7 @@ _review_ledger_check_ref() {
 # Rejects the --ref a non-carry row names when _review_ledger_check_ref found it
 # retired, unless a non-carry row that names REF holds the same fields as LINE.
 # That is a retry of a write that already landed, and the append then dedups it.
-# The fields compared are every one except id, schema_version and event_time,
+# The fields compared are every one except id, schema_version, event_time, reviewed_head and reviewed_tree,
 # which is the append's dedup key. A retry whose lane set differs from the landed
 # row's is therefore rejected as retired, not deduped. Returns 1 with the reason
 # on stderr, and also when the ledger cannot be read.
@@ -725,7 +881,7 @@ _review_ledger_check_not_retired() {
   # shellcheck disable=SC2016 # single-quoted on purpose: $candidate and $ref are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
   is_retry=$(_review_ledger_read_rows "$ledger_file" | _lib_jq -n -r --argjson candidate "$line" --arg ref "$ref" \
     "$_REVIEW_LEDGER_JQ_COMMON"'
-    def dedup_fields: del(.id, .schema_version, .event_time, .source_repo_hash);
+    def dedup_fields: del(.id, .schema_version, .event_time, .source_repo_hash, .reviewed_head, .reviewed_tree);
     ($candidate | dedup_fields) as $key
     | any(inputs | select((is_carry | not) and ((.ref | s) == $ref)); dedup_fields == $key)
   ') || is_retry=""
@@ -942,15 +1098,10 @@ _review_ledger_trend() {
 # Succeeds only when git confirms agent-reviews/NAME is ignored in REAL_ROOT.
 # Exit 1 from `git check-ignore` (not ignored, negated, or tracked) and every
 # status other than 0 and 1 (a fatal error, a timeout, a missing git) both
-# refuse. The subshell scrubs the variables that redirect git to another
-# repository, as worktree-ensure.sh and deny-reviewer-tree-mutation.sh do.
-# Returns 1 with the reason on stderr.
+# refuse. Returns 1 with the reason on stderr.
 _review_ledger_confirm_ignored() {
   local real_root="$1" name="$2" subcommand="$3" target="$4" ignore_status
-  (
-    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
-    _lib_capped git -C "$real_root" check-ignore -q -- "agent-reviews/$name" 2>/dev/null
-  )
+  _review_ledger_repo_git "$real_root" "" check-ignore -q -- "agent-reviews/$name"
   ignore_status=$?
   case "$ignore_status" in
     0) return 0 ;;
