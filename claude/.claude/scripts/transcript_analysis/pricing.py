@@ -17,6 +17,7 @@ from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 # Labels persist in pr-cost ledger model_breakdown and review_rounds cells; never rename or remove one.
 # Older checkouts read an added label, because the ledger parser checks labels for key shape only.
+# A new class also needs a mapping in _token_counts, _price_turn and _usage_for_token_group.
 _TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
 
 _PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"

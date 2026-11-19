@@ -743,6 +743,12 @@ class TestRepriceTokenSplits:
             pricing._reprice_token_splits({_REPRICED_ROUND_MODEL: {"standard": full}})
         )
 
+    @pytest.mark.parametrize("token_class", pricing._TOKEN_CLASSES)
+    def test_every_token_class_prices_above_zero(self, token_class):
+        # A class added to _TOKEN_CLASSES but not mapped in _usage_for_token_group would price at zero silently.
+        splits = {_REPRICED_ROUND_MODEL: {"standard": {token_class: 1_000_000}}}
+        assert pricing._reprice_token_splits(splits) > 0
+
     def test_empty_object_prices_at_zero(self):
         assert pricing._reprice_token_splits({}) == 0.0
 

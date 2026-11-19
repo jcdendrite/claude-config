@@ -977,8 +977,6 @@ class TestPrCostRecordRelativeLedgerPathExitsWithNoRawValue:
     def test_relative_pr_cost_ledger_path_exits_1_with_no_raw_value(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
-        """_pr_cost_report reaches the ledger path through _pr_cost_ledger_path_or_exit, so a relative
-        PR_COST_LEDGER_PATH exits 1 with the fixed account-1 line and never echoes the raw value."""
         monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 

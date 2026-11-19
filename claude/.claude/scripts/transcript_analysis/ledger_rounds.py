@@ -141,6 +141,8 @@ def _read_account_ledger_rows(account_root: Path, ordinal: int, subcommand: str)
     cell value.
     Each exit follows its except block so that the caught error does not stay on SystemExit.__context__."""
     ledger_path = pr_cost_ledger._pr_cost_ledger_path_or_exit(subcommand, ordinal, account_root.parent)
+    # Whole-file read with no size bound: only `pr-cost --record` writes the ledger, on the operator's own
+    # machine (docs/pr-cost.md "Data").
     try:
         ledger_text = ledger_path.read_text()
     except FileNotFoundError:

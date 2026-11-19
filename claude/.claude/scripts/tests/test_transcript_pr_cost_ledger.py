@@ -1415,7 +1415,7 @@ class TestPrCostLedgerPathOverridden:
 
 
 class TestPrCostLedgerPathOrExit:
-    """_pr_cost_ledger_path_or_exit, the one place a relative PR_COST_LEDGER_PATH becomes an exit 1 for every ledger reader."""
+    """_pr_cost_ledger_path_or_exit."""
 
     @pytest.mark.parametrize(("subcommand", "ordinal"), [("pr-cost", 1), ("pr-cost-export", 2)])
     def test_relative_override_exits_1_with_the_fixed_account_message_and_no_raw_value(

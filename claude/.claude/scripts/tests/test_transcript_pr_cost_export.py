@@ -578,8 +578,6 @@ class TestPrCostExportRefusals:
     def test_relative_pr_cost_ledger_path_exits_1_naming_account_with_no_raw_value(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
-        """pr-cost-export reaches the ledger path through _pr_cost_ledger_path_or_exit, so a relative
-        PR_COST_LEDGER_PATH exits 1 with the fixed account-1 line and never echoes the raw value."""
         _enable_pr_cost(tmp_path)
         monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
