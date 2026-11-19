@@ -1939,7 +1939,7 @@ class TestHookClassHeader:
 
 # First entry is the intent tier, the rest the canonical elevation order —
 # also the vocabulary claude-hook-review/SKILL.md's tier-header paragraph's
-# tier-shaped backtick spans must equal (test_skills.py derives its own copy
+# tier-shaped backtick spans must equal (test_doc_cross_references.py derives its own copy
 # from docs/hooks.md's definition bullets).
 _THREAT_MODEL_TIERS: tuple[str, ...] = ("cooperative", "untrusted-input", "irreversible")
 
