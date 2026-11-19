@@ -22,9 +22,9 @@
 # surfaces when extending coverage.
 #
 # Scope:
-# - Fires only when origin URL contains `claude-config` (the origin-URL
-#   test deny-private-project-refs.sh also applies, without its
-#   .claude/private-projects-optin marker arm).
+# - Fires only when `_lib_origin_names_claude_config` in _lib.sh accepts the
+#   origin, the same test deny-private-project-refs.sh applies without its
+#   .claude/private-projects-optin marker arm.
 # - Detects a path added under `claude/.claude/` between `main` and `HEAD`
 #   (`git diff --diff-filter=A`) whose first path component does not exist
 #   on `main` (`git cat-file -e`).
@@ -85,6 +85,8 @@
 #   and `claude/.claude/scripts/relocate-claude-config.sh`.
 #   A PR making such an edit gets no reminder.
 #   The only modified path the gate checks is `install.sh`.
+# - The origin test's own gaps are listed in _lib_origin_names_claude_config's
+#   header in _lib.sh.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
@@ -130,8 +132,7 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # Scope: claude-config only. Other repos don't use stow this way.
-REMOTE_URL=$(cd "$REPO_ROOT" && git config --get remote.origin.url 2>/dev/null)
-if [[ "$REMOTE_URL" != *claude-config* ]]; then
+if ! _lib_origin_names_claude_config "$REPO_ROOT"; then
   exit 0
 fi
 

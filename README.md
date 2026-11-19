@@ -1,6 +1,6 @@
 # claude-config
 
-[![Tests](https://github.com/jcdendrite/claude-config/actions/workflows/tests.yml/badge.svg)](https://github.com/jcdendrite/claude-config/actions/workflows/tests.yml)
+[![Tests](https://github.com/cordova-strategy/workflow-gates/actions/workflows/tests.yml/badge.svg)](https://github.com/cordova-strategy/workflow-gates/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Works with Claude Code](https://img.shields.io/badge/Works%20with-Claude%20Code-blueviolet)](https://claude.ai/claude-code)
 
@@ -85,7 +85,7 @@ The README below is organized by feature surface (hooks, skills, plugins, script
 ## Quickstart
 
 ```bash
-git clone git@github.com:jcdendrite/claude-config.git ~/claude-config
+git clone git@github.com:cordova-strategy/workflow-gates.git ~/claude-config
 cd ~/claude-config
 ./install.sh
 ```
@@ -309,7 +309,7 @@ mkdir -p .claude
 cat > .claude/worktree-required <<'EOF'
 # Claude Code worktree enforcement marker.
 # Presence of this file activates ~/.claude/hooks/require-worktree-for-git-writes.sh.
-# See https://github.com/jcdendrite/claude-config for details.
+# See https://github.com/cordova-strategy/workflow-gates for details.
 EOF
 
 grep -qxF '.claude/worktrees/' .gitignore 2>/dev/null || echo '.claude/worktrees/' >> .gitignore
@@ -470,7 +470,7 @@ This repo is public — any project codename, organization name, or tracker-ID t
 2. **Private-projects blocklist** (opt-in) — the same hook reads a user-local `<config-dir>/private-projects.md` and blocks any commit or PR whose content matches a listed project name (case-insensitive, whole-word). `install-dev.sh` requires this file to exist before setting up a contributor's `.venv`, so the opt-in isn't silently skippable at first setup.
 3. **Reviewer discipline** — what the hook can't catch: structural fingerprints (a verbatim RLS policy, a rare column-naming pattern) and private-corpus provenance (a fact known only through exposure to private engagement material, whether quoted, computed, or recalled) are a review responsibility, not a mechanical one.
 
-The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines *what* to keep out; the hook is the mechanical enforcement of tiers 1–2. The hook runs in claude-config and its forks (origin URL contains `claude-config`), and in any other repo that commits `.claude/private-projects-optin`; see [`docs/private-project-redaction.md`](docs/private-project-redaction.md#opting-in-another-repository). For blocklist setup, file format, match semantics, the deny-message contract, and the fork-contributor path, see [`docs/private-project-redaction.md`](docs/private-project-redaction.md).
+The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines *what* to keep out; the hook is the mechanical enforcement of tiers 1–2. The hook runs in claude-config and its forks (origin URL contains `claude-config` or `workflow-gates`), and in any other repo that commits `.claude/private-projects-optin`; see [`docs/private-project-redaction.md`](docs/private-project-redaction.md#opting-in-another-repository). For blocklist setup, file format, match semantics, the deny-message contract, and the fork-contributor path, see [`docs/private-project-redaction.md`](docs/private-project-redaction.md).
 
 ### Auto mode
 
@@ -596,7 +596,7 @@ Set `test_selection_tracking = true` in `<config-dir>/claude-config.toml` (off b
 
 Heavy reliance on official Anthropic documentation throughout: [Claude Code docs](https://code.claude.com/docs/en/), [permission modes reference](https://code.claude.com/docs/en/permission-modes), [auto-mode engineering deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode), [skill best practices](https://code.claude.com/docs/en/skill-best-practices), and [Claude Code best practices](https://code.claude.com/docs/en/best-practices). Stow distribution pattern inspired by the GNU Stow community.
 
-Bug reports and feature requests: [GitHub Issues](https://github.com/jcdendrite/claude-config/issues). Security disclosures: see [SECURITY.md](./SECURITY.md).
+Bug reports and feature requests: [GitHub Issues](https://github.com/cordova-strategy/workflow-gates/issues). Security disclosures: see [SECURITY.md](./SECURITY.md).
 
 ## License
 

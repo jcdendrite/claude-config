@@ -75,5 +75,5 @@ A fork copies `.claude/ready-for-review-verification-cache-optin` but not the br
 
 ## Contact
 
-Bug reports and feature requests: [GitHub Issues](https://github.com/jcdendrite/claude-config/issues).  
+Bug reports and feature requests: [GitHub Issues](https://github.com/cordova-strategy/workflow-gates/issues).  
 Security disclosures: see [SECURITY.md](./SECURITY.md).

@@ -40,8 +40,10 @@ EXAMPLE_BODY_LINE = (
 
 @pytest.fixture
 def stow_repo(tmp_path):
-    """A claude-config-shaped repo with `main` containing one existing
-    top-level entry under `claude/.claude/`, and a `feature`
+    """A repo whose origin URL carries the `workflow-gates` arm of the
+    scope check (the `claude-config` arm is pinned by
+    `test_origin_with_the_pre_rename_slug_still_gates`), with `main` containing
+    one existing top-level entry under `claude/.claude/`, and a `feature`
     branch checked out for tests to add new content on top of.
 
     Tests that want a new top-level entry to be detected should add it
@@ -57,7 +59,7 @@ def stow_repo(tmp_path):
     subprocess.run(["git", "config", "core.quotePath", "true"], cwd=repo, check=True)
     subprocess.run(["git", "config", "diff.renames", "true"], cwd=repo, check=True)
     subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+        ["git", "remote", "add", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
         cwd=repo,
         check=True,
     )
@@ -207,6 +209,33 @@ class TestRequireStowReminder:
     def test_non_pr_command_allowed(self, stow_repo):
         commit_new_toplevel_dir(stow_repo, "agents")
         assert run_hook(STOW_REMINDER_HOOK, bash_input("git status"), cwd=stow_repo) == "allow"
+
+    def test_origin_with_the_pre_rename_slug_still_gates(self, stow_repo):
+        """A clone whose origin predates the repo rename still scopes in."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/claude-config.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        assert_live_deny_control(stow_repo)
+
+    def test_origin_with_the_new_slug_still_gates(self, stow_repo):
+        """A clone whose origin carries the `workflow-gates` slug scopes in."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/workflow-gates.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        assert_live_deny_control(stow_repo)
+
+    def test_origin_in_mixed_case_still_gates(self, stow_repo):
+        """GitHub resolves a repository path in any letter case, so the origin match is case-insensitive."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:Someone/Workflow-Gates.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        assert_live_deny_control(stow_repo)
 
     def test_unrelated_remote_repo_allowed(self, tmp_path):
         """The gate is scoped to claude-config. Other repos may legitimately
@@ -831,7 +860,7 @@ class TestRequireStowReminder:
         subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         subprocess.run(
-            ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+            ["git", "remote", "add", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
             cwd=repo,
             check=True,
         )

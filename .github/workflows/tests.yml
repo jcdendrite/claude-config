@@ -2,7 +2,7 @@
 # referenced by branch protection on main. Renaming the job silently breaks
 # the required-check match. If you rename the job, also update the
 # required_status_checks.contexts list via:
-#   gh api -X PUT repos/jcdendrite/claude-config/branches/main/protection
+#   gh api -X PUT repos/cordova-strategy/workflow-gates/branches/main/protection
 # A job-level "name:", when set, replaces the id as the context string, so the "tests" job carries none.
 # The workflow-level "name:" does not affect the context string.
 # The "tests" job is the aggregate at the end of this file, and passes only when every test-slice leg succeeds.

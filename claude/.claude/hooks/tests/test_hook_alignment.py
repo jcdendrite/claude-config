@@ -897,7 +897,7 @@ def test_promptcachettl_stays_unset_in_repo_local_settings() -> None:
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
 # above (a static naming exception), this set is expected to grow — the
 # cross-hook `if`-dispatch audit tracked in
-# https://github.com/jcdendrite/claude-config/issues/774 is expected to add
+# https://github.com/cordova-strategy/workflow-gates/issues/774 is expected to add
 # an entry here each time it lands another hook's own dispatch fix.
 _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "block-gh-pr-merge.sh",

@@ -1,4 +1,5 @@
-"""Unit tests for _lib.sh's _lib_gh, _lib_origin_owner_repo and _lib_case_insensitive_ne."""
+"""Unit tests for _lib.sh's _lib_gh, _lib_origin_owner_repo, _lib_origin_names_claude_config and
+_lib_case_insensitive_ne."""
 from __future__ import annotations
 
 import json
@@ -7,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import init_git_repo_with_commit
+from helpers import init_git_repo, init_git_repo_with_commit, isolated_git_config_env
 
 from ._lib_sh_helpers import _LIB_SH, _gh_shim_dir, _run_lib_call
 
@@ -129,6 +130,92 @@ class TestLibOriginOwnerRepo:
         result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
         assert result.returncode != 0
         assert result.stdout == ""
+
+
+class TestLibOriginNamesClaudeConfig:
+    """Direct unit coverage for _lib_origin_names_claude_config -- the one
+    origin-scope test deny-private-project-refs.sh and require-stow-reminder.sh
+    both call."""
+
+    @staticmethod
+    def _names_claude_config(repo: Path, tmp_path: Path) -> int:
+        """Return code of the helper against repo, with ambient git config isolated so a
+        contributor's global or system `remote.origin.url` value is not merged into the
+        `--get-all` result or the `git remote get-url` positive control's output."""
+        env = {**os.environ, **isolated_git_config_env(tmp_path / "home")}
+        return _run_lib_call(f'_lib_origin_names_claude_config "{repo}"', env=env).returncode
+
+    @staticmethod
+    def _repo_with_remote(tmp_path: Path, remote_name: str, url: str) -> Path:
+        repo = init_git_repo(tmp_path / "repo")
+        subprocess.run(["git", "remote", "add", remote_name, url], cwd=repo, check=True)
+        return repo
+
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/someone/claude-config.git",
+            "https://github.com/someone/claude-config/",
+            "git@github.com:someone/workflow-gates.git",
+            "https://github.com/Someone/Workflow-Gates.git",
+            "git@github.com:SOMEONE/CLAUDE-CONFIG.git",
+            "git@github.com:someone/claude-config-notes.git",
+        ],
+        ids=[
+            "claude_config",
+            "trailing_slash_that_owner_repo_rejects",
+            "workflow_gates",
+            "mixed_case_workflow_gates",
+            "upper_case_claude_config",
+            "superstring_of_claude_config",
+        ],
+    )
+    def test_returns_zero_when_the_origin_url_contains_either_name(self, tmp_path: Path, origin_url: str) -> None:
+        repo = self._repo_with_remote(tmp_path, "origin", origin_url)
+        assert self._names_claude_config(repo, tmp_path) == 0
+
+    def test_returns_zero_when_a_non_last_origin_url_value_contains_either_name(self, tmp_path: Path) -> None:
+        """`remote.origin.url` is multi-valued and `git config --get` prints only the last value."""
+        repo = self._repo_with_remote(tmp_path, "origin", "https://github.com/someone/claude-config.git")
+        subprocess.run(
+            ["git", "config", "--add", "remote.origin.url", "git@github.com:someone/other-app.git"],
+            cwd=repo, check=True,
+        )
+        assert self._names_claude_config(repo, tmp_path) == 0
+
+    def test_returns_one_for_an_origin_naming_neither(self, tmp_path: Path) -> None:
+        repo = self._repo_with_remote(tmp_path, "origin", "git@github.com:someone/other-app.git")
+        assert self._names_claude_config(repo, tmp_path) == 1
+
+    def test_returns_one_for_a_plain_directory_with_no_origin(self, tmp_path: Path) -> None:
+        not_a_repo = tmp_path / "plain-dir"
+        not_a_repo.mkdir()
+        assert self._names_claude_config(not_a_repo, tmp_path) == 1
+
+    def test_returns_one_for_a_repository_with_no_remotes(self, tmp_path: Path) -> None:
+        repo = init_git_repo(tmp_path / "repo")
+        assert self._names_claude_config(repo, tmp_path) == 1
+
+    def test_returns_one_when_only_a_non_origin_remote_names_the_repository(self, tmp_path: Path) -> None:
+        repo = self._repo_with_remote(tmp_path, "upstream", "git@github.com:someone/workflow-gates.git")
+        upstream_url = subprocess.run(
+            ["git", "config", "--get", "remote.upstream.url"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout
+        assert "workflow-gates" in upstream_url
+        assert self._names_claude_config(repo, tmp_path) == 1
+
+    def test_returns_one_for_an_instead_of_alias_origin_that_hides_the_name(self, tmp_path: Path) -> None:
+        repo = self._repo_with_remote(tmp_path, "origin", "wg:")
+        subprocess.run(
+            ["git", "config", "url.git@github.com:someone/workflow-gates.git.insteadOf", "wg:"],
+            cwd=repo, check=True,
+        )
+        env = {**os.environ, **isolated_git_config_env(tmp_path / "home")}
+        rewritten_url = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True, env=env
+        ).stdout
+        assert "workflow-gates" in rewritten_url
+        assert self._names_claude_config(repo, tmp_path) == 1
 
 
 class TestLibCaseInsensitiveNe:
