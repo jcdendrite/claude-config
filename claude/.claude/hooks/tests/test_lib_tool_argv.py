@@ -568,9 +568,10 @@ def _gh_help_flags_by_section(help_text: str, section_heading: str) -> tuple[set
 
 
 def test_gh_help_flags_parser_strips_the_optional_value_suffix() -> None:
-    """Pins that a flag printed with a trailing `[=...]` suffix is classified under its bare name, so an allowlisted
-    one (`--help[=true|false]`) matches the live-gh drift guards' allowlists and a non-allowlisted one
-    (`--draft[=true|false]`) stays in the no-value set. The fixture rows are synthetic, not captured gh output.
+    """Pins that a flag printed with a trailing `[=...]` suffix is classified under its bare name.
+    An allowlisted flag (`--help[=true|false]`) therefore matches the live-gh drift guards' allowlists.
+    A non-allowlisted flag (`--draft[=true|false]`) stays in the no-value set.
+    The fixture rows are synthetic, not captured gh output.
     """
     help_text = "\n".join(
         [
