@@ -6,6 +6,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`deny-reviewer-tree-mutation.sh` and `deny-invisible-commit-content.sh` now allow a fragment that is exactly `git --version`, with no read-only subcommand.**
+  - Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
+  - The change is live on `git pull`.
 - **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**
   - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.
   - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`.
