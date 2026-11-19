@@ -527,6 +527,10 @@ def test_require_gh_fails_in_ci_when_gh_is_absent(monkeypatch: pytest.MonkeyPatc
         _require_gh()
 
 
+# Strips a trailing optional-value suffix such as `[=true|false]`, so a flag is classified by its bare name.
+_OPTIONAL_VALUE_SUFFIX = re.compile(r"\[=[^\]]*\]$")
+
+
 def _gh_help_flags_by_section(help_text: str, section_heading: str) -> tuple[set[str], set[str]]:
     """Parses a `gh help ...` section (INHERITED FLAGS or FLAGS) into
     (value_taking_flags, no_value_placeholder_flags) -- distinguished by
@@ -552,13 +556,34 @@ def _gh_help_flags_by_section(help_text: str, section_heading: str) -> tuple[set
     for line in section_lines:
         spec = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
         tokens = spec.split()
-        flag_tokens = {t.rstrip(",") for t in tokens if t.startswith("-")}
+        flag_tokens = {
+            _OPTIONAL_VALUE_SUFFIX.sub("", t.rstrip(",")) for t in tokens if t.startswith("-")
+        }
         has_value_placeholder = any(not t.startswith("-") for t in tokens)
         if has_value_placeholder:
             value_taking_flags |= flag_tokens
         else:
             no_value_placeholder_flags |= flag_tokens
     return value_taking_flags, no_value_placeholder_flags
+
+
+def test_gh_help_flags_parser_strips_the_optional_value_suffix() -> None:
+    """Pins that a flag printed with a trailing `[=...]` suffix is classified under its bare name, so an allowlisted
+    one (`--help[=true|false]`) matches the live-gh drift guards' allowlists and a non-allowlisted one
+    (`--draft[=true|false]`) stays in the no-value set. The fixture rows are synthetic, not captured gh output.
+    """
+    help_text = "\n".join(
+        [
+            "INHERITED FLAGS",
+            "  -h, --help[=true|false]        Show help for command",
+            "      --draft[=true|false]       Mark as draft",
+            "  -R, --repo [HOST/]OWNER/REPO   Select another repository",
+            "",
+        ]
+    )
+    value_taking, no_value_placeholder = _gh_help_flags_by_section(help_text, "INHERITED FLAGS")
+    assert no_value_placeholder == {"-h", "--help", "--draft"}
+    assert value_taking == {"-R", "--repo"}
 
 
 @pytest.mark.parametrize(
