@@ -351,6 +351,7 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_cursor_adapter_install_uninstall.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_install_unusable_inputs.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_install_write_failures.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_parts.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_shim.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_translate.py",
