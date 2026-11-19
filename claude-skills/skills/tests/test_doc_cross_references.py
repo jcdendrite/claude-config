@@ -1,4 +1,4 @@
-"""Cross-references from docs and agent bodies to skill headings, threat-model tier wording, and redaction-policy list items."""
+"""Cross-references from docs, `CLAUDE.md` and skill bodies to headings, threat-model tier wording, redaction-policy items."""
 from __future__ import annotations
 
 import re
