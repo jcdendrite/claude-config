@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import init_git_repo, init_git_repo_with_commit, isolated_git_config_env
+from helpers import (
+    init_git_repo,
+    init_git_repo_with_commit,
+    isolated_git_config_env,
+    locale_that_folds_ascii_capital_i_to_a_non_ascii_letter,
+)
 
 from ._lib_sh_helpers import _LIB_SH, _gh_shim_dir, _run_lib_call
 
@@ -191,38 +195,36 @@ class TestLibOriginNamesClaudeConfig:
         repo = self._repo_with_remote(tmp_path, "origin", "git@github.com:someone/other-app.git")
         assert self._names_claude_config(repo, tmp_path) == 1
 
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "git@github.com:someone/claude-code.git",
+            "git@github.com:someone/claude_config.git",
+            "git@github.com:someone/workflow_gates.git",
+            "git@github.com:someone/workflow-engine.git",
+        ],
+        ids=[
+            "claude_code_shares_only_the_claude_prefix",
+            "underscore_claude_config",
+            "underscore_workflow_gates",
+            "workflow_engine_shares_only_the_workflow_prefix",
+        ],
+    )
+    def test_returns_one_for_a_near_miss_origin_that_shares_only_part_of_a_name(
+        self, tmp_path: Path, origin_url: str
+    ) -> None:
+        """Pins whole-literal, hyphenated matching: a broader predicate such as `*claude*` or a looser separator
+        would return 0 for these."""
+        repo = self._repo_with_remote(tmp_path, "origin", origin_url)
+        assert self._names_claude_config(repo, tmp_path) == 1
+
     def test_returns_zero_for_an_upper_case_origin_under_a_locale_that_folds_i_to_a_dotless_letter(
         self, tmp_path: Path
     ) -> None:
         """Without the helper's `LC_ALL=C` pin, `${var,,}` turns `CLAUDE-CONFIG` into `claude-confıg` here."""
-        def fail_under_ci_else_skip(reason: str) -> None:
-            if os.environ.get("CI"):
-                pytest.fail(f"{reason}; CI must provide a usable tr_TR locale")
-            pytest.skip(reason)
-
-        locale_source = Path("/usr/share/i18n/locales/tr_TR")
-        if shutil.which("localedef") is None or not locale_source.is_file():
-            fail_under_ci_else_skip("localedef or /usr/share/i18n/locales/tr_TR is absent, so no locale can be built")
-        locale_dir = tmp_path / "locales"
-        locale_dir.mkdir()
-        # -c builds despite warnings in the locale source, and localedef creates the output directory even when it fails.
-        locale_build = subprocess.run(
-            ["localedef", "--no-archive", "-c", "-i", "tr_TR", "-f", "UTF-8", str(locale_dir / "tr_TR.UTF-8")],
-            capture_output=True, text=True, check=False,
-        )
+        turkish_locale = locale_that_folds_ascii_capital_i_to_a_non_ascii_letter()
         repo = self._repo_with_remote(tmp_path, "origin", "git@github.com:SOMEONE/CLAUDE-CONFIG.git")
-        turkish_locale_env = {"LOCPATH": str(locale_dir), "LC_ALL": "tr_TR.UTF-8"}
-        premise = subprocess.run(
-            ["bash", "-c", 'v=CLAUDE-CONFIG; printf %s "${v,,}"'],
-            capture_output=True, text=True, check=False, env={**os.environ, **turkish_locale_env},
-        )
-        if "ı" not in premise.stdout:
-            fail_under_ci_else_skip(
-                "the built tr_TR locale does not fold I to a dotless letter "
-                f"(localedef exit {locale_build.returncode}, stderr: {locale_build.stderr.strip()!r}; "
-                f"bash exit {premise.returncode}, stdout: {premise.stdout!r}, stderr: {premise.stderr.strip()!r})"
-            )
-        assert self._names_claude_config(repo, tmp_path, extra_env=turkish_locale_env) == 0
+        assert self._names_claude_config(repo, tmp_path, extra_env={"LC_ALL": turkish_locale}) == 0
 
     def test_returns_one_when_the_origin_read_fails_for_a_nonexistent_repository_path(self, tmp_path: Path) -> None:
         """A nonexistent path makes `git -C` exit 128 and cannot reach an enclosing repository."""
