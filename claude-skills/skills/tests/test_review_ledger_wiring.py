@@ -304,12 +304,18 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
         "PR number, say it exists without the block, and neither launch the CI watch nor report ready.",
         id="step-8-runs-the-pr-open-path-after-the-confirm-refetch",
     ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "before dispatching or applying any fix and before review-findings persistence below",
+        id="ledger-appends-run-before-any-fix",
+    ),
 ]
 
 
 class TestReviewLedgerPublishAndInjectionControls:
     """Narrow token pins for the `/code-review` and `/ready-for-review` prose
-    that keeps spawns and consults off the ledger and marker scripts, quotes ledger arguments, and gates what reaches
+    that keeps spawns and consults off the ledger and marker scripts, quotes ledger arguments,
+    orders a round's ledger appends before its fix, and gates what reaches
     the public PR body. Each token fails a test when a later trim drops the
     control it names, without pinning the surrounding paragraph.
     """

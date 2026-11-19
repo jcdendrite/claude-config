@@ -545,9 +545,19 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
     wall_clock_s = time.monotonic() - start
 
     projects_root = runner.config_dir() / "projects"
-    session_jsonl = runner.wait_for_session_flush(projects_root, session_id, timed_out=timed_out)
+    blocked_detail = runner.blocked_prompt_detail(lines)
+    session_jsonl = (
+        None if blocked_detail is not None
+        else runner.wait_for_session_flush(projects_root, session_id, timed_out=timed_out)
+    )
 
-    if session_jsonl is None:
+    if blocked_detail is not None:
+        validity = runner.RunValidity(
+            ok=False, failure_reason=runner.MISSING_REASON_BLOCKED_PROMPT, observed_model=None,
+            observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
+            failure_detail=blocked_detail,
+        )
+    elif session_jsonl is None:
         # A run the timeout killed may never have flushed a transcript; the
         # timeout, not the absent store, is its recorded cause.
         missing_reason = runner.MISSING_REASON_TIMEOUT if timed_out else runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND

@@ -829,8 +829,8 @@ class TestCostHeadingLiteralMatchesSkillBody:
     and pr-description/SKILL.md's descriptive mention of the heading are two
     independently-maintained copies of the same string, introduced by moving
     the heading into the script. A rename of one copy without the other would
-    leave both this suite's byte-exact block assertions and test_skills.py's
-    test_declares_cost_heading_literal green while the two diverge."""
+    leave both this suite's byte-exact block assertions and
+    test_pr_lifecycle_skills.py's test_declares_cost_heading_literal green while the two diverge."""
 
     def test_heading_literal_appears_identically_in_both_places(self):
         script_source = _SCRIPT.read_text()

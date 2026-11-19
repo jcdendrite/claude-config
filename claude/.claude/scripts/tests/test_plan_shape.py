@@ -1343,7 +1343,7 @@ def _step5_section() -> str:
     return after_heading.split(_STEP6_START, 1)[0]
 
 
-# test_skills.py pins the check command inside Step 5's clauses.
+# test_plan_pipeline_skills.py pins the check command inside Step 5's clauses.
 class TestSkillContract:
     def test_step5_names_every_output_key(self, script) -> None:
         section = _step5_section()
