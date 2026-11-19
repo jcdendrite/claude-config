@@ -49,7 +49,11 @@ class TestEntryLevelDenialShape:
     @pytest.mark.parametrize("override", [
         {"toolDenialKind": ""}, {"toolDenialKind": 7}, {"permissionDecision": {"decision": "allow"}},
         {"permissionDecision": "reject"}, {"toolDenialKind": "interrupted"}, {"toolDenialKind": "future-unknown-kind"},
-    ], ids=["empty-kind", "numeric-kind", "allow-decision", "string-decision", "interrupted", "unknown-kind"])
+        {"toolDenialKind": ["permission-rule"]}, {"toolDenialKind": {"kind": "permission-rule"}},
+    ], ids=[
+        "empty-kind", "numeric-kind", "allow-decision", "string-decision", "interrupted", "unknown-kind",
+        "unhashable-list-kind", "unhashable-dict-kind",
+    ])
     def test_a_marker_of_the_wrong_value_or_type_denies_nothing(self, tmp_path, override):
         entry = denied_result_entry("toolu_1", "/tmp/x.txt")
         entry.pop("toolDenialKind")

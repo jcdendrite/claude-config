@@ -853,6 +853,23 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, _mod.SELECT_TESTS_TEST_PATH}
 
+    def test_replay_bench_arms_test_change_also_selects_its_own_domain_and_test_select_tests(self):
+        """evals/test_replay_bench_arms.py lies outside the claude/ and plugins/ test trees, so
+        _is_test_source_change does not select test_select_tests.py for it; a standalone row does."""
+        result = _mod.select_pytest_targets([_mod.REPLAY_BENCH_ARMS_TEST_PATH])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
+
+    @pytest.mark.parametrize(("target_attribute", "_reader_test_name"), _HAND_AUDITED_AGENTS_DIR_READERS)
+    def test_a_hand_audited_agents_dir_reader_change_selects_test_select_tests(
+        self, target_attribute, _reader_test_name,
+    ):
+        """test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self reads each listed file by
+        path, so an edit to one must select test_select_tests.py or a scoped run misses a renamed reader."""
+        result = _mod.select_pytest_targets([getattr(_mod, target_attribute)])
+        assert result.is_full_suite is False, f"{target_attribute} selects the full suite, which hides a missing row"
+        assert _mod.SELECT_TESTS_TEST_PATH in result.target_paths
+
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
         """The recall scorer's own test file selects itself and every other test in
         EVALS_TEST_TARGETS rather than falling through to the full suite."""

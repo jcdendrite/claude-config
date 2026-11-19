@@ -1,5 +1,5 @@
-"""Tests for replay_bench/arms. Every agent file and config dir is synthetic under `tmp_path`, except the one
-contract case that reads this checkout's `code-writer.md`. No test launches `claude`.
+"""Tests for replay_bench/arms. Agent text is a synthetic string, or a synthetic file in a config dir under `tmp_path`,
+except the one contract case that reads this checkout's `code-writer.md`. No test launches `claude`.
 """
 from __future__ import annotations
 

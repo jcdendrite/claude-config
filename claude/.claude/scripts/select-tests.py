@@ -912,8 +912,14 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # The row is standalone because the review_bench predicate already includes this
 # file, and folding this target in would run test_select_tests.py on every
 # review_bench edit.
-# The other files in _HAND_AUDITED_AGENTS_DIR_READERS are covered by the
-# SELECT_TESTS_TEST_PATH comment.
+# REPLAY_BENCH_ARMS_TEST_PATH (standalone row): the same hand-audited-reader test
+# reads this file by path, and it lies outside the claude/ and plugins/ test
+# trees that _is_test_source_change covers, so it needs its own row.
+# The row is standalone because the replay domain row already includes this file,
+# and folding this target in would run test_select_tests.py on every replay test edit.
+# The two transcript test files in _HAND_AUDITED_AGENTS_DIR_READERS lie under
+# claude/.claude/scripts/tests/, which _is_test_source_change covers, as the
+# SELECT_TESTS_TEST_PATH comment describes.
 # REPLAY_BENCH_DIR and REPLAY_BENCH_RUNNER (standalone row): SELECT_TESTS_TEST_PATH's
 # own tests read the replay package's files and the runner by path from a function
 # body, which TestCrossDomainReadCompleteness cannot see.
@@ -932,6 +938,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_temp_project_fixture_change, tuple(sorted(SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER))),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: p == REPLAY_BENCH_ARMS_TEST_PATH, (SELECT_TESTS_TEST_PATH,)),
     (lambda p: _is_under(p, REPLAY_BENCH_DIR) or p == REPLAY_BENCH_RUNNER, (SELECT_TESTS_TEST_PATH,)),
     (lambda p: p == MEASURE_MAIN_SESSION_RULE_ADHERENCE, (SELECT_TESTS_TEST_PATH,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),

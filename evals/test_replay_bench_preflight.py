@@ -3,6 +3,7 @@ the real tools, so the real probe snippet runs. No test launches the real CLI.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import shlex
 import subprocess
@@ -12,12 +13,14 @@ from urllib.parse import urlsplit
 
 import pytest
 import run_replay_bench
-from replay_bench import account, attempt
+from replay_bench import account, attempt, launch
 from review_bench import runner as review_runner
 from review_bench.runner import HarnessInvalidatedError
 from test_replay_bench_launch import PROXY_WITH_CREDENTIALS
 from test_replay_bench_runner_support import (
     CODE_WRITER_MARKDOWN,
+    SLEEP_PAST_TIMEOUT_S,
+    SLEEP_REFUSAL_BOUND_S,
     Scenario,
     build_config_dir,
     build_replay_world,
@@ -29,9 +32,8 @@ from test_replay_bench_runner_support import (
 # What the fake tools run under in place of the 10 s production default, which a loaded host can outlast. A test of a
 # timeout passes its own limit.
 SPAWN_TIMEOUT_S = 120.0
-# The sleeping fakes outlast their timeout by far more than a loaded host can stall a spawn.
-SLEEP_PAST_TIMEOUT_S = 60
-SLEEP_REFUSAL_BOUND_S = 30
+# Names the shell that runs a fake tool adds to its own environment.
+SHELL_ADDED_NAMES = frozenset({"PWD", "OLDPWD", "SHLVL", "_"})
 CREDENTIAL = urlsplit(PROXY_WITH_CREDENTIALS).password
 PASSTHROUGH_DIRENV = "shift 2\nexec \"$@\"\n"
 CLAUDE_PRINTING_VERSION = 'echo "2.1.322 (Claude Code)"\n'
@@ -60,6 +62,10 @@ class Preflight:
 
     def install_claude(self, body: str) -> None:
         write_executable(self.bin / "claude", f"touch {shlex.quote(str(self.claude_ran))}\n{body}")
+
+    def isolate_path(self) -> None:
+        """Only the fake tools' directory is on `PATH`, so no tool the host installs under a system directory resolves."""
+        self.monkeypatch.setenv("PATH", str(self.bin))
 
     def run(self, **kwargs) -> account.Account:
         return account.preflight_repo(self.repo, **kwargs)
@@ -120,6 +126,23 @@ class TestTheProbe:
         assert resolved.config_dir_value == str(exported)
         assert resolved.key == account.account_key(exported)
         assert "CLAUDE_CONFIG_DIR" not in resolved.dropped_variables
+
+    def test_each_repo_is_probed_under_its_own_direnv_directory(self, preflight, tmp_path):
+        config_dirs_by_repo = {}
+        for name in ("alpha", "beta"):
+            repo = tmp_path / f"repo-{name}"
+            repo.mkdir()
+            config_dir = tmp_path / f"config-{name}"
+            build_config_dir(config_dir)
+            config_dirs_by_repo[repo] = config_dir
+        routes = "".join(
+            f"{shlex.quote(str(repo))}) export CLAUDE_CONFIG_DIR={shlex.quote(str(config_dir))};;\n"
+            for repo, config_dir in config_dirs_by_repo.items()
+        )
+        preflight.install_direnv(f'case "$2" in\n{routes}*) exit 9;;\nesac\n{PASSTHROUGH_DIRENV}')
+
+        for repo, config_dir in config_dirs_by_repo.items():
+            assert account.preflight_repo(repo).config_dir == config_dir
 
     def test_a_relative_config_dir_is_refused_as_not_an_absolute_path(self, preflight):
         preflight.monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative-config")
@@ -195,6 +218,7 @@ class TestTheProbe:
 
     def test_a_missing_direnv_is_refused(self, preflight):
         (preflight.bin / "direnv").unlink()
+        preflight.isolate_path()
 
         assert "direnv is not on PATH" in preflight.refusal()
 
@@ -223,15 +247,20 @@ class TestTheRefusals:
         assert "we*ird" in message
         assert not preflight.claude_ran.exists(), "the readiness check must not have run"
 
-    def test_a_variable_name_prints_in_repr_form_and_a_path_without_raw_control_characters(self, preflight, capsys):
+    def test_a_path_in_a_refusal_prints_without_raw_control_characters(self, preflight):
         (preflight.config_dir / "rules" / "esc\x1b\nname*.md").write_text("rule")
-        message = preflight.refusal()
-        assert "\x1b" not in message and "\n" not in message.split(": ", 1)[1]
 
-        (preflight.config_dir / "rules" / "esc\x1b\nname*.md").unlink()
-        preflight.monkeypatch.setenv("WEIRD\x1b\nNAME", "value")
+        message = preflight.refusal()
+
+        assert "\x1b" not in message and "\n" not in message
+
+    def test_a_dropped_variable_name_prints_in_repr_form(self, preflight, monkeypatch, capsys):
+        resolved = dataclasses.replace(preflight.run(), dropped_variables=("WEIRD\x1b\nNAME",))
+        monkeypatch.setattr(account, "preflight_repo", lambda repo, **_kwargs: resolved)
         args = run_replay_bench.build_parser().parse_args(["preflight", "--tasks", "x"])
+
         run_replay_bench._preflight_repos(args, [str(preflight.repo)])
+
         printed = capsys.readouterr().out
         assert "\x1b" not in printed and "WEIRD\\x1b\\nNAME" in printed
 
@@ -239,6 +268,7 @@ class TestTheRefusals:
 class TestTheReadinessCheck:
     def test_a_missing_claude_is_refused(self, preflight):
         (preflight.bin / "claude").unlink()
+        preflight.isolate_path()
 
         assert "claude --version" in preflight.refusal()
 
@@ -270,6 +300,54 @@ class TestTheReadinessCheck:
 
         assert "claude --version timed out after 1 s" in message
         assert time.monotonic() - started < SLEEP_REFUSAL_BOUND_S, "the kill did not reach the sleeper"
+
+    def observe_claude(self, preflight) -> tuple[dict[str, str], list[str]]:
+        """Runs preflight against a `claude` that records the environment and argv it was started with."""
+        env_file, argv_file = preflight.tmp_path / "claude-env", preflight.tmp_path / "claude-argv"
+        preflight.install_claude(
+            f"{launch.ENV_EXECUTABLE} > {shlex.quote(str(env_file))}\n"
+            f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_file))}\n{CLAUDE_PRINTING_VERSION}"
+        )
+        preflight.run()
+        observed_env = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+        return {name: value for name, value in observed_env.items() if name not in SHELL_ADDED_NAMES}, (
+            argv_file.read_text().splitlines()
+        )
+
+    def test_claude_starts_under_only_the_allowlisted_environment_and_no_config_dir_when_none_was_found(
+        self, preflight,
+    ):
+        preflight.monkeypatch.setenv("HTTPS_PROXY", PROXY_WITH_CREDENTIALS)
+        preflight.monkeypatch.setenv("AMBIENT_PROFILE", "sentinel-value")
+
+        observed_env, observed_argv = self.observe_claude(preflight)
+
+        assert observed_env == {name: os.environ[name] for name in launch.LAUNCH_ENV_ALLOWLIST if name in os.environ}
+        assert "HTTPS_PROXY" in observed_env and "AMBIENT_PROFILE" not in observed_env
+        assert observed_argv == ["--version"]
+
+    def test_claude_starts_with_the_config_dir_the_probe_found(self, preflight, tmp_path):
+        exported = tmp_path / "exported-config"
+        build_config_dir(exported)
+        preflight.install_direnv(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(exported))}\n{PASSTHROUGH_DIRENV}")
+
+        observed_env, _observed_argv = self.observe_claude(preflight)
+
+        assert observed_env[launch.CONFIG_DIR_VARIABLE] == str(exported)
+
+    def test_the_direnv_timeout_defaults_to_the_environment_read_timeout(self, preflight, monkeypatch):
+        seen = []
+        monkeypatch.setattr(review_runner, "_ENVIRONMENT_READ_TIMEOUT_S", 42.0)
+        real_probe = account._probe
+
+        def spy(repo, probe_dir, *, timeout_s):
+            seen.append(timeout_s)
+            return real_probe(repo, probe_dir, timeout_s=timeout_s)
+
+        monkeypatch.setattr(account, "_probe", spy)
+        preflight.run()
+
+        assert seen == [42.0]
 
     def test_the_readiness_timeout_defaults_to_the_environment_read_timeout(
         self, preflight, monkeypatch,

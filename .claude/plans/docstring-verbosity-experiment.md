@@ -231,7 +231,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 36. [verified: `evals/review_bench/mine_szz.py:112-141`] `_python_docstring_lines` returns the 1-based line numbers of module, class and function docstrings, leaving out a first or last line shared with code.
 37. [verified: `evals/review_bench/runner.py:68-78`] The per-run budget cap and timeout were set for reviewer dispatches. [unverified] Whether a replay fits within them is unmeasured, so `smoke` prints each run's cost and wall clock.
 38. [verified: `claude/.claude/agents/comment-discipline-reviewer.md:77-83`] That reviewer's Comment verbosity angle counts separate sentences that each carry a distinct fact as not verbosity. A word or line count therefore measures comment volume and shape, not verbosity as that lens judges it.
-39. [verified: `claude/.claude/scripts/select-tests.py`, its review-bench rows; `claude/.claude/scripts/tests/test_select_tests.py`, its review-bench selection and import-closure tests] The review-bench rows' target tuples carry each sibling eval script's test, with `measure_explore_recall.py` as the precedent. The selection tests assert that set by equality, and the import-closure test's seed list needs each sibling eval script.
+39. [verified: `claude/.claude/scripts/select-tests.py`, its review-bench rows; `claude/.claude/scripts/tests/test_select_tests.py`, its review-bench selection and import-closure tests] The review-bench rows' target tuples carry each sibling eval script's test, with `measure_explore_recall.py` as the precedent. The selection tests assert that set by equality. The import-closure test finds its entry points by globbing `evals/run_*.py` and `evals/measure_*.py`, so each sibling eval script is a seed with no list edit. It also asserts that the five known entry points are still found.
 40. [verified: `claude/.claude/scripts/select-tests.py`, `GLOBAL_TRIGGER_PATHS`] A change to `select-tests.py` itself selects the full suite.
 41. [verified: `.gitignore`] `evals/review_bench/.local/` has its own ignore entry, so `evals/replay_bench/.local/` needs one too (Phase 1).
 42. [verified: `evals/run_review_bench.py:2284-2309,2327-2331`] The bench CLI sets an owner-only umask and restricts an existing `.local/` to 0700 with `_restrict_local_dir_to_owner`.
@@ -276,7 +276,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 77. [unverified] `git add -A` stores a symlink as its link text and skips a FIFO without opening it. Phase 4's hostile-tree test checks both.
 78. [unverified] `git add -A` leaves out an untracked path that the work tree's ignore rules match, and fails on a nested repository that has no commit. Phase 4's tests pin both outcomes.
 79. [verified: `claude/.claude/hooks/send-back-skipped-self-review.sh:40-41`; `docs/session-config-keys-log.md:3`] A replay session adds to account files that already exist. `toolkit`'s `SubagentStop` hook writes `.code-writer-self-review.log` and `.code-writer-self-review.d` in the config dir. Every session start adds a row to `.session-config-keys-log.jsonl`.
-80. Superseded by row 158. [verified: `claude/.claude/scripts/select-tests.py:812-832,876-879`; `claude/.claude/scripts/tests/test_select_tests.py:425-431,1092-1105,2138-2149`] A test that reads the real agents directory through a production function is a hand-audited `AGENTS_DIR` reader. `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST` carries the wiring one needs:
+80. [verified: `claude/.claude/scripts/select-tests.py`, the `AGENTS_DIR` row and the standalone `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST` and `REPLAY_BENCH_ARMS_TEST_PATH` rows of `CROSS_DOMAIN_EXCEPTIONS`; `claude/.claude/scripts/tests/test_select_tests.py`, `_HAND_AUDITED_AGENTS_DIR_READERS`, `_FILE_TARGETS` and `test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self`] A test that reads the real agents directory through a production function is a hand-audited `AGENTS_DIR` reader. `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST` and `REPLAY_BENCH_ARMS_TEST_PATH` (row 158) carry the wiring one needs:
     - a target in the `AGENTS_DIR` row;
     - an entry in `_HAND_AUDITED_AGENTS_DIR_READERS`;
     - a `_FILE_TARGETS` entry;
@@ -415,6 +415,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - item 8: no resume cap charge for a swept attempt that has no spend line (row 155);
     - item 9: a manual listing of the account config dir in Verification step 6, in place of `smoke`'s own;
     - item 10: the arms test reading a `tmp_path` agent file, not this checkout's (row 158).
+    - [engineer-verified: "Keep the test, update row 151 (Recommended)"] Later asked whether to keep a contract test that reads this checkout's `code-writer.md` or to hold item 10's cut, the engineer selected this label. The label covers that selection, nothing more. Row 158 holds the design that results, so item 10's cut no longer applies to that one case.
 152. [unverified] The session's design, not the engineer's words: `tasks`' flags for the nine `SelectionLimits` fields, `--rev` included, default to `None`, and `cmd_tasks` passes only the flags given to `SelectionLimits`, by field name. `SelectionLimits` then holds the only defaults, and no flag can reach another field. The CLI case that gives all nine flags distinct values pins the wiring.
 153. [unverified] The session's design under row 159, not the engineer's words:
     - A task-specific failed block, one where an arm has no valid run and no attempt in the block ended under an instrument reason, is marked complete and never rerun. Its task leaves the pairs, and `summarize` counts it.
@@ -436,7 +437,15 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - The README states this as accepted residue, beside row 79's files.
 156. [verified: `evals/review_bench/runner.py:1128,1168-1177,1636-1638`] The store's lock is `lock.pid`, taken with a non-blocking exclusive `flock`, and the review bench takes it before its sweep. The replay resume takes it before its sweep and its `attempts/` delete (`campaign.py`), so no attempt of the campaign runs then. [verified: `evals/review_bench/runner.py:1294-1300`] `remove_tree_reporting_failure` runs `shutil.rmtree` with an `onexc` handler and prints each failure, so the resume checks for a symlinked or an absent `attempts/` itself before it calls the helper.
 157. [unverified] The plan's design: each run's record keeps its metrics, first-turn prompt size and diff, each task keeps its base density, and each spend line keeps its cap-charge flag. So a later change can compute any figure `summarize` leaves out, Out of scope's list included, with no rerun.
-158. [unverified] The session's design, not the engineer's words: `evals/test_replay_bench_arms.py` builds `bare-writer.md` from a `tmp_path` `code-writer.md`, so it reads no real agents directory and needs none of row 80's wiring. That file uses distinctive non-default `tools`, `model` and `effort` values and a multi-line `description`, so a hard-coded value or a reader that handles only one-line values fails. Preflight still refuses, unpaid, an account `code-writer.md` that yields no tools, model or effort (`arms.bare_writer_markdown` and `account.py`). No test catches a change to the real file's frontmatter that the generator reads into a wrong but present value.
+158. [verified: `evals/test_replay_bench_arms.py:1-3,14-17,48-60`; `claude/.claude/scripts/select-tests.py`, the `AGENTS_DIR` row and the standalone `REPLAY_BENCH_ARMS_TEST_PATH` row; `claude/.claude/scripts/tests/test_select_tests.py`, `_HAND_AUDITED_AGENTS_DIR_READERS` and `_FILE_TARGETS`] `evals/test_replay_bench_arms.py` builds `bare-writer.md` from a synthetic `code-writer.md` text constant. The constant uses distinctive non-default `tools`, `model` and `effort` values and a multi-line `description`, so a hard-coded value or a reader that handles only one-line values fails.
+    - `tmp_path` holds only the config-dir, rules-directory and body-count cases.
+    - One contract case reads this checkout's `code-writer.md`. That makes the test a hand-audited `AGENTS_DIR` reader, so it carries row 80's wiring. The case catches these changes to the real file's frontmatter:
+      - a change that leaves no tools;
+      - a tools line that is not a comma-separated list of bare names;
+      - no effort;
+      - a bare writer that does not copy its tools, model and effort.
+    - The contract case does not check `model` or `effort` independently of the reader that yields both sides of its equality, so a quoted `model: "sonnet"` passes.
+    - Preflight still refuses, unpaid, an account `code-writer.md` that yields no tools, model or effort (`arms.bare_writer_markdown` and `account.py`).
 159. [engineer-verified: "Mark complete, halt after two in a row (Recommended)"] Asked how the per-arm stop treats a failed block, in place of holding it, the engineer selected this label and "Halt at the first block (Recommended)". The labels cover those selections, nothing more. [unverified] The option descriptions were the session's proposals, not the engineer's words. By the session's relay, the first label covers task-specific failed blocks and the second covers instrument failures. Row 153 holds the design that carries them out.
 160. [unverified] The design for an instrument failure under row 159's "Halt at the first block (Recommended)", from a second architect consult the session relayed, not the engineer's words:
     - It triggers on any attempt that ends under an instrument reason. Neither `run` nor `smoke` retries such an attempt, because a clean retry would hide the evidence (`evals/README.md` § "Retry and missing reasons").
@@ -558,7 +567,7 @@ The two PRs (Approach) split at Phase 2 to Phase 3, with Phase 5a in the first a
 - `evals/conftest.py` (edit): the shared autouse `fresh_launch_abort_flag` fixture, which resets `msmr`'s launch-abort flag for every test in `evals/`, and the `checks_world` and `world` fixtures.
 - `evals/replay_bench/comment_metrics.py` and `evals/test_replay_bench_comment_metrics.py` (edit): docstring wording and the `ValueError` text, with the test's `match=` following it.
 - `evals/run_replay_bench.py` (new): the CLI. `tasks` takes one flag per `SelectionLimits` field, defaulting to `None`, and `cmd_tasks` passes only the flags given, by field name, so `SelectionLimits` holds the only defaults (row 152).
-- `evals/test_replay_bench_arms.py` (new) builds `bare-writer.md` from a `tmp_path` `code-writer.md` and reads no real agents directory (row 158).
+- `evals/test_replay_bench_arms.py` (new) builds `bare-writer.md` from a synthetic `code-writer.md` text constant, plus one contract case that reads this checkout's real `code-writer.md` (row 158).
 - The runner, campaign, spend, CLI, summarize and smoke tests are in `evals/test_replay_bench*.py` (new). Their setup, as M17 cites:
   - They stub every `claude` call, and every `direnv` call outside the preflight cases. An injected `launch=` writes a synthetic dispatcher transcript and subagent sidecar under a `tmp_path` projects root, and fakes the fixture edits.
   - They monkeypatch `review_bench.runner.read_environment_record` to a fixed reading, or to a sequence for the drift cases.
@@ -584,11 +593,16 @@ The two PRs (Approach) split at Phase 2 to Phase 3, with Phase 5a in the first a
   - a standalone row that selects `SELECT_TESTS_TEST_PATH` for a change under `REPLAY_BENCH_DIR`, because `test_select_tests.py` reads the replay package's files from a function body, which `TestCrossDomainReadCompleteness` cannot see.
 - `claude/.claude/scripts/tests/test_select_tests.py`:
   - the glob joins every set-equality assertion over the review-bench target set (row 67);
-  - `replay_bench/*.py` joins the import-closure test's seed list;
+  - the import-closure test's walk starts from `evals/review_bench/*.py`, `evals/replay_bench/*.py` and the `run_*.py` and `measure_*.py` entry points it globs, so `replay_bench/*.py` joins it with no list edit;
   - a test finds no `ImportFrom` with `level > 0` in `evals/replay_bench/`, with a seeded relative import as its failing control and an assertion on its scanned set, because the closure test maps every relative import to `review_bench` (row 81).
 
 **Phase 5b — the rest of test selection, and docs (second PR).** Verify: as Phase 5a.
-- `select-tests.py` and its test: `REPLAY_BENCH_RUNNER` joins Phase 5a's two rows, `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`, the import-closure seed list and the no-relative-import test. `evals/test_replay_bench_arms.py` reads no real agents directory, so it needs no `AGENTS_DIR` wiring (row 158).
+- `select-tests.py` and its test: `REPLAY_BENCH_RUNNER` joins these places:
+  - Phase 5a's two rows in `select-tests.py`: the replay domain predicate and the standalone `SELECT_TESTS_TEST_PATH` row;
+  - the `_EXACT_MATCH_LITERAL_PATH_CONSTANTS` tuple in `test_select_tests.py` (row 67);
+  - the no-relative-import test's scanned set in `test_select_tests.py`.
+
+  The import-closure test finds `run_replay_bench.py` by its `run_*.py` glob. `evals/test_replay_bench_arms.py` reads this checkout's `code-writer.md` in one contract case, so it carries row 80's `AGENTS_DIR` wiring (row 158).
 - `evals/README.md`: a "Replay bench" section after "Review bench", which points to this plan for the design.
 
 The second PR's files are those of Phases 3, 4 and 5b. Phase 3 measured 2,658 lines at its commit, and the architect's inference puts the second PR near 7,500 to 8,000 lines, above the 6,300 row 141 accepted. Row 163 records the diff-size gate.
@@ -666,7 +680,7 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
    - Record `scripts/venv-run.sh pytest --durations=20` over that PR's new and edited replay test files beside that comparison, so a slow test shows by name (row 107).
 4. First PR: `git check-ignore -q evals/replay_bench/.local/tasks/probe.json` exits 0.
 5. A review check covering:
-   - every new test builds its repositories, transcripts and config dirs under `tmp_path`;
+   - every new test builds its repositories, transcripts and config dirs under `tmp_path`, except the arms contract case, which reads this checkout's `code-writer.md` and writes nothing;
    - no committed log or transcript fixture carries a captured value: its paths, IDs, CLI versions and `usage` counts are all synthetic;
    - no committed file names or mines a real repository (row 9).
 6. Second PR, before it merges: live checks the engineer runs from a terminal through `scripts/venv-run.sh python3`, never in CI. These checks spend subscription quota. The first PR has none, because it ships no CLI. Their output stays in the terminal and `.local/`, and the PR body may say whether they passed but cites no figure (rows 9, 10).

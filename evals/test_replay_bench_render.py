@@ -48,11 +48,22 @@ class TestSafeStream:
         assert SafeStream(io.StringIO()).write("a\x1bb") == 3
 
     def test_every_other_attribute_is_the_wrapped_streams(self):
-        target = io.StringIO()
+        class TerminalStream(io.StringIO):
+            flushes = 0
 
-        SafeStream(target).flush()
+            def isatty(self) -> bool:
+                return True
 
-        assert SafeStream(target).isatty() is False
+            def flush(self) -> None:
+                self.flushes += 1
+
+        target = TerminalStream()
+        stream = SafeStream(target)
+
+        stream.flush()
+
+        assert stream.isatty() is True
+        assert target.flushes == 1
 
 
 class TestHostileTextInFixtureErrorDetailAndClassifierMessage:

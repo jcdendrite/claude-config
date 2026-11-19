@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -458,6 +459,29 @@ class TestArmOutcomes:
         )
         assert outcome.reasons == ()
 
+    @pytest.mark.parametrize(("make_expectation", "expected_reasons"), [
+        pytest.param(_toolkit_arm, (checks.REASON_FIXTURE_INSTRUCTION_LOAD,), id="toolkit"),
+        pytest.param(_bare, (checks.REASON_ARM_LEAK, checks.REASON_FIXTURE_INSTRUCTION_LOAD), id="bare"),
+    ])
+    def test_a_dispatcher_load_of_a_fixture_claude_md_fails_fixture_instruction_load(
+        self, checks_world, make_expectation, expected_reasons,
+    ):
+        fixture_claude_md_load = _line(str(checks_world.fixture_dir / "CLAUDE.md"), SESSION_START)
+        outcome = _check(
+            checks_world, [_dispatcher_claude_md(checks_world), fixture_claude_md_load], make_expectation(checks_world),
+        )
+        assert outcome.reasons == expected_reasons
+
+    def test_a_fixture_file_load_outside_a_non_empty_allow_list_still_fails(self, checks_world):
+        listed_load = _line(str(checks_world.fixture_dir / "docs" / "NOTES.md"), PATH_GLOB_MATCH, agent_id=AGENT_ID)
+        unlisted_load = _line(str(checks_world.fixture_dir / "docs" / "OTHER.md"), PATH_GLOB_MATCH, agent_id=AGENT_ID)
+        outcome = _check(
+            checks_world, [_dispatcher_claude_md(checks_world), listed_load, unlisted_load],
+            _bare(checks_world, allowed_fixture_loads=frozenset({"docs/NOTES.md"})),
+        )
+        assert outcome.reasons == (checks.REASON_FIXTURE_INSTRUCTION_LOAD,)
+        assert outcome.subagent_loads_by_class == {"fixture": {"docs/NOTES.md": 1, "docs/OTHER.md": 1}}
+
     def test_each_instrument_reason_is_emitted_by_some_scenario(self, checks_world, tmp_path):
         emitted: set[str] = set()
         emitted.add(_parse(checks_world, []).reason or "")
@@ -653,6 +677,23 @@ class TestAccountHooks:
     def test_a_directory_entry_counts_as_absent(self, checks_world):
         (checks_world.config_dir / "sessions" / "4242").mkdir()
         assert checks.check_account_hooks(checks_world.config_dir, SESSION_ID) == checks.REASON_ACCOUNT_HOOKS_MISSING
+
+    def test_a_non_regular_entry_whose_first_line_is_the_session_id_counts_as_absent(self, checks_world, monkeypatch):
+        """A FIFO with a live writer can present the session ID, which a test cannot stage without a race.
+        So a matching file is reported as a FIFO through fstat."""
+        self._session_file(checks_world, "4242", f"{SESSION_ID}\n")
+        real_fstat = os.fstat
+        fstat_calls = []
+
+        def fstat_reporting_a_fifo(descriptor):
+            fstat_calls.append(descriptor)
+            real_result = real_fstat(descriptor)
+            return os.stat_result((stat.S_IFIFO | 0o600, *tuple(real_result)[1:]))
+
+        monkeypatch.setattr(os, "fstat", fstat_reporting_a_fifo)
+
+        assert checks.check_account_hooks(checks_world.config_dir, SESSION_ID) == checks.REASON_ACCOUNT_HOOKS_MISSING
+        assert fstat_calls, "the entry's type was never read through fstat"
 
     @pytest.mark.timing
     def test_a_fifo_entry_counts_as_absent(self, checks_world):

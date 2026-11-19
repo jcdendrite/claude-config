@@ -42,6 +42,9 @@ AGENT_ID = "synthetic-agent-id"
 TOOLKIT_FIRST_TURN_SIZE = 6000
 BARE_FIRST_TURN_SIZE = 1000
 READING = EnvironmentRecord("2.1.322", "synthetic-commit")
+# A sleeping fake outlasts its timeout by far more than a loaded host can stall a spawn.
+SLEEP_PAST_TIMEOUT_S = 60
+SLEEP_REFUSAL_BOUND_S = 30
 # Fixture files whose presence at launch time each arm's wiring decides.
 FIXTURE_FILES_AT_LAUNCH = (".claude/settings.json", ".claude/agents/bare-writer.md", ".claude/worktree-optout")
 

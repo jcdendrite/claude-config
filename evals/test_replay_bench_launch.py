@@ -134,6 +134,29 @@ class TestEachEmittedFormIsChecked:
             launch.read_allow_paths(other, tmp_path / "nohome")
 
 
+    def test_the_exclude_generator_checks_a_link_path_alone(self, tmp_path):
+        config_dir = tmp_path / "config"
+        (config_dir / "rules").mkdir(parents=True)
+        target = tmp_path / "targets" / "clean.md"
+        target.parent.mkdir()
+        target.write_text("rule")
+        (config_dir / "rules" / "spaced name.md").symlink_to(target)
+
+        with pytest.raises(launch.UnsafeConfigPathError, match="spaced name"):
+            arms.claude_md_excludes(config_dir)
+
+    def test_the_read_allow_generator_checks_a_link_path_alone(self, tmp_path):
+        config_dir = tmp_path / "config"
+        (config_dir / "skills").mkdir(parents=True)
+        target_dir = tmp_path / "targets" / "clean-skill"
+        target_dir.mkdir(parents=True)
+        (target_dir / "SKILL.md").write_text("skill")
+        (config_dir / "skills" / "spaced name").symlink_to(target_dir)
+
+        with pytest.raises(launch.UnsafeConfigPathError, match="spaced name"):
+            launch.read_allow_paths(config_dir, tmp_path / "nohome")
+
+
 class TestTheLaunchEnvironment:
     def test_the_prefix_passes_each_proxy_form_the_runner_sets(self):
         environ = {

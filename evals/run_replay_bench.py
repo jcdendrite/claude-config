@@ -38,7 +38,7 @@ DEFAULT_SEED = 0
 
 
 def _positive_float(text: str) -> float:
-    """NaN is refused too: every comparison against it is False, so a NaN stop would never halt."""
+    """NaN is refused too: every ordering comparison against it is False, so a NaN stop would never halt."""
     value = float(text)
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError(f"must be a finite number > 0, got {value}")

@@ -36,6 +36,8 @@ from test_replay_bench_runner_support import (
     ENTRY_DENIAL,
     MODEL_ID,
     READING,
+    SLEEP_PAST_TIMEOUT_S,
+    SLEEP_REFUSAL_BOUND_S,
     Scenario,
     build_replay_world,
     claude_md_line,
@@ -754,8 +756,7 @@ class TestWorkerFailures:
     ):
         """Kills:
         - `abort_launches()` missing from the failing worker: the wait times out.
-        - The pre-launch recheck missing: the held run launches.
-        - The spend failure missing from the root-cause choice: LaunchAbortedError surfaces."""
+        - The pre-launch recheck missing: the held run launches."""
         first_arm, _index = review_runner.build_block_plan(world.task.id, ("toolkit", "bare"), 1, 0).ordered_runs[0]
         real_build = tasks.build_task_fixture
         released_by = {}
@@ -1478,14 +1479,14 @@ class TestTheCommandLine:
 
     @pytest.mark.timing
     def test_direnv_timeout_s_reaches_the_probe(self, run_files, tmp_path, monkeypatch, capsys):
-        fake_direnv = write_executable(tmp_path / "bin" / "direnv", "exec sleep 10\n")
+        fake_direnv = write_executable(tmp_path / "bin" / "direnv", f"exec sleep {SLEEP_PAST_TIMEOUT_S}\n")
         monkeypatch.setenv("PATH", f"{fake_direnv.parent}:{os.environ['PATH']}")
         started = time.monotonic()
 
         code = main_run("--local-dir", str(run_files.local_dir), "preflight", "--tasks", "set", "--direnv-timeout-s", "1")
 
-        assert code == 2 and "--direnv-timeout-s" in capsys.readouterr().err
-        assert time.monotonic() - started < 5
+        assert code == 2 and "timed out after 1 s; raise --direnv-timeout-s" in capsys.readouterr().err
+        assert time.monotonic() - started < SLEEP_REFUSAL_BOUND_S, "the kill did not reach the sleeper"
 
     def test_fixture_git_timeout_s_reaches_each_git_dir_call(
         self, run_ready, monkeypatch,
