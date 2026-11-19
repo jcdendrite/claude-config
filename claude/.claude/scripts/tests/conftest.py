@@ -33,7 +33,16 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from helpers import CLAUDE_DIR, HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
+from helpers import (
+    CLAUDE_DIR,
+    HOOKS_DIR,
+    SCRIPTS_DIR,
+    SKILLS_DIR,
+    head_sha,
+    init_git_repo,
+    install_shell_exec_guard,
+    install_unwarmed_stub_guard,
+)
 from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, redaction, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
@@ -1644,11 +1653,13 @@ def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
 
 
 @pytest.fixture(autouse=True)
-def _guard_shell_exec(monkeypatch):
+def _guard_shell_exec(monkeypatch, tmp_path_factory):
     """Fail a test that execs a shell file in a way that can pass without the file running.
     The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
-    fixture because importing one into a conftest trips ruff F401."""
+    fixture because importing one into a conftest trips ruff F401.
+    It also fails a launch under the scaled timeout shim whose PATH holds a stub write_prewarmed_stub did not write."""
     install_shell_exec_guard(monkeypatch)
+    install_unwarmed_stub_guard(monkeypatch, tmp_path_factory.getbasetemp())
 
 
 @pytest.fixture(autouse=True)

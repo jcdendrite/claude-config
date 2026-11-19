@@ -5,7 +5,16 @@ import json
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, edit_input, read_input, run_hook, run_hook_reason, write_input
+from helpers import (
+    HOOKS_DIR,
+    bash_input,
+    edit_input,
+    read_input,
+    run_hook,
+    run_hook_payload,
+    run_hook_reason,
+    write_input,
+)
 
 DENY_DATA_FILE_READS_HOOK = HOOKS_DIR / "deny-data-file-reads.sh"
 
@@ -157,6 +166,53 @@ class TestDenyDataFileReads:
             read_input("/srv/patient-exports/2024/jan.txt"),
             extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
         ) == "deny"
+
+    # ------------------------------------------------------------------ #
+    # Agent identity: the hook ignores agent_id / agent_type keys        #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "identity",
+        [
+            pytest.param(
+                {"agent_id": "agent-0123456789abcdef", "agent_type": "general-purpose"},
+                id="agent_id and general-purpose agent_type",
+            ),
+            pytest.param(
+                {"agent_id": "agent-0123456789abcdef", "agent_type": "staff-sdet"},
+                id="agent_id and roster agent_type",
+            ),
+            pytest.param({"agent_type": "general-purpose"}, id="agent_type only"),
+            pytest.param({"agent_id": "agent-0123456789abcdef"}, id="agent_id only"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("relative_path", "guard_globs", "file_size_bytes"),
+        [
+            pytest.param("export.csv", "", 1, id="extension rule"),
+            pytest.param("Downloads/notes.txt", "", 1, id="Downloads rule"),
+            pytest.param("big.log", "", 6 * 1024 * 1024, id="size rule"),
+            pytest.param("patient-exports/jan.txt", "**/patient-exports/**\n", 1, id="configured glob rule"),
+        ],
+    )
+    def test_subagent_read_denied_under_every_rule(
+        self, isolated_home, read_guard, tmp_path, identity, relative_path, guard_globs, file_size_bytes
+    ):
+        """The hook ignores the `agent_id` and `agent_type` keys: a Read payload
+        carrying any of the four identity combinations parametrized here is
+        denied under each rule class.
+        This covers the hook's handling of the keys only, not whether the
+        harness invokes the hook for a subagent Read.
+        docs/security-hardening.md § "Limitations" relies on this."""
+        read_guard(guard_globs)
+        target = tmp_path / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"x" * file_size_bytes)
+        payload = {**read_input(str(target)), **identity}
+        hook_output = run_hook_payload(DENY_DATA_FILE_READS_HOOK, payload)
+        assert hook_output is not None
+        assert hook_output["permissionDecision"] == "deny"
+        assert str(target) in hook_output["permissionDecisionReason"]
 
     # ------------------------------------------------------------------ #
     # Deny message names the path and the matched rule                    #

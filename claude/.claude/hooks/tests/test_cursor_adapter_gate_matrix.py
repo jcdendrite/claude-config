@@ -546,7 +546,6 @@ DELIVERED_INFORMATIONAL_ARMS = frozenset(
         "SessionStart|startup|set-session-title-from-branch.sh",
         "SessionStart|startup|bootstrap-project-plugins.sh",
         "SessionStart|startup|nudge-memory-store-audit.sh",
-        "SessionStart|startup|resume|clear|announce-autonomous-shipping.sh",
         "SessionStart|*|record-session-config-keys.sh",
         "SubagentStart|plan-architect|announce-branch-review-history.sh",
         "UserPromptSubmit|*|nudge-error-mode-analysis.sh",
@@ -1102,7 +1101,6 @@ NO_WRITE_TRIGGER_YET = {
     "set-session-title-from-branch.sh": "none found in the hook's source",
     "bootstrap-project-plugins.sh": "an audit log line, reached by TestBootstrapProjectPluginsRow and by no trigger row",
     "nudge-memory-store-audit.sh": "a nudge log line under the config dir",
-    "announce-autonomous-shipping.sh": "none found in the hook's source",
     "announce-branch-review-history.sh": "none found in the hook's source",
     "nudge-error-mode-analysis.sh": "a checkpoint directory, a fired marker and a nudge log line",
     "nudge-worktree-anchor.sh": "a per-session anchor state file",
@@ -2126,7 +2124,6 @@ class TestRecoverySectionResolves:
         "heading_part",
         [
             "A deny from a marker-gated gate",
-            "CLAUDECODE set in Cursor's hook environment",
             "A host walk that found no host",
             "A worktree held by a live process",
             "A marker write that the sandbox denies",

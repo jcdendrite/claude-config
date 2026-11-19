@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # hook-class: turn-gate
 # Stop hook: force forward progress past a commit/push/PR permission-question
-# stall (GH-526), in repos where the engineer has opted in to autonomous
-# shipping. Fires only on a session (never a subagent) whose last message
-# asks permission to commit/push/open a PR while work is pending, in a repo
-# where _lib_autonomous_shipping_active holds and HEAD is on a non-default
-# branch (_lib_head_detached_or_default). The default branch and a detached
-# HEAD stay silent, because the forced continuation would ship from them.
+# stall (GH-526). Blocks a session's (never a subagent's) stop whose final
+# sentence asks permission to commit, push or open a PR while work is pending.
+# Its reason tells the agent not to ask permission to continue at a stopping
+# point. Fires in a repo the root guard (_lib_autonomous_shipping_root_for_cwd)
+# accepts, with HEAD on a non-default branch (_lib_head_detached_or_default).
+# The default branch and a detached HEAD stay silent, because the forced
+# continuation would ship from them.
 #
 # Dispatch: matcher-less Stop (per Anthropic's docs, Stop has no matcher
 # support). Fail-silent posture throughout — this hook must never emit a
 # malformed block payload; every non-firing path is a plain `exit 0`.
 # The reason is encoded through the capped _lib_jq wrapper, so a failed
-# encode emits nothing and a broken, missing, or hung jq degrades to
-# silent-allow, not a stuck block loop.
+# encode emits nothing and a broken or missing jq degrades to silent-allow,
+# not a stuck block loop. A hung jq is bounded only where GNU timeout or
+# gtimeout is on PATH.
 #
 # set -euo pipefail deliberately omitted (nudge-worktree-anchor.sh:51-54
 # is the precedent): this hook inspects many non-zero exits (grep/git/jq
@@ -21,11 +23,9 @@
 # strict mode would turn those into premature exits that skip the
 # fail-silent tail.
 #
-# Kill switches: the commit_stall_block config key (`commit_stall_block = false`
+# Kill switch: the commit_stall_block config key (`commit_stall_block = false`
 # in <config-dir>/claude-config.toml; the legacy <config-dir>/.commit-stall-block-disabled
-# file counts only while the key has no row there) and
-# <repo>/.claude/autonomous-shipping-optout (repo-scoped, read via
-# _lib_autonomous_shipping_active).
+# file counts only while the key has no row there).
 #
 # STATE_DIR gets a 30-day eviction sweep on every fire, since state files are
 # themselves only ever written here — no SessionEnd hook cleans them up.
@@ -44,6 +44,12 @@
 # - STATE_FILE's write-then-read-back race is untested: assumes Stop fires
 #   at most once per session at a time (the harness's own invocation model),
 #   not two concurrent processes racing the same session_id/prompt_id.
+# - commit_stall_block = false is not honored while config-keys.psv is
+#   unreadable or missing the row; see docs/commit-stall-block.md.
+# - The predicate does not read what the question targets, so from a feature
+#   branch a compound question or one naming the default branch fires; see
+#   docs/commit-stall-block.md.
+# - EXCLUDE_RE misses the `force push` and `-f` spellings; see docs/commit-stall-block.md.
 
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
@@ -56,8 +62,8 @@ fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 [ -d "$CONFIG_DIR" ] || exit 0
 
-# 2. Always-effective kill switch, independent of sentinel state. Delegates
-# to _config_enabled's commit_stall_block schema row (presence-disables).
+# 2. Always-effective kill switch. Delegates to _config_enabled's
+# commit_stall_block schema row (presence-disables).
 # Only exit code 1 (explicitly disabled) turns this hook off -- every other
 # outcome, including config-keys.psv being transiently unreadable (exit 3)
 # or readable but missing commit_stall_block's own row (exit 4), leaves it
@@ -69,25 +75,14 @@ case "$?" in
   *) ;;
 esac
 
-# 3. Machine-sentinel fast path: the cheap (no parsed input
-# needed) half of the full _lib_autonomous_shipping_active check at step 9
-# below. This fast path delegates to _lib_autonomous_shipping_sentinel_present,
-# which unions the resolved config dir with the legacy ~/.claude location the
-# same way step 9's full check does. Absent on the vast majority of
-# non-adopting sessions, so checking it here skips spawning jq for the
-# common case. The full check (this file plus the per-repo optout) still
-# runs at step 9, once REPO_ROOT is known. This is a redundant, cheaper
-# pre-filter, not a replacement for it.
-_lib_autonomous_shipping_sentinel_present || exit 0
-
 # Six fields in a single jq pass, the same shape as nudge-handoff-near-context-cap.sh's
 # multi-field read. Pre-initialized so a failed read leaves empty strings, not
 # unbound variables.
 # last_assistant_message stays the last field and is read to EOF, because it can span lines.
-# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
+# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured.
 # A newline inside a field would shift the later fields of the line-oriented read.
-# A .cwd that is not a single-line string is blanked, which step 9 denies.
-# Any other header field that is not a single-line string empties every field, which gate 5 denies.
+# A .cwd that is not a single-line string is blanked, which step 8 denies.
+# Any other header field that is not a single-line string empties every field, which gate 4 denies.
 SESSION_ID=""
 AGENT_TYPE=""
 PERMISSION_MODE=""
@@ -113,7 +108,7 @@ LAST_ASSISTANT_MESSAGE=""
 
 LOG_FILE="$CONFIG_DIR/.commit-stall-block.log"
 
-# 4. A Stop payload with agent_type set is never force-continued, because
+# 3. A Stop payload with agent_type set is never force-continued, because
 # CLAUDE.md's Agent Core tells any fork or subagent to return its work to its
 # dispatcher rather than ship.
 # This gate covers a fork only if the fork's Stop payload carries agent_type,
@@ -121,19 +116,19 @@ LOG_FILE="$CONFIG_DIR/.commit-stall-block.log"
 # AGENT_TYPE-unreadable and AGENT_TYPE-absent pass this gate as the main
 # session does.
 # That is safe only because a jq/read failure also empties SESSION_ID, which
-# gate 5 below independently denies.
+# gate 4 below independently denies.
 # The safety rests on that ordering, not on an explicit fail-closed check on
 # this field itself.
 [ -z "$AGENT_TYPE" ] || exit 0
 
-# 5. session_id required and must be a safe single path component; it feeds
+# 4. session_id required and must be a safe single path component; it feeds
 # STATE_FILE below.
 [ -n "$SESSION_ID" ] && _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
-# 6. Never force-continue out of plan mode.
+# 5. Never force-continue out of plan mode.
 [ "$PERMISSION_MODE" != "plan" ] || exit 0
 
-# 7. prompt_id required (guards an empty-vs-absent-state-file comparison
+# 6. prompt_id required (guards an empty-vs-absent-state-file comparison
 # ambiguity) and must differ from the last-fired prompt_id for this session
 # — at most one forced continuation per user turn, re-arming on a new turn.
 if [ -z "$PROMPT_ID" ]; then
@@ -146,7 +141,7 @@ STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$PREVIOUSLY_FIRED_PROMPT_ID" = "$PROMPT_ID" ] && exit 0
 
-# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
+# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned. The window's rationale is in `docs/commit-stall-block.md` § "Fire predicate and the exclusion-window tradeoff".
 # A last sentence longer than the window is judged on its final ASK_WINDOW_CHARS characters.
 ASK_WINDOW_CHARS=2048
 if [ "${#LAST_ASSISTANT_MESSAGE}" -gt "$ASK_WINDOW_CHARS" ]; then
@@ -155,7 +150,7 @@ fi
 LAST_ASSISTANT_MESSAGE="${LAST_ASSISTANT_MESSAGE%"${LAST_ASSISTANT_MESSAGE##*[![:space:]]}"}"
 [ -n "$LAST_ASSISTANT_MESSAGE" ] || exit 0
 
-# 8. Fire predicate on the final sentence: the last sentence of the last non-blank line.
+# 7. Fire predicate on the final sentence: the last sentence of the last non-blank line.
 # A quoted example mid-message does not reach this slice.
 # No length floor, unlike a tail-byte-count slice.
 last_line="${LAST_ASSISTANT_MESSAGE##*$'\n'}"
@@ -195,33 +190,37 @@ if ! $FIRE_MATCHED || $EXCLUDE_MATCHED; then
   exit 0
 fi
 
-# 9. Repo root + machine-anchored opt-in. The root comes from the payload's cwd
-# alone, with no $PWD fallback (see _lib_autonomous_shipping_root_for_cwd);
-# the regex above already filtered out most non-firing turns.
+# 8. Repo root. The root comes from the payload's cwd alone, with no $PWD
+# fallback (see _lib_autonomous_shipping_root_for_cwd); the regex above
+# already filtered out most non-firing turns.
 REPO_ROOT=$(_lib_autonomous_shipping_root_for_cwd "$CWD") || {
   printf 'root-denied session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 2>/dev/null || true
   exit 0
 }
-SHIPPING_STATEMENT=$(_lib_autonomous_shipping_statement "$REPO_ROOT") || exit 0
 
-# 10. Work pending: dirty tree, HEAD ahead of its configured upstream, or —
-# when no upstream is configured at all, the common state of a branch
-# before its first push — any resolvable HEAD (nothing has ever been
-# published, so a commit existing at all is unpublished work). Deliberately
-# NOT "commits not on origin/<default>" as the general case — that stays
-# true for a branch's whole life including after the PR opens, which would
-# re-fire forever; the no-upstream fallback below is narrower and only
-# reachable in the transient pre-first-push window, since the first
-# `git push -u` (ready-for-review/SKILL.md's own push step) configures
-# tracking and moves subsequent turns onto the ahead-of-upstream branch.
-# Up to three git calls; a failure or hang on any of them yields empty/
-# nonzero, read as "no work pending" — fail-safe direction, since
+# 9. Only status 1 (a non-default branch) fires. Status 0 (detached or default)
+# and status 2 (git could not read HEAD) stay silent, so they never run
+# `git status`. See _lib_head_detached_or_default for how the
+# default branch is resolved.
+HEAD_BRANCH_STATUS=0
+_lib_head_detached_or_default "$REPO_ROOT" >/dev/null || HEAD_BRANCH_STATUS=$?
+[ "$HEAD_BRANCH_STATUS" -eq 1 ] || exit 0
+
+# 10. Work pending: dirty tree, HEAD ahead of its configured upstream, or any
+# resolvable HEAD when `rev-list` against the upstream fails. Deliberately NOT
+# "commits not on origin/<default>" as the general case — that stays true for
+# a branch's whole life including after the PR opens, which would re-fire
+# forever. The first `git push -u` (ready-for-review/SKILL.md's own push step)
+# configures tracking and moves later turns onto the ahead-of-upstream branch.
+# A `rev-list` failure falls through to `rev-parse` and counts as pending; see
+# docs/commit-stall-block.md for the failure causes.
+# Up to three git calls. A failed or hung `status` reads as a clean tree.
 # _lib_capped is not a bound on stock macOS without GNU coreutils
 # (_lib.sh:29-35).
 _commit_stall_work_pending() {
   local repo_root="$1"
   local dirty ahead
-  dirty=$(_lib_capped git -C "$repo_root" status --porcelain 2>/dev/null)
+  dirty=$(_lib_capped git --no-optional-locks -C "$repo_root" status --porcelain 2>/dev/null)
   [ -n "$dirty" ] && return 0
   if ahead=$(_lib_capped git -C "$repo_root" rev-list --count '@{u}..HEAD' 2>/dev/null) && [ -n "$ahead" ]; then
     [ "$ahead" -gt 0 ] 2>/dev/null
@@ -231,13 +230,6 @@ _commit_stall_work_pending() {
 }
 
 _commit_stall_work_pending "$REPO_ROOT" || exit 0
-
-# 11. Only status 1 (a non-default branch) fires. Status 0 (detached or default)
-# and status 2 (git could not read HEAD) stay silent. See
-# _lib_head_detached_or_default for how the default branch is resolved.
-HEAD_BRANCH_STATUS=0
-_lib_head_detached_or_default "$REPO_ROOT" >/dev/null || HEAD_BRANCH_STATUS=$?
-[ "$HEAD_BRANCH_STATUS" -eq 1 ] || exit 0
 
 # Fire. Write state, read it back, and emit block only if it holds the
 # current prompt_id — a write failure (read-only $HOME, full disk) must not
@@ -253,7 +245,7 @@ WRITTEN_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 
 printf 'fired session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 2>/dev/null || true
 
-REASON="$SHIPPING_STATEMENT If the statement above lets you ship this work, continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\". To disable it for this repo: add .claude/autonomous-shipping-optout."
+REASON="Do not ask the engineer for permission to continue at a natural stopping point, unless CLAUDE.md, the skill you are following, or a hold the engineer stated requires the question. If one does, end your turn. Otherwise continue with your task's next step, say the task is complete, or say what is blocked. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\""
 
 # Mirrors _lib_emit_allow_with_context's gated-encode shape:
 # an empty REASON_JSON exits before printing, avoiding the malformed

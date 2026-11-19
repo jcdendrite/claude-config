@@ -103,12 +103,14 @@ A direct `marker.sh write` in an unprompted mode matches Claude Code's main sess
 
 A write that newly takes a worktree lock prints no "run `git worktree unlock <path>` if this was unintended" note under Cursor, where Claude Code prints one, because Cursor's hooks reference lists no `additional_context` output for `preToolUse` [unverified: Cursor's hooks reference was not re-read for this claim]. The lock and the collision guard still work.
 
+`claude/.claude/scripts/cursor-adapter/parity-exceptions.json` lists the Stop hook `advance-past-commit-stall.sh` and the compact hook `restore-authorization-boundary-on-compact.sh` as `pending-phase 5b`, so the adapter carries neither. Whether Cursor loads `~/.claude/CLAUDE.md`, which carries the shipping instruction, is not established in this repo.
+
 ## Prerequisites
 
 - **Python:** the recorded python3 and the `python3` the hooks run both meet the toolkit's Python floor, which `README.md` § "Requirements" states.
   - `install` records `sys.executable` of the first `python3` on `PATH`, resolved from `~/.cursor/` or `$HOME` when `~/.cursor` does not exist yet, and refuses a virtual environment's interpreter.
   - The fix for a recorded python3 below the floor is to put a newer `python3` first on `PATH` and re-run `install`. The refusal names that interpreter's path and version.
-  - The same fix serves a Python `SyntaxError` from an older interpreter that cannot parse `cursor-adapter.py`.
+  - The same fix serves a Python `SyntaxError` from an older interpreter that cannot parse `cursor-adapter.py` or one of its parts.
   - The hooks' `PATH` holds each recorded tool's directory in record order, python3's first, then `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`. The bare-name `python3` the hooks call is therefore the recorded interpreter whenever its directory holds it as `python3`. When that directory holds no file named `python3`, or an older one, the refusal names the directory and its own fix.
   - A tool in python3's directory shadows the recorded one for the hooks. In practice that needs python3 to share a system or package-manager `bin` directory with other tools.
 - **GNU coreutils `timeout` or `gtimeout`:** stricter than the `timeout` bullet in `README.md` § "Requirements". `install` records the first of `timeout` and `gtimeout` whose `--version` first line names GNU coreutils, because BusyBox returns a TERM-trapping hook's own status, as the `_lib_capped_for` header in `claude/.claude/hooks/_lib.sh` states, and a timed-out hook could then read as an allow. On macOS, `brew install coreutils` provides `gtimeout`. Otherwise put GNU's directory first on `PATH`, then re-run `install`.
@@ -125,7 +127,7 @@ A write that newly takes a worktree lock prints no "run `git worktree unlock <pa
   - Until then, marker-gated work uses Allowlist with the sandbox off, and `status` prints `sandbox grant: pending.` with that reason.
   - Once `install` writes it, `install` keeps each grant directory your own file already lists and prints how many it found listed. `uninstall` removes only the paths `install` added.
 
-The session-start entry rotates the log past 16 MiB and removes first-call marks older than 7 days. It prints its findings through `additional_context`, which reaches you only if the agent repeats them, so plain `check` prints the same tamper comparison and tool findings to the terminal. It adds the Claude Code and locale environment names of the hook it runs in, which a terminal run cannot know, and `install` prints neither.
+The session-start entry rotates the log past 16 MiB and removes first-call marks older than 7 days. It prints its findings through `additional_context`, which reaches you only if the agent repeats them, so plain `check` prints the same tamper comparison and tool findings to the terminal. It adds the locale environment names of the hook it runs in, which a terminal run cannot know, and `install` prints no such names.
 
 ## Recovery
 
@@ -152,7 +154,7 @@ The way out, in order:
 3. For a checkout cause, restore the checkout.
 4. Otherwise, or until then, run `uninstall`, or follow the manual restore above.
 
-`install`, `check` and `uninstall` run `cursor-adapter.py`, which needs a python3 at the floor. Under an older one it can stop with Python's own `SyntaxError`, for example when a directory's `.python-version` pin puts a bare `python3` below the floor. Run the file under the recorded interpreter instead: its path is the `python3` entry of `~/.cursor/cursor-adapter/install.json`, and the form is `<recorded python3> -I -S ~/.claude/scripts/cursor-adapter/cursor-adapter.py uninstall`. The manual restore needs no interpreter.
+`install`, `check` and `uninstall` run `cursor-adapter.py`, which needs a python3 at the floor. Under an older one it can stop with Python's own `SyntaxError` in `cursor-adapter.py` or one of its parts, for example when a directory's `.python-version` pin puts a bare `python3` below the floor. Run the file under the recorded interpreter instead: its path is the `python3` entry of `~/.cursor/cursor-adapter/install.json`, and the form is `<recorded python3> -I -S ~/.claude/scripts/cursor-adapter/cursor-adapter.py uninstall`. The manual restore needs no interpreter.
 
 ### An install-record deny, or a deny that the hook script is missing or not executable
 
@@ -267,7 +269,7 @@ Outcome: `unknown-tool`.
 Cursor sent a tool name that neither the recorded tool map nor a `parity-exceptions.json` `cursor-tool` entry lists, such as a new or renamed tool, or WebFetch or WebSearch under a spelling the files do not hold. Classify the name in the stowed checkout:
 
 - A name added to `parity-exceptions.json` as a `cursor-tool` entry with reason `unsupported` or `declined` attaches no gate. The shim reads that file on each call, so the deny lifts live.
-- A name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map. That lifts the unknown-tool deny but attaches no gate: a name that should carry the Edit, Write or other gates also needs an entry in the `CURSOR_TOOL_NAMES` table in `cursor-adapter.py` before `install`. Until `install`, the shim keeps the recorded map, and `check` reports the drift.
+- A name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map. That lifts the unknown-tool deny but attaches no gate: a name that should carry the Edit, Write or other gates also needs an entry in the `CURSOR_TOOL_NAMES` table in `cursor-adapter-core.py` before `install`. Until `install`, the shim keeps the recorded map, and `check` reports the drift.
 
 ### A stale-install deny
 
@@ -292,10 +294,6 @@ A CLI session meets the adapter's gates as an IDE conversation does (see "Cursor
 - An active-bypass gate's deny, from `require-respond-pr` or `require-memory-skill`: run the skill in that CLI conversation. Where the CLI cannot run it, make the gated operation from your own terminal, where no hook runs, or have an IDE conversation make it under its own bypass. Another conversation's skill run releases nothing for the CLI, because a bypass is keyed on its own conversation's session id.
 - In no case write a marker for the CLI conversation's session id from anywhere else.
 - A deny no IDE call would get, such as `pin-check` or `dir-input-refused` on every CLI call: run `uninstall` and report the finding, at least until a probe records whether the CLI's `beforeShellExecution` receives the rewritten command.
-
-### CLAUDECODE set in Cursor's hook environment
-
-A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. The import's copies of the hooks then refuse the adapter's pair, the session id and host process id the hooks resolve for a Cursor call, and deny in linked worktrees, and the sessionStart report names `CLAUDECODE` among the Claude Code environment names set in the hook. With `CLAUDECODE` set, the copies' session hooks decline an untranslated Cursor payload only where the host walk finds a host (Limitations' `sessions/` entry). Terminal `check` does not report these names, because it cannot see Cursor's environment, so this entry is reached only through the sessionStart report. Quit Cursor and relaunch it from a shell that has no `CLAUDECODE` set. On macOS, launching it from the Dock does that. On Linux, use the desktop launcher or a shell started outside Claude Code.
 
 ## Limitations
 
@@ -338,8 +336,7 @@ A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. T
   - An unattributed-subagent deny, if one is added, must handle a CLI subagent call that carries `parent_agent_id` when no `subagentStart` arrives.
   - The CLI's file-tool target forms, which the main-checkout deny's repo resolution rests on, and whether the CLI runs the import's copies of `~/.claude/settings.json`'s hooks, are pending an unrecorded probe. On Linux the CLI's process name may read `node`, which resolves no host and meets the denies Recovery's CLI entry covers. That case has not been run. The IDE's main process name on Linux is also unrecorded, and a name other than `Cursor` resolves no host there either.
 - **`sessions/` registrations:** no Cursor IDE or CLI process registers in `sessions/`, because the session hooks decline an untranslated Cursor payload.
-  - With `CLAUDECODE` unset, they decline whatever the host walk returns. With it set, they decline only where the walk finds a host, so a copy whose walk returns no host name or fails still writes its entry. The sessionStart report names a set `CLAUDECODE`.
-  - A set `CLAUDECODE` has two possible sources. One is a Cursor started from a Claude Code terminal (Recovery's `CLAUDECODE` entry), and relaunching Cursor without it removes that source. The other is a repository whose `.claude/settings.json` `env` block sets it, which no run has observed reaching Cursor's hooks. No relaunch clears that source.
+  - Whether a repo's `.claude/settings.json` `env` block can set `CLAUDECODE` for Cursor's hooks is unobserved. If it can, the import's copies of the session hooks decline only where the host walk finds a host, so a copy whose walk returns no host name or fails still writes its entry.
   - A written entry clears once the registered process exits, because the start-time check then rejects it, and no runtime check flags it in between.
   - The decline keys on the payload's shape, so it applies with or without the adapter installed. Without it, `marker.sh` run from an agent Shell call has no identity, because the session id that gives one is exported only under the adapter.
   - Nothing prunes `sessions/`, so an entry from an earlier checkout stays until its process exits. The relaunch after `install` covers Cursor processes only, so a CLI process that outlives the install keeps its old entry resolving until it exits.

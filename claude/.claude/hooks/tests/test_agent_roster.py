@@ -78,7 +78,7 @@ DIFF_INPUT_NO_BASH_AGENTS = (
 # These are the sentences every no-Bash agent must state verbatim in its
 # Input contract section; checked against each agent's section here, not
 # per-agent, so the copies can't drift. The paging-instruction sentence is
-# also pinned independently in claude-skills/skills/tests/test_skills.py's
+# also pinned independently in claude-skills/skills/tests/test_ready_for_review_skill.py's
 # test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path — update
 # both on a wording change.
 DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (

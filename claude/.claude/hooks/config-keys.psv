@@ -28,26 +28,21 @@
 # resolution: `config-dir` (the resolved config dir only) or
 #   `config-dir-or-home` (union: resolved config dir OR the literal
 #   $HOME/.claude, so a sentinel armed before CLAUDE_CONFIG_DIR adoption
-#   still activates — today only worktree_required and autonomous_shipping).
-# legacy-probe-on-resolution-failure: `true` or `false`. Whether, when the
-#   resolved config dir itself cannot be determined (relative
-#   CLAUDE_CONFIG_DIR, or empty/unset $HOME with CLAUDE_CONFIG_DIR also
-#   unset), this key's legacy file is still probed at the literal
-#   $HOME/.claude location before falling through to `default`. `true` only
-#   for worktree_required, matching _lib.sh:1223-1226's existing fail-closed
-#   probe; `false` for every other key, including autonomous_shipping, whose
-#   existing behavior (_lib.sh:1280) bails immediately rather than probing —
-#   granting autonomous shipping on a resolution failure would be the wrong
-#   direction for a mechanism that removes a human checkpoint.
+#   still activates — today only worktree_required).
+# legacy-probe-on-resolution-failure: `true` or `false`. The probe applies
+#   only to a `config-dir-or-home` key: when the resolved config dir cannot be
+#   determined, `true` resolves the key from the literal $HOME/.claude.
+#   `_config_resolve` in _config.sh holds the resolution details.
+#   `true` also sets the fail-safe value for an internal read failure to `true`
+#   (see _config_resolve_fail_safe in _config.sh).
 # legacy-import-locations: `config-dir` or `config-dir-and-home`. Governs
 #   only the one-time migrate-legacy-config.sh recovery import, never
 #   ordinary reads: `config-dir-and-home` keys are checked at both
 #   $HOME/.claude/<legacy-filename> and the resolved-config-dir legacy path,
 #   treating either as "legacy value present." `config-dir-and-home` is
 #   marked for three reason categories:
-#   - The two config-dir-or-home keys (worktree_required,
-#     autonomous_shipping): their read-time union already covers both
-#     locations, so import naturally does too.
+#   - The config-dir-or-home key (worktree_required): its read-time union
+#     already covers both locations, so import naturally does too.
 #   - The four other former machine-promptable keys
 #     (permission_prompt_tracking, error_mode_nudge, cost_ledger_recording,
 #     pr_cost_recording): install.sh's old `configure_machine_level_opt_ins`
@@ -83,13 +78,12 @@
 #   interactive machine-level opt-in prompt — a non-empty value here is what
 #   makes a key promptable; there is no separate scope field.
 #
-# The five enforcement-critical keys (worktree_required, autonomous_shipping,
-# round_consult_gate, commit_stall_block, authorization_boundary_restore)
+# The four enforcement-critical keys (worktree_required, round_consult_gate,
+# commit_stall_block, authorization_boundary_restore)
 # require claude-hook-review on any future change to this file's
 # default, resolution, legacy-probe-on-resolution-failure, or
 # legacy-import-locations column for their own row — see docs/config-file.md.
 worktree_required|bool|false|config-dir-or-home|true|config-dir-and-home|worktree-required|presence-enables|Worktree enforcement|README.md § Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.
-autonomous_shipping|bool|false|config-dir-or-home|false|config-dir-and-home|autonomous-shipping-required|presence-enables|Autonomous shipping|README.md § Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.
 permission_prompt_tracking|bool|false|config-dir|false|config-dir-and-home|track-permission-prompts|presence-enables|Permission-prompt tracking|docs/permission-prompt-tracking.md|Logs each interactive permission-prompt Notification (credential-shaped values redacted) to ~/.claude/.permission-prompt-log.jsonl, so you can see which commands still trigger a prompt under auto permission mode. No per-repo opt-out.
 error_mode_nudge|bool|false|config-dir|false|config-dir-and-home|.error-mode-nudge-enabled|presence-enables|Error-mode analysis nudge|docs/error-mode-nudge.md|Nudges you to run /error-mode-analysis after a repeated-failure sequence in a session, so a stuck debugging loop gets flagged instead of continuing silently. See docs/error-mode-nudge.md.
 cost_ledger_recording|bool|false|config-dir|false|config-dir-and-home|.cost-ledger-enabled|presence-enables|Cost ledger recording|docs/cost-ledger.md|Lets cost-ledger --record append this machine's weekly cost/efficiency figures to $CLAUDE_CONFIG_DIR/cost-ledger.md (override via COST_LEDGER_PATH). See docs/cost-ledger.md.

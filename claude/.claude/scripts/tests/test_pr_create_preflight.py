@@ -814,7 +814,7 @@ def _skill_section(start: str, end: str) -> str:
     return after_heading.split(end, 1)[0]
 
 
-# test_skills.py pins the full clauses around these commands.
+# test_ready_for_review_skill.py pins the full clauses around these commands.
 class TestSkillContract:
     def test_step1_runs_ticket_mode_and_names_its_key_and_the_none_value(self, preflight) -> None:
         section = _skill_section(_STEP1_START, _STEP2_START)

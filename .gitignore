@@ -158,6 +158,8 @@ claude/.claude/.architect-consult-latch.d/
 claude/.claude/.diff-size-prompt-latch.d/
 claude/.claude/.code-writer-self-review.d/
 claude/.claude/.code-writer-self-review.log
+claude/.claude/.commit-stall-block.d/
+claude/.claude/.commit-stall-block.log
 claude/.claude/.handoff-nudge-fired.d/
 claude/.claude/.handoff-nudge.log
 claude/.claude/.memory-audit-nudge-disabled

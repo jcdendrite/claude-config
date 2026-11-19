@@ -21,7 +21,10 @@ from helpers import HOOKS_DIR
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _config import schema  # noqa: E402
-from hooks.tests.test_config_lib import _isolated_hooks_dir_with_truncated_key_row  # noqa: E402
+from hooks.tests.test_config_lib import (  # noqa: E402
+    _isolated_hooks_dir_with_truncated_key_row,
+    _isolated_hooks_dir_with_union_resolution,
+)
 
 CONFIG_SH = HOOKS_DIR / "_config.sh"
 CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
@@ -404,11 +407,64 @@ class TestConfigDirEnvironmentVariants:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
         _assert_parity()
 
-    def test_empty_home(self, tmp_path, monkeypatch):
+    def test_empty_home(self, monkeypatch):
         monkeypatch.setenv("HOME", "")
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         values = _assert_parity()
         assert values["round_consult_gate"] is None
+
+
+class TestUnionKeyWithoutResolutionFailureProbe:
+    """No real row combines `config-dir-or-home` with
+    legacy-probe-on-resolution-failure `false`, so these cases rewrite
+    permission_prompt_tracking's resolution column in an isolated schema."""
+
+    _KEY = "permission_prompt_tracking"
+
+    def _bash_value(self, isolated_hooks_dir: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value {self._KEY}'],
+            capture_output=True, text=True,
+        )
+
+    def test_relative_claude_config_dir_is_unresolvable_in_both_readers_despite_a_home_legacy_file(
+        self, tmp_path, monkeypatch
+    ):
+        home = _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, self._KEY)
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        _write_legacy_file(home / ".claude", self._KEY)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+
+        bash_result = self._bash_value(isolated_hooks_dir)
+
+        assert bash_result.returncode == 2, bash_result.stderr
+        assert bash_result.stdout == ""
+        assert _config.config_value(self._KEY) is None
+
+    def test_absolute_claude_config_dir_resolves_the_home_legacy_file_to_true_in_both_readers(
+        self, tmp_path, monkeypatch
+    ):
+        """Positive control for the test above: with a resolvable config dir
+        that differs from $HOME/.claude, "true" comes only from the union's
+        read of the $HOME/.claude legacy file."""
+        home = _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = _isolated_hooks_dir_with_union_resolution(tmp_path, self._KEY)
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        _write_legacy_file(home / ".claude", self._KEY)
+        diverged_config_dir = tmp_path / "altconfig"
+        diverged_config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(diverged_config_dir))
+
+        bash_result = self._bash_value(isolated_hooks_dir)
+
+        assert bash_result.returncode == 0, bash_result.stderr
+        assert bash_result.stdout == "true"
+        assert _config.config_value(self._KEY) == "true"
 
 
 class TestConfigDirOverrideEmptyString:
@@ -571,32 +627,30 @@ class TestSchemaRowTruncatedMidRow:
     the key/type fields (an interrupted stow-relink/git-pull caught mid-row,
     rather than mid-file) must not resolve as an empty string that
     config_enabled's any-value-but-false rule would then read as enabled.
-    autonomous_shipping is the key this matters most for: every other
-    enforcement-critical key's safe direction is "stays armed" regardless of
-    this bug, but autonomous_shipping's safe direction is "not shipping" -- a
-    silent empty resolution/default here would silently grant it. Bash-side
+    permission_prompt_tracking is a default-`false` key, so a silent empty
+    resolution/default here would silently enable it. Bash-side
     counterpart: test_config_lib.py's
-    test_mid_row_truncation_returns_exit_4_not_a_silent_grant."""
+    test_mid_row_truncation_returns_exit_4_not_a_silent_enable."""
 
-    def test_truncated_row_raises_row_truncated_error_not_a_silent_grant(self, tmp_path, monkeypatch) -> None:
+    def test_truncated_row_raises_row_truncated_error_not_a_silent_enable(self, tmp_path, monkeypatch) -> None:
         _make_home(tmp_path, monkeypatch)
         isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
-            tmp_path, "autonomous_shipping", "autonomous_shipping|bool"
+            tmp_path, "permission_prompt_tracking", "permission_prompt_tracking|bool"
         )
 
         bash_result = subprocess.run(
-            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value autonomous_shipping'],
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value permission_prompt_tracking'],
             capture_output=True, text=True,
         )
         assert bash_result.returncode == 4
         assert bash_result.stdout == ""
-        assert "autonomous_shipping" in bash_result.stderr
+        assert "permission_prompt_tracking" in bash_result.stderr
 
         import _config
 
         monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
         with pytest.raises(_config.ConfigSchemaRowTruncatedError):
-            _config.config_value("autonomous_shipping")
+            _config.config_value("permission_prompt_tracking")
 
     def test_truncation_after_resolution_column_still_raises_row_truncated_error(
         self, tmp_path, monkeypatch

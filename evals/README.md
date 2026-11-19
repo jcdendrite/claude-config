@@ -99,7 +99,8 @@ summary: 2 skills, 7 cases | pass 5/7 | review the 2 FAIL cases above
 - Under `description-fidelity` the `triggers` / `does-not-trig` per-case label
   reads as "the classifier named this skill" / "named a different skill or
   none" — there is no live dispatch in that mode.
-- Exit code is always `0` — measurement, not a gate.
+- A completed run exits `0` — measurement, not a gate — unless a hook blocks a
+  `claude -p` prompt (see "A prompt blocked by a hook").
 
 **Noise floor.** Triggering is probabilistic, so the pass rate carries sampling
 noise. At `K=10` a case that genuinely triggers ~60% of the time still reads
@@ -393,6 +394,16 @@ parsers, the anchor extractor, and the stream-json detectors (runtime and
 behavioral-dispatch) are unit-tested offline (synthetic inputs, no `claude -p`)
 in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 `evals/fixtures/`.
+
+## A prompt blocked by a hook
+
+A blocked `claude -p` prompt exits `0` and makes no model turn, so an instrument that scored it would count a miss.
+
+- No instrument here scores a blocked prompt as a model miss, except a plain-text block that carries no recognized prefix (last bullet).
+- `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate abort with a nonzero exit and lose the results not yet written.
+- Review bench records a blocked run as missing, with the hook's reason. It stops on the same all-missing condition as any other missing run.
+- The main session rule adherence gate pauses on a blocked prompt, and `--resume` reruns it.
+- `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`. Another hook's block goes unrecognized there. Description fidelity can read its echoed prompt as a skill hit, and the disposition sample can judge it as a review.
 
 ## Linting
 

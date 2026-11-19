@@ -1937,10 +1937,7 @@ class TestLibIsRepoPlanFile:
             )
 
     def test_inactive_on_wrong_arity(self, tmp_path: Path) -> None:
-        """Extra/missing positional so $1 stays bound under set -u -- mirrors
-        _lib_autonomous_shipping_active's test_inactive_on_wrong_arity in
-        test_lib_config_gates.py, which this function's own arity-guard comment says it
-        copies the shape of. The extra-argument case uses a REPO_ROOT/ABS_PATH
+        """Extra/missing positional so $1 stays bound under set -u. The extra-argument case uses a REPO_ROOT/ABS_PATH
         pair that would otherwise satisfy the function's own match (a real
         plan file directly under REPO_ROOT/.claude/plans), so the guard is
         the only thing standing between an extra, ignored argument and a
