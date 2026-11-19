@@ -402,7 +402,7 @@ class TestRuleFrontmatterViolations:
     assertions fail on a broken frontmatter shape. These fixtures prove the
     validation logic actually discriminates good from bad input, independent
     of what the current repo's rule files happen to contain (mirrors
-    TestCorpusBudgetFunction in test_skills.py).
+    TestCorpusBudgetFunction in test_validate_skill_structure.py).
     """
 
     def _write_rule(self, tmp_path: Path, content: str) -> Path:

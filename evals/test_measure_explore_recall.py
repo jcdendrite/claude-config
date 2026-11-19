@@ -1323,6 +1323,36 @@ class TestExecuteOneSampleAttempt:
             "cleanup must remove the session store keyed on the same resolved path used for launch"
         )
 
+    def test_a_blocked_prompt_raises_and_still_cleans_up_its_launch_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "config"))
+        case = m.RecallCase(id="c1", stratum=m.STRATUM_A, question="Where is X?", key=frozenset({"a.py"}))
+        seen_cwd: list[Path] = []
+
+        def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+            seen_cwd.append(cwd)
+            session_id = cmd[cmd.index("--session-id") + 1]
+            (msmr.run_skill_evals.compute_session_store_dir(cwd) / session_id).mkdir(parents=True)
+            blocked_event = {
+                "type": "system", "subtype": "informational",
+                "prompt_submit_outcome": {
+                    "kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason",
+                },
+            }
+            return [json.dumps(blocked_event).encode()], False
+
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", fake_run_claude)
+
+        with pytest.raises(msmr.run_skill_evals.BlockedPromptError, match="synthetic block reason"):
+            m.execute_one_sample_attempt(
+                case, msmr.DISPATCH_EXPLORE_HAIKU, budget_cap_usd=11.5, timeout_s=90, repo_dir=Path("/repo"),
+            )
+
+        launched_cwd = seen_cwd[0]
+        assert not launched_cwd.exists(), "cleanup must remove the tmp_project even when the prompt was blocked"
+        assert not msmr.run_skill_evals.compute_session_store_dir(launched_cwd).exists()
+
     def test_keep_artifacts_dir_copies_the_session_and_subagents_before_cleanup(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

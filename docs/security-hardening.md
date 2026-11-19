@@ -686,12 +686,34 @@ These hooks reduce *accidental* exposure. They do not make a machine safe
 to hold PII/PHI or live credentials:
 
 - The data-file read hook only intercepts the `Read` tool. `Bash`-based
-  reads (`cat`, `head`, `grep`), subagent reads, and content pasted into a
-  prompt do not cross that boundary. `deny-credential-bash-reads.sh`
+  reads (`cat`, `head`, `grep`), text a subagent returns to the session
+  that dispatched it, and content pasted into a prompt do not cross that
+  boundary. `deny-credential-bash-reads.sh`
   closes this specific gap for credential paths, but only for the Bash tool
   — it has no filesystem resolution, so a credential referenced only
   through an earlier symlink or rename under an innocuous name (not by its
   own path token, in the command this hook actually sees) is not caught.
+- A dispatched subagent's own `Read` is checked by the data-file read hook
+  when the guard file is armed. This is verified for a `general-purpose`
+  subagent on Claude Code 2.1.318 with one probe:
+  - Arm the gate with an empty guard file.
+  - Have a dispatched `general-purpose` subagent `Read` a throwaway `.csv`.
+  - Expect the data-file read gate's denial.
+
+  Re-run the probe after a Claude Code upgrade. On 2026-11-05 it gave the
+  denial on Claude Code 2.1.318. The vendor statement, from the subagent
+  passage of the Claude Code hooks reference
+  (https://code.claude.com/docs/en/hooks.md), is that a subagent's tool
+  events "fire the same configured hooks as in the main conversation". The
+  hook decides on the tool name and file path, never on `agent_id` or
+  `agent_type`, so one extension-rule probe covers the hook's other rules.
+  Treat these cases as uncovered until verified:
+  - Other versions and subagent kinds, which rest on the vendor statement
+    alone.
+  - The other two `Read` gates, since only the data-file gate was probed.
+  - Forks.
+  - Nested `claude -p` sessions, which are themselves a Bash-reachable read
+    path, already listed as uncovered in the previous bullet.
 - The commit hook scans `git commit` issued through Claude Code. A commit
   made in a plain terminal, an IDE git GUI, or any non-Claude session is
   not gated. Git-native `pre-commit` and server-side `pre-receive` hooks

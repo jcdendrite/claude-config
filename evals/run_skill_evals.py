@@ -91,6 +91,53 @@ TRIGGER_TOOL_NAMES = frozenset(("Skill",))
 # live claude -p stream: the model calls Agent even when instructed to use Task.
 DISPATCH_TOOL_NAMES = frozenset(("Agent", "Task"))
 
+# Plain-text output carries no structured block field, so a prompt-blocking hook
+# must print this line in its reason to be recognized there.
+PROMPT_BLOCK_PREFIX = "main-session-rules: prompt blocked"
+
+
+class BlockedPromptError(RuntimeError):
+    """A hook blocked the claude -p prompt, so the run produced nothing to score."""
+
+
+def _hook_block_message(reason: object) -> str:
+    if isinstance(reason, str) and reason:
+        return f"a hook blocked the claude -p prompt: {reason}"
+    return "a hook blocked the claude -p prompt"
+
+
+def raise_if_blocked_prompt_event(event: object) -> None:
+    """Raise BlockedPromptError when a parsed stream-json event reports a hook-blocked prompt."""
+    if not isinstance(event, dict) or event.get("type") != "system":
+        return
+    outcome = event.get("prompt_submit_outcome")
+    if isinstance(outcome, dict) and outcome.get("kind") == "blocked_by_hook":
+        raise BlockedPromptError(_hook_block_message(outcome.get("reason")))
+
+
+def raise_if_blocked_prompt_stream(lines: Iterable[str | bytes]) -> None:
+    """Raise BlockedPromptError when any stream-json line reports a hook-blocked prompt."""
+    for raw_line in lines:
+        line = (
+            raw_line.strip().decode("utf-8", errors="replace")
+            if isinstance(raw_line, bytes)
+            else raw_line.strip()
+        )
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        raise_if_blocked_prompt_event(event)
+
+
+def raise_if_blocked_prompt_stdout(stdout: str | bytes) -> None:
+    """Raise BlockedPromptError when plain-text claude -p output carries PROMPT_BLOCK_PREFIX."""
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    if PROMPT_BLOCK_PREFIX in text:
+        raise BlockedPromptError(f"a hook blocked the claude -p prompt: {PROMPT_BLOCK_PREFIX}")
+
 
 def find_skill_dir(skill_name: str) -> Path | None:
     candidate = SKILLS_DIR / skill_name
@@ -442,6 +489,7 @@ def run_description_fidelity_sample(args: tuple) -> tuple[str | None, list[str]]
     except subprocess.TimeoutExpired:
         return None, []
 
+    raise_if_blocked_prompt_stdout(proc.stdout)
     named = parse_classification_answer(proc.stdout, valid_names)
     return score_classification(named, skill_name, also_not)
 
@@ -455,6 +503,8 @@ def detect_trigger_in_lines(
     Scans all lines without early termination so later also_not blocks are observed.
     Separated from the subprocess layer so the unit test can feed fixture
     files without spawning a subprocess.
+
+    Raises BlockedPromptError when a hook blocked the prompt.
     """
     fired_skill: str | None = None
     also_fired: list[str] = []
@@ -469,6 +519,8 @@ def detect_trigger_in_lines(
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+
+        raise_if_blocked_prompt_event(obj)
 
         evt = obj.get("event")
         if not isinstance(evt, dict):
@@ -586,6 +638,8 @@ def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
     Mirrors detect_trigger_in_lines but simpler: no also_not, no payload
     parsing. Separated from the subprocess layer so the unit test can feed
     fixture files without spawning a subprocess.
+
+    Raises BlockedPromptError when a hook blocked the prompt.
     """
     for raw_line in lines:
         line = (
@@ -599,6 +653,8 @@ def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+
+        raise_if_blocked_prompt_event(obj)
 
         evt = obj.get("event")
         if not isinstance(evt, dict):
@@ -715,7 +771,7 @@ def prime_dispatch_session(dispatch_project: Path, priming_prompt: str, model: s
     session_id = str(uuid.uuid4())
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     try:
-        subprocess.run(
+        proc = subprocess.run(
             ["claude", "-p", priming_prompt, "--session-id", session_id, "--model", model],
             cwd=str(dispatch_project),
             env=env,
@@ -730,6 +786,8 @@ def prime_dispatch_session(dispatch_project: Path, priming_prompt: str, model: s
             "Warning: priming invocation timed out; samples will attempt --resume anyway",
             file=sys.stderr,
         )
+    else:
+        raise_if_blocked_prompt_stdout(proc.stdout)
     return session_id
 
 
@@ -946,6 +1004,7 @@ def judge_disposition(review_output: str, rubric: str, judge_model: str, cwd: Pa
     except subprocess.TimeoutExpired:
         return None
 
+    raise_if_blocked_prompt_stdout(proc.stdout)
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
 
@@ -988,6 +1047,7 @@ def run_disposition_sample(args: tuple) -> tuple[bool | None, bool | None]:
             )
         except subprocess.TimeoutExpired:
             return None
+        raise_if_blocked_prompt_stdout(proc.stdout)
         # A non-zero exit or empty stdout means the review never actually
         # completed (auth expiry, rate limit, CLI crash) — treat it the same
         # as a timeout (excluded downstream) rather than feeding a failed
@@ -1440,7 +1500,7 @@ def main() -> int:
             Path(args.json_out).write_text(json.dumps(out, indent=2))
             print(f"Full results written to {args.json_out}")
 
-        return 0  # always 0 — measurement, not a gate
+        return 0  # a completed run returns 0 — measurement, not a gate
 
     finally:
         if tmp_project is not None:

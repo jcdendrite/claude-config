@@ -755,6 +755,10 @@ No code, skill, hook, or test change ships from this investigation.
 
 **2026-10-24 follow-up:** the suggested-fix-wording form of the lever above is adopted by judgment, not by measurement; the rule lives in `code-review/SKILL.md` § "Output format". The `code-writer` form stays deferred.
 
+**2026-11-17 follow-up:** review-ledger rows from schema 6 on store `reviewed_head` and `reviewed_tree` (see `docs/scripts.md`'s `review-ledger.sh` entry), so each round logged from then on records the commit and index it was appended against. `reviewed_tree` is the index at append time, so a staged round's state is recorded too. The record is per round, while "Reopening would need" asks for one per cumulative pass, and no row field marks a pass kind. The pass kind stays in `/ready-for-review`'s disposition record, not in the ledger, so a measurement of cumulative passes takes them from that record, and a pair whose `reviewed_head` values differ is a stratum, not a cumulative-pass label. Each recorded tree is pinned under a local ref, best-effort, so it resolves until that ref is deleted unless its pin failed, and that entry gives the audit command that finds a failed pin. A measurement read from these rows keeps `comment-discipline-reviewer` outside the comparison, for the reason the scan's limits give, and can place `skill-fidelity-reviewer`'s findings by each row's `source`, as it places any lane's. Nothing records which finding's suggested fix wrote a line, and the lever stays deferred.
+
+**2026-11-19 follow-up:** no staged-round measurement is scheduled, so the `code-writer` form stays deferred. The record of which finding's suggested fix wrote each line is not built ahead of that measurement, because the measurement is its only consumer.
+
 ## From `haiku-routing-surfaces.md` — "Haiku routing surfaces: measure Haiku's locate recall, then pin and route the locate lane"
 
 | Lever | Verdict | Measured reason |

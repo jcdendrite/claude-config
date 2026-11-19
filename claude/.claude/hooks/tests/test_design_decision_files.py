@@ -148,9 +148,9 @@ _DESIGN_DECISIONS_ANCHOR_RE = re.compile(r"design-decisions\.md")
 # reaches each directory's tests/ subdirectory and
 # claude/.claude/scripts/transcript_analysis/'s subpackage in one entry --
 # no nested *.sh files exist under either, so those globs stay non-recursive.
-# claude-skills/skills/tests/test_skills.py and repo-root install.sh are
-# named explicitly rather than swept in by a directory glob: each is the
-# sole citing file in its tree, and neither tree is otherwise live code.
+# claude-skills/skills/tests/ and repo-root install.sh are
+# named explicitly rather than swept in by a wider glob: each is the
+# only citing location in its tree, and neither tree is otherwise live code.
 # Excludes CLAUDE.md, skills, docs/, and .claude/rules|plans -- prose
 # surfaces where a citation cluster like "§37, §42, §45" needs a
 # citation-list parser this check doesn't attempt.
