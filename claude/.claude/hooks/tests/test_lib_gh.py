@@ -183,7 +183,7 @@ class TestLibOriginNamesClaudeConfig:
         assert self._names_claude_config(repo, tmp_path) == 0
 
     def test_returns_zero_when_a_non_last_origin_url_value_contains_either_name(self, tmp_path: Path) -> None:
-        """`remote.origin.url` is multi-valued and `git config --get` prints only the last value."""
+        """`remote.origin.url` is multi-valued, and the helper must read every value, not only the last."""
         repo = self._repo_with_remote(tmp_path, "origin", "https://github.com/someone/claude-config.git")
         subprocess.run(
             ["git", "config", "--add", "remote.origin.url", "git@github.com:someone/other-app.git"],

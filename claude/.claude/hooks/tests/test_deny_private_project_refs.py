@@ -37,6 +37,7 @@ from helpers import (
     run_hook_reason,
 )
 
+from ._lib_sh_helpers import copy_hooks_tree, remove_lib_function
 from .conftest import _write_conditional_sleep_shim
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
@@ -687,13 +688,8 @@ class TestDenyPrivateProjectRefs:
         """Only status 1 from `_lib_origin_names_claude_config` means "not claude-config". Any other
         non-zero status, here 127 from a function absent in the sourced lib, must deny rather than
         leave the redaction gate silent. The commit text is clean, so only the scope check can deny."""
-        hooks_copy = tmp_path / "hooks"
-        shutil.copytree(HOOKS_DIR, hooks_copy, ignore=shutil.ignore_patterns("tests", "__pycache__"))
-        lib_copy = hooks_copy / "_lib.sh"
-        lib_source = lib_copy.read_text()
-        function_definition = "_lib_origin_names_claude_config() {"
-        assert function_definition in lib_source
-        lib_copy.write_text(lib_source.replace(function_definition, "_lib_origin_names_claude_config_absent() {"))
+        hooks_copy = copy_hooks_tree(tmp_path)
+        remove_lib_function(hooks_copy, "_lib_origin_names_claude_config")
         _stage_clean_file(claude_config_repo)
         reason = run_hook_reason(
             hooks_copy / "deny-private-project-refs.sh",

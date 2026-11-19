@@ -39,6 +39,8 @@ Add one helper, `_lib_origin_names_claude_config REPO_ROOT`, to `claude/.claude/
 #   "For fork contributors".
 _lib_origin_names_claude_config() {
   local repo_root="$1" origin_urls
+  # Pin the C locale: tr_TR and az_AZ fold `I` to a dotless letter, so `CLAUDE-CONFIG` would not match.
+  local LC_ALL=C
   origin_urls=$(git -C "$repo_root" config --get-all remote.origin.url 2>/dev/null)
   origin_urls="${origin_urls,,}"
   [[ "$origin_urls" == *claude-config* || "$origin_urls" == *workflow-gates* ]]
@@ -162,6 +164,13 @@ Added after code-review round 2, on the engineer's selected label "Fix all three
 - `docs/precompact-hook-behavior.md`: one issue link retargeted to `cordova-strategy/workflow-gates`.
 - `docs/cost-levers-considered.md`: one issue link retargeted to `cordova-strategy/workflow-gates`.
 
+Added after the round 12 consult, on the engineer's selected label "Fix it in this PR (Recommended)":
+
+- `evals/comment_ab_pool_count.py`: `STUDY_REPOSITORY` at line 98 names `cordova-strategy/workflow-gates`.
+- `claude/.claude/hooks/tests/_lib_sh_helpers.py`: shared `copy_hooks_tree` and `remove_lib_function` helpers for the two status-127 tests.
+- `claude/.claude/tests/helpers.py`: the shared `locale_that_folds_ascii_capital_i_to_a_non_ascii_letter` finder.
+- `claude/.claude/scripts/tests/test_reconcile_project_plugins.py`: imports that finder instead of a private copy.
+
 Already staged, with no further change:
 
 - `.github/workflows/tests.yml`
@@ -197,7 +206,8 @@ Projected diff: about 300 changed lines. Roughly 130 are already staged, estimat
 ## Out of scope
 
 - A permanent tripwire test for a third inline copy of the slug list: Verification step 5's one-shot grep covers this PR, and the shell-lib liveness test already flags an unreferenced helper.
-- Locale-sensitive lowercasing (`LC_ALL=C` in the helper): unverified, and neither literal contains a letter a Turkish locale folds differently.
+- A separate locale-pin change for the unchanged case-insensitive comparator and the blocklist grep.
+- The helper itself carries `local LC_ALL=C`, because a Turkish locale folds `CLAUDE-CONFIG` to `claude-confıg`. The pin test in `test_lib_gh.py` runs only where a Turkic locale is installed, and CI installs one.
 - `claude-skills/skills/memory-store-audit/SKILL.md:125`, whose own check requires the remote to contain `claude-config`: the engineer selected "Separate follow-up (Recommended)".
 - The false-match arm's deny text, which tells an honest agent in an unrelated repo whose origin merely contains either string to add a prefix to the public allowlist. Raised by the security review for the engineer's call.
 - Closing either documented gap, whether by reading `git remote get-url` or by matching every remote: the engineer accepted both as documented gaps.

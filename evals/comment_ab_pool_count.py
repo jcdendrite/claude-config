@@ -95,7 +95,7 @@ _DOCSTRING_OWNER_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 # The repository name and host `gh repo view` must resolve from the checkout's remote, because a count may be
 # published only when it is computed over this repository's own corpus (docs/private-project-redaction.md,
 # "Publishing a tooling measurement"). The history under `--ref` is not verified to come from it.
-STUDY_REPOSITORY = "jcdendrite/claude-config"
+STUDY_REPOSITORY = "cordova-strategy/workflow-gates"
 GITHUB_HOSTNAME = "github.com"
 STUDY_REPOSITORY_URL = f"https://{GITHUB_HOSTNAME}/{STUDY_REPOSITORY}"
 # `gh` reads these to pick another repository or host than the checkout's remote.

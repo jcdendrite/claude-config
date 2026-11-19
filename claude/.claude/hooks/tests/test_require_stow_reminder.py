@@ -26,6 +26,7 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from ._lib_sh_helpers import copy_hooks_tree, remove_lib_function
 from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
@@ -231,17 +232,12 @@ class TestRequireStowReminder:
     def test_origin_scope_helper_failing_allows(self, stow_repo, tmp_path):
         """This hook fails open when `_lib_origin_names_claude_config` returns a status other than 0 or 1,
         here 127 from a function absent in the sourced lib. The control denies with the helper present."""
-        hooks_copy = tmp_path / "hooks"
-        shutil.copytree(HOOKS_DIR, hooks_copy, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        hooks_copy = copy_hooks_tree(tmp_path)
         copied_hook = hooks_copy / "require-stow-reminder.sh"
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr create --title T --body 'no marker here'"
         assert run_hook(copied_hook, bash_input(cmd), cwd=stow_repo) == "deny", "control: copied hook did not deny"
-        lib_copy = hooks_copy / "_lib.sh"
-        lib_source = lib_copy.read_text()
-        function_definition = "_lib_origin_names_claude_config() {"
-        assert function_definition in lib_source
-        lib_copy.write_text(lib_source.replace(function_definition, "_lib_origin_names_claude_config_absent() {"))
+        remove_lib_function(hooks_copy, "_lib_origin_names_claude_config")
         failing_run = subprocess.run(
             [str(copied_hook)], input=json.dumps(bash_input(cmd)), capture_output=True, text=True, cwd=stow_repo,
             check=False,

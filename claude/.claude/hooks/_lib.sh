@@ -846,6 +846,7 @@ _lib_case_insensitive_ne() {
 #   "For fork contributors".
 _lib_origin_names_claude_config() {
   # glibc's tr_TR and az_AZ lowercase `I` to dotless `ı`, so `CLAUDE-CONFIG` would not match.
+  # Pinned by `test_returns_zero_for_an_upper_case_origin_under_a_locale_that_folds_i_to_a_dotless_letter` in `test_lib_gh.py`.
   local LC_ALL=C
   local repo_root="$1" origin_urls
   origin_urls=$(git -C "$repo_root" config --get-all remote.origin.url 2>/dev/null)
