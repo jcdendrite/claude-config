@@ -585,6 +585,47 @@ def test_no_upstream_configured_clean_tree_is_pending(isolated_home, clean_no_up
     assert result is not None
 
 
+def test_pruned_upstream_ref_clean_tree_is_pending(isolated_home, clean_pushed_no_pending_repo):
+    """The configured upstream's remote-tracking ref is gone (after a merge plus
+    `fetch --prune`), so `@{u}` fails to resolve although tracking config remains."""
+    subprocess.run(
+        ["git", "update-ref", "-d", "refs/remotes/origin/feature"],
+        cwd=clean_pushed_no_pending_repo,
+        check=True,
+    )
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION,
+            session_id="s",
+            prompt_id="p1",
+            cwd=str(clean_pushed_no_pending_repo),
+        ),
+        cwd=clean_pushed_no_pending_repo,
+        home=isolated_home,
+    )
+    assert result is not None
+
+
+def test_killed_upstream_comparison_clean_tree_is_pending(
+    isolated_home, clean_pushed_no_pending_repo, git_timeout_shim
+):
+    """A `rev-list` that fails outright (status 124, the `timeout` kill status)
+    on an otherwise clean, fully pushed branch counts as pending work."""
+    env = git_timeout_shim('[ "$3" = "rev-list" ]', exit_status=124)
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION,
+            session_id="s",
+            prompt_id="p1",
+            cwd=str(clean_pushed_no_pending_repo),
+        ),
+        cwd=clean_pushed_no_pending_repo,
+        home=isolated_home,
+        extra_env=env,
+    )
+    assert result is not None
+
+
 # ------------------------------------------------------------------ #
 # Branch predicate: the default branch and a detached HEAD stay silent #
 # ------------------------------------------------------------------ #
@@ -893,6 +934,22 @@ def test_plan_mode_silent(isolated_home, dirty_repo):
         home=isolated_home,
     )
     assert result is None
+
+
+@pytest.mark.parametrize("permission_mode", ["acceptEdits", "bypassPermissions", "dontAsk", "auto"])
+def test_non_plan_permission_modes_fire(isolated_home, dirty_repo, permission_mode):
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION,
+            session_id="s",
+            prompt_id="p1",
+            permission_mode=permission_mode,
+            cwd=str(dirty_repo),
+        ),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    assert result is not None
 
 
 def test_missing_session_id_silent(isolated_home, dirty_repo):

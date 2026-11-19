@@ -396,7 +396,8 @@ class TestAutonomousShippingRootForCwd:
         """HOME=/ resolves, and the ancestor walk then refuses only a root of / itself.
 
         The guard therefore accepts every repo for such an account.
-        The Stop hook still exits silently there unless CLAUDE_CONFIG_DIR is absolute, because _lib_config_dir fails when HOME is /.
+        The Stop hook still exits silently there unless CLAUDE_CONFIG_DIR is absolute,
+        because _lib_config_dir fails when HOME is /.
         """
         _, repo = self._home_and_repo(tmp_path)
         result = run_autonomous_shipping_root_for_cwd("/", str(repo))
@@ -415,6 +416,14 @@ class TestAutonomousShippingRootForCwd:
 
     def test_rejects_root_that_is_an_ancestor_of_home(self, tmp_path: Path) -> None:
         home, _ = self._home_and_repo(tmp_path)
+        init_git_repo_with_commit(tmp_path, branch="main")
+        result = run_autonomous_shipping_root_for_cwd(home, str(home))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_root_that_is_a_distant_ancestor_of_home(self, tmp_path: Path) -> None:
+        home = tmp_path / "a" / "b" / "home"
+        home.mkdir(parents=True)
         init_git_repo_with_commit(tmp_path, branch="main")
         result = run_autonomous_shipping_root_for_cwd(home, str(home))
         assert result.returncode == 1
@@ -484,9 +493,7 @@ class TestAutonomousShippingRootForCwd:
 
 
 # _lib_permission_prompt_tracking_active — direct unit coverage. The function is
-# zero-arity by design (a machine-global sentinel with no repo-scoped axis to
-# check against), so there is no repo_root, no optout, and no wrong-arity case
-# to pin.
+# zero-arity by design: a machine-global sentinel has no repo-scoped axis to test.
 
 
 def _permission_prompt_tracking_active(env: dict) -> bool:

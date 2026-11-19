@@ -102,7 +102,7 @@ What only the installer produces needs it too: the `~/.local/bin` copy of `reloc
 
 To check a new file, run `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`, which assumes no same-named local file of yours sits there. "No such file or directory" means re-run the installer once the change is in the checkout.
 
-If you installed the Cursor adapter, run `python3 ~/.claude/scripts/cursor-adapter/cursor-adapter.py check` after a pull: it compares the entries in `~/.cursor/hooks.json` with what the checkout now generates. A changed registration, tool map or contract version is reported with its fix: quit Cursor, re-run `install` with the arguments [`docs/cursor-adapter.md`](docs/cursor-adapter.md) § "Commands" gives, and relaunch.
+If you installed the Cursor adapter, run `python3 ~/.claude/scripts/cursor-adapter/cursor-adapter.py check` after a pull: it compares the entries in `~/.cursor/hooks.json` with what the checkout now generates. An added, changed or removed registration, or a changed tool map or contract version, is reported with its fix: quit Cursor, re-run `install` with the arguments [`docs/cursor-adapter.md`](docs/cursor-adapter.md) § "Commands" gives, and relaunch.
 
 ## Requirements
 
