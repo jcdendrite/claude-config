@@ -19,33 +19,9 @@ Decisions already made this session, from the plan-architect consult the review 
 
 ## Approach
 
-Add one helper, `_lib_origin_names_claude_config REPO_ROOT`, to `claude/.claude/hooks/_lib.sh`, and replace the hand-copied `REMOTE_URL` test in both hooks with a call to it. The helper lowercases every `remote.origin.url` value and returns 0 when any contains `claude-config` or `workflow-gates`. Its header is the one place that states the match rule and the two accepted gaps, and both hook headers point there.
+Add one helper, `_lib_origin_names_claude_config REPO_ROOT`, to `claude/.claude/hooks/_lib.sh`, and replace the hand-copied `REMOTE_URL` test in both hooks with a call to it. The helper lowercases every `remote.origin.url` value and returns 0 when any contains `claude-config` or `workflow-gates`. Its header is the one place that states the match rule and its known gaps, and both hook headers point there.
 
-**The helper.** Insert it in `_lib.sh` directly after `_lib_case_insensitive_ne`, which ends at line 827, so the origin helpers sit together. The header carries durable facts only:
-
-```bash
-# _lib_origin_names_claude_config REPO_ROOT
-# Returns 0 when any `remote.origin.url` value of the repository at REPO_ROOT
-# contains `claude-config` or `workflow-gates`, in any letter case.
-# The match is a substring over the whole URL, so it accepts a fork and also an
-# unrelated repository whose name merely contains either string.
-# Known gaps:
-# - An origin written as a `url.<base>.insteadOf` alias that hides the
-#   repository name does not match, because `git config` returns the URL
-#   unrewritten.
-# - A repository with no remote named `origin` does not match.
-# - An origin that names neither string, such as a renamed fork or a mirror
-#   under another name, does not match; see docs/private-project-redaction.md
-#   "For fork contributors".
-_lib_origin_names_claude_config() {
-  local repo_root="$1" origin_urls
-  # Pin the C locale: tr_TR and az_AZ fold `I` to a dotless letter, so `CLAUDE-CONFIG` would not match.
-  local LC_ALL=C
-  origin_urls=$(git -C "$repo_root" config --get-all remote.origin.url 2>/dev/null)
-  origin_urls="${origin_urls,,}"
-  [[ "$origin_urls" == *claude-config* || "$origin_urls" == *workflow-gates* ]]
-}
-```
+**The helper.** Insert it in `_lib.sh` directly after `_lib_case_insensitive_ne`, so the origin helpers sit together. The body runs under `local LC_ALL=C`.
 
 **Call sites.**
 
@@ -137,7 +113,7 @@ Rows:
 10. `[verified: .claude/rules/shell-floor.md; _lib.sh:25 sources _config.sh, whose floor check is at _config.sh:40; _lib.sh:2145-2147 already uses ${var,,}]` The bash-4 lowercase expansion is allowed here, and it runs only after the floor check. `anchors: row9`
 11. Mechanism: the whole-URL substring match stays, per the Context decision. The matrix pins it with a superstring case. `anchors: root`
 12. `[verified: reading deny-private-project-refs.sh:487-488 and require-stow-reminder.sh:133-134 against the helper body]` The helper accepts every origin the staged predicate accepts. The last value is among the values `--get-all` prints, and lowercasing leaves a lowercase literal intact. Neither gate allows an input it denied at the merge-base, so the regression-only rule finds no regression. `anchors: row7`
-13. `[verified: deny-private-project-refs.sh:152-153; docs/hooks.md:55]` This gate's Known gaps already points at a shared helper's header for that helper's gaps. The commit-boundary gates record their debt in their header Known gaps, so a pointer bullet in each hook keeps both gaps in that closed set. `anchors: row2`
+13. `[verified: deny-private-project-refs.sh:152-153; docs/hooks.md:55]` This gate's Known gaps already points at a shared helper's header for that helper's gaps. The commit-boundary gates record their debt in their header Known gaps, so a pointer bullet in each hook keeps the helper's known gaps in that closed set. `anchors: row2`
 14. `[verified: docs/hooks.md:20, :26]` Every gap in the helper's header also exists at the merge-base, which reads the same unrewritten `origin` URL, so none is a regression. The header lists four gaps:
     - An alias origin.
     - No `origin` remote.
@@ -192,8 +168,6 @@ Already staged, with no further change:
 Reuse rather than reimplement:
 
 - `_run_lib_call` from `claude/.claude/hooks/tests/_lib_sh_helpers.py`.
-- `init_git_repo_with_commit` from `claude/.claude/tests/helpers.py`.
-- The `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` env shape at `test_lib_gh.py:62`.
 - `run_hook` and `bash_input` in the deny test file.
 - `assert_live_deny_control` at `test_require_stow_reminder.py:187`.
 
