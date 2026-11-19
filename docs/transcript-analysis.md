@@ -1500,6 +1500,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - A PR enters the aggregates only with at least one `code-review` round before merge, so rounds per PR floors at 1. `PRs with no code-review round before merge` counts the PRs left out.
 - Bucket medians resolve only at the bucket edges above, so a threshold inside a bucket reads from the per-PR rows.
 - A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost (see "Round detection caveats" under `review-round-cost`): fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
+- Because the dollars come from the rate table as it stands at read time and the command prints no `STALE PRICING` banner, unlike `cost`, treat them as stale once today is past the earliest `_MODEL_RATE_EXPIRES` re-verify-by date in `transcript_analysis/pricing.py`.
 - Only recorded PRs appear, and a PR is recorded only after its merge, the as-of window and a `pr-cost --record` run. A PR with no row is absent.
 - The writer's bulk discovery lists at most 1000 merged PRs per run (`gh pr list --limit 1000`), so a PR beyond that cap is never recorded, and a branch name reused by a PR beyond it can carry the older PR's rounds.
 - A row captured after some of its sessions aged out of Claude Code's retention undercounts its rounds, and no field marks it. A row recorded before the `review_rounds` column existed is excluded.
@@ -1513,7 +1514,12 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
   - A synced config directory shares one machine identity, so the report collapses to the latest capture with no exclusion count. See `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
   - Whether any setup shares a file under distinct identities is unverified.
 
-**Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". Default mode prints a one-line pointer to that route under the scope-unverified notice. The proposal quotes the notice and states which checkout's `origin` the run used, because the report does not name its repository and a run from another checkout reports that checkout's repository. `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr and no pointer, and its output is never proposed for publication.
+**Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case".
+- Default mode prints a one-line pointer to that route under the scope-unverified notice.
+- The proposal quotes the notice.
+- The proposal states that the output cannot show whether a round came from another repository.
+- The proposal states which checkout's `origin` the run used, because the report does not name its repository and a run from another checkout reports that checkout's repository.
+- `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr and no pointer, and its output is never proposed for publication.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run; default mode, stdout only):
 ```

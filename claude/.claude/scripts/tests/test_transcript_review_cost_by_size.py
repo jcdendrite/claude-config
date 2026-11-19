@@ -206,9 +206,22 @@ def _run_report(monkeypatch, capsys, args) -> tuple[str, str]:
     return out, err
 
 
+def _printed_pr_rows(stdout: str) -> list[list[str]]:
+    """The whitespace-split fields of every line after the per-PR heading line and the column header."""
+    _, _, rows_section = stdout.partition(_PER_PR_ROWS_HEADING)
+    return [line.split() for line in rows_section.splitlines()[2:]]
+
+
 def _printed_pr_numbers(stdout: str) -> list[int]:
-    _, _, rows_section = stdout.partition("Per-PR rows")
-    return [int(match.group(1)) for match in re.finditer(r"^\s+(\d+)\s+[\d,]+\s+\d+\s", rows_section, re.MULTILINE)]
+    return [int(fields[0]) for fields in _printed_pr_rows(stdout)]
+
+
+def _printed_pr_figures(stdout: str, pr_number: int) -> tuple[str, ...]:
+    """The lines, rounds, total and mean figures printed in one PR's row."""
+    printed_rows = _printed_pr_rows(stdout)
+    matching_rows = [fields[1:] for fields in printed_rows if fields[0] == str(pr_number)]
+    assert len(matching_rows) == 1, f"expected one row for PR {pr_number}, found {matching_rows} in {printed_rows}"
+    return tuple(matching_rows[0])
 
 
 def _count_line(out: str, label: str) -> int:
@@ -598,8 +611,22 @@ class TestCmdSuccessRuns:
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args_scoped_to_seeded_session(fake_projects))
 
         assert _printed_pr_numbers(out) == [71]
-        assert f"  {71:>7}  {5:>8,}  {2:>6}  {_dollars_text(3):>10}  {_dollars_text(1.5):>10}" in out.splitlines()
+        assert _printed_pr_figures(out, 71) == ("5", "2", _dollars_text(3), _dollars_text(1.5))
         assert _dollars_text(5) not in out
+
+    def test_the_per_pr_table_prints_a_right_aligned_header_and_row_in_fixed_columns(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_account_ledger(fake_projects.parent.parent, [_kept_row(71, round_count=2)])
+
+        out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
+
+        assert out.splitlines()[-4:] == [
+            "",
+            "Per-PR rows, sorted by lines then PR number",
+            f"  {'PR':>7}  {'lines':>8}  {'rounds':>6}  {'total $':>10}  {'mean $':>10}",
+            f"  {71:>7}  {5:>8}  {2:>6}  {_dollars_text(3):>10}  {_dollars_text(1.5):>10}",
+        ]
 
     def test_the_header_is_followed_by_the_scope_unverified_notice_and_the_publication_pointer(
         self, fake_projects, monkeypatch, capsys,
@@ -616,7 +643,7 @@ class TestCmdSuccessRuns:
             _kept_row(11, status=pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, additions=37, deletions=5),
         ])
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
-        assert f"  {11:>7}  {42:>8,}  {1:>6}" in out
+        assert _printed_pr_figures(out, 11)[:2] == ("42", "1")
 
 
 class TestCmdArithmeticAndDiagnostics:
@@ -638,7 +665,7 @@ class TestCmdArithmeticAndDiagnostics:
 
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
 
-        assert f"  {61:>7}  {'1,480':>8}  {4:>6}  {_dollars_text(15):>10}  {_dollars_text(3.75):>10}" in out.splitlines()
+        assert _printed_pr_figures(out, 61) == ("1,480", "4", _dollars_text(15), _dollars_text(3.75))
         assert "  PRs with a rho: 1; median rho 0.80; share above zero 100.0%" in out.splitlines()
 
     def test_a_pr_whose_rounds_carry_no_agent_tokens_is_reported_at_its_main_price(
@@ -658,8 +685,8 @@ class TestCmdArithmeticAndDiagnostics:
 
         assert _count_line(out, "PRs reported") == 2
         assert _printed_pr_numbers(out) == [97, 98]
-        assert f"  {97:>7}  {5:>8,}  {2:>6}  {_dollars_text(2):>10}  {_dollars_text(1):>10}" in out.splitlines()
-        assert f"  {98:>7}  {5:>8,}  {1:>6}  {_dollars_text(0):>10}  {_dollars_text(0):>10}" in out.splitlines()
+        assert _printed_pr_figures(out, 97) == ("5", "2", _dollars_text(2), _dollars_text(1))
+        assert _printed_pr_figures(out, 98) == ("5", "1", _dollars_text(0), _dollars_text(0))
         _assert_exclusion_counts_are_zero(out)
 
     def test_a_row_with_negative_additions_plus_deletions_is_reported_with_its_negative_size(
@@ -674,7 +701,8 @@ class TestCmdArithmeticAndDiagnostics:
         out, _err = _run_report(monkeypatch, capsys, _review_cost_by_size_args(this_repo=True))
 
         assert _count_line(out, "PRs reported") == 2
-        assert any(line.startswith(f"  {95:>7}  {-20:>8,}  {1:>6}") for line in out.splitlines())
+        assert _printed_pr_figures(out, 95)[:2] == ("-20", "1")
+        assert 95 in _printed_pr_numbers(out)
 
     def test_the_per_pr_rows_print_after_every_aggregate_and_the_diagnostics(self, fake_projects, monkeypatch, capsys):
         _write_account_ledger(fake_projects.parent.parent, [_kept_row(11)])
