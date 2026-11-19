@@ -383,7 +383,7 @@ _shim_modules = {}
 
 
 def load_shim(path=None):
-    """The shim module, loaded once per path. The default is the file beside this one."""
+    """The shim module, loaded once per path. The default is the file beside the adapter's entry."""
     shim_path = str(path) if path is not None else os.path.join(adapter_directory(), SHIM_FILE_NAME)
     if shim_path not in _shim_modules:
         _shim_modules[shim_path] = compile_module("cursor_hook_shim", shim_path)
