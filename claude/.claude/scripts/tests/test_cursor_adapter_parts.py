@@ -1,6 +1,8 @@
-"""cursor-adapter.py and its parts: the part list, the names across the files, a part that fails to load, and a link to the entry.
+"""cursor-adapter.py and its parts: the part list, the names across the files, a part that fails to load, and a link to
+`cursor-adapter.py`.
 
-The entry executes each `cursor-adapter-*.py` part into its own namespace, so no per-file check sees a name the parts share.
+`cursor-adapter.py` executes each `cursor-adapter-*.py` part into its own namespace, so no per-file check sees a name the
+parts share.
 These tests run the same checks over the files as one source.
 
 The scan finds an unbound name, an unused import, and a function, class or import defined twice.
@@ -42,9 +44,9 @@ FIRST_PART_NAME = "cursor-adapter-core.py"
 def combined_adapter_source(
     adapter: types.ModuleType, *, entry_head_extra: str = "", part_extras: dict[str, str] | None = None
 ) -> str:
-    """The entry up to its `execute_adapter_parts()` call, each part in load order, then the rest of the entry."""
+    """`cursor-adapter.py` up to its `execute_adapter_parts()` call, each part in load order, then the rest of it."""
     entry_head, entry_execution_line, entry_rest = ADAPTER_SOURCE.read_text(encoding="utf-8").partition(ENTRY_EXECUTION_LINE)
-    assert entry_execution_line, f"{ADAPTER_SOURCE.name} has no {ENTRY_EXECUTION_LINE.strip()!r} line to split the entry on"
+    assert entry_execution_line, f"{ADAPTER_SOURCE.name} has no {ENTRY_EXECUTION_LINE.strip()!r} line to split on"
     for part_name in part_extras or {}:
         assert part_name in adapter.ADAPTER_PART_FILE_NAMES, f"{part_name} is not in ADAPTER_PART_FILE_NAMES"
     part_sources = [

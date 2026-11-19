@@ -1,4 +1,4 @@
-# cursor-adapter.py executes this file into its own namespace, so names its other parts define need no import here.
+# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
 
 # --- probes and tools ---
 

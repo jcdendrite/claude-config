@@ -35,7 +35,7 @@ import types
 # --- the parts ---
 
 # Each part executes into this module's namespace, so every name, and a test's patch of one, resolves as in one file.
-# The order is file order: a part's top-level statements read only names the entry or an earlier part defines.
+# The order is dependency order: a part's top-level statements read only names `cursor-adapter.py` or an earlier part defines.
 ADAPTER_PART_FILE_NAMES = (
     "cursor-adapter-core.py",
     "cursor-adapter-hooks-json.py",

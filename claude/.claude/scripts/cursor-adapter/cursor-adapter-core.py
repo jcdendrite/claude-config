@@ -1,4 +1,4 @@
-# cursor-adapter.py executes this file into its own namespace, so names its other parts define need no import here.
+# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
 
 # --- constants ---
 
@@ -141,7 +141,7 @@ FAIL_CLOSED_EVENTS = frozenset({"preToolUse", "beforeShellExecution", "beforeRea
 # a deny, so their entries run fail-closed: a fail-open entry prints `{}` when a payload's author makes the payload malformed.
 ASK_ON_WRITE_SCRIPTS = frozenset({"ask-review-permissions.sh", "ask-new-dependency-disclosure.sh"})
 
-# The shim's command-line vocabulary. The command grammar below reads it without loading the shim, and a test ties it to the
+# The shim's command-line vocabulary. `parse_command` reads it without loading the shim, and a test ties it to the
 # shim's own.
 SHIM_VALUE_FLAGS = ("--contract-version", "--claude-event", "--mode", "--matcher", "--script", "--label", "--deadline")
 SHIM_SWITCH_FLAGS = ("--fail-closed", "--fail-open")
@@ -383,7 +383,7 @@ _shim_modules = {}
 
 
 def load_shim(path=None):
-    """The shim module, loaded once per path. The default is the file beside the adapter's entry."""
+    """The shim module, loaded once per path. The default is the file beside `cursor-adapter.py`."""
     shim_path = str(path) if path is not None else os.path.join(adapter_directory(), SHIM_FILE_NAME)
     if shim_path not in _shim_modules:
         _shim_modules[shim_path] = compile_module("cursor_hook_shim", shim_path)
