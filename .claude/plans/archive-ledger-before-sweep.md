@@ -121,12 +121,7 @@ With REPORT=1, `clear-stale` also prints, on stdout:
 
 **Loading the lib.** `review-ledger.sh` sources `_branch-records-lib.sh` right after `_review-ledger-lib.sh`, with a `# shellcheck source=_branch-records-lib.sh` directive and the same exit-2 guard and install message, naming the new file.
 
-**The call-tally comment.** The append call-tally comment (`review-ledger.sh:631-649`) adds the calls a due ledger file brings:
-- `branch_records_status`'s uncapped key read, its uncapped account-directory test (`[ -d ]`, once per sweep) and its capped probes;
-- the uncapped `date -r`, the uncapped staleness `find`, the uncapped file tests on the ledger file, and the directory step's uncapped `[ -d ]` tests, which run only when the subdirectory is missing;
-- the capped `test -d` on the subdirectory, the capped `cp` and `cmp`, and the capped `mkdir` and `chmod` when the subdirectory is missing.
-
-It also says that a stall or a directory failure ends archiving for the sweep, and that the sweep runs under `append`'s lock. Critical files lists the usage, doc and changelog edits.
+**The call-tally comment.** The append call-tally comment (`review-ledger.sh:631-649`) gains one line naming `_sweep_stale_ledger_files` and the `_branch-records-lib.sh` functions it reaches as the sweep's added calls, some of them uncapped tests on the archive volume. It names the functions rather than listing their calls, because a per-state call list restates code-owned behavior. The three uncapped groups above record which calls those are.
 
 **Alternatives set aside.**
 - Clock-stamped copy names with a `.<pid>.<n>` suffix, as an earlier revision had: a file whose `rm` keeps failing gains one copy per `append`, so that design needed a reuse check over the archive directory to bound the growth.
@@ -284,7 +279,7 @@ Modify:
   - The reason table:
     - Its lead sentence covers the sweep, which keeps the file and exits as before.
     - It gains a row per new reason.
-    - The copy-failed row says a file `cp` cannot read also shows it.
+    - The copy-failed row names its permission causes, a ledger file the running user cannot read and a `review-narrative-ledger/` subdirectory it cannot write or search, and gives no remedy that deletes or moves that subdirectory, which can hold the only copy of archived rows.
     - The stalled row says a ledger copy that outlives the cap also shows it, and that it ends archiving for that sweep.
     - Both new rows say the next sweep retries.
   - A new "Ledger copies" section after "Snapshots" states:
@@ -305,7 +300,7 @@ Modify:
       - It says the config exception keeps due ledger files and warns.
     - The read-as-off line says those three cases also delete due ledger files with no copy. The `append` sweep shows no sign of them, and `review-ledger.sh clear-stale --dry-run` is the check.
     - The uncapped-copy line is scoped to snapshots.
-    - A new line on the ledger copy, at the level of the existing snapshot line (`:62`): calls on the archive are capped at 5 seconds where `timeout` or `gtimeout` is on PATH, and a stall ends archiving for that sweep and keeps the due files. Some calls stay uncapped, and a call blocked in uninterruptible I/O ignores the cap, so a stalled archive volume can still hang `append` while it holds its ledger lock. The list of those calls lives in the call-tally comment (`review-ledger.sh:631-649`) and the Approach, not in the doc.
+    - A new line on the ledger copy, at the level of the existing snapshot line (`:62`): calls on the archive are capped at 5 seconds where `timeout` or `gtimeout` is on PATH, and a stall ends archiving for that sweep and keeps the due files. Some calls stay uncapped, and a call blocked in uninterruptible I/O ignores the cap, so a stalled archive volume can still hang `append` while it holds its ledger lock. The Approach's three uncapped groups name those calls, and neither the doc nor the call-tally comment lists them.
     - A new line on kept ledger files:
       - An `unavailable` archive keeps every due ledger file.
       - A file the sweep can never copy stays and warns on every `append` until someone removes it.
@@ -343,7 +338,7 @@ Projected diff: ~830 lines, an estimate scaled from the previous revision's per-
 2. `scripts/venv-run.sh ruff check` passes on the five changed or new Python files.
 3. `review-ledger.sh`, `_branch-records-lib.sh` and both new test files stay under 1,000 lines (row 25).
    - `review-ledger.sh` lands at about 955 lines by this plan's estimate: 865 plus about 90 net, mostly the sweep and its per-file helper.
-   - If it would pass 1,000, the sweep's header comment and the call-tally addition shrink to one-line pointers at `docs/agent-branch-records.md`, and no code moves.
+   - If it would pass 1,000, the sweep's header comment shrinks to a one-line pointer at `docs/agent-branch-records.md`, and no code moves.
    - If it still passes 1,000, the code-writer stops and returns the count rather than splitting the file.
 4. `docs/agent-branch-records.md` no longer says the archive does not cover ledger files.
 5. Each guard, removed once, makes its named case fail, and the PR body records the eight runs:
