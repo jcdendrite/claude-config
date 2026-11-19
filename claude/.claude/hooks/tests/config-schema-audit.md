@@ -468,7 +468,7 @@ Column legend:
 
 - Call site: `branch_records_status` in `_branch-records-lib.sh`, a single
   `_config_enabled agent_branch_records` ahead of any archive-root read. Both
-  cleanup scripts call it.
+  cleanup scripts call it, and so does the retention sweep in `review-ledger.sh`.
 - Resolution: **config-dir**. `_config_enabled` reads only the resolved
   config dir — no `$HOME` union arm.
 - Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists.
@@ -477,15 +477,20 @@ Column legend:
   `migrate-legacy-config.sh` to import from either location.
 - Fail direction on resolution failure: **keep every item**. The
   `_config_enabled` statuses 2, 3 and 4 make the archive `unavailable`, so a
-  cleanup script removes no worktree and exits 1.
+  cleanup script removes no worktree and exits 1. On statuses 3 and 4 the ledger
+  sweep keeps every due ledger file, warns, and leaves its exit status unchanged.
+  Status 2 never reaches the sweep, because `review-ledger.sh` exits 2 at its
+  config-directory resolution first.
 - Fail direction on a malformed or unreadable enabling line: **keep every
   item**. When `_config_enabled` reads the key as off, `branch_records_status`
   makes the archive `unavailable` unless `claude-config.toml` provably does not
   exist or was read and holds no offending line.
   `docs/agent-branch-records.md` § "Fail direction" holds the residuals, and
-  the reason table's last row holds the condition list.
+  the reason table's last row holds the condition list. The ledger sweep keeps
+  every due ledger file, warns, and leaves its exit status unchanged.
 - Check scope: the check does not run when `_config_enabled` reads the key as
   on, so a `= true` line followed by a malformed duplicate still archives.
 - Fail direction on an internal resolver failure of `_config.sh`:
   **remove unarchived**. `_config_resolve_fail_safe` substitutes the schema
-  default, false, so `_config_enabled` returns 1 and the key reads as off.
+  default, false, so `_config_enabled` returns 1 and the key reads as off. The
+  ledger sweep then deletes due ledger files with no copy.

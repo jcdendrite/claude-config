@@ -2678,13 +2678,14 @@ def install_marker_script(isolated_home: Path) -> Path:
 
 
 def install_review_ledger_scripts(home: Path) -> Path:
-    """Symlink the real review-ledger.sh and _review-ledger-lib.sh into `<home>/.claude/scripts/`,
+    """Symlink the real review-ledger.sh, _review-ledger-lib.sh and _branch-records-lib.sh into `<home>/.claude/scripts/`,
     and the hooks/_lib.sh chain that review-ledger.sh sources through `../hooks/_lib.sh`, so a hook
     invoking `$CONFIG_DIR/scripts/review-ledger.sh` runs the real script. A write onto a linked path
     writes through to the production script. Returns the `review-ledger.sh` link. Idempotent."""
     symlink_hooks_lib_chain(home / ".claude" / "hooks")
     scripts_dir = home / ".claude" / "scripts"
     _symlink_if_absent(scripts_dir / "_review-ledger-lib.sh", SCRIPTS_DIR / "_review-ledger-lib.sh")
+    _symlink_if_absent(scripts_dir / "_branch-records-lib.sh", SCRIPTS_DIR / "_branch-records-lib.sh")
     return _symlink_if_absent(scripts_dir / "review-ledger.sh", SCRIPTS_DIR / "review-ledger.sh")
 
 
@@ -3243,6 +3244,34 @@ def install_unwarmed_stub_guard(monkeypatch: pytest.MonkeyPatch, basetemp: Path)
         return real_init(self, *args, **kwargs)
 
     monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
+
+
+# Prefix for a `cp` shim body that reads its operands by position.
+CP_OPERANDS_NOTE = "# The lib calls cp -- SRC DST, so $2 is the source and $3 the copy.\n"
+
+
+def real_binary_shim_env(shim_dir: Path, tool_bodies: dict[str, str]) -> dict[str, str]:
+    """`{"PATH": ...}` with `shim_dir` first, holding one prewarmed shim per tool in `tool_bodies`.
+
+    Each body runs with `$REAL` bound to the binary PATH resolves for that tool before `shim_dir`.
+    """
+    shim_dir.mkdir(exist_ok=True)
+    for tool, body in tool_bodies.items():
+        real_binary = shutil.which(tool)
+        assert real_binary is not None, f"cannot shim {tool!r}: no such binary on PATH={os.environ['PATH']}"
+        write_prewarmed_stub(shim_dir / tool, f"#!/bin/bash\nREAL={shlex.quote(real_binary)}\n{body}\n")
+    return {"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def skip_without_timeout_binary() -> None:
+    """Skips the calling test when neither `timeout` nor `gtimeout` is on PATH.
+
+    `_lib_capped_for` then runs the command bare, so a PATH shim for a shell builtin such as `test` is never reached.
+    """
+    import pytest  # imported here because the module header keeps pytest out of the runtime imports
+
+    if shutil.which("timeout") is None and shutil.which("gtimeout") is None:
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
 
 def record_subprocess_runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:

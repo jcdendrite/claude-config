@@ -69,6 +69,15 @@ call_archive() {{
   if branch_records_archive_worktree "$@" >"$CALL_STDOUT_FILE"; then rc=0; else rc=$?; fi
   report_call "$rc"
 }}
+call_archive_ledger() {{
+  local rc=0
+  if branch_records_archive_ledger_file "$@" >"$CALL_STDOUT_FILE"; then rc=0; else rc=$?; fi
+  report_call "$rc"
+}}
+call_archive_ledger_in_ready_account() {{
+  branch_records_status
+  call_archive_ledger "$BRANCH_RECORDS_ACCOUNT_DIR" "$@"
+}}
 """
 
 requires_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only modes this case relies on")
@@ -305,6 +314,26 @@ def run_archive(
     shell_options: str = STRICT_SHELL_OPTIONS,
 ) -> CallReport:
     return run_lib(tmp_path, env, f"call_archive {quoted_archive_arguments(target, trigger=trigger)}", shell_options).only
+
+
+def run_archive_ledger(
+    tmp_path: Path,
+    env: dict[str, str],
+    *arguments: str,
+    shell_options: str = STRICT_SHELL_OPTIONS,
+    in_ready_account: bool = False,
+) -> CallReport:
+    """Calls `branch_records_archive_ledger_file` with `arguments` as given, so an absent argument and an empty one stay distinct.
+
+    `in_ready_account` first resolves `branch_records_status` and passes its account directory as ACCOUNT_DIR,
+    so `arguments` then holds FILE alone. It asserts that status was `ready`.
+    """
+    function = "call_archive_ledger_in_ready_account" if in_ready_account else "call_archive_ledger"
+    quoted_arguments = " ".join(shlex.quote(argument) for argument in arguments)
+    report = run_lib(tmp_path, env, f"{function} {quoted_arguments}", shell_options).only
+    if in_ready_account:
+        assert report.state == "ready", f"expected a ready account, got {report.state}"
+    return report
 
 
 def checked_snapshot(tmp_path: Path, env: dict[str, str], report: CallReport) -> Path:

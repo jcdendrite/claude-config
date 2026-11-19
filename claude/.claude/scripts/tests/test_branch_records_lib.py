@@ -56,6 +56,7 @@ _DOC = REPO_ROOT / "docs" / "agent-branch-records.md"
 _EXPECTED_REASON_CAUSES = {
     "CONFIG", "SENTINEL", "STALLED", "ROOT_NOT_WRITABLE", "ACCOUNT_NOT_WRITABLE", "LEDGER_KEY",
     "UNSUPPORTED_ENTRY", "DIRECTORY", "SNAPSHOT_MKDIR", "COPY_FAILED", "COPY_MISMATCH", "MANIFEST", "KEY_UNREADABLE",
+    "LEDGER_COPY_FAILED", "LEDGER_COPY_MISMATCH",
 }
 _COMMANDS_THAT_CREATE_THE_ROOT_OR_SENTINEL = {"touch", "mkdir", "ln"}
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -156,7 +157,7 @@ class TestEnvironmentConfinement:
 
 
 class TestReasonVariables:
-    def test_causes_are_the_documented_thirteen_with_distinct_neutral_documented_values(self):
+    def test_causes_are_the_documented_fifteen_with_distinct_neutral_documented_values(self):
         reasons = reason_variables()
 
         assert set(reasons) == _EXPECTED_REASON_CAUSES

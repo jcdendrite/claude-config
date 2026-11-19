@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# _branch-records-lib.sh — copies a worktree's agent-reviews/ into the branch-records archive before a cleanup script removes the worktree.
+# _branch-records-lib.sh — copies a worktree's agent-reviews/, or a stale review-ledger file, into the branch-records archive before its remover deletes it.
 #
-# Sourced by cleanup-merged-branches.sh and cleanup-idle-open-pr-worktrees.sh, after hooks/_lib.sh.
+# Sourced by cleanup-merged-branches.sh, cleanup-idle-open-pr-worktrees.sh and review-ledger.sh, after hooks/_lib.sh.
 # Not executable on its own; source it, do not invoke it.
-# Neither function depends on the caller's `pipefail`.
-# Call both functions in the current shell, not in a command substitution or pipeline, because their outputs and the snapshot counter live in the caller's shell.
+# No archive function depends on the caller's `pipefail`.
+# Call the archive functions in the current shell, not in a command substitution or pipeline, because their outputs and the snapshot counter live in the caller's shell.
 # Only commands run through `_lib_capped` and `_lib_jq` are capped, so a stall in any other step, a shell test or a redirection included, hangs the caller until interrupted.
 # docs/agent-branch-records.md is the home of the archive layout and the reason table.
 #
 # Provides:
-#   branch_records_status           — whether the archive is disabled, ready or unavailable
-#   branch_records_archive_worktree — a verified snapshot of one worktree's agent-reviews/
+#   branch_records_status              — whether the archive is disabled, ready or unavailable
+#   branch_records_archive_worktree    — a verified snapshot of one worktree's agent-reviews/
+#   branch_records_archive_ledger_file — a verified copy of one review-ledger file
 
 _BRANCH_RECORDS_SENTINEL_NAME='.agent-branch-records-root'
 _BRANCH_RECORDS_MANIFEST_SCHEMA_VERSION=1
@@ -29,6 +30,8 @@ _BRANCH_RECORDS_REASON_COPY_FAILED='copying agent-reviews failed'
 _BRANCH_RECORDS_REASON_COPY_MISMATCH='the snapshot copy of agent-reviews differs from the original'
 _BRANCH_RECORDS_REASON_MANIFEST='the snapshot manifest could not be written'
 _BRANCH_RECORDS_REASON_KEY_UNREADABLE='the archive setting in claude-config.toml could not be read as true or false'
+_BRANCH_RECORDS_REASON_LEDGER_COPY_FAILED='copying a review ledger file failed'
+_BRANCH_RECORDS_REASON_LEDGER_COPY_MISMATCH='the archived copy of a review ledger file differs from the original'
 
 # Outputs, read by the sourcing scripts.
 BRANCH_RECORDS_STATE=''
@@ -232,6 +235,23 @@ _branch_records_find_reusable_snapshot() {
   printf '%s' "$snapshot_dir"
 }
 
+# _branch_records_make_archive_dirs ACCOUNT_DIR [DIR...]
+# Creates ACCOUNT_DIR and then each DIR in order, and narrows ACCOUNT_DIR to 0700.
+# Returns 1 with BRANCH_RECORDS_REASON set to the directory reason when a directory stays missing.
+_branch_records_make_archive_dirs() {
+  local account_dir="$1" archive_dir
+  shift
+  for archive_dir in "$account_dir" "$@"; do
+    [ -d "$archive_dir" ] && continue
+    # A concurrent first run may have just made it, so a failed mkdir only counts when the directory is still missing.
+    ( umask 077; _lib_capped mkdir -- "$archive_dir" ) >/dev/null 2>&1 || [ -d "$archive_dir" ] || {
+      BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_DIRECTORY"
+      return 1
+    }
+  done
+  _lib_capped chmod -- 700 "$account_dir" >/dev/null 2>&1 || true
+}
+
 # branch_records_archive_worktree WORKTREE BRANCH MAIN_WORKTREE TRIGGER
 # BRANCH is the name that refs/heads/<BRANCH> resolves, with neither a refs/heads/ nor a heads/ prefix, because the ledger key hashes it verbatim.
 # Returns 0 with BRANCH_RECORDS_SNAPSHOT empty when the archive is disabled, which means nothing was archived.
@@ -297,16 +317,7 @@ branch_records_archive_worktree() {
 
   local branches_dir="$account_dir/branches"
   local key_dir="$branches_dir/$ledger_key"
-  local archive_dir
-  for archive_dir in "$account_dir" "$branches_dir" "$key_dir"; do
-    [ -d "$archive_dir" ] && continue
-    # A concurrent first run may have just made it, so a failed mkdir only counts when the directory is still missing.
-    ( umask 077; _lib_capped mkdir -- "$archive_dir" ) >/dev/null 2>&1 || [ -d "$archive_dir" ] || {
-      BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_DIRECTORY"
-      return 1
-    }
-  done
-  _lib_capped chmod -- 700 "$account_dir" >/dev/null 2>&1 || true
+  _branch_records_make_archive_dirs "$account_dir" "$branches_dir" "$key_dir" || return 1
 
   # Every miss falls through to a fresh copy, so a removal never rests on a doubtful snapshot.
   local reusable_snapshot reuse_status=0
@@ -377,4 +388,71 @@ branch_records_archive_worktree() {
 
   BRANCH_RECORDS_SNAPSHOT="$snapshot_dir"
   return 0
+}
+
+# branch_records_archive_ledger_file ACCOUNT_DIR FILE
+# ACCOUNT_DIR is the BRANCH_RECORDS_ACCOUNT_DIR of a `ready` branch_records_status. FILE is one regular review-ledger file.
+# The copy is named <FILE's stem>.<UTC stamp of FILE's mtime>.jsonl, so a repeat call on an unchanged FILE rewrites the same copy.
+# Returns 0 with BRANCH_RECORDS_SNAPSHOT naming a copy that compared byte-equal to FILE.
+# Returns 1 with BRANCH_RECORDS_REASON set for a failure that belongs to FILE.
+# Returns 2 with BRANCH_RECORDS_REASON set for a failure every later file would meet: a stalled call or an uncreatable archive directory.
+# Removes nothing under the archive, because a failed call could otherwise delete the copy a concurrent call just verified.
+# shellcheck disable=SC2034 # BRANCH_RECORDS_REASON and BRANCH_RECORDS_SNAPSHOT are read by the sourcing scripts, not by this lib.
+branch_records_archive_ledger_file() {
+  local account_dir="${1-}" ledger_file="${2-}"
+  BRANCH_RECORDS_SNAPSHOT=''
+  BRANCH_RECORDS_REASON=''
+
+  if [ -z "$account_dir" ] || [ -z "$ledger_file" ] || [ -L "$ledger_file" ] || [ ! -f "$ledger_file" ]; then
+    BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_LEDGER_COPY_FAILED"
+    return 1
+  fi
+
+  local stamp
+  stamp=$(date -u -r "$ledger_file" +%Y%m%dT%H%M%SZ 2>/dev/null) || stamp=''
+  if [ -z "$stamp" ]; then
+    BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_LEDGER_COPY_FAILED"
+    return 1
+  fi
+
+  local ledger_archive_dir="$account_dir/review-narrative-ledger" probe_status=0
+  _lib_capped test -d "$ledger_archive_dir" >/dev/null 2>&1 || probe_status=$?
+  if [ "$probe_status" -ne 0 ]; then
+    if _lib_status_consistent_with_cap_kill "$probe_status"; then
+      BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_STALLED"
+      return 2
+    fi
+    _branch_records_make_archive_dirs "$account_dir" "$ledger_archive_dir" || return 2
+  fi
+
+  local ledger_name="${ledger_file##*/}"
+  local copy="$ledger_archive_dir/${ledger_name%.jsonl}.$stamp.jsonl" copy_status=0
+  ( umask 077; _lib_capped cp -- "$ledger_file" "$copy" ) >/dev/null 2>&1 || copy_status=$?
+  if [ "$copy_status" -ne 0 ]; then
+    if _lib_status_consistent_with_cap_kill "$copy_status"; then
+      BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_STALLED"
+      return 2
+    fi
+    BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_LEDGER_COPY_FAILED"
+    return 1
+  fi
+
+  local compare_status=0
+  _lib_capped cmp -s -- "$ledger_file" "$copy" >/dev/null 2>&1 || compare_status=$?
+  case "$compare_status" in
+    0)
+      BRANCH_RECORDS_SNAPSHOT="$copy"
+      return 0
+      ;;
+    1)
+      BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_LEDGER_COPY_MISMATCH"
+      return 1
+      ;;
+  esac
+  if _lib_status_consistent_with_cap_kill "$compare_status"; then
+    BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_STALLED"
+    return 2
+  fi
+  BRANCH_RECORDS_REASON="$_BRANCH_RECORDS_REASON_LEDGER_COPY_FAILED"
+  return 1
 }
