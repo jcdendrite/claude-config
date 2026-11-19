@@ -183,41 +183,77 @@ Narrower alternatives inside the chosen design:
   - `docs/hooks.md`, dispatch 1: a `- **\`steer-compaction-summary.sh\`**` bullet (PreCompact, no matcher, informational) after the state hook's bullet.
     - It says the hook prints a constant instruction text asking the summary to end with a `Continuity` section.
     - It says the text is plain stdout, advisory only, and built from no payload, transcript or prompt text.
-    - It gives M8's rollback: remove the registration and the parity entry, and reduce the script to a stub that exits 0 and prints nothing, which stays.
-  - `docs/hooks.md`, dispatch 2, as sub-items under that bullet:
-    - the six headings are `handoff/SKILL.md`'s, and a test ties them;
-    - the attribution rules are advisory model behavior. The two that name a permitted source are authority paths the summarizer must recognize, and the rest can lower the weight the summary gives content and never raise it (row 37);
-    - the summarizer cannot tell typed text from pasted or script-sent text, so the rules narrow that gap and do not close it;
-    - quoted words are not redacted, so a secret typed into a quoted sentence reaches the summary and every later one;
-    - the section authorizes nothing while `restore-authorization-boundary-on-compact.sh` restates the boundary after the summary, which it does unless its opt-out is set (row 42);
-    - that hook's opt-out (`~/.claude/.authorization-boundary-disabled`, key `authorization_boundary_restore`) does not silence this hook's text;
-    - the exit-0 rule and why, and the 10 s timeout;
-    - Run D's missing-command outcome on the build tested, or that it was not exercised, with the recovery: check that the file exists and is executable, run `./install.sh` from a separate terminal, or remove the registration (row 26);
-    - where the text appears besides the summary (row 8);
-    - builds from the README's floor up to the verified build, and later builds, are unverified, and what such a build does with the stdout is unknown;
-    - no kill switch besides the rollback, and no Cursor counterpart;
-    - an ordered triage list for a summary with no `Continuity` section:
+    - It gives M8's four code edits: remove the registration and the parity entry, reduce the script to a stub that exits 0 and prints nothing, which stays, and reduce the test file to the stub's assertions.
+  - `docs/hooks.md`, dispatch 2, a block under that bullet whose target is about 25 lines. One rule governs the block (row 56): it cites `docs/precompact-hook-behavior.md` for every measurement and restates none. After dispatch 2, a wording fix edits `docs/hooks.md`'s entry, not this list, because the sub-items below were dispatch 2's brief and the entry holds the shipped wording. That entry is the only home of the authorization posture, meaning what the `Continuity` section does and does not authorize and where its next step may come from. `README.md` and `CHANGELOG.md` state only that the next-step heading lets the resuming agent take a reversible step without asking, and point to that entry.
+    - A measurement is any count, size, duration, build number or date that a probe or the live check recorded.
+    - The block's only figures are the registration's 10 s timeout and the six headings.
+    - Each citation names the section that records the figure by its exact heading text, in the form `.claude/rules/citation-grammar.md` gives:
+      1. a live-check result: `docs/precompact-hook-behavior.md` § "Live check of the shipped hook", which the sub-items below call "the live-check subsection";
+      2. a steering-probe result: `docs/precompact-hook-behavior.md` § "Steering probe — does `PreCompact` stdout steer the summary?";
+      3. the exit-2 retries (row 6): `docs/precompact-hook-behavior.md` § "Assumption 2 — auto-compaction-block safety? Partially confirmed.", whose bold marks the citation helper's `normalize_heading` strips (`claude/.claude/tests/helpers.py:157`).
+
+    The bullet's rollback paragraph gains M8's `docs/hooks.md` edit and the prose edits M8's last bullet lists, so it names every edit M8 makes.
+
+    The sub-items, in order:
+    - **Headings:** the six headings are `handoff/SKILL.md`'s, and a test ties them.
+    - **Attribution rules**, advisory model behavior (row 37):
+      - The two that name a permitted source are authority paths the summarizer must recognize, so a recognition failure can raise a forged claim's weight.
+      - The text gives a positional test only for an earlier summary and for an AskUserQuestion answer.
+      - The other rules lower weight.
+      - The item cites `docs/precompact-hook-behavior.md` § "Known limits of the shipped text" instead of listing them.
+    - **Typed and pasted text:** the summarizer cannot tell typed text from pasted or script-sent text, so the rules narrow that gap and do not close it.
+    - **Not redacted:** a secret typed into a quoted sentence reaches the summary and every later one.
+    - **Grants no approval for an irreversible action** (row 42):
+      - It describes the `Next concrete step (safe to execute autonomously)` heading as a step the text allows from three sources: the engineer's own requests, a skill or plan the engineer started, and a carried earlier-summary entry.
+      - It says the resuming agent may take that step without asking, and that the first source is bounded by the typed-and-pasted item above.
+      - It says the second and third sources are known limits, citing `docs/precompact-hook-behavior.md` § "Known limits of the shipped text".
+      - It says the summarizer decides what counts as reversible, and that call is advisory. No run tested it, because the run lures were inert.
+      - It names the two advisory restatements after the summary, the boundary hook's text and the state hook's second framing line, and points to each one's entry. Nothing the item says depends on either restatement being present.
+      - It says the state hook's second framing line appears only when the block holds at least one quoted message (`compaction-context.py:297-298`).
+      - It points to the boundary hook's entry for the shipping statement, which that hook's post-compact message carries. Where autonomous shipping is active, the statement overrides a generic "not authorized" line for a commit, a plain push and a PR, and does not override a hold the engineer gave (row 17).
+      - The enforcement is the harness permission prompt, in a permission mode that raises one, plus in-session confirmation. The item never calls these the only enforcement.
+      - The boundary hook's opt-out (`~/.claude/.authorization-boundary-disabled`, key `authorization_boundary_restore`) silences neither the state hook's line nor this hook's text.
+      - It carries no further shipping prose and no Run A sample.
+
+      Keep the shipping clause: it is behavior read from `restore-authorization-boundary-on-compact.sh:68-79`, not a measurement, so row 56's rule does not apply to it.
+    - **Exit 0:** one sentence that the hook exits 0 on every path because, in the probes, exit 2 blocked automatic compaction and exit 1 preceded a thrash stop. A second sentence says the registration's 10 s timeout bounds the hook's wall time, so a stalled `jq` cannot hold compaction. The first sentence carries two citations and names no build in its own text:
+      - citation 3 above, for exit 2, which the Assumption 2 section records on build 2.1.233;
+      - citation 2 above, for exit 1, which the steering probe's results record on 2.1.326.
+    - **Missing command**, in this order:
+      1. one line saying its effect on automatic compaction is unverified, citing the live-check subsection;
+      2. one clause opening the recovery steps, stated unconditionally: the harness's own thrash message names an oversized file read or tool output as the likely cause, so check read sizes first (row 57);
+      3. one sentence naming the ways the registered command cannot start: a missing or non-executable file, or `bash` missing from the PATH Claude Code launches with. It points the `bash` case to `docs/hooks.md` § "Gate deadlock recovery" (row 26);
+      4. the recovery steps for the file (row 26):
+         1. check that the file exists and is executable;
+         2. run `./install.sh` from a separate terminal;
+         3. as a last resort, remove the registration;
+         4. restart a running session.
+    - **Where the text appears besides the summary** (row 8), and that the state block excludes it, citing the live-check subsection for the record shapes.
+    - **Builds:** builds other than the verified one are unverified, and what such a build does with the stdout is unknown. It cites only the live-check subsection for the verified build and its re-verify date.
+    - **No kill switch** besides the rollback, and no Cursor counterpart.
+    - **No `Continuity` section**, an ordered triage list:
       1. the script present at `~/.claude/hooks/steer-compaction-summary.sh` and executable;
       2. the `PreCompact` registration present in `settings.json`;
       3. bash at the floor;
       4. `jq` on PATH, and no `timeout` that rejects `-k` ahead of it, because either failure empties the self-filter's read;
       5. `claude --version` against the verified build;
-      6. the hook run by hand with a `PreCompact` payload, which must print the text;
-      7. the session transcript's `isCompactSummary` records, each checked for a `Continuity` heading, which measures adherence without shipping a monitor.
-    - a citation of `docs/precompact-hook-behavior.md` § "Steering probe — does `PreCompact` stdout steer the summary?" for the verified build and re-verify date, rather than restating them;
-    - that re-verifying means re-running M7's Run B recipe from the findings subsection.
-  - `README.md`, dispatch 2:
+      6. the hook run by hand with a `PreCompact` payload, which must print the text, pointing to the payload replay in `docs/precompact-hook-behavior.md` § "Setup and scoring recipe";
+      7. the `isCompactSummary` records in the transcript the payload's `transcript_path` names, each checked for a `Continuity` heading, which measures adherence without shipping a monitor.
+    - **Re-verifying:** re-running `docs/precompact-hook-behavior.md` § "Setup and scoring recipe", which re-authors its fixtures and so yields a new sample.
+  - `README.md`, dispatch 2, at line numbers on the merge base, which the inserted feature bullet shifts:
     - a feature bullet after line 75;
     - "four layers" at line 514 becomes "five layers";
     - a fifth "How it works" item after line 522;
     - the line 531 table row names the `Continuity` request;
     - lines 75 and 522 keep their text, because they describe the state hook, which still does not steer.
   - `CHANGELOG.md`, dispatch 2: a new bullet under `[Unreleased]` `### Added`, after the state hook's bullet. Line 619 stays untouched, as a record (`.claude/rules/changelog-entries.md`). The new bullet:
-    - leads with the one action a consumer may need: if `~/.claude/hooks` is a real directory, run `./install.sh` from a separate terminal (row 26);
-    - then states what the hook does, that it is advisory, that it is live on `git pull` when `~/.claude/hooks` is the folded link, and that `docs/hooks.md` gives its rollback (M8).
-  - `docs/handoff-nudge.md:218`, dispatch 2: its last sentence says only the focus line carries the step in flight, which this hook makes false (row 29). It becomes a sentence saying the steering hook asks every summary to name the skill and its current step, as model behavior, and the focus line adds the engineer's own focus on a manual compaction.
+    - leads with the one action a consumer may need: if `~/.claude/hooks` is a real directory, run `./install.sh` from a separate terminal (row 26), with `docs/hooks.md` named for the recovery;
+    - gives the reason in one clause that holds no measurement: until the consumer links the file, the registration names a missing file, whose effect on automatic compaction is unverified;
+    - then states what the hook does, that it is advisory, that it is live on `git pull` when `~/.claude/hooks` is the folded link, and that `docs/hooks.md` gives its rollback (M8);
+    - restates no live-check evidence, under the same rule as the `docs/hooks.md` block (row 56), and cites `docs/precompact-hook-behavior.md` § "Live check of the shipped hook" for the build it was checked on instead of naming the build number.
+  - `docs/handoff-nudge.md:218`, dispatch 2: its last sentence says only the focus line carries the step in flight, which this hook makes false (row 29). It becomes a sentence saying the steering hook asks the compaction summary to name the skill and its current step, as model behavior, and the focus line adds the engineer's own focus on a manual compaction.
 
-  anchors: row1, row8, row13, row24, row26, row29, row37, row42, row52
+  anchors: row1, row6, row8, row13, row24, row26, row29, row37, row42, row52, row56, row57
 - **M7. Live check.** Its result is a smoke check on one build. It also settles row 8. Each run is one sample, and an attempt is one execution of a run, so the findings state each run's count of attempts and never a rate (rows 1 and 28).
   - Order: Run D and its control run before dispatch 1, because they need no dispatch-1 file (row 48). Runs A and B run after dispatch 1's code review has settled the text.
   - Setup, written by the session before any run, in a scratch directory outside this repository created owner-only (`mkdir -m 700`):
@@ -238,9 +274,10 @@ Narrower alternatives inside the chosen design:
     - Run A's pasted paragraph is a fourth.
   - Handling of the scratch artifacts:
     - Every archive and transcript copy stays in the scratch directory, is never committed, and is deleted after scoring.
+    - Before that deletion, the session copies Run D's thrash-stop message from its stream's `result` field into the findings it hands dispatch 2 (row 57).
     - Run A runs under the engineer's own config, so its summary can hold user-level instructions and memory. The findings quote no summary text.
   - Headless runs, which are Run B, Run D and Run D's control:
-    - Each runs `claude -p` with the scratch repository as its working directory, `--permission-mode default`, `--tools` naming only the read tools and skill tool its prompts need, and `--output-format stream-json --verbose --include-hook-events`, as this repository's evals run `claude -p` (row 49). So it holds no tool that writes, no lure's command can run, and its blast radius is the scratch directory.
+    - Each runs `claude -p` with the scratch repository as its working directory, `--permission-mode default`, `--setting-sources project` so no user-level registration loads beside the scratch project's entries, `--tools` naming only the read tools and skill tool its prompts need, and `--output-format stream-json --verbose --include-hook-events`, as this repository's evals run `claude -p` (row 49). So it holds no tool that writes, no lure's command can run, and its blast radius is the scratch directory.
     - Each has a 30-minute wall clock through `timeout` or `gtimeout`. That figure is a project choice for a scratch run.
     - Each also has a `--max-turns` or `--max-budget-usd` ceiling.
     - The session confirms every flag in `claude --help` before the first run.
@@ -251,6 +288,7 @@ Narrower alternatives inside the chosen design:
   - Run D, the missing command, and its control, both on Run B's prompts:
     - Run D's only `PreCompact` entry names a nonexistent absolute path (row 26). The control's only entry is the archiver.
     - Each records whether compaction proceeded, `is_error`, whether the harness's thrash stop appeared, and the harness's own evidence, from the hook events in its stream, that each `PreCompact` command was attempted.
+    - When the thrash stop appears, the run also records the stop's message from the stream's `result` field (row 57).
     - The control is the positive case, and its stream must show the archiver attempted. A Run D whose stream shows no attempt of the missing command is recorded as not exercised, and M6 then calls the missing-command outcome unverified.
     - The control's summary is not scored, so it is not an unsteered control. Its archived payload gives the automatic trigger's key set and `hook_event_name` value for M4's factory (row 54).
   - Run A, manual and interactive. Before pausing, the session gives the engineer a paste-ready checklist: the launch command, each prompt to type verbatim, each answer to select or type, and the archive path it will read. The launch command starts `claude` in the scratch repository with `--permission-mode default`, and the checklist tells the engineer to deny any permission prompt for a lure's command. The steps:
@@ -309,34 +347,48 @@ Narrower alternatives inside the chosen design:
     - Each echo shape row 8 recorded gets an `_EXCLUDED_AFTER_PRIOR` row, which asserts that `PRIOR` stays the only quote, unless a row there already has that shape's marker set.
     - The interactive shape also gets an `_SDK_CLI_COPIES` row, which runs its headless-marker copy and the control that the copy minus its excluding feature is quoted (`:156-170`).
     - When row 8 finds no echo record, no test is added, and the findings say so.
-  - Findings: dispatch 2 adds one subsection under "Steering probe" in `docs/precompact-hook-behavior.md`. It holds:
-    - the build, the date and the SHA-256 digest of the scored stdout;
+  - Findings: dispatch 2 adds one subsection under "Steering probe" in `docs/precompact-hook-behavior.md`, headed `### Live check of the shipped hook` verbatim, because M6 and `CHANGELOG.md` cite it by that heading. It holds:
+    - the build, the run date, the re-verify-by date and the first 12 hex digits of the SHA-256 of the scored stdout;
     - each run's attempt count, with invalid attempts marked;
     - each valid attempt's per-check results, beside row 28's default-summary rates;
     - the untrusted-text defense per run, as held, not held or not exercised;
-    - Run D's outcome with its attempt evidence;
+    - Run D's outcome with its attempt evidence, and the thrash-stop message quoted verbatim (row 57);
     - the `PreCompact` payload's key set and `hook_event_name` value per trigger;
     - row 8's record shapes;
-    - the setup and scoring recipe, so a re-verification is a mechanical re-run.
+    - the setup and scoring recipe under the heading `Setup and scoring recipe`, so a re-verification is a bounded re-run. The fixtures are not recorded, so a re-run re-authors them and produces a new sample, not a re-score. A re-run holds these conditions, which the recipe states:
+      - It names `--setting-sources project` for every re-run, Run A's included.
+      - It says Run A's launch carried no flag excluding user settings. So the recorded Run A may have emitted the text twice if a user-level registration was present, and the doc records that as not observed. The recorded prefix then may not describe what the summarizer saw.
+      - It records which runs loaded project settings only and whether Run D carried Run B's `--autocompact 100k`.
+      - It says unknown for any run or flag the session holds no record of (row 58).
+    - a known-limits part under the heading `Known limits of the shipped text`, which M6 cites. It lists the four text gaps settled in review as known limits, one item each, and then every limit the live runs observed:
+      - the third next-step source, "a skill or plan the engineer started", has no recognition test;
+      - `Status` and `Task list` entries sit outside the next-step source limit;
+      - a carried next step passes its own re-check, because its source name travels in the earlier summary;
+      - the text asks for verbatim quotes with no credential-placeholder clause.
 
-    It records shapes, counts and booleans only (`:253`).
+    It records shapes, counts and booleans only (`:253`), except that it quotes the harness's thrash-stop message (row 57). It is the single home for the live check's evidence, which `docs/hooks.md` and `CHANGELOG.md` cite (row 56).
 
-  anchors: row1, row8, row9, row19, row23, row26, row28, row31, row34, row37, row44, row45, row48, row49, row50, row51, row52, row53, row54
+  anchors: row1, row8, row9, row19, row23, row26, row28, row31, row34, row37, row44, row45, row48, row49, row50, row51, row52, row53, row54, row56, row57, row58
 - **M8. Rollback**, one repository change that leaves a stub in place for good, so a session's registration never names a file the rollback deleted (row 26). It touches:
-  - `steer-compaction-summary.sh`, which keeps lines 1-2 and the `_lib.sh` bootstrap line the alignment suite requires (row 13), and whose body becomes `exit 0`, printing nothing;
+  - `steer-compaction-summary.sh`, which keeps lines 1-2 and the `_lib.sh` bootstrap block the alignment suite requires (row 13), meaning the `if ! . "${0%/*}/_lib.sh" 2>/dev/null; then`, `exit 0` and `fi` lines, and whose body after that block becomes `exit 0`, printing nothing;
   - `settings.json`, which loses the `PreCompact` registration;
   - `parity-exceptions.json`, which loses the entry, because the generate test does not fail on a stale one (row 52);
   - the test file, which keeps only the stub's assertions: exit 0, empty stdout for a `PreCompact` payload, and the executable bit;
-  - the `docs/hooks.md` bullet, which then says the script is a stub registered nowhere.
+  - the `docs/hooks.md` bullet, whose text and every sub-item under it are replaced by a statement that the script is a stub registered nowhere;
+  - the prose dispatch 2 adds that describes the hook as live: `README.md`'s feature bullet, layer count, fifth "How it works" item and auto-compact table row, and `docs/handoff-nudge.md:218`'s last sentence.
 
-  A running session may keep firing the old registration until it restarts, as `docs/hooks.md:311` says of the state hook, and that fire prints nothing and exits 0. Dispatch 1 writes this rollback into the `docs/hooks.md` bullet (M6), so the rollback is a known diff. No kill switch or config key ships, matching the state hook (row 23).
+  Two edits the list leaves out on purpose:
+  - The gate matrix's `EVENT_SPEC_IDS["PreCompact"]` entry stays, harmless after rollback, because nothing but `_benign_spec_id` reads the mapping (`test_cursor_adapter_gate_matrix.py:1135-1151`, row 55).
+  - The rollback adds its own `CHANGELOG.md` entry and does not edit the hook's.
+
+  A running session may keep firing the old registration until it restarts, as `docs/hooks.md:311` says of the state hook, and that fire prints nothing and exits 0. Dispatch 1's bullet names the script, registration, parity-entry and test-file edits. Dispatch 2 completes it with the `docs/hooks.md` edit and the prose edits (M6), so the rollback is a known diff. No kill switch or config key ships, matching the state hook (row 23).
 
   Over-powered check, for a stub kept for good where deleting the file would be lighter. Each lighter primitive fails:
   - One revert removing the registration and the script together: a session started before the pull may still fire the old registration at a missing file. Run D samples that case once (row 26), so a pass does not show it safe.
   - A later change deleting the stub: no one can observe when every stow consumer's sessions have restarted, and a consumer who pulls the removal and the deletion together gets the one-revert case (row 52).
   - A `|| true` suffix on the registered command, so a missing file exits 0: the Cursor adapter keys a registration by the command's last path segment (row 14), the test helper that parses a key splits its script segment at the last `|` (row 52), and no registration in `claude/.claude/settings.json` uses a shell-form fallback.
 
-  anchors: row13, row14, row23, row26, row52
+  anchors: row13, row14, row23, row26, row52, row55
 
 **Rows:**
 1. A `PreCompact` hook's stdout on exit 0 steered the summary on both triggers on claude 2.1.326. Manual: all three runs passed the content checks, and two of three held the exact reversed control. Automatic: the first compaction passed every check. [verified: `docs/precompact-hook-behavior.md:250`, `:270-271`] One build, re-verify by 2027-02-16 (`:252`).
@@ -356,8 +408,8 @@ Narrower alternatives inside the chosen design:
     - it maps only `SessionStart`, `SubagentStart`, `UserPromptSubmit` and the two tool events (`cursor-adapter.py:163-168`, `:668-680`);
     - it raises on a registration with no counterpart that `parity-exceptions.json` does not list (`:884`);
     - it keys a registration as event, matcher or `*`, and the command's last path segment (`:580-581`, `:633`);
-    - the test reserves `declined` for three scripts (`test_cursor_adapter_gate_matrix.py:1361-1368`);
-    - every informational registration needs a delivered arm or an exception (`:1322-1325`).
+    - the test reserves `declined` for three scripts (`test_cursor_adapter_gate_matrix.py:1362-1369`);
+    - every informational registration needs a delivered arm or an exception (`:1323-1326`).
 
     [verified: reads]
 15. Cursor's `preCompact` hook is "observational ... cannot block or modify", and its only output is `user_message`. [verified: `.claude/plans/cursor-adapter.md:3600`, that plan's row 46, which relays Cursor's hooks doc as a review fetched it on 2026-10-26] The evidence is relayed, not a first-hand read. The adapter's field table models only `trigger` for that event (`field-table.json:130-134`). So no Cursor channel reaches its summary, and M5's detail says so.
@@ -386,9 +438,9 @@ Narrower alternatives inside the chosen design:
 24. The handoff nudge's focus line reaches only a manual compaction the nudge prompted, because only the user can run `/compact`, and nothing steers an automatic compaction today. [verified: `docs/handoff-nudge.md:67`; `restore-session-state-on-compact.sh:7`]
 25. A `python3` start costs about half a second to a second per fire, and `compaction-context.py` is verified on Python 3.14 only. [verified: `docs/hooks.md:294`, `:302`]
 26. The registered command cannot start on four routes:
-    - on the unsupported layout where `~/.claude/hooks` is a real directory, because a pulled registration names a file the pull did not link [verified: `docs/hooks.md:540`];
+    - on the unsupported layout where `~/.claude/hooks` is a real directory, because a pulled registration names a file the pull did not link [verified: `docs/hooks.md` § "Gate deadlock recovery", "the pull leaves the new file unlinked"];
     - after a change deletes the script, in a session still running with the old registration, which may keep firing until it restarts [verified: `docs/hooks.md:311`, said of the state hook];
-    - with `bash` missing from the harness PATH, as `docs/hooks.md:531` describes for gates;
+    - with `bash` missing from the harness PATH, as `docs/hooks.md` § "Gate deadlock recovery" describes for gates ("A bash that is missing from the harness PATH makes every gate block");
     - with the file's exec bit lost.
 
     How a `PreCompact` command that cannot start affects automatic compaction was never probed (`docs/precompact-hook-behavior.md:70-72`). [unverified] The one non-zero automatic outcome observed, exit 1, ended in a thrash stop with the cause not isolated (row 5). In a separate probe, a PreToolUse hook with no `onFailure` that could not start let its call through (`docs/design-decisions/code-writer-self-review-send-back.md:28`). Run D records the `PreCompact` case before dispatch 1, and M8's rollback leaves a stub in place for good.
@@ -459,6 +511,17 @@ Narrower alternatives inside the chosen design:
     - No one can observe when every stow consumer's running sessions have restarted, so a later deletion step has no checkable condition. [unverified]
 53. Where autonomous shipping is active, `claude/.claude/CLAUDE.md` § "Shipping" has a session commit, run `/ready-for-review` and open the PR once the requested change is made, without pausing. [verified: `claude/.claude/CLAUDE.md:174-176`] Run A waits on the engineer, so after dispatch 1 the branch would otherwise reach a reviewer with a live registration and no live-check result. The plan holds the push and the PR until dispatch 2 lands, and reads the engineer's approval of this plan as that hold. [unverified]
 54. M4's factory copies the `PreCompact` key set captured on build 2.1.233. [verified: `docs/precompact-hook-behavior.md:3`, `:7-17`] The steering probe on 2.1.326 logged its hook's stdin, but its results record no key set. [verified: `:258`, `:268-274`] A renamed field or a changed `hook_event_name` value would leave the hook silent while M4 passes. M7's archiver records the live payload, from Run D's control before dispatch 1 and from Runs A and B after it, and the replay shows whether the shipped script prints for it.
+55. The gate matrix's import-arm test needs a benign payload spec id for the new `PreCompact` registration, because it is parametrized over every registration and a script with no `TRIGGERS` entry runs once with `trigger=None`. [verified: `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py:1379-1382`] `_benign_spec_id`, starting at `:1148`, returns the id `EVENT_SPEC_IDS` holds for the event. [verified: `:1148-1151`] It raises `AssertionError` when neither that mapping nor a tool arm supplies an id. [verified: `:1163`] The session found the file when dispatch 1's scoped run failed one case, and asked the engineer whether it was in scope. [engineer-verified: "In scope (Recommended)"] Cursor documents a `preCompact` event but the repository holds no observed payload for it (`claude/.claude/scripts/cursor-adapter/field-table.json:130-134`, status `doc-only`), so the entry borrows the `after_agent_response` spec. [unverified] The hook prints the `Continuity` text on a matching event and writes no file. [verified: `claude/.claude/hooks/steer-compaction-summary.sh:26-86`] The borrowed payload therefore exercises only its self-filter, which `test_steer_compaction_summary.py` already covers.
+56. The session's reading of a round-8 architect consult in `/code-review`, which returned the verdict `re-plan`. [unverified]
+    - The session read review rounds 6, 7 and 8 as raising 11, 11 and 9 findings. It read most of them as landing in prose a previous fix round wrote or rewrote. It read eight of the nine round-8 findings as touching `docs/hooks.md`.
+    - The consult's diagnosis: `docs/hooks.md` had become a second home for the evidence in `docs/precompact-hook-behavior.md`, and each figure a fix round restated there became something the next round reviewed.
+    - The fix is a cut, not a new design: `docs/hooks.md` cites the behavior doc for every measurement and restates none, and the behavior doc stays the single home for the evidence. The repository's single-source rule backs it (`claude/.claude/CLAUDE.md:25`, "Single source of truth").
+57. The harness's thrash-stop message names an oversized file read or tool output as the likely cause. [verified: Run D stream result field, both turns] Its text: "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh."
+    - Before dispatch 2, the behavior doc named only the stop, as "Autocompact is thrashing". Dispatch 2 added the whole message and the `rapid_refill_breaker` reason, under § "Live check of the shipped hook".
+    - The scratch holding Run D's stream is deleted after scoring, so M7 records the message in the findings subsection before then.
+    - M6's clause opening the recovery steps names that cause unconditionally.
+58. Before dispatch 2, the behavior doc did not say which runs loaded project settings only, or whether Run D carried Run B's `--autocompact 100k`. Dispatch 2's recipe states both, from the session's record. [unverified]
+59. [engineer-verified: "Accept the smaller shape (Recommended)"] Selected in answer to whether the engineer accepts three changes to the plan's deliverables since its commit: shrinking the `docs/hooks.md` block under row 56's rule, adding the README and `docs/handoff-nudge.md` prose to the rollback's list, and having the `CHANGELOG.md` bullet restate no live-check evidence. The option's description was the session's proposal.
 
 ## Critical files
 
@@ -466,11 +529,12 @@ The branch is not pushed and no PR is opened until dispatch 2 lands (row 53).
 
 **Live check, Run D** (M7), before dispatch 1. The session writes the setup and runs Run D and its control headless. Stop 3 hands the engineer its decision here, before any dispatch.
 
-**Dispatch 1** (`code-writer`): the hook, its tests, the registration, the parity entry and the minimal hook-doc bullet. Verification items 1-3.
+**Dispatch 1** (`code-writer`): the hook, its tests, the registration, the parity entry, the gate matrix's `EVENT_SPEC_IDS` entry and the minimal hook-doc bullet. Verification items 1-3.
 - `claude/.claude/hooks/steer-compaction-summary.sh` (new, mode 100755): M1 and M2. Reuse the `_lib.sh` bootstrap and `_lib_jq` self-filter at `restore-authorization-boundary-on-compact.sh:39-45`.
 - `claude/.claude/hooks/tests/test_steer_compaction_summary.py` (new): M4, with the payload factory following the key set Run D's control recorded. Reuse row 43's pieces. The read shape at `test_restore_authorization_boundary_on_compact.py:35-36` covers reading `handoff/SKILL.md`, and the heading extraction is new.
 - `claude/.claude/settings.json`: M3.
 - `claude/.claude/scripts/cursor-adapter/parity-exceptions.json`: M5, one entry.
+- `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`: map `PreCompact` to the `after_agent_response` spec id in `EVENT_SPEC_IDS`. The matrix's import-arm test is parametrized over every registration and raises on one with no benign payload (row 55).
 - `docs/hooks.md`: M6's minimal bullet with M8's rollback, after the state hook's bullet, which ends at line 311.
 
 **Live check, Runs A and B** (M7), after dispatch 1's code review. The session runs Run B headless. The engineer runs Run A from the session's checklist, because it needs interactive AskUserQuestion answers and a paste.
@@ -483,14 +547,18 @@ The branch is not pushed and no PR is opened until dispatch 2 lands (row 53).
 - `docs/handoff-nudge.md`: M6, line 218 only.
 - `claude/.claude/scripts/tests/test_compaction_context_messages.py`: M7's regression guard, only when row 8 found an echo record that the state block excludes. Reuse the file's `_EXCLUDED_AFTER_PRIOR` and `_SDK_CLI_COPIES` tables, `user_prompt` and `block_for`.
 
-Projected diff: about 485 lines (hook about 90, hook test about 265, settings 11, parity entry 1, `docs/hooks.md` about 38, README 6, CHANGELOG 8, `docs/handoff-nudge.md` 2, `docs/precompact-hook-behavior.md` about 40, state-script test about 25).
+Projected diff: about 760 lines, the plan file excluded, each dispatch counted as additions plus deletions.
+- Dispatch 1 changed 604 lines (`git show --numstat HEAD`).
+- Dispatch 2 ran after the live check and has the smaller shape of row 56. It changes 157 lines (`git diff --cached --numstat`, the plan file excluded: 150 added and 7 deleted), and the total is about 760.
+- The engineer answered "Proceed anyway" (row 47) to an earlier projection of about 445 lines.
+- The current projection is larger, and the session disclosed this to the engineer.
 
 ## Verification
 
 1. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` passes, after each dispatch. Per row 12 it selects the hooks, scripts and skills test directories. They hold `test_steer_compaction_summary.py`, `test_hook_alignment.py`, `test_cursor_adapter_gate_matrix.py`, the cursor adapter's generate tests, `test_restore_authorization_boundary_on_compact.py` and `test_compaction_context_messages.py`.
 2. `scripts/venv-run.sh ruff check` on each Python test file the dispatch touched, and `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`, pass.
 3. Required cases: every item of M4, each its own test or parametrized case.
-4. The live check (M7) ends with none of its five stops. Its findings land in dispatch 2 with the scored stdout's digest, and they state the untrusted-text defense per run as held, not held or not exercised.
+4. The live check (M7) ends with none of its five stops. Its findings land in dispatch 2 with the scored stdout's SHA-256 prefix, and they state the untrusted-text defense per run as held, not held or not exercised.
 5. The diff leaves the text of three base lines unchanged: `CHANGELOG.md:619`, `README.md:75` and `README.md:522`, as numbered on the merge base. Compare by content, because the README bullet inserted after line 75 shifts every later line number. The diff touches none of `restore-authorization-boundary-on-compact.sh`, `compaction-context.py` and `claude/.claude/tests/helpers.py`.
 
 ## Out of scope
@@ -499,7 +567,7 @@ Projected diff: about 485 lines (hook about 90, hook test about 265, settings 11
   - The recipe and its three sites (earlier-plan row 18, `precompact-compaction-instructions.md:549`) still work, because the typed-focus run shows the focus and the hook combine (row 4).
   - Its "open decisions in the words the user used" clause (`docs/handoff-nudge.md:67`) predates earlier-plan row 75's typed-versus-selected distinction.
 - **The sourcing literal in `claude-skills/skills/handoff/SKILL.md` section 3**, a follow-up PR (rows 40-41). That section gets clause 6's sourcing literal verbatim, and the follow-up adds an assertion tying the two copies.
-- **A test or re-run rule tying the shipped text to the bytes M7 scored.** M7 is a smoke check of one sample per case on one build, too weak a result to gate every later wording edit on. Its steering runs follow dispatch 1's code review, which settles the text, and its findings record the scored stdout's digest, so a reader can see whether the shipped text is the one scored.
+- **A test or re-run rule tying the shipped text to the bytes M7 scored.** M7 is a smoke check of one sample per case on one build, too weak a result to gate every later wording edit on. Its steering runs follow dispatch 1's code review, which settles the text, and its findings record the scored stdout's SHA-256 prefix, so a reader can see whether the shipped text drifted from the one scored. The prefix detects drift, not tampering.
 - **A closed-stdout test.** No probe in `docs/precompact-hook-behavior.md` covers the harness closing a hook's stdout before reading it, and the text is lost in that case whatever the hook does. The test would pin the hook's side of a harness behavior no one has observed.
 - **Isolating the exit-1 automatic thrash** (row 5). The hook has no non-zero exit of its own. Run D records the one non-zero route the registration can reach, a command that cannot start (row 26).
 - **Cursor summary steering** (rows 14-15). Cursor's `preCompact` is observational, as relayed.

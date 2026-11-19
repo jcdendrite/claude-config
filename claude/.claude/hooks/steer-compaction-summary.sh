@@ -5,8 +5,8 @@
 #
 # It registers with no matcher, so it self-filters on .hook_event_name == "PreCompact" per repo CLAUDE.md's
 # hook defense-in-depth rule.
-# It exits 0 on every path, because a non-zero PreCompact exit blocks or disturbs compaction (see
-# docs/precompact-hook-behavior.md).
+# It exits 0 on every path, because in the probes exit 2 blocked automatic compaction and exit 1 preceded a
+# thrash stop (see docs/precompact-hook-behavior.md).
 # The text is a compile-time constant and is never built from payload, transcript or prompt text, because the
 # stdout is re-summarized into later compactions.
 # test_steer_compaction_summary.py ties the six subheadings to handoff/SKILL.md.
