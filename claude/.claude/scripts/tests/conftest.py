@@ -1695,7 +1695,7 @@ def _pin_transcript_corpus_lookups(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_transcript_corpus_lookups(tmp_path, monkeypatch):
-    """Applies _pin_transcript_corpus_lookups before every test. The helper's docstring owns the rationale."""
+    """The helper's docstring owns the rationale."""
     _pin_transcript_corpus_lookups(tmp_path, monkeypatch)
 
 

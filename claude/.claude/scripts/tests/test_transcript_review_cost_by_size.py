@@ -292,7 +292,6 @@ def _excluded_cell(review_round: dict) -> dict:
 
 
 def _excluded_rows() -> list[dict]:
-    """The rows of `_EXCLUDED_PR_NUMBERS`, each carrying its own seeded `machine` and `head_branch`."""
     unpriced_round = _ledger_round(main_tokens={_UNPRICED_MODEL_SENTINEL: {"standard": {"input": 1}}})
     rows = [_origin_ledger_row(number, cell=None) for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_NO_CELL]]
     for number in _EXCLUDED_PR_NUMBERS[ledger_rounds.EXCLUDED_MULTI_ROW]:
@@ -312,8 +311,7 @@ def _excluded_rows() -> list[dict]:
 
 
 def _non_origin_rows() -> list[dict]:
-    """A kept-looking PR on the origin host for another repository, and one for the origin repository's slug on
-    another host. Neither is read, counted or named by a report."""
+    """Neither is read, counted or named by a report."""
     return [
         _origin_ledger_row(_NON_ORIGIN_PR_NUMBERS[0], cell=_optional_code_review_cell([_ledger_round()]), host=_OTHER_HOST),
         _origin_ledger_row(
@@ -328,9 +326,6 @@ def _non_origin_components() -> tuple[str, ...]:
 
 
 def _active_account_rows() -> list[dict]:
-    """PRs 11 and 12 are kept, the PRs of `_EXCLUDED_PR_NUMBERS` are excluded, and the PRs of `_non_origin_rows`
-    belong to another repository and another host. PR 11 also holds an after-merge code-review round and an
-    after-merge plan-review round."""
     return [
         _origin_ledger_row(11, additions=100, deletions=49, cell=_optional_code_review_cell(
             [_ledger_round(), _ledger_round(), _ledger_round(after_merge=1)],
@@ -406,8 +401,9 @@ class TestCmdRefusalsAndFailures:
     def test_all_accounts_exits_2_under_projects_dir_after_the_banner_when_the_config_dir_is_unresolvable(
         self, monkeypatch, capsys,
     ):
-        """`_projects_dir` reads config_dir() only while PROJECTS_DIR is absent from the module globals, and an
-        earlier test's monkeypatch can leave it there as a real global, so the test removes it first."""
+        """`_projects_dir` reads config_dir() only while PROJECTS_DIR is absent from the module globals.
+        An earlier test's monkeypatch can leave PROJECTS_DIR there as a real global.
+        The test removes it first."""
         def unresolvable_config_dir():
             raise ValueError("no HOME")
 
@@ -651,9 +647,7 @@ class TestCmdArithmeticAndDiagnostics:
         self, fake_projects, monkeypatch, capsys,
     ):
         """Four code-review rounds cost 1.5, 4.5, 3 and 6 times _DOLLARS_PER_100K_INPUT_TOKENS in list order, so the
-        within-PR rho is 0.80, where sorted order would give 1.00. A huge after-merge round sits between the second
-        and third, and a huge plan-review round beside them. Neither adds to the series. Every stored micro-dollar
-        figure differs from the splits' price."""
+        within-PR rho is 0.80, where sorted order would give 1.00."""
         pr_cell = _optional_code_review_cell(
             [
                 _round_scaled(100_000), _round_scaled(300_000), _round_scaled(5_000_000) | {"after_merge": 1},
@@ -671,9 +665,7 @@ class TestCmdArithmeticAndDiagnostics:
     def test_a_pr_whose_rounds_carry_no_agent_tokens_is_reported_at_its_main_price(
         self, fake_projects, monkeypatch, capsys,
     ):
-        """Main input of 100_000 tokens prices at _DOLLARS_PER_100K_INPUT_TOKENS, so two rounds with an empty agent object
-        cost twice that. A PR whose rounds have neither object costs nothing. Both are reported, not excluded as
-        unpriceable."""
+        """Main input of 100_000 tokens prices at _DOLLARS_PER_100K_INPUT_TOKENS."""
         _write_account_ledger(fake_projects.parent.parent, [
             _origin_ledger_row(
                 97, cell=_optional_code_review_cell([_ledger_round(agent_tokens={}), _ledger_round(agent_tokens={})]),
