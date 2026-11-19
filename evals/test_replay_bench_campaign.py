@@ -982,6 +982,18 @@ class TestResumeAndAttempts:
             env.run(env.world.launch())
         assert (sentinel_dir / "keep.txt").read_text() == "keep"
 
+    def test_a_resume_over_a_torn_spend_line_charges_every_later_attempt_on_a_line_of_its_own(self, env):
+        env.run(env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, account_stop_usd=1000, allow_early_stop=True)
+        assert len(env.completed()) == 2
+        with env.spend().path.open("a") as handle:
+            handle.write('{"task_id": "t2", "ar')
+
+        assert env.run(env.world.launch(), cumulative_stop_usd=1000, account_stop_usd=1000) == 0
+
+        totals = env.spend().totals()
+        assert totals.unparsed_lines == 0
+        assert totals.total_usd == 4.0, "eight attempts at 0.5 each, with none fused into the torn bytes"
+
     def test_a_swept_entry_with_no_spend_line_is_reported(self, env, capsys):
         env.world.tasks[:] = env.world.tasks[:1]
         store = RunStore(env.campaign_dir / "store")
@@ -1191,7 +1203,7 @@ class TestTheSpendFile:
         assert totals.unparsed_lines == 1
         assert totals.total_usd == CAP + 3.0
 
-    def test_a_torn_last_line_is_truncated_at_resume(self, tmp_path):
+    def test_repairing_a_torn_last_line_truncates_it_so_the_next_append_starts_a_line(self, tmp_path):
         spend = SpendFile(tmp_path / "spend.jsonl", budget_cap_usd=CAP)
         spend.append(self.line())
         with spend.path.open("a") as handle:

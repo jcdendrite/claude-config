@@ -1486,7 +1486,9 @@ before the first launch. An interrupt exits 128 plus the signal number. A held
 run-store lock exits 1. Two commands have further rules:
 
 - `smoke` exits 0 only when its last line reads `instrument: ok`. A failed
-  condition or refusal exits 2.
+  condition or a refusal exits 2. So does a spend-file append that fails after
+  a launch, and so does a block-end environment that differs from the
+  block-start one or cannot be read.
 - `run` exits 2 when a block-start read of the environment or the live
   checkouts fails after block 1, and spends nothing for that block, since none
   of its runs has launched.
@@ -1757,6 +1759,10 @@ missing with its reason.
   - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing`
     outrank them only when the run reached its end, because a run that never
     finished leaves a log that is often absent or torn.
+  - A log with more than one subagent `agent_id` is `instrument-log-invalid`,
+    unless the run also failed `extra-dispatcher-tool-call`. A second dispatch
+    is what adds the second `agent_id`, so that reason stands and the run
+    retries once.
   - `launch-no-output` and `launch-error` return before the instrument checks
     run, so they keep their own reasons. So does `analysis-error` when a check
     raises before the instrument reasons are computed.

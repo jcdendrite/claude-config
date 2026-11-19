@@ -279,6 +279,50 @@ class TestInstrumentReasons:
         assert outcome.record.missing_reason == checks.REASON_FIXTURE_INSTRUCTION_LOAD
         assert len(launch_stub.calls) == 1
 
+    @staticmethod
+    def dispatching_twice_scenario(world, *, dispatches: int):
+        """Every subagent loads an instruction file under its own agent ID, as `dispatches` subagents would."""
+
+        def append_dispatches(call) -> None:
+            session_jsonl = stub_session_store(call.config_dir / "projects", call.session_id) / f"{call.session_id}.jsonl"
+            with session_jsonl.open("a") as handle:
+                for number in range(2, dispatches + 1):
+                    handle.write(json.dumps({"type": "assistant", "message": {"content": [{
+                        "type": "tool_use", "id": f"toolu_dispatch_{number}", "name": "Agent",
+                        "input": {"subagent_type": call.agent_name, "prompt": call.inner_prompt},
+                    }]}}) + "\n")
+
+        return Scenario(
+            log_lines=lambda session_id: [
+                claude_md_line(world, session_id),
+                *(
+                    _line(
+                        str(world.config_dir / "rules" / "python.md"), "path_glob_match", agent_id=f"agent-{number}",
+                        session_id=session_id,
+                    )
+                    for number in range(1, dispatches + 1)
+                ),
+            ],
+            after_write=append_dispatches,
+        )
+
+    def test_a_dispatcher_that_dispatched_twice_records_the_validity_reason_and_retries_once(self, world):
+        outcome, launch_stub, _settings = run(
+            world, arms.TOOLKIT.name, lambda _n, _a: self.dispatching_twice_scenario(world, dispatches=2),
+        )
+
+        assert outcome.record.missing_reason == review_runner.VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL
+        assert len(launch_stub.calls) == 2
+
+    def test_two_agent_ids_without_a_second_dispatch_are_instrument_log_invalid_and_not_retried(self, world):
+        scenario = self.dispatching_twice_scenario(world, dispatches=2)
+        scenario = dataclasses.replace(scenario, after_write=None)
+
+        outcome, launch_stub, _settings = run(world, arms.TOOLKIT.name, lambda _n, _a: scenario)
+
+        assert outcome.record.missing_reason == checks.REASON_INSTRUMENT_LOG_INVALID
+        assert len(launch_stub.calls) == 1
+
     def test_a_missing_account_session_file_is_account_hooks_missing(self, world):
         outcome, launch_stub, _settings = run(
             world, arms.TOOLKIT.name, lambda _n, _a: Scenario(write_account_session_file=False),

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
+from process_test_helpers import is_running
 from replay_bench import arms, launch
 from test_replay_bench_runner_support import write_executable
 
@@ -207,13 +208,9 @@ class TestTheLaunchEnvironment:
         assert timed_out
         child_pid = int(pid_file.read_text())
         deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
-                return
+        while is_running(child_pid) and time.monotonic() < deadline:
             time.sleep(0.1)
-        pytest.fail("the forked child outlived the group kill")
+        assert not is_running(child_pid), "the forked child outlived the group kill"
 
 
 class TestTheInstrumentHook:

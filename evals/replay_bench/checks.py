@@ -272,11 +272,15 @@ class InstructionLoad:
 
 @dataclass(frozen=True)
 class InstructionLog:
-    """`loads` is empty whenever `reason` is set: a log that fails a parse check is not read further."""
+    """`loads` is empty whenever `reason` is set: a log that fails a parse check is not read further.
+
+    `multiple_agent_ids` is True when `reason` is set because the log carries more than one subagent `agent_id`.
+    """
 
     loads: tuple[InstructionLoad, ...]
     reason: str | None = None
     detail: str | None = None
+    multiple_agent_ids: bool = False
 
 
 class _InvalidLogLine(Exception):
@@ -344,7 +348,9 @@ def parse_instruction_log(log_path: Path, *, session_id: str) -> InstructionLog:
         except _InvalidLogLine as exc:
             return InstructionLog((), REASON_INSTRUMENT_LOG_INVALID, f"line {number} {exc}")
     if len({load.agent_id for load in loads if load.is_subagent}) > 1:
-        return InstructionLog((), REASON_INSTRUMENT_LOG_INVALID, "the log carries more than one agent_id")
+        return InstructionLog(
+            (), REASON_INSTRUMENT_LOG_INVALID, "the log carries more than one agent_id", multiple_agent_ids=True,
+        )
     return InstructionLog(tuple(loads))
 
 
@@ -651,8 +657,8 @@ def check_tool_call_paths(
     own_session_paths: tuple[Path, ...], local_dir: Path, live_checkout_roots: tuple[Path, ...],
     changed_relpaths: tuple[str, ...],
 ) -> PathCheck:
-    """A transcript that is unreadable, has a skipped or torn line, or may be missing calls fails as
-    `REASON_TRANSCRIPT_UNREADABLE`, since a clean verdict over missing calls proves nothing.
+    """A transcript that is unreadable or has a skipped or torn line fails as `REASON_TRANSCRIPT_UNREADABLE`,
+    since it may be missing calls and a clean verdict over missing calls proves nothing.
 
     A call the permission flow denied reached nothing, so it is skipped once denied.
 

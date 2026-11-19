@@ -82,7 +82,9 @@ class BlockContext:
 @dataclass(frozen=True)
 class AttemptResult:
     """`log`, `transcript`, `toolkit` and `fixture_dir` are the evidence smoke's block calibration reads after
-    the fixture and the attempt dir are gone. They are None when the attempt failed before they existed."""
+    the fixture and the attempt dir are gone. `toolkit` and `fixture_dir` are None when the attempt failed before its
+    launch. `log` and `transcript` are set only when the analysis ran to its end. `transcript` is None even then
+    when the session left no subagent sidecar."""
 
     reason: str | None
     detail: str | None
@@ -363,7 +365,11 @@ def _evaluate_launched(
     log = checks.parse_instruction_log(log_path, session_id=session_id)
     expectation = arm.load_expectation(account.config_dir / "CLAUDE.md")
     load_check = checks.check_instruction_loads(log, expectation, toolkit=toolkit, fixture_dir=fixture_dir)
-    instrument_reasons = list(load_check.reasons)
+    # Only a dispatcher that dispatched again adds a second `agent_id`, so that validity reason explains the log.
+    log_explained_by_extra_dispatch = (
+        log.multiple_agent_ids and validity.failure_reason == review_runner.VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL
+    )
+    instrument_reasons = [] if log_explained_by_extra_dispatch else list(load_check.reasons)
     if transcript is not None:
         instrument_reasons.extend(checks.toolkit_reach_reasons(transcript, expectation, toolkit=toolkit, fixture_dir=fixture_dir))
     hook_reason = checks.check_account_hooks(account.config_dir, session_id)

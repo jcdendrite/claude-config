@@ -157,8 +157,9 @@ def _stop_further_launches(settings: RunSettings) -> None:
 
 
 def _reported_root_cause(settings: RunSettings, raised: BaseException) -> BaseException:
-    """A spend failure outranks every other: only its halt names the launches begun and not charged. The failures it
-    outranks are named in its message. Otherwise a sibling's abort yields to the failure that caused it."""
+    """An interrupt is returned as it is, which keeps its exit status. Among failures, a spend failure outranks every
+    other: only its halt names the launches begun and not charged. The failures it outranks are named in its message.
+    Otherwise a sibling's abort yields to the failure that caused it."""
     if not isinstance(raised, Exception):
         return raised
     spend_failure = next((failure for failure in settings.failures if isinstance(failure, SpendAppendError)), None)
