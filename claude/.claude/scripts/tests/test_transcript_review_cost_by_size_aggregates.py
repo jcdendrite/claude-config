@@ -73,8 +73,7 @@ class TestComputeAggregates:
         assert aggregates["elasticity"]["total_dollars"][0] == pytest.approx(1.5)
 
     def test_negative_line_pr_is_ranked_by_every_spearman_measure_and_dropped_from_every_elasticity_and_bucket(self):
-        """Only a hand-edited ledger holds a negative size. It has no log and fits no half-open bucket, but Spearman
-        ranks it."""
+        """A negative size has no log and fits no half-open bucket, but Spearman ranks it."""
         records = [_record(1, -20, 1.0), _record(2, 5, 1.0), _record(3, 10, 2.0)]
         aggregates = review_cost_by_size._compute_aggregates(records)
         assert [aggregates["spearman"][measure][1] for measure in review_cost_by_size._MEASURES] == [3, 3, 3]

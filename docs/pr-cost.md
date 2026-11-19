@@ -69,7 +69,7 @@ A later column follows the same shape: freeze the outgoing header and document t
 - **Readers.** `review-cost-by-size` reads the cell. Read mode prints three per-skill round counts from it, `code-review-rounds`, `plan-review-rounds` and `ready-for-review-rounds`, and no other part of the cell. It is also reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON. Read mode's columns have these properties:
   - Each column counts that skill's rounds not flagged `after_merge`, so a round with no flag counts too.
   - A row with no cell prints `-` in all three columns. `0` means no rounds were counted, not that none ran, so it can also follow a capture that missed rounds (see "Absence" below). A skill the writer did not track also prints `0`.
-  - The columns describe the row under any `rule` or `join_confidence`, so they are not the count a ledger view reports for that PR.
+  - The columns describe the row under any `rule` or `join_confidence`, so they are not the rounds `review-cost-by-size` reports for that PR.
   - A PR refilled by `--record --force --pr N` shows both its older `-` row and its new counted row.
   - The counts are `review_rounds`-derived figures under the publication rule in the section "Redacted cross-account export" below.
 - **Shape.** `{"rule": int, "rounds": {skill: [round, ...]}}`, in the same canonical encoding as `model_breakdown`. `rounds` has one key per review skill the writer tracked (`code-review`, `plan-review`, `ready-for-review`), and each list holds that skill's rounds in round order.
@@ -226,7 +226,7 @@ After an exit 1 for a `review_rounds` check failure:
 `status` is a fixed enum, deliberately carrying no embedded `gh` diagnostic text — any error detail goes to stderr, never into a ledger cell:
 
 - `ok` — enrichment (`gh pr view`) succeeded.
-- `degraded_rate_limit` — the per-PR enrichment call exhausted its retry budget on a rate-limit response; the row's `commit_count`, `review_comment_count` and mechanical proxies are zero-valued, while its `additions`, `deletions` and `changed_files` come from the bulk discovery call and stay accurate. Recapture later with `--force --pr N`, within the limits in "The re-record contract" below.
+- `degraded_rate_limit` — the per-PR enrichment call exhausted its retry budget on a rate-limit response. The row's `commit_count`, `review_comment_count` and mechanical proxies are zero-valued. Its `additions`, `deletions` and `changed_files` come from the bulk discovery call and stay accurate. Recapture later with `--force --pr N`, within the limits in "The re-record contract" below.
 - `degraded_network` — the same, for a non-rate-limit transient failure (including an auth-shaped failure surfacing mid-run, once no other row is at risk). Same recapture path and limits.
 
 A degraded row's dollar/token figures are still trustworthy (those come from the local corpus pass, not `gh`); only the enrichment-sourced columns are incomplete.

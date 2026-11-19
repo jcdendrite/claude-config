@@ -493,7 +493,7 @@ def _unrecognized_header_message(first_line: str | None) -> str:
     return f"{message} (unrecognized first line)"
 
 
-# Every ledger reader (pr_cost, pr_cost_export, ledger_rounds) reads the whole file into memory with no size bound.
+# The ledger is read whole into memory with no size bound.
 # That is acceptable because the ledger is operator-written; revisit if that stops being true.
 def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     """Canonical parser for the pr-cost ledger's tab-separated content.

@@ -684,8 +684,7 @@ class TestCmdArithmeticAndDiagnostics:
     def test_a_row_with_negative_additions_plus_deletions_is_reported_with_its_negative_size(
         self, fake_projects, monkeypatch, capsys,
     ):
-        """Only a hand-edited ledger can hold a negative size. Its aggregate treatment is pinned in
-        test_transcript_review_cost_by_size_aggregates.py."""
+        """The aggregate treatment of a negative size is pinned in test_transcript_review_cost_by_size_aggregates.py."""
         _write_account_ledger(fake_projects.parent.parent, [
             _kept_row(95, additions=-30, deletions=10), _kept_row(96, additions=3, deletions=2),
         ])

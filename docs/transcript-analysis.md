@@ -1511,7 +1511,7 @@ A scope-unverified notice follows the header on every run. In default mode a one
 - A row captured after some of its sessions aged out of Claude Code's retention undercounts its rounds, and no field marks it. A row recorded before the `review_rounds` column existed is excluded.
 - A row records no capture scope. The capture's review-round pass defaults to every project directory, and it joins a round to a PR by head-branch name alone, so a PR's rounds can include another repository's session on a same-named branch.
 - For the same reason, and because the writer has no fork guard, a fork PR whose head name equals a local branch name inherits that branch's rounds, paired with the PR's size.
-- A row's size is `additions + deletions` as the ledger holds it. A row with a negative sum, which only a hand-edited ledger can hold, is ranked and counted but falls in no size bucket.
+- A row's size is `additions + deletions` as the ledger holds it. A row with a negative sum is ranked and counted but falls in no size bucket. The writer stores `gh`'s counts without a range check.
 - Because the join is by head-branch name, a PR whose head branch is `main`, `master`, `develop`, a detached `HEAD` or a `worktree-agent-*` name carries every round the capture saw on that name, including other repositories' sessions. A row holds only an opaque per-run branch label, so the report cannot refuse such a row.
 - Each account's ledger lives in its own config directory, which has these consequences:
   - A PR worked on two machines shows only the rounds this machine captured, an undercount no field marks.
@@ -1521,9 +1521,7 @@ A scope-unverified notice follows the header on every run. In default mode a one
 
 **Publication.** The report is not a publication instrument. It reads rows that do not record their capture scope, so it cannot refuse a wider corpus, and a figure from it publishes only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case".
 - Default mode prints a one-line pointer to that route under the scope-unverified notice.
-- The proposal quotes the notice.
-- The proposal states that the output cannot show whether a round came from another repository.
-- The proposal states which checkout's `origin` the run used, because the report does not name its repository and a run from another checkout reports that checkout's repository.
+- `docs/private-project-redaction.md` § "This repository, one account" states what a proposal for a default-mode figure must quote and state.
 - `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr and no pointer, and its output is never proposed for publication.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run; default mode, stdout only):
