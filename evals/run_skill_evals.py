@@ -46,6 +46,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVALS_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
@@ -88,6 +90,53 @@ TRIGGER_TOOL_NAMES = frozenset(("Skill",))
 # harness stays correct across a version boundary. Confirmed by capturing a
 # live claude -p stream: the model calls Agent even when instructed to use Task.
 DISPATCH_TOOL_NAMES = frozenset(("Agent", "Task"))
+
+# Plain-text output carries no structured block field, so a prompt-blocking hook
+# must print this line in its reason to be recognized there.
+PROMPT_BLOCK_PREFIX = "main-session-rules: prompt blocked"
+
+
+class BlockedPromptError(RuntimeError):
+    """A hook blocked the claude -p prompt, so the run produced nothing to score."""
+
+
+def _hook_block_message(reason: object) -> str:
+    if isinstance(reason, str) and reason:
+        return f"a hook blocked the claude -p prompt: {reason}"
+    return "a hook blocked the claude -p prompt"
+
+
+def raise_if_blocked_prompt_event(event: object) -> None:
+    """Raise BlockedPromptError when a parsed stream-json event reports a hook-blocked prompt."""
+    if not isinstance(event, dict) or event.get("type") != "system":
+        return
+    outcome = event.get("prompt_submit_outcome")
+    if isinstance(outcome, dict) and outcome.get("kind") == "blocked_by_hook":
+        raise BlockedPromptError(_hook_block_message(outcome.get("reason")))
+
+
+def raise_if_blocked_prompt_stream(lines: Iterable[str | bytes]) -> None:
+    """Raise BlockedPromptError when any stream-json line reports a hook-blocked prompt."""
+    for raw_line in lines:
+        line = (
+            raw_line.strip().decode("utf-8", errors="replace")
+            if isinstance(raw_line, bytes)
+            else raw_line.strip()
+        )
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        raise_if_blocked_prompt_event(event)
+
+
+def raise_if_blocked_prompt_stdout(stdout: str | bytes) -> None:
+    """Raise BlockedPromptError when plain-text claude -p output carries PROMPT_BLOCK_PREFIX."""
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    if PROMPT_BLOCK_PREFIX in text:
+        raise BlockedPromptError(f"a hook blocked the claude -p prompt: {PROMPT_BLOCK_PREFIX}")
 
 
 def find_skill_dir(skill_name: str) -> Path | None:
@@ -194,50 +243,90 @@ def build_temp_project(skills_dir: Path, plugins_dir: Path) -> Path:
 # fallback for advisory skills the `runtime` substrate cannot measure.
 
 
-def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
-    """Extract (name, description) from a SKILL.md YAML frontmatter block.
+def split_frontmatter(text: str) -> tuple[str, str]:
+    """Return (block, rest) around a leading --- block, as validate_skill_structure.parse_frontmatter splits a SKILL.md.
 
-    Minimal stdlib parser — handles inline scalars and `>`/`|` block scalars.
-    Avoids a PyYAML dependency so this module imports cleanly under CI, which
-    installs only pytest and ruff. Falls back to the directory name when the
-    `name` key is absent or there is no frontmatter.
+    One leading U+FEFF is removed first.
+    The block closes at the first --- after the opener, even mid-line.
+    Raises ValueError when the text does not start with --- or no --- follows the opener.
     """
-    text = skill_md_path.read_text()
-    fallback_name = skill_md_path.parent.name
+    text = text.removeprefix("\ufeff")
     if not text.startswith("---"):
-        return fallback_name, ""
-    try:
-        closing = text.index("\n---", 3)
-    except ValueError:
-        return fallback_name, ""
-    lines = text[3:closing].splitlines()
+        raise ValueError("frontmatter does not start with ---")
+    closing = text.find("---", 3)
+    if closing == -1:
+        raise ValueError("frontmatter has no closing ---")
+    return text[3:closing], text[closing + 3:]
 
-    name = fallback_name
-    description = ""
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith("name:"):
-            value = line.split(":", 1)[1].strip()
-            if value:
-                name = value
-            i += 1
-        elif line.startswith("description:"):
-            value = line.split(":", 1)[1].strip()
-            if value and value not in (">", "|", ">-", "|-", ">+", "|+"):
-                description = value
-                i += 1
-            else:
-                # Block scalar: gather blank or indented continuation lines,
-                # stopping at the next top-level key.
-                block: list[str] = []
-                i += 1
-                while i < len(lines) and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
-                    block.append(lines[i].strip())
-                    i += 1
-                description = " ".join(part for part in block if part)
-        else:
-            i += 1
+
+def split_agent_frontmatter(text: str) -> tuple[str, str]:
+    """Return split_frontmatter's (block, rest) for an agent file.
+
+    Raises ValueError when the closer does not start a line, since nothing documents whether Claude Code's
+    agent loader closes the block mid-line.
+    The leading U+FEFF rule rests on the skill loader's behavior, not a documented agent-loader rule.
+    """
+    block, rest = split_frontmatter(text)
+    if not block.endswith("\n"):
+        raise ValueError("frontmatter closes at a --- that does not start a line")
+    return block, rest
+
+
+def parse_frontmatter_block(block: str) -> dict:
+    """Return the block's YAML mapping, or {} when YAML reads the block as null.
+
+    Raises ValueError for any other non-mapping and for invalid YAML.
+    """
+    try:
+        frontmatter = yaml.safe_load(block)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"frontmatter is not valid YAML: {exc}") from exc
+    if frontmatter is None:
+        return {}
+    if not isinstance(frontmatter, dict):
+        raise ValueError("frontmatter is not a YAML mapping")
+    return frontmatter
+
+
+def declared_tool_names(tools_value: object) -> frozenset[str] | None:
+    """Return the names in an agent's tools: value, given as a comma-separated string or a list of strings.
+
+    Returns None for any other value, and when no name remains, so a blank value reads like an absent one.
+    """
+    if isinstance(tools_value, str):
+        raw_names = tools_value.split(",")
+    elif isinstance(tools_value, list) and all(isinstance(item, str) for item in tools_value):
+        raw_names = tools_value
+    else:
+        return None
+    names = frozenset(name.strip() for name in raw_names if name.strip())
+    return names or None
+
+
+def as_listing_line(text: str) -> str:
+    """Collapse every whitespace run, line breaks included, to one space, since the listing gives each skill one line."""
+    return " ".join(text.split())
+
+
+def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
+    """Return (name, description) for the description-fidelity skill listing.
+
+    Falls back to (directory name, "") when the frontmatter cannot be read as a mapping.
+    That fallback prints the file path and reason to stderr.
+    """
+    text = skill_md_path.read_text(encoding="utf-8")
+    fallback_name = as_listing_line(skill_md_path.parent.name)
+    try:
+        frontmatter = parse_frontmatter_block(split_frontmatter(text)[0])
+    except ValueError as error:
+        print(f"WARNING: {skill_md_path}: frontmatter unreadable, listing it without a description: {error}", file=sys.stderr)
+        return fallback_name, ""
+
+    declared_name = frontmatter.get("name")
+    name = as_listing_line(declared_name) if isinstance(declared_name, str) else ""
+    name = name or fallback_name
+    declared_description = frontmatter.get("description")
+    description = as_listing_line(declared_description) if isinstance(declared_description, str) else ""
     return name, description
 
 
@@ -400,6 +489,7 @@ def run_description_fidelity_sample(args: tuple) -> tuple[str | None, list[str]]
     except subprocess.TimeoutExpired:
         return None, []
 
+    raise_if_blocked_prompt_stdout(proc.stdout)
     named = parse_classification_answer(proc.stdout, valid_names)
     return score_classification(named, skill_name, also_not)
 
@@ -413,6 +503,8 @@ def detect_trigger_in_lines(
     Scans all lines without early termination so later also_not blocks are observed.
     Separated from the subprocess layer so the unit test can feed fixture
     files without spawning a subprocess.
+
+    Raises BlockedPromptError when a hook blocked the prompt.
     """
     fired_skill: str | None = None
     also_fired: list[str] = []
@@ -427,6 +519,8 @@ def detect_trigger_in_lines(
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+
+        raise_if_blocked_prompt_event(obj)
 
         evt = obj.get("event")
         if not isinstance(evt, dict):
@@ -544,6 +638,8 @@ def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
     Mirrors detect_trigger_in_lines but simpler: no also_not, no payload
     parsing. Separated from the subprocess layer so the unit test can feed
     fixture files without spawning a subprocess.
+
+    Raises BlockedPromptError when a hook blocked the prompt.
     """
     for raw_line in lines:
         line = (
@@ -557,6 +653,8 @@ def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+
+        raise_if_blocked_prompt_event(obj)
 
         evt = obj.get("event")
         if not isinstance(evt, dict):
@@ -673,7 +771,7 @@ def prime_dispatch_session(dispatch_project: Path, priming_prompt: str, model: s
     session_id = str(uuid.uuid4())
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     try:
-        subprocess.run(
+        proc = subprocess.run(
             ["claude", "-p", priming_prompt, "--session-id", session_id, "--model", model],
             cwd=str(dispatch_project),
             env=env,
@@ -688,6 +786,8 @@ def prime_dispatch_session(dispatch_project: Path, priming_prompt: str, model: s
             "Warning: priming invocation timed out; samples will attempt --resume anyway",
             file=sys.stderr,
         )
+    else:
+        raise_if_blocked_prompt_stdout(proc.stdout)
     return session_id
 
 
@@ -904,6 +1004,7 @@ def judge_disposition(review_output: str, rubric: str, judge_model: str, cwd: Pa
     except subprocess.TimeoutExpired:
         return None
 
+    raise_if_blocked_prompt_stdout(proc.stdout)
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
 
@@ -946,6 +1047,7 @@ def run_disposition_sample(args: tuple) -> tuple[bool | None, bool | None]:
             )
         except subprocess.TimeoutExpired:
             return None
+        raise_if_blocked_prompt_stdout(proc.stdout)
         # A non-zero exit or empty stdout means the review never actually
         # completed (auth expiry, rate limit, CLI crash) — treat it the same
         # as a timeout (excluded downstream) rather than feeding a failed
@@ -1398,7 +1500,7 @@ def main() -> int:
             Path(args.json_out).write_text(json.dumps(out, indent=2))
             print(f"Full results written to {args.json_out}")
 
-        return 0  # always 0 — measurement, not a gate
+        return 0  # a completed run returns 0 — measurement, not a gate
 
     finally:
         if tmp_project is not None:

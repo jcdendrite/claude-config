@@ -35,7 +35,7 @@ _BARE_SUFFIX_RE = re.compile(r"^[0-9]+-[A-Za-z0-9-]{1,20}$")
 _EMPTY_SLUG_SUFFIX_RE = re.compile(r"^[0-9]+-$")
 
 # The findings_path template as it appears in code-review/SKILL.md's dispatch
-# contract -- kept in sync with test_skills.py's _FINDINGS_PATH_RECIPE_TOKENS,
+# contract -- kept in sync with test_review_dispatch_contracts.py's _FINDINGS_PATH_RECIPE_TOKENS,
 # which pins the same literal for the same reason.
 _CODE_REVIEW_SKILL_MD = SKILLS_DIR / "code-review" / "SKILL.md"
 _FINDINGS_PATH_TEMPLATE = "agent-reviews/<agent-name>-<suffix>.md"

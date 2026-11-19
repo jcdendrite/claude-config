@@ -582,7 +582,7 @@ class TestSelectPytestTargets:
     def test_scripts_dir_shell_script_change_also_selects_hooks_and_skills_tests(self):
         """test_shellcheck.py (HOOKS_TESTS_DIR) lints every tracked shell
         script in the repo, including claude/.claude/scripts/*.sh.
-        test_skills.py's test_scripts_are_executable (SKILLS_TESTS_DIR) also
+        SKILLS_TESTS_DIR's test_scripts_are_executable also
         globs SCRIPTS_DIR/*.sh for an executable-bit check. Without these
         cross-domain exceptions, SCRIPTS_DIR's domain rule claims the path
         first and both checks go unrun."""
@@ -667,7 +667,7 @@ class TestSelectPytestTargets:
 
     def test_skill_auxiliary_files_module_change_also_selects_skills_tests(self):
         """The row is hand-declared; without it SCRIPTS_DIR's domain rule
-        claims the path alone and skips the test_skills.py importer."""
+        claims the path alone and skips the SKILLS_TESTS_DIR importers."""
         result = _mod.select_pytest_targets([_mod.SKILL_AUXILIARY_FILES_MODULE])
         assert result.is_full_suite is False
         assert _mod.SKILLS_TESTS_DIR in result.target_paths
@@ -743,8 +743,8 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_lovable_cloud_skills_change_also_selects_skills_tests(self):
-        """test_skills.py globs plugins/*/skills/*/SKILL.md and
-        plugins/*/skills/**/REFERENCES.md into SKILLS_TESTS_DIR's checks.
+        """SKILLS_TESTS_DIR's tests glob plugins/*/skills/*/SKILL.md and
+        plugins/*/skills/**/REFERENCES.md into their checks.
         Same cross-domain shape as the hooks and plugin-manifest cases
         above."""
         result = _mod.select_pytest_targets(["plugins/lovable-cloud/skills/lovable-cloud-knowledge/SKILL.md"])
@@ -752,7 +752,7 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_lovable_cloud_agents_change_also_selects_skills_and_hooks_tests(self):
-        """test_skills.py globs plugins/*/agents/*.md into SKILLS_TESTS_DIR's
+        """SKILLS_TESTS_DIR's tests glob plugins/*/agents/*.md into their
         checks. test_agent_roster.py (HOOKS_TESTS_DIR) globs the same path
         for a cross-scope agent-name-collision check. plugins/lovable-cloud/agents/
         doesn't exist on disk today, but both rules must hold the moment it's added."""
@@ -808,7 +808,7 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, *_mod.EVALS_TEST_TARGETS}
 
     def test_evals_readme_change_selects_skills_tests_rather_than_falling_open(self):
-        """test_skills.py reads evals/README.md by path (its state-path doc scan)."""
+        """SKILLS_TESTS_DIR's tests read evals/README.md by path (their state-path doc scan)."""
         result = _mod.select_pytest_targets([_mod.EVALS_README_MD])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR}
@@ -1193,7 +1193,7 @@ class TestSelectPytestTargets:
         """test_hook_alignment.py and test_lib_session_identity.py glob plugins/*/hooks/*.sh
         generically, across every plugin, not only lovable-cloud, so a
         skill-management hooks change selects HOOKS_TESTS_DIR.
-        test_skills.py globs plugins/*/skills/*/SKILL.md just as generically,
+        SKILLS_TESTS_DIR's tests glob plugins/*/skills/*/SKILL.md just as generically,
         so a skill-management skills change selects SKILLS_TESTS_DIR too.
         This exact SKILL.md is also SKILL_REVIEW_SKILL_MD, which
         test_require_skill_review.py reads by path from HOOKS_TESTS_DIR, so
@@ -1244,7 +1244,7 @@ class TestSelectPytestTargets:
     def test_plugin_skills_nested_subdirectory_change_also_selects_skills_tests(self):
         """_is_plugin_skills_change matches any depth under plugins/*/skills/,
         not just the single-level plugins/*/skills/*/SKILL.md shape the
-        globs in test_skills.py actually use -- a SKILL.md nested one level
+        globs in SKILLS_TESTS_DIR's tests actually use -- a SKILL.md nested one level
         deeper than any real glob reaches must still select SKILLS_TESTS_DIR."""
         result = _mod.select_pytest_targets(["plugins/npm-semver/skills/npm-semver/subdir/SKILL.md"])
         assert result.is_full_suite is False
@@ -1440,7 +1440,7 @@ class TestSelectPytestTargets:
         """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
         reads this exact file's content by path to pin its module list, in
         addition to the docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR,
-        since test_skills.py's test_doc_has_no_state_path also parametrizes
+        since SKILLS_TESTS_DIR's test_doc_has_no_state_path also parametrizes
         over it."""
         result = _mod.select_pytest_targets([_mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD])
         assert result.is_full_suite is False
@@ -1451,7 +1451,7 @@ class TestSelectPytestTargets:
     def test_docs_dir_change_selects_hooks_and_skills_tests(self):
         """The docs/ blanket covers any file directly under docs/:
         test_hook_alignment.py, test_doc_counts.py (both HOOKS_TESTS_DIR),
-        and test_skills.py's test_doc_has_no_state_path (SKILLS_TESTS_DIR)
+        and SKILLS_TESTS_DIR's test_doc_has_no_state_path
         all read docs/*.md files by path."""
         result = _mod.select_pytest_targets(["docs/some-guide.md"])
         assert result.is_full_suite is False
@@ -1461,7 +1461,7 @@ class TestSelectPytestTargets:
         """_is_under matches any depth under DOCS_DIR, so a nested
         docs/reports/*.md file is covered by the same blanket as a
         top-level docs/*.md file. Over-selecting here is deliberate: only
-        test_skills.py's test_doc_has_no_state_path excludes docs/reports/**
+        SKILLS_TESTS_DIR's test_doc_has_no_state_path excludes docs/reports/**
         from its own corpus (preserved historical records, CLAUDE.md Axis 3),
         and over-selection is the safe direction."""
         result = _mod.select_pytest_targets(["docs/reports/2026-08-audit.md"])
@@ -1470,8 +1470,8 @@ class TestSelectPytestTargets:
 
     def test_readme_md_change_selects_hooks_skills_and_routing_guard_capture_tests(self):
         """test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and
-        token-cap counts in README.md. test_skills.py's
-        test_doc_has_no_state_path (SKILLS_TESTS_DIR) also reads it for the
+        token-cap counts in README.md. SKILLS_TESTS_DIR's
+        test_doc_has_no_state_path also reads it for the
         per-account state-path contract. test_transcript_routing_guard_capture.py
         reads it for a heading a printed message cites."""
         result = _mod.select_pytest_targets([_mod.README_MD])
@@ -1524,7 +1524,7 @@ class TestSelectPytestTargets:
         }
 
     def test_global_claude_md_change_selects_hooks_and_skills_tests(self):
-        """test_skills.py (SKILLS_TESTS_DIR) reads this file by path in six
+        """SKILLS_TESTS_DIR's tests read this file by path in several
         places, including test_global_claude_md_has_no_state_path.
         test_doc_counts.py (HOOKS_TESTS_DIR) reads it by path in
         _count_ground_every_choice_categories. test_nudge_transcript_toolkit.py's
@@ -1535,7 +1535,7 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_root_claude_md_change_selects_hooks_tests(self):
-        """test_skills.py (SKILLS_TESTS_DIR) reads the repo-root CLAUDE.md by
+        """SKILLS_TESTS_DIR's tests read the repo-root CLAUDE.md by
         path, but only HOOKS_TESTS_DIR is selected -- the accepted
         under-selection ROOT_CLAUDE_MD's comment records. It's also picked
         up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
@@ -1554,7 +1554,7 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_root_skills_dir_change_selects_skills_tests(self):
-        """test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
+        """SKILLS_TESTS_DIR's _all_skill_md_files() globs
         .claude/skills/*/SKILL.md by path, one of three SKILL.md-glob roots
         alongside SKILLS_DIR and plugins/*/skills/*/SKILL.md."""
         result = _mod.select_pytest_targets([".claude/skills/code-review-claude-config/SKILL.md"])
@@ -1612,8 +1612,8 @@ class TestSelectPytestTargets:
         }
 
     def test_non_lovable_cloud_plugin_agents_change_selects_hooks_and_skills_tests(self):
-        """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
-        (SKILLS_TESTS_DIR) both glob plugins/*/agents/*.md generically, not
+        """test_agent_roster.py (HOOKS_TESTS_DIR) and SKILLS_TESTS_DIR's
+        tests both glob plugins/*/agents/*.md generically, not
         just lovable-cloud's. npm-semver doesn't need an agents/ directory
         to exist on disk for this -- select_pytest_targets is a pure
         path-string mapping."""
@@ -2048,40 +2048,83 @@ class TestCursorAdapterSelection:
         assert "claude/.claude/scripts/tests/test_cursor_adapter_shim.py" in result.target_paths
         assert _mod.HOOKS_TESTS_DIR in result.target_paths
 
+    def test_the_identity_fixtures_module_selects_every_scripts_test(self):
+        """The scripts conftest.py imports it, so a break there fails every scripts test."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/_cursor_identity_fixtures.py"])
+        assert result.is_full_suite is False
+        assert _mod.SCRIPTS_TESTS_DIR in result.target_paths
+
+    def test_every_hooks_tests_module_the_scripts_conftest_imports_selects_every_scripts_test(self):
+        """The importer scan reads only test_*.py, so a conftest.py import needs its own check."""
+        # Gaps:
+        # - importlib loads are unseen.
+        # - A hooks-tests module reached through a helper the conftest imports is unseen.
+        # - Package __init__ files are unscanned.
+        scripts_conftest = _REPO_ROOT / _mod.SCRIPTS_TESTS_DIR / "conftest.py"
+        hooks_tests_module_stems = {path.stem for path in (_REPO_ROOT / _mod.HOOKS_TESTS_DIR).glob("*.py")}
+        imported_hooks_tests_modules = _imported_module_basenames(scripts_conftest.read_text()) & hooks_tests_module_stems
+
+        assert "_cursor_identity_fixtures" in imported_hooks_tests_modules
+        for module_basename in sorted(imported_hooks_tests_modules):
+            result = _mod.select_pytest_targets([f"{_mod.HOOKS_TESTS_DIR}/{module_basename}.py"])
+            assert _mod.SCRIPTS_TESTS_DIR in result.target_paths, module_basename
+
+    _HOOKS_TESTS_FIXTURE_MODULES = ("_cursor_payloads", "_cursor_identity_fixtures")
+
     @staticmethod
-    def _undeclared_payload_builder_importers(sources: dict[str, str], declared: set[str]) -> set[str]:
-        """The keys of `sources` whose code imports the payload builder in any form and are not in `declared`."""
+    def _undeclared_fixture_module_importers(
+        module_basename: str, sources: dict[str, str], declared: set[str]
+    ) -> set[str]:
+        """The keys of `sources` whose code imports `module_basename` in any form and are not in `declared`."""
         return {
             name
             for name, source in sources.items()
-            if "_cursor_payloads" in _imported_module_basenames(source) and name not in declared
+            if module_basename in _imported_module_basenames(source) and name not in declared
         }
 
-    def test_every_scripts_test_importing_the_payload_builder_is_a_declared_importer(self):
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
+    def test_every_scripts_test_importing_a_hooks_fixture_module_is_a_declared_importer(self, module_basename):
         sources = {
             f"claude/.claude/scripts/tests/{path.name}": path.read_text()
             for path in (_REPO_ROOT / _mod.SCRIPTS_TESTS_DIR).glob("test_*.py")
         }
         declared = set(_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES)
-        assert self._undeclared_payload_builder_importers(sources, declared) == set()
-        assert self._undeclared_payload_builder_importers(sources, set()), "no scripts test imports the builder"
+        assert self._undeclared_fixture_module_importers(module_basename, sources, declared) == set()
 
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
+    def test_a_hooks_fixture_module_has_a_scripts_test_importer_for_the_scan_to_cover(self, module_basename):
+        """The scan above passes vacuously for a module no scripts test imports."""
+        sources = {
+            f"claude/.claude/scripts/tests/{path.name}": path.read_text()
+            for path in (_REPO_ROOT / _mod.SCRIPTS_TESTS_DIR).glob("test_*.py")
+        }
+        assert self._undeclared_fixture_module_importers(module_basename, sources, set()), (
+            f"no scripts test imports {module_basename}"
+        )
+
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
     @pytest.mark.parametrize(
-        "import_line",
+        "import_template",
         [
-            "from hooks.tests._cursor_payloads import SHIM",
-            "import hooks.tests._cursor_payloads",
-            "from hooks.tests import _cursor_payloads",
+            "from hooks.tests.{module} import SHIM",
+            "import hooks.tests.{module}",
+            "from hooks.tests import {module}",
         ],
     )
-    def test_the_importer_scan_flags_an_undeclared_fixture_in_each_import_form(self, import_line):
-        fixture = {"claude/.claude/scripts/tests/test_fixture.py": f"{import_line}\n"}
-        assert self._undeclared_payload_builder_importers(fixture, set()) == set(fixture)
-        assert self._undeclared_payload_builder_importers(fixture, set(fixture)) == set()
-        assert self._undeclared_payload_builder_importers({"x.py": "import os\n# _cursor_payloads\n"}, set()) == set()
+    def test_the_importer_scan_flags_an_undeclared_fixture_in_each_import_form(self, module_basename, import_template):
+        fixture = {"claude/.claude/scripts/tests/test_fixture.py": import_template.format(module=module_basename) + "\n"}
+        assert self._undeclared_fixture_module_importers(module_basename, fixture, set()) == set(fixture)
+        assert self._undeclared_fixture_module_importers(module_basename, fixture, set(fixture)) == set()
+        assert (
+            self._undeclared_fixture_module_importers(module_basename, {"x.py": f"import os\n# {module_basename}\n"}, set())
+            == set()
+        )
 
-    def test_the_payload_builder_is_a_declared_hooks_tests_module(self):
-        assert "claude/.claude/hooks/tests/_cursor_payloads.py" in _mod.HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
+    @pytest.mark.parametrize("module_basename", _HOOKS_TESTS_FIXTURE_MODULES)
+    def test_a_hooks_fixture_module_selects_every_declared_scripts_test_importer(self, module_basename):
+        result = _mod.select_pytest_targets([f"claude/.claude/hooks/tests/{module_basename}.py"])
+        assert result.is_full_suite is False
+        assert set(_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) <= set(result.target_paths)
 
 
 class TestResolveTargetPaths:

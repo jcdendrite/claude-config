@@ -16,7 +16,9 @@ Reuses from evals/run_skill_evals.py rather than re-deriving: the
 subprocess.Popen(["claude", "-p", ...]) launch shape, SAMPLE_TIMEOUT_S,
 config_dir(), compute_session_store_dir() (transcripts live outside the
 launched project dir; shutil.rmtree(project_dir) alone does not remove
-them), and detect_dispatch_in_lines() for the attempted-dispatch signal.
+them), detect_dispatch_in_lines() for the attempted-dispatch signal, and the
+frontmatter reader (split_agent_frontmatter(), parse_frontmatter_block(),
+declared_tool_names()).
 The meta.json/jsonl join mirrors (does not import) _index_subagent_dispatches
 in claude/.claude/scripts/transcript_analysis/corpus.py and
 _dispatch_usage_summary's observed-model walk in
@@ -35,7 +37,6 @@ import argparse
 import contextlib
 import json
 import os
-import re
 import select
 import shutil
 import signal
@@ -299,39 +300,28 @@ def build_run_command(run: MatrixRun, *, session_id: str, budget_cap_usd: float)
 
 
 # --- Agent frontmatter reading ----------------------------------------------
-# Mirrors _agent_frontmatter_model's leading-YAML-block scoping in
-# claude/.claude/scripts/transcript_analysis/subagent_mix.py (never matches a
-# "model:"/"tools:" mention inside the agent's prose body).
-
-_AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
-_AGENT_FRONTMATTER_TOOLS_RE = re.compile(r"(?m)^tools:\s*(.+?)\s*$")
 
 
-def _frontmatter_block(agent_file_text: str) -> str | None:
-    if not agent_file_text.startswith("---"):
+def _agent_frontmatter(agent_file_text: str) -> dict | None:
+    try:
+        return run_skill_evals.parse_frontmatter_block(run_skill_evals.split_agent_frontmatter(agent_file_text)[0])
+    except ValueError:
         return None
-    end = agent_file_text.find("\n---", 3)
-    if end == -1:
-        return None
-    return agent_file_text[3:end]
 
 
 def agent_frontmatter_model(agent_file_text: str) -> str | None:
-    block = _frontmatter_block(agent_file_text)
-    if block is None:
+    frontmatter = _agent_frontmatter(agent_file_text)
+    if frontmatter is None:
         return None
-    match = _AGENT_FRONTMATTER_MODEL_RE.search(block)
-    return match.group(1) if match else None
+    model = frontmatter.get("model")
+    return (model.strip() or None) if isinstance(model, str) else None
 
 
 def agent_frontmatter_tools(agent_file_text: str) -> frozenset[str] | None:
-    block = _frontmatter_block(agent_file_text)
-    if block is None:
+    frontmatter = _agent_frontmatter(agent_file_text)
+    if frontmatter is None:
         return None
-    match = _AGENT_FRONTMATTER_TOOLS_RE.search(block)
-    if not match:
-        return None
-    return frozenset(t.strip() for t in match.group(1).split(",") if t.strip())
+    return run_skill_evals.declared_tool_names(frontmatter.get("tools"))
 
 
 def _read_staff_backend_engineer_agent_text() -> str | None:

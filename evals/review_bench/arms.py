@@ -7,6 +7,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import run_skill_evals
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 AGENTS_DIR = REPO_ROOT / "claude" / ".claude" / "agents"
 
@@ -54,30 +56,31 @@ FUNCTION_CONTEXT_CLAUSE = (
 
 
 class ArmSnapshotError(ValueError):
-    """Raised when a production lens file fails one of snapshot_arm's
-    loud-failure checks: a missing ARM_TOOLS entry, or (for the function-context arm) a
-    read clause that doesn't match exactly once."""
+    """Raised when a production lens file fails one of snapshot_arm's loud-failure checks.
+
+    The checks are:
+    - The file is not valid UTF-8.
+    - The frontmatter cannot be split or parsed.
+    - The production `tools:` lacks an ARM_TOOLS entry.
+    - The rendered frontmatter does not read back as the arm's name, model and tools.
+    - For the function-context arm, the lens's read clause does not match exactly once.
+
+    Every message is prefixed with the lens.
+    """
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
     """Return (frontmatter_block, body); frontmatter_block excludes the
-    delimiting '---' lines. Raises ValueError when text has no closed
-    leading frontmatter block."""
-    if not text.startswith("---"):
-        raise ValueError("agent file has no leading frontmatter block")
-    end = text.find("\n---", 3)
-    if end == -1:
-        raise ValueError("agent file's frontmatter block is never closed")
-    frontmatter = text[3:end].strip("\n")
-    body = text[end + 4:]
-    return frontmatter, body
+    delimiting '---' lines. A leading U+FEFF is dropped, so the rendered arm starts with ---.
+    Raises ValueError when text has no closed
+    leading frontmatter block, or its closer does not start a line."""
+    block, body = run_skill_evals.split_agent_frontmatter(text)
+    return block.strip("\n"), body
 
 
 def _parse_tools_field(frontmatter: str) -> frozenset[str]:
-    match = re.search(r"(?m)^tools:\s*(.+?)\s*$", frontmatter)
-    if not match:
-        return frozenset()
-    return frozenset(t.strip() for t in match.group(1).split(",") if t.strip())
+    declared_tools = run_skill_evals.parse_frontmatter_block(frontmatter).get("tools")
+    return run_skill_evals.declared_tool_names(declared_tools) or frozenset()
 
 
 def _replace_frontmatter_field(frontmatter: str, field: str, value: str) -> str:
@@ -89,6 +92,26 @@ def _replace_frontmatter_field(frontmatter: str, field: str, value: str) -> str:
     if pattern.search(frontmatter):
         return pattern.sub(f"{field}: {value}", frontmatter, count=1)
     return frontmatter + f"\n{field}: {value}"
+
+
+def _check_rendered_frontmatter(frontmatter: str, lens: str) -> None:
+    """Raise ArmSnapshotError unless the rendered frontmatter parses and reads back as this arm's
+    name, model and tools."""
+    try:
+        rendered_fields = run_skill_evals.parse_frontmatter_block(frontmatter)
+    except ValueError as exc:
+        raise ArmSnapshotError(f"{lens}: rendered frontmatter does not read back: {exc}") from exc
+    expected_fields = {"name": f"bench-{lens}", "model": ARM_MODEL_FRONTMATTER_VALUE, "tools": ", ".join(ARM_TOOLS)}
+    differing_fields = [
+        f"{field} read back as {rendered_fields.get(field)!r}, expected {expected_value!r}"
+        for field, expected_value in expected_fields.items()
+        if rendered_fields.get(field) != expected_value
+    ]
+    if differing_fields:
+        raise ArmSnapshotError(
+            f"{lens}: rendered frontmatter does not read back as the arm's name, model and tools: "
+            + "; ".join(differing_fields)
+        )
 
 
 def _substitute_read_clause(body: str, lens: str) -> str:
@@ -103,26 +126,29 @@ def _substitute_read_clause(body: str, lens: str) -> str:
 
 
 def _production_agent_text(lens: str, agents_dir: Path) -> str:
-    return (agents_dir / f"{lens}.md").read_text()
+    return (agents_dir / f"{lens}.md").read_text(encoding="utf-8")
 
 
 def render_arm_agent(arm: str, lens: str, *, agents_dir: Path = AGENTS_DIR) -> str:
     """Render one lens's `bench-<lens>.md` text for `arm` from its
     production agent file under `agents_dir`.
 
-    Fails loudly (ArmSnapshotError) unless production's `tools:` holds
-    every ARM_TOOLS entry, and, for ARM_FUNCTION_CONTEXT, unless the lens's
-    read clause matches exactly once in the production body.
+    Raises ArmSnapshotError for the failures that class lists.
     """
     if arm not in KNOWN_ARMS:
         raise ValueError(f"unknown arm {arm!r}, expected one of {sorted(KNOWN_ARMS)}")
     if lens not in LENS_READ_CLAUSES:
         raise ValueError(f"{lens!r} has no known read clause -- not one of the seven lenses the review bench covers")
 
-    text = _production_agent_text(lens, agents_dir)
-    frontmatter, body = _split_frontmatter(text)
-
-    declared_tools = _parse_tools_field(frontmatter)
+    try:
+        text = _production_agent_text(lens, agents_dir)
+    except UnicodeDecodeError as exc:
+        raise ArmSnapshotError(f"{lens}: production agent file is not valid UTF-8: {exc}") from exc
+    try:
+        frontmatter, body = _split_frontmatter(text)
+        declared_tools = _parse_tools_field(frontmatter)
+    except ValueError as exc:
+        raise ArmSnapshotError(f"{lens}: production frontmatter is unreadable: {exc}") from exc
     missing_tools = set(ARM_TOOLS) - declared_tools
     if missing_tools:
         raise ArmSnapshotError(
@@ -136,6 +162,9 @@ def render_arm_agent(arm: str, lens: str, *, agents_dir: Path = AGENTS_DIR) -> s
     frontmatter = _replace_frontmatter_field(frontmatter, "name", f"bench-{lens}")
     frontmatter = _replace_frontmatter_field(frontmatter, "model", ARM_MODEL_FRONTMATTER_VALUE)
     frontmatter = _replace_frontmatter_field(frontmatter, "tools", ", ".join(ARM_TOOLS))
+    # The field edits are line-level, so a multi-line, nested or repeated production field
+    # can render a value other than the one written.
+    _check_rendered_frontmatter(frontmatter, lens)
 
     # body already retains the closing fence's own trailing newline (see
     # _split_frontmatter) -- no "\n" is inserted here, or the reconstructed
@@ -156,7 +185,7 @@ def install_arm(rendered: dict[str, str], agents_dir: Path) -> None:
     copy the snapshot files themselves (runner.build_defect_fixture_spec)."""
     agents_dir.mkdir(parents=True, exist_ok=True)
     for lens, text in rendered.items():
-        (agents_dir / f"bench-{lens}.md").write_text(text)
+        (agents_dir / f"bench-{lens}.md").write_text(text, encoding="utf-8")
 
 
 def write_arm_snapshot(arm: str, dest_dir: Path, *, lenses: list[str] | None = None) -> None:

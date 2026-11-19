@@ -138,7 +138,7 @@ _walk_session() {
   # so this file's own error message stays specific to marker.sh's context.
   local out
   out=$(_lib_resolve_claude_pid) || {
-    printf 'marker.sh: SESSION_ID empty — capture-session-id.sh SessionStart hook did not run. Abort without writing a marker.\n' >&2
+    printf 'marker.sh: SESSION_ID empty — no live session file found for this process or its ancestors (usual causes: the capture-session-id.sh SessionStart hook did not run, its file is stale, or ps could not read the process table). Abort without writing a marker.\n' >&2
     return 2
   }
   printf '%s' "$out"

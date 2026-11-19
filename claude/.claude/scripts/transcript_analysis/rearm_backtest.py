@@ -18,6 +18,7 @@ from pathlib import Path
 from transcript_analysis import handoff_nudge, render, scope
 
 _REARM_BACKTEST_DEFAULT_SPACINGS: tuple[int, ...] = (40_000, 80_000, 120_000)
+_REARM_BACKTEST_DEFAULT_SPACINGS_ARG: str = ",".join(str(spacing) for spacing in _REARM_BACKTEST_DEFAULT_SPACINGS)
 
 
 def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
@@ -253,7 +254,7 @@ def _parse_rearm_spacings_arg(args: argparse.Namespace) -> list[int]:
     """Parse --spacings' comma-separated token list into a list of positive
     ints, defaulting to _REARM_BACKTEST_DEFAULT_SPACINGS. Exits 2 on a
     non-integer or non-positive value."""
-    raw: str = getattr(args, "spacings", None) or ",".join(str(s) for s in _REARM_BACKTEST_DEFAULT_SPACINGS)
+    raw: str = getattr(args, "spacings", None) or _REARM_BACKTEST_DEFAULT_SPACINGS_ARG
     spacings: list[int] = []
     for token in raw.split(","):
         token = token.strip()
@@ -595,7 +596,7 @@ def _add_rearm_backtest_subparser(subparsers: argparse._SubParsersAction) -> Non
         ),
     )
     p_rearm_backtest.add_argument(
-        "--spacings", metavar="N1,N2,...", default="40000,80000,120000",
-        help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: 40000,80000,120000).",
+        "--spacings", metavar="N1,N2,...", default=_REARM_BACKTEST_DEFAULT_SPACINGS_ARG,
+        help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: %(default)s).",
     )
     p_rearm_backtest.set_defaults(func=cmd_rearm_backtest)

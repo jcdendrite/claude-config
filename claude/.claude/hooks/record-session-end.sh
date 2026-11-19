@@ -20,11 +20,17 @@ set -uo pipefail
 #   undocumented upstream and verified only by manual testing (see
 #   .claude/plans/detect-clean-exit-vs-crash.md).
 #
+# Cursor decline: the hook writes no record for an untranslated Cursor payload, as
+# _lib_declines_untranslated_cursor_payload decides.
+#
 # Failure mode: every failure path exits 0, with a one-line diagnostic to
 # stderr only.
 #
 # Per-fire cost: a conditional `ps` shellout (inside _lib_hook_claude_pid,
-# when $CLAUDE_PID is set and numeric) plus jq and find. See the script
+# when $CLAUDE_PID is set and numeric) plus jq and find. The Cursor-payload
+# decline adds one more capped jq call, after the session-id checks. The host
+# walk then also runs, two capped `ps` reads per hop, when that check matches
+# and CLAUDECODE is set. A failed jq check counts as a match. See the script
 # below for the exact call sequence.
 #
 # SessionEnd hooks share a 1.5s default execution budget across every
@@ -33,8 +39,9 @@ set -uo pipefail
 # per-hook `timeout` field raises that budget, up to a 60s ceiling.
 # settings.json sets `"timeout": 10` on this hook's registration for that
 # reason. The self-sweep below is capped at 2s, or 4s counting _lib_capped_for's
-# -k SIGKILL grace. The per-fire cost above is comfortably sub-second, and 10
-# is well under the 60s ceiling.
+# -k SIGKILL grace. The per-fire cost above is comfortably sub-second for a
+# Claude Code payload, which skips the host walk, and 10 is well under the 60s
+# ceiling.
 #
 # Two 5s-capped _lib_jq calls run before the first exit gate that depends on
 # jq output, so a systemic jq stall exhausts that 10s budget after two calls:
@@ -67,6 +74,12 @@ if [ -z "$SESSION_ID" ]; then
 fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   echo "[record-session-end] session_id is not a valid path component; no SessionEnd record written" >&2
+  exit 0
+fi
+
+# An import copy of this hook declines to write a SessionEnd record for a Cursor payload.
+if _lib_declines_untranslated_cursor_payload "$INPUT"; then
+  echo "[record-session-end] untranslated Cursor payload declined; no SessionEnd record written" >&2
   exit 0
 fi
 

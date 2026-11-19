@@ -22,6 +22,7 @@ from helpers import (
     git_toplevel,
     init_git_repo_with_commit,
     install_shell_exec_guard,
+    install_unwarmed_stub_guard,
     live_process,
     run_autonomous_shipping_statement,
     scaled_shim_sleep,
@@ -29,6 +30,8 @@ from helpers import (
     write_prewarmed_stub,
     write_scaled_timeout_shim,
 )
+
+from ._cursor_identity_fixtures import clear_adapter_environment
 
 # Shim sleep duration for the git/gh-timeout regression tests below: long
 # enough that a broken (uncapped) call site never returns before the
@@ -453,11 +456,13 @@ def gh_timeout_shim(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _guard_shell_exec(monkeypatch):
+def _guard_shell_exec(monkeypatch, tmp_path_factory):
     """Fail a test that execs a shell file in a way that can pass without the file running.
     The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
-    fixture because importing one into a conftest trips ruff F401."""
+    fixture because importing one into a conftest trips ruff F401.
+    It also fails a launch under the scaled timeout shim whose PATH holds a stub write_prewarmed_stub did not write."""
     install_shell_exec_guard(monkeypatch)
+    install_unwarmed_stub_guard(monkeypatch, tmp_path_factory.getbasetemp())
 
 
 @pytest.fixture(autouse=True)
@@ -470,6 +475,18 @@ def _clear_claude_pid_env(monkeypatch):
     isolated_home precedent below for a var that may not be set.
     """
     monkeypatch.delenv("CLAUDE_PID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_adapter_env(monkeypatch):
+    """_lib_adapter_session_pair reads CLAUDE_CONFIG_ADAPTER_SESSION_ID and
+    CLAUDE_CONFIG_ADAPTER_HOST_PID from its own environment. A suite run from a
+    Cursor agent's Shell call inherits both, and the test runners below copy
+    the parent environment wholesale, so a real value would resolve an identity
+    the test never set. test_cursor_adapter_hooks_env_scrub.py runs this
+    fixture's own test.
+    """
+    clear_adapter_environment(monkeypatch)
 
 
 @pytest.fixture

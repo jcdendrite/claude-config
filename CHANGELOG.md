@@ -6,6 +6,25 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**
+  - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.
+  - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`.
+  - Another hook's block goes unrecognized there. Description fidelity can read its echoed prompt as a skill hit, and the disposition sample can judge it as a review.
+  - The main session rule adherence gate is unchanged: it pauses on a blocked prompt, and `--resume` reruns it.
+- **`check-skill-length.sh` gives `subagent-delegation/SKILL.md` a line cap of 218, above the 200-line default.** Splitting the skill's run-on `review-orchestrator` protocol lines into lists needed more lines than the default cap left, and the protocol could not move out of the skill. Other skills' caps are unchanged. The change is live on `git pull`.
+- **The evals harness reads SKILL.md and agent frontmatter with PyYAML, and the documented evals commands now run through `scripts/venv-run.sh python3`.** Plugin bumped: `skill-management` 5.1.0 → 5.1.1.
+  - A quoted `description` no longer keeps its quotes in the description-fidelity listing.
+  - `measure_subagent_model_resolution.py` reads a quoted `model:` value and one followed by a comment.
+  - `snapshot-arms` fails when a lens's rendered frontmatter does not read back as the arm's name, model and tools, and when a lens's frontmatter closes at a `---` that does not start a line.
+  - `/skill-review`'s eval command is the plugin's only change, hence the patch bump.
+  - **Migration:** in claude-config, run `claude plugin install skill-management@claude-config --scope project`, then `/reload-plugins` (or restart Claude Code). A consuming repo can skip the refresh, because the edited command runs only in claude-config.
+- **`review-ledger.sh append` now records the git state each row was appended against.**
+  - Each new row stores `reviewed_head` (HEAD's commit) and `reviewed_tree` (the index as a tree object), and `schema_version` is now 6.
+  - A field is empty when git cannot produce it, and a failed capture never stops the append. `append` prints a stderr line for an empty field unless git reported no HEAD commit, no index file or an unmerged index.
+  - Each append writes the index's tree objects into the repository's object store, from a copy of the index and under the invoking shell's umask. It pins each recorded tree under the local ref `refs/review-ledger/<YYYY-MM>/<tree id>`, so `git gc` keeps it. `reviewed_head` is not pinned, and nothing expires a pin.
+  - `/code-review` now appends a round's ledger rows before it dispatches or applies any fix.
+  - `docs/scripts.md`'s `review-ledger.sh` entry states how to compare two rounds, how long a recorded id resolves, what the pins keep, how to measure and audit them, how to delete a month's pins, and the other limits.
+  - The change is live on `git pull`. A consumer cannot turn pinning off without editing a tracked file, so reverting this change is the off-switch, and the revert leaves the pins already written.
 - **The `skill-management` structural validator now reports a frontmatter block with no closing `---` line, or one that is not a YAML mapping, as one violation line instead of exiting with a traceback.** Plugin bumped: `skill-management` 5.0.2 → 5.1.0.
   - A falsy non-mapping block such as `[]` used to pass and is now denied, hence the minor bump.
   - The corpus-budget warning skips a non-mapping file, which used to raise or count as a skill with no description.
@@ -23,6 +42,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A cancelled run, whether superseded or cancelled by hand, now reports `tests` as failed, not cancelled.
   - A newer push to `main` no longer cancels a `main` run that has started.
   - `claude/.claude/hooks/tests/test_ci_workflow_gates.py` replaces `test_ci_watch_workflow_parity.py`.
+- **`comment-discipline-reviewer`'s fix for a false claim is now the narrowest statement the subject supports, less what the restating-the-code check would delete, and a claim with nothing left is deleted.**
+  - `/code-review` output item 5 now names the text to delete, not the lines, for prose that restates the code.
+  - The restating pointer now reads "what reading the code shows".
+  - In the 2026-11-15 acceptance cell, a true docstring on a function that only calls another function was deleted in 5 of 10 runs, against a bar of at least 8 of 10 after the K=10 re-run. In the limit-note cell, a true note was deleted in 4 of 5 runs, and that cell has no bar. For the limit-note cell the cause is not isolated, because the False bullet and the restating pointer changed together. See `docs/design-decisions/false-or-unsourced-claim-checks.md`.
+  - The change is live on `git pull`.
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
   - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
@@ -710,6 +734,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **`show --out` writes a 0600 copy of the ledger rows to `agent-reviews/review-history-<slug>.md`, engineer quotes included.** The file stays until a zero-row `show --out` to the same path, a failure after the delete, or the worktree's removal, beyond the ledger's sweep and reset.
   - **`render --out` now refuses a target that git does not confirm is ignored, with exit 2.** The refusal covers a target with no matching ignore entry, one that a negating pattern re-includes, and one that is tracked.
   - **Re-run `./install.sh` after pulling if `~/.claude/hooks` is a real directory.** A `git pull` alone does not link the new hook into an existing stowed directory, so the hook stays unlinked until you re-stow.
+- **A design-decision entry records that parts 1, 2 and 4 of the defect-class exit rule from issue 1428 are declined for the `/code-review` fix loop, and that part 3 stays unevaluated.** See `docs/design-decisions/defect-class-exit-rule.md`.
 - **A design-decision entry records that no finding class became non-blocking in a cumulative `/code-review` pass.** See `docs/design-decisions/cumulative-review-exempts-no-finding-class.md`.
 - **The full `cost` report under `--branches` prints one audit line for the leading default-branch turns and dollars credited to the filter.** It never prints under `--summary` or `--share-only`, and it audits only the pre-branch shift, not the subagent one.
 - **`review-orchestrator` agent, which runs one `/code-review` round per dispatch in its own context.** Its instructions have it send every fix to `code-writer` and write the code-review marker only on a round with no fix. No hook enforces either rule, and like a `general-purpose` dispatch it can write or activate any marker that `permissions.allow` pre-approves. Its trigger is explicit-request-only: it fires only when you ask for a `/code-review` through it, and no session is told to use it otherwise. The dispatching session's protocol lives in `subagent-delegation`'s gate/review-loop section. See `docs/design-decisions/review-orchestrator-gate-release-decoupling.md`.

@@ -54,10 +54,10 @@ wiring, no per-token charge on Max plan.
 
 ```bash
 # Run the 4 pilot skills (runtime, description-fidelity, and behavioral-dispatch):
-python evals/run_skill_evals.py --skill code-review --skill test-conventions --skill test-evaluation --skill subagent-delegation
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill code-review --skill test-conventions --skill test-evaluation --skill subagent-delegation
 
 # Run a single skill after editing its TRIGGER block:
-python evals/run_skill_evals.py --skill <name>
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill <name>
 ```
 
 See `evals/README.md` for the full usage guide, output format, and how to

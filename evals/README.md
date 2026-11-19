@@ -38,30 +38,32 @@ because the tests of code that shells out to `claude` or `gh` substitute those c
 
 ## Usage
 
+In every command in this file, `scripts/venv-run.sh python3` runs the [contributor `.venv`](../README.md#tests), which carries the PyYAML these scripts import.
+
 ```bash
 # Run all skills that have a trigger-cases.json:
-python evals/run_skill_evals.py
+scripts/venv-run.sh python3 evals/run_skill_evals.py
 
 # Run one skill:
-python evals/run_skill_evals.py --skill code-review
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill code-review
 
 # Run the test-conventions / test-evaluation adjacency pair:
-python evals/run_skill_evals.py --skill test-conventions --skill test-evaluation
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill test-conventions --skill test-evaluation
 
 # Tune sampling:
-python evals/run_skill_evals.py --skill code-review --samples 5
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill code-review --samples 5
 
 # Spot-compare with Opus:
-python evals/run_skill_evals.py --skill code-review --model claude-opus-4-7
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill code-review --model claude-opus-4-7
 
 # Verbose (prints each case as it completes):
-python evals/run_skill_evals.py --verbose
+scripts/venv-run.sh python3 evals/run_skill_evals.py --verbose
 
 # Warm behavioral-dispatch (physically primes context window via real Read calls):
-python evals/run_skill_evals.py --skill subagent-delegation --warm-dispatch --samples 30
+scripts/venv-run.sh python3 evals/run_skill_evals.py --skill subagent-delegation --warm-dispatch --samples 30
 
 # Write machine-readable results:
-python evals/run_skill_evals.py --json /tmp/results.json
+scripts/venv-run.sh python3 evals/run_skill_evals.py --json /tmp/results.json
 ```
 
 Default model: `claude-sonnet-4-6`. Sonnet is a stricter classifier than Opus,
@@ -97,7 +99,8 @@ summary: 2 skills, 7 cases | pass 5/7 | review the 2 FAIL cases above
 - Under `description-fidelity` the `triggers` / `does-not-trig` per-case label
   reads as "the classifier named this skill" / "named a different skill or
   none" — there is no live dispatch in that mode.
-- Exit code is always `0` — measurement, not a gate.
+- A completed run exits `0` — measurement, not a gate — unless a hook blocks a
+  `claude -p` prompt (see "A prompt blocked by a hook").
 
 **Noise floor.** Triggering is probabilistic, so the pass rate carries sampling
 noise. At `K=10` a case that genuinely triggers ~60% of the time still reads
@@ -392,6 +395,16 @@ behavioral-dispatch) are unit-tested offline (synthetic inputs, no `claude -p`)
 in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 `evals/fixtures/`.
 
+## A prompt blocked by a hook
+
+A blocked `claude -p` prompt exits `0` and makes no model turn, so an instrument that scored it would count a miss.
+
+- No instrument here scores a blocked prompt as a model miss, except a plain-text block that carries no recognized prefix (last bullet).
+- `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate abort with a nonzero exit and lose the results not yet written.
+- Review bench records a blocked run as missing, with the hook's reason. It stops on the same all-missing condition as any other missing run.
+- The main session rule adherence gate pauses on a blocked prompt, and `--resume` reruns it.
+- `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`. Another hook's block goes unrecognized there. Description fidelity can read its echoed prompt as a skill hit, and the disposition sample can judge it as a review.
+
 ## Linting
 
 CI lints `evals/` with the rest of the repo. The local command lives in the
@@ -413,13 +426,13 @@ this is a pointer, not a restatement.
 
 ```bash
 # Print the nine-run matrix without launching anything:
-python evals/measure_subagent_model_resolution.py --list
+scripts/venv-run.sh python3 evals/measure_subagent_model_resolution.py --list
 
 # Run a single matrix cell (1-9):
-python evals/measure_subagent_model_resolution.py --run 1
+scripts/venv-run.sh python3 evals/measure_subagent_model_resolution.py --run 1
 
 # Run the full matrix in order (stops if run 1's self-check fails):
-python evals/measure_subagent_model_resolution.py --all --json results.json
+scripts/venv-run.sh python3 evals/measure_subagent_model_resolution.py --all --json results.json
 ```
 
 Tests: `evals/test_measure_subagent_model_resolution.py`, fixture-based, no
@@ -451,11 +464,11 @@ startup.
 
 ```bash
 # Build every dispatch command and prompt without launching anything:
-python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json --dry-run
+scripts/venv-run.sh python3 evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json --dry-run
 
 # Run the gate for real (K=5 samples per case per model by default),
 # writing the full report:
-python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
+scripts/venv-run.sh python3 evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
   --repo-dir /path/to/clean/checkout --json /tmp/results.json
 ```
 
@@ -546,15 +559,15 @@ the emitter, every arm receives the rules by hook, so the preflight refuses.
 
 ```bash
 # Print the schedule and launch nothing:
-python evals/measure_main_session_rule_adherence.py --phase calibrate --dry-run
+scripts/venv-run.sh python3 evals/measure_main_session_rule_adherence.py --phase calibrate --dry-run
 
 # Run the calibration, with every output outside the repository:
 mkdir -p /tmp/msra
-caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibrate \
+caffeinate -i scripts/venv-run.sh python3 evals/measure_main_session_rule_adherence.py --phase calibrate \
   --run-log /tmp/msra/run.jsonl --json /tmp/msra/result.json --keep-artifacts /tmp/msra/streams
 
 # Continue an interrupted or paused run:
-caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibrate \
+caffeinate -i scripts/venv-run.sh python3 evals/measure_main_session_rule_adherence.py --phase calibrate \
   --resume /tmp/msra/run.jsonl --json /tmp/msra/result.json --keep-artifacts /tmp/msra/streams
 ```
 
@@ -710,37 +723,37 @@ or newer; see `review_bench/local_git.py`.
 
 ```bash
 # Mine defect candidates (mine-rounds first -- transcripts age out):
-python evals/run_review_bench.py mine-rounds
-python evals/run_review_bench.py mine-pr-comments
-python evals/run_review_bench.py mine-szz
+scripts/venv-run.sh python3 evals/run_review_bench.py mine-rounds
+scripts/venv-run.sh python3 evals/run_review_bench.py mine-pr-comments
+scripts/venv-run.sh python3 evals/run_review_bench.py mine-szz
 
 # Triage every candidate at the [y/n/q] prompt (needs a terminal):
-python evals/run_review_bench.py confirm
+scripts/venv-run.sh python3 evals/run_review_bench.py confirm
 
 # Snapshot both frozen arms from production at the freeze commit:
-python evals/run_review_bench.py snapshot-arms
+scripts/venv-run.sh python3 evals/run_review_bench.py snapshot-arms
 
 # Dry-run one defect against the real CLI, with optional fault injection:
-python evals/run_review_bench.py smoke --defect-id <id> --k 2 --inject-fault wrong-agent
+scripts/venv-run.sh python3 evals/run_review_bench.py smoke --defect-id <id> --k 2 --inject-fault wrong-agent
 
 # The real campaign (baseline or a later arm's rerun):
-python evals/run_review_bench.py run --k 10 --records-dir evals/review_bench/.local/runs
+scripts/venv-run.sh python3 evals/run_review_bench.py run --k 10 --records-dir evals/review_bench/.local/runs
 
 # Judge a completed reviewer campaign:
-python evals/run_review_bench.py judge --reviewer-records-path evals/review_bench/.local/runs/<campaign>.jsonl
+scripts/venv-run.sh python3 evals/run_review_bench.py judge --reviewer-records-path evals/review_bench/.local/runs/<campaign>.jsonl
 
 # Export, then import, the human spot-check:
-python evals/run_review_bench.py spot-check export \
+scripts/venv-run.sh python3 evals/run_review_bench.py spot-check export \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl>
-python evals/run_review_bench.py spot-check import \
+scripts/venv-run.sh python3 evals/run_review_bench.py spot-check import \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --labels-path <labels.json>
 
 # Freeze the harness (run once, after a passing smoke campaign):
-python evals/run_review_bench.py freeze --k 10 --campaign-seed 0 \
+scripts/venv-run.sh python3 evals/run_review_bench.py freeze --k 10 --campaign-seed 0 \
   --last-smoke-manifest-hash <hash from smoke's own output> --smoke-full-k 10
 
 # Compute a campaign's verdicts:
-python evals/run_review_bench.py analyze \
+scripts/venv-run.sh python3 evals/run_review_bench.py analyze \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --k 10
 ```
 
