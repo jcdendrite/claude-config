@@ -179,8 +179,7 @@ def _fmt_measure(measure: str, value: float | None) -> str:
 
 
 def _scope_header(all_accounts: bool, ledger_path_overridden: bool) -> str:
-    """The override label omits the variable's value and any path. It reads "account scope unverified" because one file
-    may hold several accounts."""
+    """The override label reads "account scope unverified" because one file may hold several accounts."""
     if ledger_path_overridden:
         account_scope = "PR_COST_LEDGER_PATH file, account scope unverified"
     else:

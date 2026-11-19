@@ -593,9 +593,8 @@ def _new_pr_cost_row(
 
 def _review_round_counts(review_rounds_cell: dict | None) -> tuple[int, ...] | None:
     """Each review skill's rounds not flagged after_merge, in review_rounds.REVIEW_SKILLS order, or None for a row with
-    no cell. A round with no flag counts, because the writer omits the flag only when it cannot place the round
-    against the merge. The count ignores the cell's `rule` and the row's `join_confidence`, so it can differ from a
-    ledger view's."""
+    no cell. The count ignores the cell's `rule` and the row's `join_confidence`, so it can differ from a ledger
+    view's."""
     if review_rounds_cell is None:
         return None
     rounds_by_skill = review_rounds_cell["rounds"]

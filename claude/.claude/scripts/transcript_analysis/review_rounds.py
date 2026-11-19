@@ -45,7 +45,9 @@ _REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
 
 # Stamped into pr-cost ledger review_rounds cells; bump it with any change to which records open a round, where a
 # window ends, which branch a round goes to, or which turns and dispatches it prices. ledger_rounds excludes every
-# cell stamped with another value, so a bump drops older rows from its reports until a forced re-capture.
+# cell stamped with another value, so a bump drops every older row from its reports. A forced re-capture cannot restore
+# a row whose sessions have all aged out, and restores a partly aged one undercounted;
+# see `docs/pr-cost.md` § "The re-record contract".
 REVIEW_ROUND_RULE: int = 1
 
 

@@ -46,6 +46,8 @@ class _PricedRounds(NamedTuple):
 
 
 def _round_is_after_merge(review_round: dict) -> bool:
+    """A round with no after_merge flag reads as before the merge, because the writer omits the flag only when it cannot
+    place the round against the merge (see `docs/pr-cost.md` § "The `review_rounds` cell")."""
     return review_round.get("after_merge") == 1
 
 
@@ -106,8 +108,7 @@ def select_ledger_prs(rows_by_account: Sequence[Sequence[dict]], host: str, repo
     """The PRs whose single current row can be trusted for `host` and `repo`, with the rest counted by reason.
 
     A degraded status excludes nothing, because a row's size and rounds do not come from the enrichment call that
-    status reports on. A round with no after_merge flag stays, because the writer omits the flag only when it
-    cannot place the round against the merge.
+    status reports on.
     """
     rows_by_pr: dict[int, list[dict]] = {}
     for row in _current_rows_for_repo(rows_by_account, host, repo):

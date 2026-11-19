@@ -1,6 +1,4 @@
-"""Test helpers shared by the pr-cost family's test files (test_transcript_pr_cost*.py,
-test_transcript_gh_cli.py, test_transcript_ledger_common.py) and by the ledger reader's consumers
-(test_transcript_ledger_rounds.py, test_transcript_review_cost_by_size.py, test_transcript_pricing.py)."""
+"""Test helpers for the pr-cost command and its ledger."""
 from __future__ import annotations
 
 import json

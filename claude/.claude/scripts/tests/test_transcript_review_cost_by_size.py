@@ -763,9 +763,8 @@ class TestCmdArithmeticAndDiagnostics:
     def test_the_sums_cover_the_reported_code_review_rounds_alone(
         self, fake_projects, monkeypatch, capsys, reported_invalid_usage_records,
     ):
-        """Five rounds carry distinct counts: the reported code-review round, an after-merge code-review round, the
-        kept PR's plan-review round and its after-merge plan-review round, and an excluded PR's round. Only the first
-        reaches the sums."""
+        """Every round carries distinct counts, so a sum that took in any round but the reported code-review one would
+        print a different figure."""
         reported = _ledger_round(unpriced_turns=3, dangling=5, invalid_usage_records=reported_invalid_usage_records)
         after_merge = _ledger_round(unpriced_turns=700, dangling=1_100, invalid_usage_records=1_300, after_merge=1)
         plan_review = _ledger_round(unpriced_turns=17, dangling=19, invalid_usage_records=23)

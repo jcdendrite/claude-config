@@ -43,9 +43,11 @@ _CACHE_READ_MULTIPLIER_OVERRIDES: dict[str, float] = {
 # Multipliers applied to every dollar class when usage.speed/usage.inference_geo
 # report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
 # and .../about-claude/pricing's data-residency section.
-# A new multiplier condition in _price_turn must also become a _pricing_variant outcome, a _PRICING_VARIANTS label and a
-# _USAGE_FIELDS_BY_PRICING_VARIANT entry. Without the first two, pr-cost ledger cells file its turns under the wrong
-# variant. Without the entry, _usage_for_token_group cannot rebuild that variant and re-pricing excludes the PR.
+# A new multiplier condition in _price_turn also needs:
+# - A _pricing_variant outcome and a _PRICING_VARIANTS label, or pr-cost ledger cells file the condition's turns
+#   under the wrong variant.
+# - A _USAGE_FIELDS_BY_PRICING_VARIANT entry, or _usage_for_token_group cannot rebuild the variant and re-pricing
+#   excludes the PR.
 _FAST_MODE_RATE_MULTIPLIER = 2
 _INFERENCE_GEO_US_RATE_MULTIPLIER = 1.1
 

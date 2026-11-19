@@ -1493,14 +1493,19 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - Unpriced turns and dangling dispatches inside the reported rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both. Only the reported PRs' `code-review` rounds before merge add to them.
 - A `MALFORMED USAGE` line prints after the dangling-dispatches line, only when nonzero: `MALFORMED USAGE — <n> usage-bearing turns inside reported rounds had non-numeric or negative token fields and were excluded from this report's dollars`. Those turns are missing from the dollar figures too. The **Round detection caveats.** list under `review-round-cost` defines the exclusion.
 
-**Header.** `REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; active account only)`, or `every declared account` under `--all-accounts`. Under a non-empty `PR_COST_LEDGER_PATH`, both modes print `PR_COST_LEDGER_PATH file, account scope unverified` in that slot, with no path or value: every account that ran `pr-cost --record` under the variable wrote that one file, so the file is not verified to hold one account. A scope-unverified notice follows the header on every run. In default mode a one-line publication pointer follows the notice. `--all-accounts` prints the private-view banner and no pointer.
+**Header.** `REVIEW COST BY SIZE SOURCES (pr-cost ledger rows for this checkout's origin; <scope>)`, where `<scope>` is:
+- `active account only` by default.
+- `every declared account` under `--all-accounts`.
+- `PR_COST_LEDGER_PATH file, account scope unverified` under a non-empty `PR_COST_LEDGER_PATH`, in both modes. Every account that ran `pr-cost --record` under the variable wrote that one file, so the file is not verified to hold one account. The label prints no path and no value of the variable.
+
+A scope-unverified notice follows the header on every run. In default mode a one-line publication pointer follows the notice. `--all-accounts` prints the private-view banner and no pointer.
 
 **Known limits.**
 - A PR's size is its final merged size, not the size each round read, so an early round's dollars are set against changes made after it ran.
 - A PR enters the aggregates only with at least one `code-review` round before merge, so rounds per PR floors at 1. `PRs with no code-review round before merge` counts the PRs left out.
 - Bucket medians resolve only at the bucket edges above, so a threshold inside a bucket reads from the per-PR rows.
 - A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost (see "Round detection caveats" under `review-round-cost`): fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
-- Because the dollars come from the rate table as it stands at read time and the command prints no `STALE PRICING` banner, unlike `cost`, treat them as stale once today is past the earliest `_MODEL_RATE_EXPIRES` re-verify-by date in `transcript_analysis/pricing.py`.
+- Treat the dollars as stale once today is past the earliest `_MODEL_RATE_EXPIRES` re-verify-by date in `transcript_analysis/pricing.py`. They come from the rate table as it stands at read time, and unlike `cost` the command prints no `STALE PRICING` banner.
 - Only recorded PRs appear, and a PR is recorded only after its merge, the as-of window and a `pr-cost --record` run. A PR with no row is absent.
 - The writer's bulk discovery lists at most 1000 merged PRs per run (`gh pr list --limit 1000`), so a PR beyond that cap is never recorded, and a branch name reused by a PR beyond it can carry the older PR's rounds.
 - A row captured after some of its sessions aged out of Claude Code's retention undercounts its rounds, and no field marks it. A row recorded before the `review_rounds` column existed is excluded.

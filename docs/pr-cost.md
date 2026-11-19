@@ -67,7 +67,7 @@ A later column follows the same shape: freeze the outgoing header and document t
 ### The `review_rounds` cell
 
 - **Readers.** `review-cost-by-size` reads the cell. Read mode prints three per-skill round counts from it, `code-review-rounds`, `plan-review-rounds` and `ready-for-review-rounds`, and no other part of the cell. It is also reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON. Read mode's columns have these properties:
-  - Each column counts that skill's rounds not flagged `after_merge`, so a round with no flag counts too. The writer omits the flag only when it cannot place the round against the merge.
+  - Each column counts that skill's rounds not flagged `after_merge`, so a round with no flag counts too.
   - A row with no cell prints `-` in all three columns. `0` means no rounds were counted, not that none ran, so it can also follow a capture that missed rounds (see "Absence" below). A skill the writer did not track also prints `0`.
   - The columns describe the row under any `rule` or `join_confidence`, so they are not the count a ledger view reports for that PR.
   - A PR refilled by `--record --force --pr N` shows both its older `-` row and its new counted row.
