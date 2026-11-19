@@ -231,6 +231,32 @@ CORPUS: list[tuple[str, bool]] = [
     ("Want me to commit this now that the build passed?", True),  # failed twin
     ("Want me to commit the fix for this typo?", True),  # error twin
     ("Want me to push this while the release is pending?", True),  # blocked twin
+    # Known gap: OBJECT_RE has no word boundaries, so an object token inside another word or phrase fires when
+    # the final sentence also carries a permission verb (commit-stall-block.md).
+    ("Should I push back on the spec change?", True),  # known gap: "push back", phrase-level
+    ("Want me to raise the commitment question with the team?", True),  # known gap: "commitment", word-boundary
+    ("Should I add push notification support next?", True),  # known gap: "push notification", phrase-level
+    ("Let me know if the committee wants a different layout.", True),  # known gap: "committee", word-boundary
+    ("Want me to open a project?", True),  # known gap: "open a PR" matches inside "open a project", word-boundary
+    # Known gap: "create a PR" matches inside "create a profile page", word-boundary.
+    ("Want me to create a profile page?", True),
+    # Known gap: VERB_RE "should I" has no trailing word boundary, so "should include" matches.
+    ("The fix should include a commit.", True),
+    # Real stalls: the inflected stems "committing" and "pushing" fire only through the bare-substring match, so a
+    # word-boundary fix to OBJECT_RE must stay stem-aware.
+    ("Want me to start committing this?", True),
+    ("Shall I start pushing this?", True),
+    # Real stalls whose only object is a PR alternative, so a word-boundary fix to OBJECT_RE must keep them firing.
+    ("Should I open a PR?", True),
+    ("Want me to open the PR?", True),
+    ("Want me to create a PR?", True),
+    # Known gap: EXCLUDE_RE has no word boundaries either, so an exclusion token inside another word, or a whole
+    # word in an unrelated sense, silences a real stall (commit-stall-block.md).
+    # Known gap: real stall silenced by a whole-word, unrelated-sense exclusion match (error).
+    ("Want me to commit the error handling changes?", False),
+    ("Want me to push the emergency fix?", False),  # known gap: real stall silenced by in-word exclusion match (merge)
+    # Known gap: real stall silenced by an in-word exclusion match (blocked in "unblocked").
+    ("Want me to commit this now that CI is unblocked?", False),
 ]
 
 
@@ -433,10 +459,8 @@ def test_known_gap_explicit_false_is_ignored_when_schema_unreadable_exit_3(
     Honoring it there is a deliberate behavior change that flips this test.
 
     Direct regression test for the case "$?" statement itself (advance-
-    past-commit-stall.sh step 2). Pins that commit_stall_block = false is
-    not honored while config-keys.psv is unreadable: see
-    config-schema-audit.md's commit_stall_block section for the fail-direction
-    rationale and docs/commit-stall-block.md for the gap.
+    past-commit-stall.sh step 2). See config-schema-audit.md's
+    commit_stall_block section for the fail-direction rationale.
 
     Drives the real hook script itself, not a hand-copied case statement --
     a reintroduced bug in the hook's own case arm (e.g. folding exit 3 into

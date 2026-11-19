@@ -227,9 +227,10 @@ for that asymmetry and why it's accepted.
 Nothing mechanically enforces the "only these two writers" restriction at
 the Claude-Code-tool-call boundary — see
 [`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)'s
-descope note for why. An agent asking Claude Code to write
-`claude-config.toml` by another path still goes through the harness's own
-ask-by-default permission prompt, same as any other file write.
+descope note for why. With the shipped settings, an agent in the main session that writes `claude-config.toml` by another path meets no `permissions.ask` rule and no hook that gates writes to it.
+The only file-path ask rule, `Edit(//**/.claude/settings*.json)`, does not match it.
+Any human gate is then Claude Code's own permission prompt, and this repo has not verified whether that prompt fires for this file in any permission mode or for any tool, the Stop reason's Bash append included.
+The recorded observations are in `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected".
 
 Neither writer locks against the other. `_config_set`'s read-modify-write
 cycle can lose an update if `install.sh`'s prompt and

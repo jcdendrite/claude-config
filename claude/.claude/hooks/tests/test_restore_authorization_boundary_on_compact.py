@@ -258,6 +258,26 @@ class TestShippingStatementOnCompact:
         assert result.returncode == 0
         assert session_start_additional_context(result) == shipping_statement
 
+    def test_config_row_false_silences_only_the_boundary_text(
+        self, isolated_home, shipping_repo, shipping_statement
+    ):
+        (isolated_home / ".claude" / "claude-config.toml").write_text("authorization_boundary_restore = false\n")
+        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
+        assert result.returncode == 0
+        assert session_start_additional_context(result) == shipping_statement
+
+    def test_config_row_true_outranks_the_legacy_kill_switch_file(
+        self, isolated_home, shipping_repo, shipping_statement
+    ):
+        boundary_text = session_start_additional_context(
+            _run_hook(self._compact_payload(None), isolated_home)
+        )
+        (isolated_home / ".claude" / "claude-config.toml").write_text("authorization_boundary_restore = true\n")
+        (isolated_home / ".claude" / ".authorization-boundary-disabled").touch()
+        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
+        assert result.returncode == 0
+        assert session_start_additional_context(result) == f"{boundary_text} {shipping_statement}"
+
     def test_kill_switch_with_empty_statement_part_is_silent(self, isolated_home, non_repo_dir):
         (isolated_home / ".claude" / ".authorization-boundary-disabled").touch()
         result = _run_hook(self._compact_payload(non_repo_dir), isolated_home)

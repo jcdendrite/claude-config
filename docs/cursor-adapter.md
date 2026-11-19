@@ -103,6 +103,8 @@ A direct `marker.sh write` in an unprompted mode matches Claude Code's main sess
 
 A write that newly takes a worktree lock prints no "run `git worktree unlock <path>` if this was unintended" note under Cursor, where Claude Code prints one, because Cursor's hooks reference lists no `additional_context` output for `preToolUse` [unverified: Cursor's hooks reference was not re-read for this claim]. The lock and the collision guard still work.
 
+`claude/.claude/scripts/cursor-adapter/parity-exceptions.json` lists the Stop hook `advance-past-commit-stall.sh` and the compact hook `restore-authorization-boundary-on-compact.sh` as `pending-phase 5b`, so the adapter carries neither. Whether Cursor loads `~/.claude/CLAUDE.md`, which carries the shipping instruction, is not established in this repo.
+
 ## Prerequisites
 
 - **Python:** the recorded python3 and the `python3` the hooks run both meet the toolkit's Python floor, which `README.md` § "Requirements" states.

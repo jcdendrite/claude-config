@@ -1246,6 +1246,19 @@ class TestConfigSet:
         state_file = isolated_home / ".claude" / "claude-config.toml"
         assert state_file.read_text() == "commit_stall_block = true\nhandoff_nudge = false\n"
 
+    def test_rewrite_keeps_a_row_for_a_retired_key_with_no_schema_row(self, isolated_home):
+        """Every former adopter's state file holds `autonomous_shipping = true`,
+        a grammatical row for a key the schema no longer carries. The writers
+        stay schema-agnostic about it, so a set of an unrelated key leaves the
+        row in place."""
+        _write_state_file(isolated_home, "autonomous_shipping = true\nhandoff_nudge = false\n")
+        (isolated_home / ".claude" / "autonomous-shipping-required").touch()
+        result = _run("_config_set handoff_nudge true")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "autonomous_shipping = true\nhandoff_nudge = true\n"
+
     def test_refuses_to_write_when_file_contains_a_malformed_line(self, isolated_home):
         original = "handoff_nudge = false\nthis line has no equals sign\n"
         _write_state_file(isolated_home, original)
@@ -1363,6 +1376,18 @@ class TestConfigScaffold:
         state_file = isolated_home / ".claude" / "claude-config.toml"
         assert f"{key} = {non_default_value}" in state_file.read_text().splitlines()
         assert f"{key} = {schema()[key].default}" not in state_file.read_text().splitlines()
+
+    def test_row_for_a_retired_key_with_no_schema_row_survives_unchanged(self, isolated_home):
+        """Scaffold only appends missing defaults, so the retired key's row
+        stays a byte-for-byte prefix of the file, listed exactly once."""
+        original = "autonomous_shipping = true\n"
+        _write_state_file(isolated_home, original)
+        (isolated_home / ".claude" / "autonomous-shipping-required").touch()
+        result = _run("_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == original + "\n".join(_no_legacy_polarity_default_rows()) + "\n"
 
     def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
         """Every key with a legacy-polarity value stays absent (backfilling

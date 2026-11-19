@@ -106,6 +106,13 @@ def _read_state(config_dir: Path) -> dict[str, str]:
     }
 
 
+def _scaffolded_default_rows() -> dict[str, str]:
+    """Schema-default rows scaffold writes into any state file: the bool keys
+    with no legacy predecessor, whose absence would otherwise be indistinguishable
+    from a run that never reached scaffold."""
+    return {row.key: row.default for row in _SCHEMA.values() if not row.legacy_polarity and row.type == "bool"}
+
+
 def _legacy_derived_value(row: SchemaRow) -> str:
     if row.legacy_polarity == "presence-enables":
         return "true"
@@ -989,9 +996,28 @@ class TestRetiredAutonomousShippingSentinelIgnored:
         result = _run(_env(home, config_dir=config_dir))
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "autonomous_shipping" not in _read_state(config_dir)
+        state = _read_state(config_dir)
+        assert state.items() >= _scaffolded_default_rows().items(), "migration must still scaffold"
+        assert "autonomous_shipping" not in state
         assert "autonomous" not in (result.stdout + result.stderr).lower()
         assert "add this line to claude-config.toml by hand" not in result.stderr
+
+    def test_leftover_state_row_survives_migration_alongside_the_legacy_file(self, tmp_path: Path) -> None:
+        """A state file still holding `autonomous_shipping = true` and a
+        leftover `autonomous-shipping-required` file migrates with exit 0 and
+        keeps the row, which names no schema key."""
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        (config_dir / "autonomous-shipping-required").touch()
+        _state_file(config_dir).write_text("autonomous_shipping = true\n")
+
+        result = _run(_env(home, config_dir=config_dir))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        state = _read_state(config_dir)
+        assert state.get("autonomous_shipping") == "true"
+        assert state.items() >= _scaffolded_default_rows().items(), "migration must still scaffold"
 
 
 # ---------------------------------------------------------------------------
