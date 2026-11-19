@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
+import run_skill_evals
 
 from replay_bench.checks import LoadExpectation
 from replay_bench.launch import check_path_characters
@@ -19,28 +19,26 @@ BARE_WRITER_BODY = "You implement the change the prompt describes, in the curren
 CODE_WRITER_AGENT_RELPATH = Path("agents") / "code-writer.md"
 CLAUDE_MD_EXCLUDES_KEY = "claudeMdExcludes"
 
-_AGENT_FRONTMATTER_EFFORT_RE = re.compile(r"(?m)^effort:\s*(\S+)\s*$")
-
-
 class AgentConfigError(ValueError):
     """An account agent file that lacks a field `bare-writer` copies."""
 
 
 def agent_frontmatter_effort(agent_file_text: str) -> str | None:
-    block = msmr._frontmatter_block(agent_file_text)
-    if block is None:
+    try:
+        frontmatter = run_skill_evals.parse_frontmatter_block(run_skill_evals.split_agent_frontmatter(agent_file_text)[0])
+    except ValueError:
         return None
-    match = _AGENT_FRONTMATTER_EFFORT_RE.search(block)
-    return match.group(1) if match else None
+    effort = frontmatter.get("effort")
+    return (effort.strip() or None) if isinstance(effort, str) else None
 
 
 def agent_body(agent_file_text: str) -> str:
     """A file with no closing frontmatter marker is all body."""
-    block = msmr._frontmatter_block(agent_file_text)
-    if block is None:
+    try:
+        rest = run_skill_evals.split_agent_frontmatter(agent_file_text)[1]
+    except ValueError:
         return agent_file_text.strip()
-    after_marker = agent_file_text[3 + len(block):].split("\n", 2)
-    return (after_marker[2] if len(after_marker) > 2 else "").strip()
+    return rest.partition("\n")[2].strip()
 
 
 def agent_body_chars(agent_file_text: str) -> int:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
+import run_skill_evals
 from replay_bench import arms, launch
 
 CODE_WRITER_TEXT = (
@@ -31,7 +32,7 @@ class TestBareWriterMarkdown:
         assert msmr.agent_frontmatter_tools(markdown) == frozenset({"Grep", "Read", "Edit"})
         assert msmr.agent_frontmatter_model(markdown) == "opus"
         assert arms.agent_frontmatter_effort(markdown) == "xhigh"
-        frontmatter = msmr._frontmatter_block(markdown)
+        frontmatter = run_skill_evals.split_agent_frontmatter(markdown)[0]
         assert "name: bare-writer" in frontmatter and "omitClaudeMd: true" in frontmatter
         assert arms.agent_body(markdown) == arms.BARE_WRITER_BODY
 
