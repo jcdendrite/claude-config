@@ -98,7 +98,7 @@ Withdrawing the agent after a failed dogfood touches every surface this change a
 - `denials.py`: move the `review-orchestrator routing` label into `_DENIAL_HOOK_LABELS`' legacy-only block, so older transcripts still attribute their denies.
 - `test_transcript_denials.py`: remove the `_BOOTSTRAP_FALLBACK_HOOKS` row and the behavioral-deny case, which fail once the hook is gone.
 - `select-tests.py` and `test_select_tests.py`: remove both `subagent-delegation` declarations.
-- The skill sentences that pass `unrouted` or name the routing gate (including the request parenthetical), and their `test_skills.py` pins, including the span-coupling assertion in the gate's test.
+- The skill sentences that pass `unrouted` or name the routing gate (including the request parenthetical), and their `test_review_orchestrator_and_review_pr.py` pins, including the span-coupling assertion in the gate's test.
 - `_lib_args_lead_word_is` and its tests in `test_lib_payload_matchers.py` go with the gate, because the gate is its only caller. `_lib_skill_basename` and its test stay, because `activate-handoff-bypass.sh` still calls the helper.
 - The `config-keys.psv` row and its count sites stay, with the docs marking the key retired. Removing the row would leave each account's scaffolded `review_orchestrator_routing = false` row printing "skipping line for unrecognized key" on every config read, and nothing prunes those rows. A later change may prune them and then drop the schema row.
 - This record, the partial-supersession line on the old record, and the CHANGELOG entry stay as history, and the withdrawal adds its own record line and CHANGELOG entry.
