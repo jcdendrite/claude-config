@@ -715,9 +715,9 @@ preserves review quality — recall and adjudicated precision on a curated set
 of this repo's own known-defect PRs — before that change is allowed to
 merge. This file's own "Why local only — never CI" section above applies
 here too, with one addition: `smoke`, `run`, and `judge` each price out a
-real reviewer or judge dispatch per sample, not one classification call, so
-the cost scales faster (see "Runtime cost" below). The harness needs Git 2.32
-or newer; see `review_bench/local_git.py`.
+real reviewer dispatch or judge session per sample, not one classification
+call, so the cost scales faster (see "Runtime cost" below). The harness needs
+Git 2.32 or newer; see `review_bench/local_git.py`.
 
 ### Usage
 
@@ -1306,11 +1306,11 @@ Five residuals remain.
   shared session store in place, and the completed block is never swept.
 - A `claude -p` child of a hard-killed runner can outlive the lock (see above).
 
-A leftover session store holds raw dispatcher and reviewer transcripts,
-including the tool results of out-of-session reads. The re-freeze recovery path
-(see "Frozen conditions and invalidation") leaves a halted campaign's
-leftovers by design. Nothing bounds their retention except
-whatever bounds `projects/`, and `/tmp` fixture retention is unverified.
+A leftover session store holds raw dispatcher, reviewer, and judge
+transcripts, including the tool results of out-of-session reads. The re-freeze
+recovery path (see "Frozen conditions and invalidation") leaves a halted
+campaign's leftovers by design. Nothing bounds their retention except whatever
+bounds `projects/`, and `/tmp` fixture retention is unverified.
 
 A crash between a block's records being appended and the block being marked
 complete reruns that block on resume, and `read_run_records` deduplicates the
@@ -1320,7 +1320,8 @@ repeated records, keeping the later one. See `runner.read_run_records`.
 
 A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
 and its own session transcript and `<session-id>/` directory is recorded in
-that run's `out_of_session_paths` and does not fail the run on its own. Only a read of a live checkout's own
+that run's `out_of_session_paths` when the run completes, and does not fail the
+run on its own. Only a read of a live checkout's own
 copy of a file the introducing commit or the fix commit changed, or of the
 ambient config's `projects/` root (a run's own transcript and its own
 `<session-id>/` directory excepted), fails the run. The live checkouts are the
@@ -1344,19 +1345,20 @@ joined onto its `path` (an absolute pattern overrides `path`). A leading `~`
 or `$VAR` in a path is expanded before the check. Printed paths show control
 characters as backslash escapes, since the path is model output.
 
-A run's transcript and subagent sidecar are checked once no file's size has
-changed across two consecutive polls. If the sizes are still changing after
-`SESSION_FLUSH_TIMEOUT_S` (10 seconds), the transcript as it stands on disk is
-classified, so a still-growing transcript can be classified partly written and
-miss a later read. A fixture tree (a reviewer arm's or the precision judge's)
-is built only when its head tree's `.claude/settings.json` holds no top-level
-key outside those this repository's own history has held and the tree holds
-neither `.mcp.json` nor `.claude/settings.local.json`; otherwise the build
-refuses. `smoke` and `run` apply the same check to every pending defect's head
-commit in their preflight, so a refusal exits 2 before any dispatch. The
-preflight reads git's tree while the build reads the archive extraction, so a
-symlinked `.claude/settings.json` or an `export-ignore` or `export-subst`
-attribute can make the two verdicts differ. The build refuses a link at or
+A run's transcript and, for a reviewer run, its subagent sidecar are checked
+once no file's size has changed across two consecutive polls. If the sizes are
+still changing after `SESSION_FLUSH_TIMEOUT_S` (10 seconds), the transcript as
+it stands on disk is classified, so a still-growing transcript can be
+classified partly written and miss a later read. A fixture tree (a reviewer
+arm's or the precision judge's) is built only when its head tree's
+`.claude/settings.json` holds no top-level key outside those this repository's
+own history has held and the tree holds neither `.mcp.json` nor
+`.claude/settings.local.json`; otherwise the build refuses. `smoke` and `run`
+apply the same check to every pending defect's head commit in their
+preflight, so a refusal exits 2 before any dispatch. The preflight reads
+git's tree while the build reads the archive extraction, so a symlinked
+`.claude/settings.json` or an `export-ignore` or `export-subst` attribute can
+make the two verdicts differ. The build refuses a link at or
 under `.claude` and any member under `.bench` (the harness's own artifact
 directory) before it writes anything, and re-checks the extracted tree. Other
 links extract. The bench supports case-sensitive volumes. On a case-insensitive
@@ -1369,6 +1371,38 @@ tree's `CLAUDE.md`, which the dispatcher loads. The dispatcher holds the CLI's
 default tools, Bash included, so a tree can steer it into running commands as
 you, with your credentials. The run-validity check fails such a run only after
 the command has run.
+
+The precision judge runs as its own session in its fixture tree, so that
+session can load the instruction channels the tree supplies, among them its
+`CLAUDE.md` files (nested ones when the judge reads under them), its
+`.claude/rules/*.md`, and the value of its `enabledPlugins` setting. The tree's
+`permissions` setting (`allow`, `additionalDirectories`, `defaultMode`) is a
+capability channel, not an instruction channel. It can widen what the judge may
+read or call, and it does not change what the judge is told. Beyond the
+refusals stated above, the fixture build checks only the top-level keys of
+`.claude/settings.json` and extracts the rest of the head tree as it is. A
+hostile tree can steer the judge's verdicts through the instruction channels.
+The launch passes no flag that limits setting sources, so the engineer's own
+user settings, hooks, and enabled plugins load as well, and their hooks run as
+the engineer. A tree's `enabledPlugins` can also enable an installed plugin
+whose hooks run as the engineer; whether the CLI honors a project-scope
+`enabledPlugins` in `-p` mode is unconfirmed. What Claude Code
+loads from a given file is its own behavior, and the harness does not verify
+it. Both judges' directories are fresh directories under the system temp
+directory (`tempfile.mkdtemp`), so a `CLAUDE.md` in an ancestor of that path
+and the user config can still load for either judge. The recall judge's
+directory holds no tree.
+
+A judge session is launched with a read-only `--tools` allowlist, so it holds
+no Bash. `--tools` governs built-in tools only. The launch also passes
+`--strict-mcp-config`. Whether that drops account-level connectors and
+plugin MCP servers is unconfirmed (see the self-check note under
+`--phase calibrate` in the "Main session rule adherence gate" section), so a
+judge session may hold connector tools the allowlist does not govern. The
+allowlist is checked only after the run, by comparing the tools the run used
+against it. A Stop hook that forces the judge session to
+continue fails the run, because the continuation's text would replace the
+judge's own answer.
 
 The dispatcher is not the only place the bench processes the tree. Mining
 runs git over its content, and each fixture build in `smoke` or `run` runs
@@ -1406,22 +1440,25 @@ restricted to 0700 at startup, and the command exits 2 if it cannot be.
   (runs times the per-run cap, unverified as a bound on spend) before their
   first dispatch. The cost totals `smoke`, `run`, `judge`, and `analyze` print
   leave out every run with no recorded cost, a timed-out run among them, and
-  may omit subagent spend, so the invoice can exceed them. This README states
-  no dollar figure:
+  may omit a reviewer run's subagent spend, so the invoice can exceed them.
+  This README states no dollar figure:
   `REPRESENTATIVE_DISPATCH_COST_USD` was derived with a command that does not
   refuse a wider corpus, so it is not a publication instrument (`docs/private-project-redaction.md` § "This repository, one account").
   `analyze` prints dollar totals, per reviewer arm and per judge kind, to
   stderr for the engineer. Its `--out` report, which is committed, carries
   none. Only the gitignored run records hold per-run costs.
-- **Judge runs:** one recall and one precision judge run per defect. Their caps
-  and timeouts equal the reviewer's. Change the `RECALL_JUDGE_BUDGET_CAP_USD` and
-  `PRECISION_JUDGE_BUDGET_CAP_USD` constants in `review_bench/runner.py` once a
-  judge has its own measured values.
+- **Judge runs:** one recall and one precision judge run per defect. A judge is
+  its own session with no subagent, so its `--max-budget-usd` applies to the
+  judge directly. Its cap and timeout equal the reviewer's, which were derived
+  for a reviewer dispatch, not measured for a judge. Change the
+  `RECALL_JUDGE_BUDGET_CAP_USD` and `PRECISION_JUDGE_BUDGET_CAP_USD` constants
+  in `review_bench/runner.py` once a judge has its own measured values. The
+  harness passes `--effort` to each judge.
 - **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
   each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
   K = 10, so 1,260 slots at 252 fixtures. Each minute of median run duration
   adds 21 hours.
-- **Judge wall-clock:** `judge` dispatches one recall and one precision judge
+- **Judge wall-clock:** `judge` launches one recall and one precision judge
   run per defect, fully serially with no worker pool, so wall-clock is
   `2 x N` run-slots with no division by a worker count — 504 at 252 fixtures.
   Each minute of median judge-run duration adds 8.4 hours.

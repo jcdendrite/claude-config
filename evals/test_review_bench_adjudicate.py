@@ -8,15 +8,17 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 from collections import Counter
 from pathlib import Path
 
+import measure_subagent_model_resolution as msmr
 import pytest
 import run_review_bench
-from review_bench import adjudicate, analysis, defects, fixture_repo, runner
+from review_bench import adjudicate, analysis, arms, defects, fixture_repo, runner
 from review_bench.defects import ConfirmedDefect
 from test_review_bench_mining import (
     ENGINEER_GIT_SETUPS,
@@ -31,10 +33,9 @@ from test_review_bench_mining import (
     commit_two_versions_of_a_multi_line_python_file,
 )
 from test_review_bench_runner import (
-    INNER_PROMPT,
     SUCCESS_STREAM_LINES,
     _build_two_commit_source_repo,
-    _load_scenario,
+    _load_top_level_scenario,
     _replace_tool_use,
     _rewrite_records,
 )
@@ -1346,10 +1347,8 @@ class TestJudgeRunRetry:
     def test_failing_judge_run_is_retried_once_then_recorded_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        scenario = _load_scenario(tmp_path, "model-mismatch")
-        inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
+        scenario = _load_top_level_scenario(tmp_path, "model-mismatch")
         session_jsonl = scenario / "session-1.jsonl"
-        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
         calls = {"n": 0}
 
         def fake_launch(cmd, cwd, timeout_s):
@@ -1357,12 +1356,12 @@ class TestJudgeRunRetry:
             return SUCCESS_STREAM_LINES, False
 
         monkeypatch.setattr(
-            runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl",
+            runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl,
         )
 
         ctx = adjudicate.JudgeRunContext(
             campaign_id="c1", defect_id="d1", judge_kind=adjudicate.JUDGE_ARM_RECALL,
-            agent_name="bench-staff-backend-engineer", agent_declared_tools=frozenset({"Read", "Grep", "Glob"}),
+            agent_name=adjudicate.RECALL_JUDGE_AGENT_NAME, agent_declared_tools=adjudicate.RECALL_JUDGE_TOOLS,
             data_file_name=adjudicate.RECALL_DATA_FILE_NAME, fixture_dir=scenario, live_checkout_roots=(),
             changed_relpaths=(), model_id="claude-sonnet-5", budget_cap_usd=1.0, timeout_s=1,
             environment=runner.EnvironmentRecord("v1", "sha1"), expected_ids=(),
@@ -1373,23 +1372,21 @@ class TestJudgeRunRetry:
         assert calls["n"] == 2  # exactly one retry
         assert attempt.record.status == runner.STATUS_MISSING
         assert attempt.record.missing_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+        assert attempt.record.observed_model == "claude-opus-5-5"
         assert attempt.record.attempts == 2
-
 
     def test_a_retried_judge_run_sums_cost_over_both_attempts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        scenario = _load_scenario(tmp_path, "model-mismatch")
-        inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
+        scenario = _load_top_level_scenario(tmp_path, "model-mismatch")
         session_jsonl = scenario / "session-1.jsonl"
-        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
         stream = [json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.5}).encode()]
         monkeypatch.setattr(
-            runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl",
+            runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl,
         )
         ctx = adjudicate.JudgeRunContext(
             campaign_id="c1", defect_id="d1", judge_kind=adjudicate.JUDGE_ARM_RECALL,
-            agent_name="bench-staff-backend-engineer", agent_declared_tools=frozenset({"Read", "Grep", "Glob"}),
+            agent_name=adjudicate.RECALL_JUDGE_AGENT_NAME, agent_declared_tools=adjudicate.RECALL_JUDGE_TOOLS,
             data_file_name=adjudicate.RECALL_DATA_FILE_NAME, fixture_dir=scenario, live_checkout_roots=(),
             changed_relpaths=(), model_id="claude-sonnet-5", budget_cap_usd=1.0, timeout_s=1,
             environment=runner.EnvironmentRecord("v1", "sha1"), expected_ids=(),
@@ -1421,23 +1418,20 @@ VALID_PRECISION_ANSWER = '### Run r1\n1. VALID -- "some finding"\n'
 
 
 class TestExecuteJudgeRunValidityWiring:
-    """execute_judge_run forwards its context's leak-check inputs to the
-    validity check, and records a timeout as the cause of a missing transcript."""
+    """execute_judge_run's wiring into the validity check."""
 
     @staticmethod
     def _judge_context_over_leaking_scenario(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fix_commit_relpaths: tuple[str, ...],
     ) -> adjudicate.JudgeRunContext:
-        scenario = _load_scenario(tmp_path, "live-checkout-leak")
+        scenario = _load_top_level_scenario(tmp_path, "live-checkout-leak")
         session_jsonl = scenario / "session-1.jsonl"
-        inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
-        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
         monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl)
         monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
         return dataclasses.replace(
             _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=scenario),
-            agent_name="bench-staff-backend-engineer", agent_declared_tools=frozenset({"Read", "Grep", "Glob"}),
-            model_id="claude-sonnet-5", live_checkout_roots=(scenario,), changed_relpaths=("introducing_only.py",),
+            model_id="claude-sonnet-5",
+            live_checkout_roots=(scenario,), changed_relpaths=("introducing_only.py",),
             fix_commit_relpaths=fix_commit_relpaths,
         )
 
@@ -1466,6 +1460,18 @@ class TestExecuteJudgeRunValidityWiring:
 
         assert record.status == runner.STATUS_OK
 
+    def test_a_timed_out_run_with_a_complete_transcript_records_the_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ctx = self._judge_context_over_leaking_scenario(tmp_path, monkeypatch, fix_commit_relpaths=())
+
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, True),
+        )
+
+        assert record.status == runner.STATUS_MISSING
+        assert record.missing_reason == runner.MISSING_REASON_TIMEOUT
+
     @pytest.mark.parametrize(("read_dir_name", "expected_status"), [
         pytest.param("session-1", runner.STATUS_OK, id="own-session-dir"),
         pytest.param("session-2", runner.STATUS_MISSING, id="sibling-session-dir"),
@@ -1477,12 +1483,10 @@ class TestExecuteJudgeRunValidityWiring:
         it to a narrower pair fails the own-session case, and widening it to the
         shared per-arm session store fails the sibling case."""
         projects_root = tmp_path / "projects"
-        scenario = _load_scenario(projects_root, "normal-success")
+        scenario = _load_top_level_scenario(projects_root, "normal-success")
         session_jsonl = scenario / "session-1.jsonl"
-        inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
-        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
         _replace_tool_use(
-            scenario / "session-1" / "subagents" / "agent-1.jsonl", "toolu_read_1", name="Read",
+            session_jsonl, "toolu_read_1", name="Read",
             input_={"file_path": str(scenario / read_dir_name / "tool-results" / "persisted.txt")},
         )
         monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda root, session_id: session_jsonl)
@@ -1490,7 +1494,6 @@ class TestExecuteJudgeRunValidityWiring:
         monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
         ctx = dataclasses.replace(
             _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path / "fixture"),
-            agent_name="bench-staff-backend-engineer", agent_declared_tools=frozenset({"Read", "Grep", "Glob"}),
             model_id="claude-sonnet-5",
         )
 
@@ -1515,16 +1518,208 @@ class TestExecuteJudgeRunValidityWiring:
 
         assert record.missing_reason == runner.MISSING_REASON_TIMEOUT
 
+    @pytest.mark.parametrize(
+        ("result_event", "expected_reason", "expected_detail_fragment"),
+        [
+            pytest.param(
+                {"type": "result", "is_error": True, "subtype": "error_during_execution"},
+                runner.VALIDITY_FAIL_RESULT_ERROR, "error_during_execution", id="result-error",
+            ),
+            pytest.param(
+                {"type": "result", "is_error": False, "terminal_reason": "budget_exhausted"},
+                runner.MISSING_REASON_BUDGET, "budget_exhausted", id="budget",
+            ),
+        ],
+    )
+    def test_a_failing_result_event_is_the_recorded_cause_when_no_transcript_is_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result_event: dict, expected_reason: str,
+        expected_detail_fragment: str,
+    ) -> None:
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: None)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 0.0)
+
+        record = adjudicate.execute_judge_run(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path), session_id="s1",
+            launch=lambda cmd, cwd, timeout_s: ([json.dumps(result_event).encode()], False),
+        )
+
+        assert record.status == runner.STATUS_MISSING
+        assert record.missing_reason == expected_reason
+        assert record.missing_detail is not None
+        assert expected_detail_fragment in record.missing_detail
+        assert record.dispatch_prompt_verbatim is None
+
+    @pytest.mark.parametrize(
+        "stream_lines",
+        [
+            pytest.param([], id="no-result-event"),
+            pytest.param([SUCCESS_STREAM_LINES[0]], id="success-result-event"),
+        ],
+    )
+    def test_a_stream_with_no_failing_result_event_records_session_store_not_found_when_no_transcript_is_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream_lines: list[bytes],
+    ) -> None:
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: None)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 0.0)
+
+        record = adjudicate.execute_judge_run(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path), session_id="s1",
+            launch=lambda cmd, cwd, timeout_s: (stream_lines, False),
+        )
+
+        assert record.missing_reason == runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
+        assert record.missing_detail is None
+        assert record.dispatch_prompt_verbatim is None
+
+    def test_a_timed_out_run_keeps_the_timeout_over_a_failing_result_event_when_no_transcript_is_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: None)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 0.0)
+        error_event = json.dumps({"type": "result", "is_error": True, "subtype": "error_during_execution"}).encode()
+
+        record = adjudicate.execute_judge_run(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path), session_id="s1",
+            launch=lambda cmd, cwd, timeout_s: ([error_event], True),
+        )
+
+        assert record.missing_reason == runner.MISSING_REASON_TIMEOUT
+
+
+def _frontmatter_value(frontmatter: str, field: str) -> str:
+    match = re.search(rf"(?m)^{field}:\s*(.+?)\s*$", frontmatter)
+    assert match is not None, f"no `{field}:` line in the frontmatter"
+    return match.group(1)
+
+
+class TestJudgeAgentFilesMatchTheHarnessConstants:
+    """The launch passes `--agent`, `--model`, `--effort` and `--tools` from constants while the
+    agent file carries its own copy of each, so the two must agree."""
+
+    @pytest.mark.parametrize(
+        ("agent_file", "agent_name", "declared_tools"),
+        [
+            (adjudicate.RECALL_JUDGE_AGENT_FILE, adjudicate.RECALL_JUDGE_AGENT_NAME, adjudicate.RECALL_JUDGE_TOOLS),
+            (
+                adjudicate.PRECISION_JUDGE_AGENT_FILE, adjudicate.PRECISION_JUDGE_AGENT_NAME,
+                adjudicate.PRECISION_JUDGE_TOOLS,
+            ),
+        ],
+    )
+    def test_name_model_effort_and_tools_equal_the_constants_and_stay_read_only(
+        self, agent_file: Path, agent_name: str, declared_tools: frozenset[str],
+    ) -> None:
+        frontmatter, _ = arms._split_frontmatter(agent_file.read_text())
+
+        assert _frontmatter_value(frontmatter, "name") == agent_name
+        assert msmr.agent_frontmatter_model(agent_file.read_text()) == runner.JUDGE_MODEL_ID
+        assert _frontmatter_value(frontmatter, "effort") == runner.JUDGE_EFFORT
+        assert arms._parse_tools_field(frontmatter) == declared_tools
+        assert declared_tools <= {"Read", "Grep", "Glob"}
+
+
+class TestJudgeLaunchesTopLevel:
+    """A judge launches as the top-level `claude -p --agent` session."""
+
+    @pytest.mark.parametrize(
+        ("judge_kind", "expected_tools"),
+        [(adjudicate.JUDGE_ARM_RECALL, "Read"), (adjudicate.JUDGE_ARM_PRECISION, "Glob,Grep,Read")],
+    )
+    def test_the_launch_command_names_the_agent_and_its_declared_tools_with_no_dispatcher_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, judge_kind: str, expected_tools: str,
+    ) -> None:
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: None)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 0.0)
+        ctx = _judge_run_context(judge_kind, fixture_dir=tmp_path)
+        launched: list[tuple[list[str], Path]] = []
+
+        def launch(cmd, cwd, timeout_s):
+            launched.append((cmd, cwd))
+            return [], True
+
+        adjudicate.execute_judge_run(ctx, session_id="s1", launch=launch)
+
+        [(cmd, cwd)] = launched
+        assert cwd == tmp_path
+        assert cmd[cmd.index("--agent") + 1] == ctx.agent_name
+        assert cmd[cmd.index("--tools") + 1] == expected_tools
+        assert "--strict-mcp-config" in cmd
+        assert cmd[cmd.index("--model") + 1] == runner.JUDGE_MODEL_ID
+        assert cmd[cmd.index("--effort") + 1] == runner.JUDGE_EFFORT
+        assert cmd[cmd.index("--max-budget-usd") + 1] == str(ctx.budget_cap_usd)
+        assert cmd[cmd.index("-p") + 1] == adjudicate.build_judge_inner_prompt(ctx.data_file_name)
+
+    def test_the_run_waits_for_the_transcript_alone_not_for_a_subagent_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        flush_waits: list[dict] = []
+
+        def spy_wait_for_session_flush(projects_root, session_id, **kwargs):
+            flush_waits.append(kwargs)
+            return None
+
+        monkeypatch.setattr(runner, "wait_for_session_flush", spy_wait_for_session_flush)
+        ctx = _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path)
+
+        adjudicate.execute_judge_run(ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: ([], True))
+
+        assert [wait["requires_subagent_sidecar"] for wait in flush_waits] == [False]
+
+    def test_a_judge_using_a_tool_outside_its_allowlist_is_recorded_missing_as_undeclared_tool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scenario = _load_top_level_scenario(
+            tmp_path, "undeclared-tool", agent_name=adjudicate.PRECISION_JUDGE_AGENT_NAME,
+        )  # observed model is claude-sonnet-5, tool is Bash
+        session_jsonl = scenario / "session-1.jsonl"
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
+        ctx = dataclasses.replace(
+            _judge_run_context(adjudicate.JUDGE_ARM_PRECISION, fixture_dir=scenario), model_id="claude-sonnet-5",
+        )
+
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, False),
+        )
+
+        assert record.status == runner.STATUS_MISSING
+        assert record.missing_reason == runner.VALIDITY_FAIL_UNDECLARED_TOOL
+        assert record.observed_tools == ("Bash",)
+
+    def test_the_recall_judge_using_grep_is_recorded_missing_as_undeclared_tool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scenario = _load_top_level_scenario(
+            tmp_path, "normal-success", agent_name=adjudicate.RECALL_JUDGE_AGENT_NAME,
+        )  # observed model is claude-sonnet-5
+        session_jsonl = scenario / "session-1.jsonl"
+        _replace_tool_use(session_jsonl, "toolu_read_1", name="Grep", input_={"pattern": "def", "path": str(scenario)})
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
+        ctx = dataclasses.replace(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=scenario), model_id="claude-sonnet-5",
+        )
+
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, False),
+        )
+
+        assert record.status == runner.STATUS_MISSING
+        assert record.missing_reason == runner.VALIDITY_FAIL_UNDECLARED_TOOL
+        assert record.observed_tools == ("Grep",)
+
 
 class TestBlockedPromptThroughExecuteJudgeRun:
     def test_a_blocked_prompt_records_missing_with_the_hooks_reason_and_skips_the_flush_wait(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        flush_waits: list[str] = []
-        monkeypatch.setattr(
-            runner, "wait_for_session_flush",
-            lambda projects_root, session_id, *, timed_out: flush_waits.append(session_id),
-        )
+        flush_waits: list[dict] = []
+
+        def spy_wait_for_session_flush(projects_root, session_id, **kwargs):
+            flush_waits.append(kwargs)
+            return None
+
+        monkeypatch.setattr(runner, "wait_for_session_flush", spy_wait_for_session_flush)
         blocked_event = {
             "type": "system", "subtype": "informational",
             "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
@@ -1544,9 +1739,13 @@ class TestBlockedPromptThroughExecuteJudgeRun:
     def test_the_final_blocked_record_keeps_the_hooks_reason_through_the_judge_retry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(
-            runner, "wait_for_session_flush", lambda projects_root, session_id, *, timed_out: None,
-        )
+        flush_waits: list[dict] = []
+
+        def spy_wait_for_session_flush(projects_root, session_id, **kwargs):
+            flush_waits.append(kwargs)
+            return None
+
+        monkeypatch.setattr(runner, "wait_for_session_flush", spy_wait_for_session_flush)
         blocked_event = {
             "type": "system", "subtype": "informational",
             "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
@@ -1567,16 +1766,15 @@ class TestBlockedPromptThroughExecuteJudgeRun:
         assert attempt.record.missing_reason == runner.MISSING_REASON_BLOCKED_PROMPT
         assert attempt.record.attempts == runner.ATTEMPTS_PER_RUN
         assert "synthetic block reason" in attempt.record.missing_detail
+        assert flush_waits == []
 
 
 class TestJudgeWriteAheadOrdering:
     def test_each_judge_attempt_records_its_session_id_before_launching(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        scenario = _load_scenario(tmp_path, "model-mismatch")
-        inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
+        scenario = _load_top_level_scenario(tmp_path, "model-mismatch")
         session_jsonl = scenario / "session-1.jsonl"
-        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
         monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl)
         monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
         events: list[tuple[str, str]] = []
@@ -1591,8 +1789,8 @@ class TestJudgeWriteAheadOrdering:
 
         ctx = dataclasses.replace(
             _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=scenario),
-            agent_name="bench-staff-backend-engineer", agent_declared_tools=frozenset({"Read", "Grep", "Glob"}),
-            model_id="claude-sonnet-5", expected_ids=(), normalized_findings_by_id={},
+            model_id="claude-sonnet-5",
+            expected_ids=(), normalized_findings_by_id={},
         )
 
         adjudicate.run_judge_with_retry(ctx, launch=launch, run_store=RecordingRunStore())
@@ -1686,23 +1884,19 @@ class TestJudgeRunOkPath:
     def _scenario_and_ctx(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, final_text: str, judge_kind: str,
     ) -> tuple[Path, adjudicate.JudgeRunContext]:
-        scenario = _load_scenario(tmp_path, "normal-success")
-        inner_prompt = adjudicate.build_judge_inner_prompt(
-            adjudicate.RECALL_DATA_FILE_NAME if judge_kind == adjudicate.JUDGE_ARM_RECALL
-            else adjudicate.PRECISION_DATA_FILE_NAME
+        scenario = _load_top_level_scenario(
+            tmp_path, "normal-success", agent_name=_judge_run_context(judge_kind).agent_name,
         )
         session_jsonl = scenario / "session-1.jsonl"
-        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
-        agent_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
         _rewrite_records(
-            agent_jsonl,
+            session_jsonl,
             lambda block: {**block, "text": final_text} if block.get("type") == "text" else block,
         )
         monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: session_jsonl)
         monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
         ctx = dataclasses.replace(
-            _judge_run_context(judge_kind, fixture_dir=scenario), agent_name="bench-staff-backend-engineer",
-            agent_declared_tools=frozenset({"Read", "Grep", "Glob"}), model_id="claude-sonnet-5",
+            _judge_run_context(judge_kind, fixture_dir=scenario),
+            model_id="claude-sonnet-5",
             changed_relpaths=("changed_file.py",),
         )
         return scenario, ctx
@@ -1728,7 +1922,7 @@ class TestJudgeRunOkPath:
         assert record.paged_followups == 0
         assert record.whole_file_reads_of_changed_files == 1
         assert record.over_read_cap is False
-        assert record.dispatch_prompt_verbatim is True
+        assert record.dispatch_prompt_verbatim is None  # a judge's prompt is never compared
         assert record.cli_version == "v1"
         assert record.ambient_config_commit == "sha1"
         assert record.total_cost_usd == pytest.approx(0.25)
