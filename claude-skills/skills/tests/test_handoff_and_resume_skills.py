@@ -1,4 +1,4 @@
-"""The handoff, brief and resume-context skills, and the executable bit of every stowed script."""
+"""The handoff, brief and resume-context skills, and the executable bit of each non-library `claude/.claude/scripts/*.sh`."""
 from __future__ import annotations
 
 import os
