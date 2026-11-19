@@ -1554,7 +1554,6 @@ class TestTheCommandLine:
     def test_a_failing_environment_read_prints_only_the_exit_status(
         self, run_files, tmp_path, monkeypatch, capsys,
     ):
-        # The real `read_environment_record` runs, with a `claude` that fails. Only the preflight is stubbed.
         write_executable(tmp_path / "bin" / "claude", 'echo "proxy http://user:sentinel-credential@proxy.invalid" >&2\nexit 3\n')
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
         monkeypatch.setattr(account, "preflight_repo", lambda repo, **_k: run_files.account)
