@@ -510,8 +510,8 @@ def _add_project_scope_args(parser: argparse.ArgumentParser, *, this_repo_help: 
     """Add the shared --projects/--this-repo scope flags to a subparser.
 
     The flags are mutually exclusive. _resolve_project_scope routes --this-repo through
-    _repo_scoped_project_slugs(), an identity-based minimization control. A caller that gives the flag
-    another meaning passes `this_repo_help` to describe it. --projects defaults to the machine-wide glob "*".
+    _repo_scoped_project_slugs(), an identity-based minimization control. --projects defaults to the
+    machine-wide glob "*".
     """
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--projects", default="*", metavar="GLOB")
