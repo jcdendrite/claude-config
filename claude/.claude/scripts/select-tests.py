@@ -285,7 +285,7 @@ TRANSCRIPT_ANALYSIS_PACKAGE_DIR = "claude/.claude/scripts/transcript_analysis"
 SKILL_STRUCTURE_VALIDATOR_MODULE = "plugins/skill-management/scripts/validate_skill_structure.py"
 
 # Every module SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's test files import
-# by name from the hooks test tree.
+# by name from the hooks test tree, directly or through a SCRIPTS_TESTS_DIR helper module.
 HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/__init__.py",
     "claude/.claude/hooks/tests/__init__.py",
@@ -338,12 +338,22 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 })
 
 # SCRIPTS_TESTS_DIR test files that import a
-# HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member by name.
+# HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member by name, directly or through
+# a SCRIPTS_TESTS_DIR helper module.
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_generate.py",
-    "claude/.claude/scripts/tests/test_cursor_adapter_install.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_prerequisites.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_reports.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_roundtrip.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_sandbox_dirs.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_sandbox_grant.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_session_start.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_status.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_uninstall.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_unusable_inputs.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_install_write_failures.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_shim.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_translate.py",
@@ -763,7 +773,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # through test_agent_roster.py.
 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: every
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES member imports one of these
-# hooks-test-tree modules by name.
+# hooks-test-tree modules by name, directly or through a SCRIPTS_TESTS_DIR helper module.
 # CURSOR_ADAPTER_DIR: see that constant's own comment above.
 # HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS: see its own comment above for citation.
 # _is_plugin_manifest_change: test_plugin_manifests.py (SKILLS_TESTS_DIR)
