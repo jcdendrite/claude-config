@@ -35,10 +35,14 @@
 # a developer machine, and if a file genuinely must be inspected that is a
 # deliberate human action outside Claude.
 #
-# Known gaps (documented, not closed): Bash-based reads (cat/head/grep),
-# subagent reads, and prompt-pasted content do not cross the Read tool
-# boundary; a data file just under the 5 MB threshold still carries many
-# records. This hook is a tripwire against the *accidental* Read of a data
+# Known gaps (documented, not closed): Bash-based reads (cat/head/grep) and
+# prompt-pasted content do not cross the Read tool boundary; a data file
+# just under the 5 MB threshold still carries many records. Text a subagent
+# returns to its dispatcher is downstream of an uncovered read, not a gap of
+# its own. A dispatched general-purpose subagent's own Read is checked (a
+# fork is not verified); scope is in
+# docs/security-hardening.md § "Limitations".
+# This hook is a tripwire against the *accidental* Read of a data
 # dump — defense-in-depth, not an airtight gate. The airtight control is
 # machine segmentation (no PHI on the box), which is policy — see
 # docs/security-hardening.md.
