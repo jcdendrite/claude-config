@@ -178,4 +178,4 @@ Do not duplicate this section into `subagent-delegation` or `skill-review` — t
     - One bullet per field, led by its backticked token and marked derived (computed by a procedure the dispatching skill names), free-form (the dispatcher's own words) or fixed (copied verbatim from one named home in the dispatching skill).
     - Text only this agent needs lives in its body, never in a fixed field.
     - The agent states the shared sentences `claude/.claude/hooks/tests/test_agent_roster.py` pins. They make the agent's own file decide what it reviews and have the agent name prompt text it sets aside.
-    - Each dispatching skill site names only these tokens and cites this section, and the dispatching skill keeps each derived value's procedure. The dispatch-site list in `claude-skills/skills/tests/test_skills.py` names every such site.
+    - Each dispatching skill site names only these tokens and cites this section, and the dispatching skill keeps each derived value's procedure. The dispatch-site list in `claude-skills/skills/tests/test_review_dispatch_contracts.py` names every such site.

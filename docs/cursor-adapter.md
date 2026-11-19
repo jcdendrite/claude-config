@@ -125,7 +125,7 @@ A write that newly takes a worktree lock prints no "run `git worktree unlock <pa
   - Until then, marker-gated work uses Allowlist with the sandbox off, and `status` prints `sandbox grant: pending.` with that reason.
   - Once `install` writes it, `install` keeps each grant directory your own file already lists and prints how many it found listed. `uninstall` removes only the paths `install` added.
 
-The session-start entry rotates the log past 16 MiB and removes first-call marks older than 7 days. It prints its findings through `additional_context`, which reaches you only if the agent repeats them, so plain `check` prints the same tamper comparison and tool findings to the terminal. It adds the Claude Code and locale environment names of the hook it runs in, which a terminal run cannot know, and `install` prints neither.
+The session-start entry rotates the log past 16 MiB and removes first-call marks older than 7 days. It prints its findings through `additional_context`, which reaches you only if the agent repeats them, so plain `check` prints the same tamper comparison and tool findings to the terminal. It adds the locale environment names of the hook it runs in, which a terminal run cannot know, and `install` prints no such names.
 
 ## Recovery
 
@@ -293,10 +293,6 @@ A CLI session meets the adapter's gates as an IDE conversation does (see "Cursor
 - In no case write a marker for the CLI conversation's session id from anywhere else.
 - A deny no IDE call would get, such as `pin-check` or `dir-input-refused` on every CLI call: run `uninstall` and report the finding, at least until a probe records whether the CLI's `beforeShellExecution` receives the rewritten command.
 
-### CLAUDECODE set in Cursor's hook environment
-
-A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. The import's copies of the hooks then refuse the adapter's pair, the session id and host process id the hooks resolve for a Cursor call, and deny in linked worktrees, and the sessionStart report names `CLAUDECODE` among the Claude Code environment names set in the hook. With `CLAUDECODE` set, the copies' session hooks decline an untranslated Cursor payload only where the host walk finds a host (Limitations' `sessions/` entry). Terminal `check` does not report these names, because it cannot see Cursor's environment, so this entry is reached only through the sessionStart report. Quit Cursor and relaunch it from a shell that has no `CLAUDECODE` set. On macOS, launching it from the Dock does that. On Linux, use the desktop launcher or a shell started outside Claude Code.
-
 ## Limitations
 
 - **Locale:** under a C locale, a hook the adapter runs may see a UTF-8 `LC_CTYPE` that the import's copy of it does not. The sessionStart report says whether Cursor's hook environment carries `LANG` or an `LC_` variable, which tells you whether the case applies.
@@ -338,8 +334,7 @@ A Cursor started from a Claude Code terminal passes `CLAUDECODE` to its hooks. T
   - An unattributed-subagent deny, if one is added, must handle a CLI subagent call that carries `parent_agent_id` when no `subagentStart` arrives.
   - The CLI's file-tool target forms, which the main-checkout deny's repo resolution rests on, and whether the CLI runs the import's copies of `~/.claude/settings.json`'s hooks, are pending an unrecorded probe. On Linux the CLI's process name may read `node`, which resolves no host and meets the denies Recovery's CLI entry covers. That case has not been run. The IDE's main process name on Linux is also unrecorded, and a name other than `Cursor` resolves no host there either.
 - **`sessions/` registrations:** no Cursor IDE or CLI process registers in `sessions/`, because the session hooks decline an untranslated Cursor payload.
-  - With `CLAUDECODE` unset, they decline whatever the host walk returns. With it set, they decline only where the walk finds a host, so a copy whose walk returns no host name or fails still writes its entry. The sessionStart report names a set `CLAUDECODE`.
-  - A set `CLAUDECODE` has two possible sources. One is a Cursor started from a Claude Code terminal (Recovery's `CLAUDECODE` entry), and relaunching Cursor without it removes that source. The other is a repository whose `.claude/settings.json` `env` block sets it, which no run has observed reaching Cursor's hooks. No relaunch clears that source.
+  - Whether a repo's `.claude/settings.json` `env` block can set `CLAUDECODE` for Cursor's hooks is unobserved. If it can, the import's copies of the session hooks decline only where the host walk finds a host, so a copy whose walk returns no host name or fails still writes its entry.
   - A written entry clears once the registered process exits, because the start-time check then rejects it, and no runtime check flags it in between.
   - The decline keys on the payload's shape, so it applies with or without the adapter installed. Without it, `marker.sh` run from an agent Shell call has no identity, because the session id that gives one is exported only under the adapter.
   - Nothing prunes `sessions/`, so an entry from an earlier checkout stays until its process exits. The relaunch after `install` covers Cursor processes only, so a CLI process that outlives the install keeps its old entry resolving until it exits.

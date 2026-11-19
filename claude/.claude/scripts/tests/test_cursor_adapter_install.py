@@ -3028,21 +3028,6 @@ class TestCheckCommand:
         assert f"The recorded python3 at {missing} could not be started (cause ENOENT)" in result.out
         assert "printed no version" not in result.out
 
-    def test_the_hook_env_report_points_a_claudecode_name_at_its_recovery_entry_and_says_nothing_without_one(
-        self, fast_world: World, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        world = fast_world
-        world.install()
-        monkeypatch.delenv("CLAUDECODE", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
-        assert "Recovery section's CLAUDECODE entry" not in run_surface(world, HOOK_ENV_SURFACE).out
-        monkeypatch.setenv("CLAUDECODE", "1")
-
-        context = run_surface(world, HOOK_ENV_SURFACE).out
-
-        assert "Claude Code environment names set in this hook: CLAUDECODE" in context
-        assert "Recovery section's CLAUDECODE entry" in context
-
     def test_a_clean_check_says_so(self, fast_world: World) -> None:
         world = fast_world
         world.install()
@@ -5317,7 +5302,7 @@ class TestSessionStartReportShape:
         informational = [line for line in lines if not line.startswith(("finding: ", "note: "))]
         assert informational[0] == "Cursor adapter check:"
         assert all(
-            line.startswith(("Cursor adapter check:", "Claude Code environment names", "Locale names", "A Cursor started"))
+            line.startswith(("Cursor adapter check:", "Locale names"))
             or line == world.adapter.AGENT_RESTRAINT_SENTENCE
             or "run mode" in line
             or "acceptance-only" in line

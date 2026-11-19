@@ -13,9 +13,12 @@ resolves correctly.
 from __future__ import annotations
 
 import json
+import pickle
 import shutil
 import subprocess
 import tempfile
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,7 @@ from helpers import REPO_ROOT
 from run_skill_evals import (
     DISPOSITION_MIN_EFFECTIVE_SAMPLES,
     DISPOSITION_PASS_THRESHOLD,
+    BlockedPromptError,
     _build_dispatch_command,
     build_disposition_prompt,
     compute_session_store_dir,
@@ -35,13 +39,20 @@ from run_skill_evals import (
     detect_dispatch_in_lines,
     detect_trigger_in_lines,
     extract_governing_rule,
+    judge_disposition,
     load_case_file,
     parse_classification_answer,
     parse_disposition_answer,
     parse_frontmatter_block,
     parse_skill_frontmatter,
     partition_case_files,
+    prime_dispatch_session,
+    raise_if_blocked_prompt_event,
+    raise_if_blocked_prompt_stdout,
+    raise_if_blocked_prompt_stream,
+    run_description_fidelity_sample,
     run_disposition_case,
+    run_disposition_sample,
     score_classification,
     score_disposition_results,
     seed_temp_project_git,
@@ -51,6 +62,68 @@ from run_skill_evals import (
 from validate_skill_structure import parse_frontmatter as validator_parse_frontmatter
 
 FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
+
+# A blocked claude -p prompt as the CLI streams it: the hook's response, the
+# block notice carrying prompt_submit_outcome, then a success result with no
+# model turn. Values are synthetic.
+BLOCKED_PROMPT_STREAM_LINES = [
+    json.dumps({
+        "type": "system", "subtype": "hook_response", "hook_id": "fixture-session-11",
+        "hook_name": "UserPromptSubmit", "hook_event": "UserPromptSubmit",
+        "output": "synthetic block reason\n", "stdout": "", "stderr": "synthetic block reason\n",
+        "exit_code": 2, "outcome": "error", "session_id": "fixture-session-01",
+    }),
+    json.dumps({
+        "type": "system", "subtype": "informational",
+        "content": (
+            "UserPromptSubmit operation blocked by hook:\n[<hook-command>]: synthetic block reason\n\n\n"
+            "Original prompt: <prompt>"
+        ),
+        "level": "warning", "prevent_continuation": True,
+        "prompt_submit_outcome": {"kind": "blocked_by_hook", "prompt_kept": False, "reason": "synthetic block reason"},
+        "session_id": "fixture-session-01",
+    }),
+    json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "num_turns": 0, "total_cost_usd": 0,
+        "stop_reason": None, "session_id": "fixture-session-01",
+    }),
+]
+
+# A blocked claude -p prompt as plain text: the CLI's header, then the hook's
+# reason after `[<hook-command>]: `, then the original prompt. Carries the
+# literal prefix so a change to PROMPT_BLOCK_PREFIX fails here.
+BLOCKED_PROMPT_STDOUT = (
+    "UserPromptSubmit operation blocked by hook:\n"
+    "[<hook-command>]: main-session-rules: prompt blocked\n"
+    "synthetic reason line\n\n\n"
+    "Original prompt: <prompt>\n"
+)
+
+
+FakeClaudeInstaller = Callable[[Callable[[str], str]], list[list[str]]]
+
+
+@pytest.fixture
+def install_fake_claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaudeInstaller:
+    """Returns an installer that replaces subprocess.run with a fake claude.
+
+    The fake exits 0 with the stdout `reply_for_prompt` returns for the prompt (the
+    argument after `-p`), and fails any call that does not start `claude -p`.
+    """
+
+    def install(reply_for_prompt: Callable[[str], str]) -> list[list[str]]:
+        commands: list[list[str]] = []
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            assert command[:2] == ["claude", "-p"], f"unexpected subprocess call: {command[:2]}"
+            commands.append(command)
+            reply = reply_for_prompt(command[2])
+            return subprocess.CompletedProcess(command, 0, stdout=reply if kwargs.get("text") else reply.encode())
+
+        monkeypatch.setattr(run_skill_evals.subprocess, "run", fake_run)
+        return commands
+
+    return install
 
 
 def _read_frontmatter(text: str) -> dict:
@@ -1093,3 +1166,235 @@ class TestComputeSessionStoreDir:
 
         assert not run_session_dir.exists()
         assert sibling_session_dir.exists()
+
+
+def _block_event(outcome: object, *, event_type: str = "system") -> dict:
+    return {"type": event_type, "prompt_submit_outcome": outcome}
+
+
+class TestRaiseIfBlockedPromptStream:
+    def test_raises_on_the_recorded_block_with_the_reason_in_the_message(self) -> None:
+        with pytest.raises(BlockedPromptError, match="synthetic block reason"):
+            raise_if_blocked_prompt_stream(BLOCKED_PROMPT_STREAM_LINES)
+
+    def test_raises_on_the_recorded_block_as_bytes(self) -> None:
+        byte_lines = [line.encode() for line in BLOCKED_PROMPT_STREAM_LINES]
+        with pytest.raises(BlockedPromptError, match="synthetic block reason"):
+            raise_if_blocked_prompt_stream(byte_lines)
+
+    def test_raises_when_a_non_json_line_comes_first(self) -> None:
+        with pytest.raises(BlockedPromptError):
+            raise_if_blocked_prompt_stream(["not json at all", *BLOCKED_PROMPT_STREAM_LINES])
+
+    def test_raises_when_an_undecodable_line_comes_first(self) -> None:
+        byte_lines = [b"\xff\xfe not utf-8", *(line.encode() for line in BLOCKED_PROMPT_STREAM_LINES)]
+        with pytest.raises(BlockedPromptError, match="synthetic block reason"):
+            raise_if_blocked_prompt_stream(byte_lines)
+
+    def test_does_not_raise_on_a_stream_with_no_trigger(self) -> None:
+        raise_if_blocked_prompt_stream(_lines("no-trigger-typo.jsonl"))
+
+    def test_does_not_raise_when_a_model_event_quotes_the_block_text(self) -> None:
+        """Only a system event's prompt_submit_outcome counts, not text a model writes."""
+        quoting_event = {
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": "A hook said main-session-rules: prompt blocked, kind blocked_by_hook.",
+                }],
+            },
+        }
+        quoting_lines = [json.dumps(quoting_event)]
+        raise_if_blocked_prompt_stream(quoting_lines)
+        assert detect_trigger_in_lines(quoting_lines, "code-review", []) == (None, [])
+        assert detect_dispatch_in_lines(quoting_lines) is False
+
+    @pytest.mark.parametrize(
+        "quoting_event",
+        [
+            pytest.param(
+                {
+                    "type": "system", "subtype": "hook_response",
+                    "output": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                    "stdout": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                    "stderr": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                },
+                id="hook-response",
+            ),
+            pytest.param(
+                {
+                    "type": "system", "subtype": "informational",
+                    "content": "main-session-rules: prompt blocked, kind blocked_by_hook",
+                },
+                id="informational-without-an-outcome",
+            ),
+        ],
+    )
+    def test_does_not_raise_when_a_system_event_quotes_the_block_text(self, quoting_event: dict) -> None:
+        """Hook output and system notices are free text, so only the structured outcome field counts."""
+        quoting_lines = [json.dumps(quoting_event)]
+        raise_if_blocked_prompt_stream(quoting_lines)
+        assert detect_trigger_in_lines(quoting_lines, "code-review", []) == (None, [])
+        assert detect_dispatch_in_lines(quoting_lines) is False
+
+
+class TestRaiseIfBlockedPromptEvent:
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            pytest.param({"kind": "blocked_by_hook"}, id="reason-absent"),
+            pytest.param({"kind": "blocked_by_hook", "reason": 7}, id="reason-is-an-int"),
+        ],
+    )
+    def test_raises_on_a_block_kind_outcome_without_a_string_reason(self, outcome: dict) -> None:
+        with pytest.raises(BlockedPromptError):
+            raise_if_blocked_prompt_event(_block_event(outcome))
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            pytest.param([], id="event-is-a-list"),
+            pytest.param("blocked_by_hook", id="event-is-a-string"),
+            pytest.param(_block_event(None), id="outcome-is-none"),
+            pytest.param(_block_event("blocked_by_hook"), id="outcome-is-a-string"),
+            pytest.param(_block_event(["blocked_by_hook"]), id="outcome-is-a-list"),
+            pytest.param(_block_event({"kind": "submitted"}), id="outcome-has-another-kind"),
+            pytest.param(
+                _block_event({"kind": "blocked_by_hook", "reason": "x"}, event_type="assistant"),
+                id="non-system-event-carries-a-block-outcome",
+            ),
+        ],
+    )
+    def test_does_not_raise_on_an_event_that_is_not_a_system_block(self, event: object) -> None:
+        raise_if_blocked_prompt_event(event)
+
+
+class TestParsersRaiseOnBlockedPrompt:
+    def test_detect_trigger_in_lines_raises(self) -> None:
+        with pytest.raises(BlockedPromptError):
+            detect_trigger_in_lines(BLOCKED_PROMPT_STREAM_LINES, "code-review", [])
+
+    def test_detect_dispatch_in_lines_raises(self) -> None:
+        with pytest.raises(BlockedPromptError):
+            detect_dispatch_in_lines(BLOCKED_PROMPT_STREAM_LINES)
+
+
+class TestRaiseIfBlockedPromptStdout:
+    def test_raises_on_the_block_stdout_as_str(self) -> None:
+        with pytest.raises(BlockedPromptError):
+            raise_if_blocked_prompt_stdout(BLOCKED_PROMPT_STDOUT)
+
+    def test_raises_on_the_block_stdout_as_bytes(self) -> None:
+        with pytest.raises(BlockedPromptError):
+            raise_if_blocked_prompt_stdout(BLOCKED_PROMPT_STDOUT.encode())
+
+    def test_raises_on_a_model_reply_that_quotes_the_prefix(self) -> None:
+        """Known limitation, not a requirement: the plain-text recognizer matches the prefix anywhere."""
+        quoting_reply = "Here is the review.\nThe hook printed main-session-rules: prompt blocked earlier.\n"
+        with pytest.raises(BlockedPromptError):
+            raise_if_blocked_prompt_stdout(quoting_reply)
+
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            pytest.param("code-review\n", id="ordinary-answer"),
+            pytest.param("the prompt blocked by the gate\n", id="prompt-blocked-alone"),
+            pytest.param("main-session-rules is loaded\n", id="main-session-rules-alone"),
+            pytest.param(b"\xff\xfe plain bytes", id="undecodable-bytes"),
+        ],
+    )
+    def test_does_not_raise_without_the_full_prefix(self, stdout: str | bytes) -> None:
+        raise_if_blocked_prompt_stdout(stdout)
+
+
+class TestBlockedPromptErrorPickling:
+    def test_pickle_round_trip_keeps_type_and_message(self) -> None:
+        """The process pool hands a worker's error to fut.result() by pickling it."""
+        restored = pickle.loads(pickle.dumps(BlockedPromptError("synthetic block reason")))
+        assert type(restored) is BlockedPromptError
+        assert str(restored) == "synthetic block reason"
+
+
+class TestPlainTextCallsRaiseOnBlockedPrompt:
+    """Each plain-text claude -p call raises instead of scoring a blocked run."""
+
+    @pytest.fixture
+    def claude_commands(self, install_fake_claude: FakeClaudeInstaller) -> list[list[str]]:
+        """A fake claude that exits 0 on the block stdout; records each command."""
+        return install_fake_claude(lambda prompt: BLOCKED_PROMPT_STDOUT)
+
+    def test_description_fidelity_sample_raises(self, tmp_path: Path, claude_commands: list[list[str]]) -> None:
+        sample_args = ("a query", "code-review", [], tmp_path, "skill listing", VALID_NAMES, "model-x")
+        with pytest.raises(BlockedPromptError):
+            run_description_fidelity_sample(sample_args)
+
+    def test_judge_disposition_raises(self, tmp_path: Path, claude_commands: list[list[str]]) -> None:
+        with pytest.raises(BlockedPromptError):
+            judge_disposition("a review", "a rubric", "model-x", tmp_path)
+
+    def test_prime_dispatch_session_raises_instead_of_returning_a_session_id(
+        self, tmp_path: Path, claude_commands: list[list[str]]
+    ) -> None:
+        with pytest.raises(BlockedPromptError):
+            prime_dispatch_session(tmp_path, "a priming prompt", "model-x")
+
+    def test_disposition_sample_raises_at_the_first_review_call(
+        self, tmp_path: Path, claude_commands: list[list[str]]
+    ) -> None:
+        """Without _run_review's own check, the first review's block text would reach
+        judge_disposition, whose check raises on a later call (the call count differs)."""
+        sample_args = ("frame", "scenario", "rule text", "rubric", tmp_path, "model-x", "judge-x")
+        with pytest.raises(BlockedPromptError):
+            run_disposition_sample(sample_args)
+        assert len(claude_commands) == 1
+
+
+class TestPlainTextCallsPassOrdinaryAnswers:
+    """Each plain-text claude -p call still returns its normal value when no hook blocked."""
+
+    def test_description_fidelity_sample_scores_an_ordinary_answer(
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
+    ) -> None:
+        install_fake_claude(lambda prompt: "code-review\n")
+        sample_args = ("a query", "code-review", ["plan-it"], tmp_path, "skill listing", VALID_NAMES, "model-x")
+        assert run_description_fidelity_sample(sample_args) == ("code-review", [])
+
+    def test_judge_disposition_returns_the_label_of_an_ordinary_answer(
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
+    ) -> None:
+        install_fake_claude(lambda prompt: "PERMISSIVE\n")
+        assert judge_disposition("a review", "a rubric", "model-x", tmp_path) == "PERMISSIVE"
+
+    def test_prime_dispatch_session_returns_the_session_id_it_assigned(
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
+    ) -> None:
+        commands = install_fake_claude(lambda prompt: "primed\n")
+        session_id = prime_dispatch_session(tmp_path, "a priming prompt", "model-x")
+        assert str(uuid.UUID(session_id)) == session_id
+        assert commands[0][commands[0].index("--session-id") + 1] == session_id
+
+    def test_prime_dispatch_session_warns_and_returns_the_session_id_on_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def timing_out_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            raise subprocess.TimeoutExpired(command, timeout=1)
+
+        monkeypatch.setattr(run_skill_evals.subprocess, "run", timing_out_run)
+        session_id = prime_dispatch_session(tmp_path, "a priming prompt", "model-x")
+        assert str(uuid.UUID(session_id)) == session_id
+        assert "priming invocation timed out" in capsys.readouterr().err
+
+    def test_disposition_sample_labels_each_arm_from_its_own_review(
+        self, tmp_path: Path, install_fake_claude: FakeClaudeInstaller
+    ) -> None:
+        def reply_for_prompt(prompt: str) -> str:
+            # Keys on production prompt wording: "You are classifying" and "<governing_rule>".
+            if prompt.startswith("You are classifying"):
+                return "BLOCKING\n" if "treatment review text" in prompt else "PERMISSIVE\n"
+            return "treatment review text\n" if "<governing_rule>" in prompt else "baseline review text\n"
+
+        commands = install_fake_claude(reply_for_prompt)
+        sample_args = ("frame", "scenario", "rule text", "rubric", tmp_path, "model-x", "judge-x")
+        assert run_disposition_sample(sample_args) == (True, False)
+        assert len(commands) == 4

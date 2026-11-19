@@ -556,11 +556,21 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
     wall_clock_s = time.monotonic() - start
 
     projects_root = runner.config_dir() / "projects"
-    session_jsonl = runner.wait_for_session_flush(
-        projects_root, session_id, timed_out=timed_out, requires_subagent_sidecar=False,
+    blocked_detail = runner.blocked_prompt_detail(lines)
+    session_jsonl = (
+        None if blocked_detail is not None
+        else runner.wait_for_session_flush(
+            projects_root, session_id, timed_out=timed_out, requires_subagent_sidecar=False,
+        )
     )
 
-    if session_jsonl is None:
+    if blocked_detail is not None:
+        validity = runner.RunValidity(
+            ok=False, failure_reason=runner.MISSING_REASON_BLOCKED_PROMPT, observed_model=None,
+            observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
+            failure_detail=blocked_detail, prompt_verbatim=None,
+        )
+    elif session_jsonl is None:
         validity = _validity_without_transcript(lines, timed_out=timed_out)
     else:
         own_session_paths = runner.own_session_paths_for(session_jsonl)

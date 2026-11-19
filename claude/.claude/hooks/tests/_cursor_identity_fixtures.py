@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from helpers import REPO_ROOT
+from helpers import REPO_ROOT, write_prewarmed_stub
 
 # Every fake ancestor reports this start time, so a registry entry seeded with it validates.
 FAKE_LIVE_START_TIME = "Tue Feb  2 03:04:05 2021"
@@ -78,9 +78,7 @@ def write_stub_tool_directory(base: Path, directory_name: str, tool_name: str, b
     """A new `base/directory_name` holding an executable POSIX `sh` stand-in named `tool_name`. Returns the directory."""
     directory = base / directory_name
     directory.mkdir()
-    stand_in = directory / tool_name
-    stand_in.write_text("#!/bin/sh\n" + body, encoding="utf-8")
-    stand_in.chmod(0o755)
+    write_prewarmed_stub(directory / tool_name, "#!/bin/sh\n" + body)
     return directory
 
 
@@ -277,31 +275,29 @@ def install_ps_stub(
             _FIELD_SEPARATOR.join((rule.kind, str(rule.pid), rule.mode, rule.output)) + "\n" for rule in rules
         )
     )
-    ps_stub = bin_dir / "ps"
-    ps_stub.write_text(
+    write_prewarmed_stub(
+        bin_dir / "ps",
         _PS_STUB_SOURCE
         % {
             "tree_file": shlex.quote(str(tree_file)),
             "rules_file": shlex.quote(str(rules_file)),
             "log_file": shlex.quote(str(log_file)),
             "ppid_pad_width": ppid_pad_width,
-        }
+        },
     )
-    ps_stub.chmod(0o755)
     if any(rule.mode == "cap-kill" for rule in rules):
         real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
         if real_timeout is None:
             pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
-        timeout_stub = bin_dir / "timeout"
-        timeout_stub.write_text(
+        write_prewarmed_stub(
+            bin_dir / "timeout",
             _TIMEOUT_STUB_SOURCE
             % {
                 "rules_file": shlex.quote(str(rules_file)),
                 "log_file": shlex.quote(str(log_file)),
                 "real_timeout": shlex.quote(real_timeout),
-            }
+            },
         )
-        timeout_stub.chmod(0o755)
     return PsStub(env={"PATH": f"{bin_dir}:{os.environ['PATH']}"}, log_path=log_file, tree=tree)
 
 

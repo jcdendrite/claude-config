@@ -190,9 +190,94 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
     - The row stores `reviewers` sorted and duplicate-free. It is `[]` on CLEAN and CONSULT and on a copy of a row that holds no lanes, and absent on a row from before schema 5.
     - A second append of one finding with other lanes lands as a second row when the row is ref-less or a carry. On any other `--ref` row it is rejected as no longer live.
   - **Id and site hash.** Every row gets a script-stamped `id`, the first 12 hex digits of the row's sha256. Only a range-form `DEFER` or `SETTLED` row also stores a `site_hash`, and it never renders. The `id` renders in full in the Id column, and 12 digits stay below the redaction gate's 32-digit hex-run detector.
+  - **Reviewed state.** From schema 6 each row stores `reviewed_head`, the commit HEAD named, and `reviewed_tree`, the index written as a tree object. Both are read when the row is appended.
+    - Either field can be empty, and the row lands either way. The row does not record why a field is empty.
+    - `append` prints a line starting `review-ledger.sh: the reviewed state was not fully recorded` when it leaves a field empty, except in three cases that print nothing:
+      - `reviewed_head` when git reports no HEAD commit. That covers a branch with no commit, and also a repository git cannot read, so a silent empty `reviewed_head` can hide a broken repository.
+      - `reviewed_tree` with no index file.
+      - `reviewed_tree` when the index has unmerged entries.
+    - The note goes to `append`'s stderr, so only the session that ran the append sees it, and a `review-orchestrator` return does not relay it. A retry leaves an empty field empty, as the dedup bullet below says.
+    - A step that times out ends the capture, so a hung call costs one capped call's time limit after the steps before it. A capture that never times out takes the sum of its steps' times, which grows with the size of the index.
+    - The tree is written from a copy of the index, so an append never takes the repository's index lock.
+    - Both record the state at append time. `code-review/SKILL.md` § "Review-narrative ledger" runs a round's appends before any fix is dispatched or applied, but nothing checks that a session follows that order. A fix staged before the append, a change staged or committed between the review and the append, or an unstaged edit a reviewer read makes the stored state differ from what the round reviewed.
+    - `append` pins each non-empty `reviewed_tree` under the local ref `refs/review-ledger/<YYYY-MM>/<tree id>`, where `<YYYY-MM>` is the first seven characters of the row's `event_time`. The ref points at the tree, so `git gc` keeps the tree and every object under it until the pin is deleted. Rows that share a tree and a month share one ref.
+    - Linked worktrees share the namespace, so a pin outlives its worktree and its branch. `git push` sends a pin only under `--mirror`, to a mirror remote (below), or under a refspec that covers the namespace, such as `refs/*:refs/*`.
+    - Other git use meets the pins too. This is unverified:
+      - A remote whose `remote.<name>.mirror` is true, which `git clone --mirror` sets on `origin`, makes a plain `git push` send the pins.
+      - A fetch whose refspec maps into `refs/*`, as `git clone --mirror` sets up, deletes the pins when it prunes.
+      - Unfiltered ref listings show them, such as `git for-each-ref`, `git show-ref`, `git log --all` and an editor's ref picker.
+      - Tools that copy or walk every ref carry them, such as `git clone --mirror`, `git bundle create --all`, `git fast-export --all` and history-rewrite tools.
+      - With `core.logAllRefUpdates=always`, each pin also gets a reflog file, which `git pack-refs` does not pack.
+    - A pin that fails prints a line starting `review-ledger.sh: the reviewed tree was recorded but not pinned` to the same stderr as the note above, and the row still lands with both fields. A tree with no pin resolves only until `git gc` deletes it, once nothing reaches it and it is older than `gc.pruneExpire`, two weeks by default (`git help gc`).
+    - Two appends that pin one tree at once can print that line although the other append's pin landed. The audit command below tells the two apart.
+    - That line naming `timed out` can mean the killed `git update-ref` left a lock file behind, and later writes of that ref then fail on it.
+    - To see git name the lock's path, run the audit command's hand pin below for that tree; `append` discards git's error. `docs/hooks.md` § "Gate deadlock recovery" gives the recovery and says what else the lock can block.
+    - A pin can outlive every row. An append that aborts after the capture, or a retry deduped after the index moved, still pins its own tree. Deleting a ledger file takes its rows with it and leaves their pins, whether the stale-file sweep each append runs deletes it, `clear-stale` does, or the reader does under the Reset bullet above.
+    - `reviewed_head` is not pinned, because a commit pin keeps every ancestor and placement compares head ids without reading the commit. A head commit resolves while a branch, a reflog or a remote's ref reaches it. Once its branch is deleted, a staged round's `git diff <reviewed_head> <reviewed_tree>` can stop resolving if that head was never pushed or was rewritten.
+    - A pin writes no object, because `git add` and the capture already wrote them. It stops `git gc` deleting what nothing else keeps under its tree: staged file versions no kept commit holds, and the directory trees above them.
+    - Each pin is a file of its own until `git pack-refs`, which `git gc` runs, moves it into `packed-refs` (`git help pack-refs`, and `gc.packRefs` in `git help gc`).
+    - A large file in the index at an append is kept once for each version a recorded tree holds.
+    - Run each command below in bash, from a worktree of the repository whose pins or ledger file it reads. Each assumes a full clone, because in a partial clone git can fetch from the promisor remote a missing object a command reads.
+    - To measure what the pins alone keep, run `LC_ALL=C comm -13 <(git rev-list --objects --exclude='refs/review-ledger/*' --all | cut -d' ' -f1 | LC_ALL=C sort -u) <(git rev-list --objects --glob='refs/review-ledger/*' | cut -d' ' -f1 | LC_ALL=C sort -u) | git cat-file --batch-check='%(objecttype) %(objectsize:disk)' | awk '{n[$1]++; s[$1]+=$2} END {for (t in n) print t, n[t], s[t]}'`.
+      - It prints one line per object type: the type, the object count and the bytes on disk. It prints only when done.
+      - The pins' total is the sum of the byte column over every line.
+      - Its run time grows with the repository's object count.
+      - It also counts objects that only a reflog or an index holds, so it can overstate.
+    - `git for-each-ref refs/review-ledger/ | wc -l` counts the pins.
+    - To list recorded trees whose pin is missing, run this once for each ledger path `show`'s stderr header lists, as `FILE`: `jq -rR 'fromjson? | objects | select((.reviewed_tree // "") != "") | "\(.event_time[0:7]) \(.reviewed_tree)"' FILE | sort -u | while read -r month tree; do [ "$(git rev-parse --verify -q "refs/review-ledger/$month/$tree")" = "$tree" ] || [ -z "$(git for-each-ref --count=1 "refs/review-ledger/$month/")" ] || printf 'unpinned: %s %s\n' "$month" "$tree"; done`.
+      - It prints one `unpinned:` line for each recorded tree whose ref is missing or names another object, in a month that still holds a pin.
+      - It therefore lists nothing for a month deleted as below, and nothing for a month whose every pin failed.
+      - Run it within `gc.pruneExpire` of the appends, while an unpinned tree still resolves.
+      - `git update-ref refs/review-ledger/<YYYY-MM>/<tree id> <tree id>` pins a listed tree by hand.
+      - Do not hand-pin a tree from a month you deleted. Once a later append pins a tree in a deleted month, the audit lists that month's deleted trees again.
+    - Each pin runs the repository's `reference-transaction` hook, if it has one. A hook that rejects the update makes the pin print its note (`git help githooks`).
+    - The tree capture's write to the index copy can also fire the repository's `post-index-change` hook. This is unverified: it is recalled from git's behavior, not run.
+    - A slow `post-index-change` hook can show up as a `timed out` note with an empty `reviewed_tree`. This is unverified: it is recalled from git's behavior, not run.
+    - Nothing expires a pin. `git for-each-ref --format='delete %(refname)' refs/review-ledger/<YYYY-MM>/ | git update-ref --stdin` deletes one month's pins in one transaction. When git prints an error, it deleted none of them, as when a listed pin's lock is stranded.
+    - A month also holds the pins of PRs still open in it. Once their trees are gone, every pair with a round whose tree only that month pinned is not placed, whether both rounds fall in the month or the pair crosses it.
+    - Run `git gc --prune=now` only while no other git command writes to the repository.
+    - Deleting a pin frees nothing by itself.
+      - A later `git gc` deletes what only that pin kept, when nothing else holds it, once it is older than `gc.pruneExpire`. `git gc --prune=now` deletes it at once.
+      - An object already in a pack goes only when a `git gc` repacks every pack, which `git gc --auto` does not do on every run (`git help gc`).
+    - Neither field is in the dedup key. A retry after HEAD or the index moved is a no-op, and the landed row keeps the first attempt's state.
+    - `render` never prints them. A full id is 40 or 64 hex digits, above the redaction gate's 32-digit hex-run detector. `show` and the file `show --out` writes carry them. The detector blocks a row copied from either into a commit or a PR body. It never catches an abbreviated id. `docs/private-project-redaction.md` § "The three scans" says where the detector runs. Anywhere else, keeping the ids out of published text is the writer's job.
+    - Rows from before schema 6 have neither key.
+
+    To compare two rounds:
+    - Read rows from the branch ledger file alone, one line at a time with `jq`, skipping a line that does not decode to an object, as `show` does. `show` itself merges in the session file, whose rows can share a `session_id` and continue the round count, and no row field tells the two files apart.
+    - The Reset bullet above says how `show`'s stderr header names the branch file. Nothing is compared when the header names no branch file:
+      - The header reads `scope=session`.
+      - The one path listed is the session file, which is named `<repo hash>.<session id>.jsonl` after the `session_id` its rows carry. It is listed alone when the branch file is empty or absent.
+    - A round is the rows sharing one `session_id` and `round`, because other sessions on the branch file can reuse a round number. CONSULT rows are left out, because a CONSULT row records a consult verdict rather than a finding, and it is appended before the round retries its denied spawn. Form rounds, and apply the two pairing rules below, from these whole groups, whatever their schema or state.
+    - Pair round N with round N+1 only when round N has an ADDRESS row. A CLEAN round starts no fix, so the delta after it is new work.
+    - Round N+1 is the same session's round N+1 when it has one. Otherwise it is the round-N+1 group whose earliest row is the first by `event_time` after round N's earliest row, because a resumed or new session continues the branch's round count.
+    - Take a round's state from its earliest row by `event_time` that has a `schema_version` of 6 or more and a non-empty `reviewed_tree`.
+    - A `--relog` row (a reopen, a gate-denial recovery or a `--carry-forward` withdrawal) and a retried append record the state at their own append time, which can follow the round's fix or commit.
+    - Each ADDRESS, DEFER and SETTLED row of round N+1 is placed by its cited location: its `source`, or its `cited_line` on a carry (`decided_by` of `carry`), whose `source` is the decided text's range. A `path:N` location is the one-line range N to N. A location with no line, such as the path alone that names a file a fix creates, is not placed.
+    - The tally is per row, and it covers every reviewer lane unless the reader filters rows on `reviewers`.
+    - A `--relog` row counts like any other row of its round, because no field marks one. It stores its `--ref` decision's lanes, and a fresh decision on a repeat also stores a `ref`. A gate-denial recovery therefore repeats its decision's location in the same round.
+    - Drop rows whose `ref` is set and whose `cited_line` is empty. These are reopen and `--carry-forward` withdrawal rows, gate-denial recoveries and fresh decisions on repeats. A reopen or a withdrawal adds an earlier decision's location, whose line numbers belong to the text that decision cited, not to round N+1's tree, so whether it reads inside is arbitrary.
+    - A location is inside when any of its lines falls in a hunk's `+` range of `git diff -U0 <round N tree> <round N+1 tree>` for its file, and outside otherwise. Default context lines would count unchanged neighbours as changed.
+    - Inside means changed between the two recorded states, not written by fix N. The delta also holds whatever else reached the index between the two appends, such as the engineer's own staged edits, a rebase or a merge. Each adds `+` ranges of its own, which push counts toward inside.
+    - Inside is block-granular. An ADDRESS, DEFER or SETTLED `source` ranges the whole block the finding concerns, so a finding reads as inside when the delta changed any line of that block, not only the defect's own line.
+    - A pair whose `reviewed_head` values differ, an empty one included, is placed and counted apart from pairs with one HEAD. A HEAD move means a commit, a rebase or a merge landed between the two appends. Consecutive cumulative passes bracket a committed fix, so leaving such pairs out would drop every cumulative pair.
+    - Hunk boundaries follow the reader's `diff.algorithm`, and with `diff.renames` off a renamed and edited file reads as all `+` lines. Counts from readers with different diff config are therefore approximate at that margin.
+    - A hunk header's `+c,n` covers lines c through c+n-1, and `+c` alone covers line c. A deletion-only hunk's `+c,0` covers no line, so the line before a deletion is not changed.
+    - A pair is not placed, which counts as neither inside nor outside, in five cases:
+      - Either round has no row with a state.
+      - Either round's `reviewed_tree` fails `git cat-file -e <id>^{tree}`.
+      - The two trees are equal, so no delta was recorded. That happens when round N was appended after its fix was staged and round N+1 was not, or when fix N left the index unchanged by round N+1's append. The first is the one late-append pattern the rows show.
+      - The diff exits nonzero.
+      - An `event_time` tie between rows or groups with different trees leaves the round's state or its pair ambiguous.
+    - An unresolvable `reviewed_head` does not change a pair's placement. Once a tree is gone, every row that recorded it reads as not placed for good.
+    - Placement assumes each round's rows were appended before that round's fix was staged, and no row records whether that held. A late append has these outcomes, so its error has no single direction:
+      - Round N late and round N+1 on time: both trees hold fix N, so the trees are equal and the pair is not placed.
+      - Both late: the delta is fix N+1, which was written for round N+1's own ADDRESS findings, so those findings read as inside. A line fix N wrote reads as outside.
+      - Round N on time and round N+1 late: the delta holds both fixes, so round N+1's ADDRESS findings read as inside.
+      - In the last two, the `+` ranges number the lines of the tree after fix N+1, not the tree round N+1 cited.
   - **Source checks.** A range-form DEFER or SETTLED source gets a `site_hash` from the working-tree file's lines, and an unterminated last line counts. A file whose physical path lies outside the repository (a symlink out) is rejected for such a source. A control character in any source's path, a tab or newline for one, is rejected.
   - **Row links.** A carry binds the decided text, not its site: the script checks that the carry's range hashes to the decision's `site_hash` and does not compare paths, so a block-length copy of the decided text in another file carries. A `--ref` is checked against the resolved ledger file only. An id that lives in a session-scope file (a detached-HEAD or default-branch session, or another session), in a torn line, or in a swept ledger reads as "not in this branch's ledger".
-    - A retry of a `--ref` append whose first attempt landed is a no-op. A non-carry row naming a retired decision is accepted only when the row that retired it holds the same fields, apart from `id`, `schema_version` and `event_time`, which is the append's dedup key.
+    - A retry of a `--ref` append whose first attempt landed is a no-op. A non-carry row naming a retired decision is accepted only when the row that retired it holds the same fields, apart from `id`, `schema_version`, `event_time`, `reviewed_head` and `reviewed_tree`, which is the append's dedup key.
     - Validation runs before the append lock, so two sessions that validate at the same moment can both land.
   - **Render.** `render` builds the PR-body block from the resolved ledger file's live decisions and, unlike `show`, reads no other session's file. Without `--pr-json` it prints the block alone, which `/code-review` writes to `agent-reviews/review-ledger-<suffix>.md` for reviewers to read. Nothing is written when no decision is live.
     - With `--pr-json`, a delimiter counts only as a whole line outside a fenced code block, so a fenced example that quotes the delimiters stays outside-body text.

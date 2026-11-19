@@ -1333,12 +1333,14 @@ class TestResolveSessionAndPid:
         assert result.stdout == "0|sess-1|4242"
         assert result.stderr == ""
 
-    def test_an_unresolvable_session_names_the_missing_hook_and_returns_one(self):
-        result = self._resolve("return 1")
+    def test_an_unresolvable_session_names_the_missing_session_file_and_returns_one(self):
+        result = self._resolve("return 2")
         assert result.returncode == 0, result.stderr
         assert result.stdout.startswith("1||")
         assert result.stderr == (
-            "demo.sh: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run). "
+            "demo.sh: could not resolve this session's id (no live session file found for this process or its "
+            "ancestors; usual causes: the capture-session-id.sh SessionStart hook did not run, its file is stale, "
+            "or ps could not read the process table). "
             "Abort before any fetch.\n"
         )
 
@@ -1350,7 +1352,7 @@ class TestResolveSessionAndPid:
             "demo.sh: resolved session id '../escape' is not a valid path component. Abort before any fetch.\n"
         )
 
-    @pytest.mark.parametrize("stubbed_resolver_body", ["return 1", "printf '../escape 4242'"])
+    @pytest.mark.parametrize("stubbed_resolver_body", ["return 2", "printf '../escape 4242'"])
     def test_the_caller_supplied_consequence_and_abort_note_end_both_failure_messages(self, stubbed_resolver_body):
         result = self._resolve(
             stubbed_resolver_body,
