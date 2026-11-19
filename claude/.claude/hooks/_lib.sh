@@ -2092,6 +2092,16 @@ _lib_extract_git_subcmd_args() {
   printf '%s\n' "${argv#*$'\n'}"
 }
 
+# $1 is a quote-stripped or masked fragment. A literal match, so no word inside it can hide another subcommand.
+# $2 is the raw tool-input command. A backtick in it can supply a command word in front of the fragment, so any backtick refuses.
+_lib_fragment_is_git_version_query() {
+  local version_query_re='^ *git --version *$'
+  if [[ "$2" == *'`'* ]]; then
+    return 1
+  fi
+  [[ "$1" =~ $version_query_re ]]
+}
+
 # Exit 0 when WORD holds a quote character, `$`, a backtick, `<`, `>`, `\`,
 # `{`, `}`, `?`, `[` or `]`.
 # Called on text that went through _lib_mask_shell_quotes or _lib_strip_shell_quotes.
