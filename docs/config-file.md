@@ -3,7 +3,7 @@
 `<config-dir>/claude-config.toml` (`<config-dir>` means `$CLAUDE_CONFIG_DIR`
 when set and absolute, else `$HOME/.claude`) is the single, hand-editable
 state file for every machine- and account-scope toggle this repo ships —
-worktree enforcement, autonomous shipping, the PR-cost ledger and its
+worktree enforcement, the PR-cost ledger and its
 disclosure mode, and the various advisory-nudge kill switches. No consumer
 re-derives its own presence/content check for a given toggle from a
 standalone sentinel file. This file, `config-keys.psv`'s schema, and one
@@ -19,7 +19,7 @@ A restricted TOML subset, hand-editable with any text editor:
 
 ```toml
 worktree_required = true
-autonomous_shipping = false
+handoff_nudge = false
 # a comment
 pr_cost_disclosure = "dollars"
 ```
@@ -34,6 +34,10 @@ pr_cost_disclosure = "dollars"
   outside this grammar is skipped with a stderr warning naming the file
   and the line, not treated as a whole-document parse failure — a
   hand-edit typo affects only that one key.
+- A row whose key has no schema row (a removed key, for example) is
+  skipped with a stderr warning each time a reader parses the file.
+  Neither `install.sh` nor `migrate-legacy-config.sh` removes it, so
+  delete the line by hand.
 - Values are matched case-insensitively (`TRUE`/`True`/`FALSE` all
   resolve), but keys are matched case-sensitively; this repo's own key
   names are already lowercase snake_case.
@@ -58,7 +62,6 @@ over any paraphrase here.
 | Key | Type | Default | Resolution | Promptable | Docs |
 |---|---|---|---|---|---|
 | `worktree_required` | bool | `false` | config-dir-or-home | yes | [README § Worktree enforcement](../README.md#worktree-enforcement) |
-| `autonomous_shipping` | bool | `false` | config-dir-or-home | yes | [README § Autonomous shipping](../README.md#autonomous-shipping) |
 | `permission_prompt_tracking` | bool | `false` | config-dir | yes | [permission-prompt-tracking.md](permission-prompt-tracking.md) |
 | `error_mode_nudge` | bool | `false` | config-dir | yes | [error-mode-nudge.md](error-mode-nudge.md) |
 | `cost_ledger_recording` | bool | `false` | config-dir | yes | [cost-ledger.md](cost-ledger.md) |
@@ -80,9 +83,9 @@ over any paraphrase here.
 | `plugin_bootstrap` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) (the `plugin_bootstrap = false` switch and rollback) |
 | `agent_branch_records` | bool | `false` | config-dir | no | [agent-branch-records.md](agent-branch-records.md) |
 
-`worktree_required`, `autonomous_shipping`, `round_consult_gate`,
-`commit_stall_block`, and `authorization_boundary_restore` are the five
-**enforcement-critical** keys `config-keys.psv`'s own header names: any
+`worktree_required`, `round_consult_gate`, `commit_stall_block`, and
+`authorization_boundary_restore` are the four **enforcement-critical** keys
+`config-keys.psv`'s own header names: any
 change to that file's `default`, `resolution`,
 `legacy-probe-on-resolution-failure`, or `legacy-import-locations` column
 for one of their rows requires a
@@ -109,8 +112,8 @@ state-file row never wins — once a key has any row, whether from a
 hand-edit, a migration import, or a scaffold default, that row is
 authoritative until it is itself changed.
 
-`worktree_required` and `autonomous_shipping` (`resolution:
-config-dir-or-home`) add a union on top of that: the effective value is
+`worktree_required` (`resolution: config-dir-or-home`) adds a union on top
+of that: the effective value is
 the OR of the resolved config dir's own three-tier value and
 `$HOME/.claude`'s own three-tier value, so an explicit `false` row in one
 location can never defeat a `true` produced by the other — the same
@@ -118,13 +121,14 @@ invariant a sentinel armed before `CLAUDE_CONFIG_DIR` adoption already
 relied on. If `CLAUDE_CONFIG_DIR` is set but relative — so the config dir
 itself cannot be resolved — resolution falls to one of these outcomes:
 
-- `$HOME` available, key is `worktree_required`: still probes the literal
-  `$HOME/.claude/worktree-required` file directly
-  (`legacy-probe-on-resolution-failure: true` — matching this key's
+- `$HOME` available, key is `worktree_required`: resolution reads
+  `$HOME/.claude` alone (its state-file row, then its legacy
+  `worktree-required` file, then the schema default), so the key still
+  resolves (`legacy-probe-on-resolution-failure: true` — matching this key's
   pre-migration fail-closed behavior).
-- `$HOME` available, any other key (including `autonomous_shipping`):
-  reports "unresolvable" instead of granting on a resolution failure — the
-  wrong direction for a mechanism that removes a human checkpoint.
+- `$HOME` available, any other key: reports "unresolvable" (the caller
+  picks its fail direction; see
+  `claude/.claude/hooks/tests/config-schema-audit.md`).
 - `$HOME` also unset or empty: no location is left to probe, so every key,
   `worktree_required` included, reports "unresolvable."
 
@@ -145,9 +149,9 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 22 keys:
+   the 21 keys:
    - Checks for a legacy value at the location(s) `legacy-import-locations`
-     names — the resolved config dir alone, or (for the six keys
+     names — the resolved config dir alone, or (for the five keys
      `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
      regardless of `CLAUDE_CONFIG_DIR`, plus `pr_cost_disclosure`, whose own
      pre-migration resolution could land at either location depending on
@@ -159,11 +163,11 @@ It runs two phases, always in this order:
      overwritten by a later run.
    - For the eleven non-enforcement-critical keys, this happens fully
      non-interactively.
-   - For the five enforcement-critical keys, import is direction-aware
+   - For the four enforcement-critical keys, import is direction-aware
      rather than TTY-gated: it compares the legacy-derived value against
      that key's fail-closed value (`worktree_required=true`,
-     `autonomous_shipping=false`, `round_consult_gate=true`,
-     `commit_stall_block=true`, `authorization_boundary_restore=true`) and
+     `round_consult_gate=true`, `commit_stall_block=true`,
+     `authorization_boundary_restore=true`) and
      writes it, with no confirmation of any kind, only when the two
      match — turning enforcement further on can only make the machine
      more restrictive, so it needs no gate. See
@@ -177,7 +181,7 @@ It runs two phases, always in this order:
      abort the run; the remaining keys still import normally.
    - After every key has been processed, a schema-default scaffold fills in
      a default row only for a key with no legacy fallback mechanism at all.
-     None exist among today's 22 keys besides `test_selection_tracking`,
+     None exist among today's 21 keys besides `test_selection_tracking`,
      `architect_fix_plan_pilot`, `review_orchestrator_routing`,
      `architect_disposition_challenge_pilot`, `plugin_bootstrap` and
      `agent_branch_records`, whose `legacy-filename` and `legacy-polarity` are
@@ -212,9 +216,9 @@ It runs two phases, always in this order:
 `~/.claude/scripts/config-get.sh` has no `set` subcommand and no other
 writing verb — it is read-only, full stop, so shipping it to every stow
 consumer opens no new write path. The only two sanctioned writers are
-`install.sh`'s interactive `[y/N]` opt-in prompt (for the six promptable
+`install.sh`'s interactive `[y/N]` opt-in prompt (for the five promptable
 keys) and `migrate-legacy-config.sh`'s import phase, described above. These
-two writers are not equally trusted for the five enforcement-critical keys:
+two writers are not equally trusted for the four enforcement-critical keys:
 `migrate-legacy-config.sh`'s import phase is direction-aware (it only
 auto-imports a legacy value that already matches the fail-closed direction),
 while `install.sh`'s interactive prompt is not — see
@@ -223,9 +227,10 @@ for that asymmetry and why it's accepted.
 Nothing mechanically enforces the "only these two writers" restriction at
 the Claude-Code-tool-call boundary — see
 [`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)'s
-descope note for why. An agent asking Claude Code to write
-`claude-config.toml` by another path still goes through the harness's own
-ask-by-default permission prompt, same as any other file write.
+descope note for why. With the shipped settings, an agent in the main session that writes `claude-config.toml` by another path meets no `permissions.ask` rule and no hook that gates writes to it.
+The only file-path ask rule, `Edit(//**/.claude/settings*.json)`, does not match it.
+Any human gate is then Claude Code's own permission prompt, and this repo has not verified whether that prompt fires for this file in any permission mode or for any tool, the Stop reason's Bash append included.
+The recorded observations are in `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected".
 
 Neither writer locks against the other. `_config_set`'s read-modify-write
 cycle can lose an update if `install.sh`'s prompt and
@@ -262,12 +267,12 @@ internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 ## Per-account isolation
 
 Because every key now lives in one file, symlinking `claude-config.toml`
-itself from one Claude account's config dir to another's merges *all 22
+itself from one Claude account's config dir to another's merges *all 21
 keys* between the two accounts at once — a wider blast radius than the
 single-sentinel symlink risk this repo already warned about for
 `pr-cost.md`'s `.pr-cost-enabled` file. A symlinked `claude-config.toml`
 silently opts both accounts into each other's worktree enforcement,
-autonomous shipping, PR-cost disclosure mode, and every advisory nudge
+PR-cost disclosure mode, and every advisory nudge
 kill switch together, defeating the per-account isolation each of those
 features is designed around. Create each account's `claude-config.toml`
 as its own regular file — never a symlink to another account's copy.
@@ -277,7 +282,7 @@ as its own regular file — never a symlink to another account's copy.
 Each `_config_value`/`_config_enabled` call for a not-yet-memoized key walks
 the state-file-then-legacy-then-default chain once per location -- twice,
 for a `config-dir-or-home` union key with a diverged `$HOME`
-(`worktree_required`, `autonomous_shipping`). Three cost components drive
+(`worktree_required`). Three cost components drive
 that walk:
 
 - **Schema passes.** One `_config_schema_row` pass over config-keys.psv up
@@ -300,22 +305,11 @@ that walk:
 Measured directly (real `bash script.sh` subprocess invocations, 40
 iterations each, otherwise-idle machine). `_config_enabled` resolves through
 a single bare call with no subshell fork of its own; the "config-dir key"
-and `advance-past-commit-stall.sh` figures below were not re-measured
-against this shape and should be treated as an upper bound for that path:
+figure below was not re-measured against this shape and should be treated
+as an upper bound for that path:
 
 - A bare `. _lib.sh` with no config call: ~15ms.
 - Adding one `_config_enabled` call for a `config-dir` key: ~23ms.
-- `advance-past-commit-stall.sh`'s real shape (`commit_stall_block`, then
-  `autonomous_shipping` twice) costs ~33-35ms regardless of whether a state
-  file exists yet. Threading the precomputed schema locals through every
-  `_config_location_value` call caps the gap between the two shapes at one
-  further schema pass per location, which sits within this machine's own
-  measurement noise. This figure does not account for the `CLAUDE_CONFIG_DIR`/`HOME`
-  fingerprint check on the memo hot path; that check is judged immaterial
-  (two builtin string comparisons, no fork/IO) and wasn't re-measured.
-
-The second `autonomous_shipping` lookup above is a memo hit, not a second
-resolution.
 
 Several hook files call into this resolution path, directly or through
 the `_lib_*` helpers in `_lib.sh`, including the highest-frequency
@@ -329,7 +323,7 @@ assume it stays under it.
 
 ## A hand-edit-loss fragility for enforcement-critical keys
 
-A hand-edited row for one of the five enforcement-critical keys is the
+A hand-edited row for one of the four enforcement-critical keys is the
 sole record of that key's value: nothing mirrors it into a legacy file.
 If the code that reads `claude-config.toml` for one of these keys is
 ever reverted to a version that only knows the legacy per-key file, that
