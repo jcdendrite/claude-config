@@ -35,9 +35,9 @@ _LEDGER_ROUND_MAX_DIGITS=4
 # In either case the append lock is the only other protection.
 # That lock fails open after _LIB_APPEND_LOCK_RETRIES failed acquisitions.
 _LEDGER_LINE_MAX_BYTES=4095
-# Ledger row schema version -- unread today, lets a future migration
-# distinguish row shapes without re-deriving them from optional-key presence.
-_LEDGER_SCHEMA_VERSION=5
+# Ledger row schema version. The reader rule in docs/scripts.md reads it to
+# take a round's state only from rows with schema_version 6 or more.
+_LEDGER_SCHEMA_VERSION=6
 
 usage() {
   cat >&2 <<'EOF'
@@ -535,6 +535,27 @@ case "$SUBCOMMAND" in
       SITE_HASH=$(_review_ledger_site_hash "$REPO_ROOT" "$SITE_PATH" "$SITE_START" "$SITE_END") || exit 2
     fi
 
+    # Captured once here, before the dedup check inside
+    # _lib_append_json_line_locked, and never recomputed on a lock retry.
+    # event_time varies on every call, so it is excluded from the dedup key
+    # filter below rather than baked into LINE per attempt.
+    # event_time is for a human reading `review-ledger.sh show` to
+    # reconstruct the review's own narrative timeline. `show` also sorts on
+    # it, to interleave rows from the branch and session files chronologically.
+    # The reviewed-tree pin below names its ref by this value's month.
+    EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Best-effort: an empty value means git could not report that state, and the append goes on.
+    # Captured and pinned before the umask below, so git writes its objects and the pin's ref under the invoking shell's umask.
+    # A HEAD look-up that timed out skips the tree capture, so a hung HEAD look-up costs one cap.
+    REVIEWED_TREE=""
+    if REVIEWED_HEAD=$(_review_ledger_reviewed_head "$REPO_ROOT"); then
+      REVIEWED_TREE=$(_review_ledger_reviewed_tree "$REPO_ROOT")
+    fi
+    if [ -n "$REVIEWED_TREE" ]; then
+      _review_ledger_pin_tree "$REPO_ROOT" "$REVIEWED_TREE" "${EVENT_TIME:0:7}"
+    fi
+
     # Ledger rows hold verbatim engineer quotes, so the directory is created 0700 and each new file 0600.
     umask 077
     if ! mkdir -p "$LEDGER_DIR" 2>/dev/null; then
@@ -544,15 +565,6 @@ case "$SUBCOMMAND" in
     if [ "$LEDGER_SCOPE" = "session" ]; then
       printf 'review-ledger.sh: row is session-scoped (HEAD is detached or is the default branch), not shared with the branch ledger: %s\n' "$LEDGER_FILE" >&2
     fi
-
-    # Captured once here, before the dedup check inside
-    # _lib_append_json_line_locked, and never recomputed on a lock retry.
-    # event_time varies on every call, so it is excluded from the dedup key
-    # filter below rather than baked into LINE per attempt.
-    # event_time is for a human reading `review-ledger.sh show` to
-    # reconstruct the review's own narrative timeline. `show` also sorts on
-    # it, to interleave rows from the branch and session files chronologically.
-    EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # jq -nc avoids hand-escaping free text -- this repo's convention for
     # untrusted/free-form strings. -c keeps each record on one line. The
@@ -574,7 +586,8 @@ case "$SUBCOMMAND" in
       --arg session_id "$SESSION_ID" --arg decided_by "$DECIDED_BY" --arg engineer_quote "$ENGINEER_QUOTE" \
       --argjson enforcement_invariant "$INVARIANT_JSON" --argjson carry_forward "$CARRY_FORWARD_JSON" \
       --arg defer_criterion "$DEFER_CRITERION" --arg ref "$REF" --arg cited_line "$CITED_LINE" \
-      --arg site_hash "$SITE_HASH" --arg reviewers_text "$REVIEWERS_TEXT" \
+      --arg site_hash "$SITE_HASH" --arg reviewed_head "$REVIEWED_HEAD" --arg reviewed_tree "$REVIEWED_TREE" \
+      --arg reviewers_text "$REVIEWERS_TEXT" \
       --argjson copied_reviewers "$COPIED_REVIEWERS_JSON" \
       --argjson round "$ROUND" --argjson schema_version "$_LEDGER_SCHEMA_VERSION" --arg event_time "$EVENT_TIME" \
       '{schema_version: $schema_version, round: $round, finding: $finding, disposition: $disposition,
@@ -585,7 +598,8 @@ case "$SUBCOMMAND" in
         session_id: $session_id, decided_by: $decided_by,
         engineer_quote: $engineer_quote, enforcement_invariant: $enforcement_invariant,
         carry_forward: $carry_forward, defer_criterion: $defer_criterion, ref: $ref,
-        cited_line: $cited_line, site_hash: $site_hash, event_time: $event_time}')
+        cited_line: $cited_line, site_hash: $site_hash,
+        reviewed_head: $reviewed_head, reviewed_tree: $reviewed_tree, event_time: $event_time}')
     if [ -z "$LINE" ]; then
       printf 'review-ledger.sh: could not build the ledger line (jq missing, failed, or timed out). Abort without writing.\n' >&2
       exit 2
@@ -607,6 +621,7 @@ case "$SUBCOMMAND" in
     # wc -c counts bytes in any locale, unlike ${#LINE}. jq escapes a control
     # character with no two-character form as six bytes (\u0001), so the
     # per-field character caps above do not bound the built line.
+    # The two reviewed-state fields add 38 bytes when empty and 166 with SHA-256 ids, so a row's size varies with the capture's outcome.
     LINE_BYTES=$(printf '%s' "$LINE" | wc -c | tr -d '[:space:]')
     if ! _is_uint "$LINE_BYTES"; then
       printf 'review-ledger.sh: could not measure the ledger line length (wc missing or failed). Abort without writing.\n' >&2
@@ -621,14 +636,15 @@ case "$SUBCOMMAND" in
     # retirer's own write, which the append below then dedups.
     _review_ledger_check_not_retired "$LEDGER_FILE" "$LINE" "$REF" || exit 2
 
-    # The dedup key excludes schema_version, event_time and id, so two rounds
+    # The dedup key excludes schema_version, event_time, id, reviewed_head and reviewed_tree, so two rounds
     # raising an identical finding both land as separate rows.
+    # A retry after HEAD or the index moved is therefore still a no-op, and the landed row keeps the first attempt's state.
     # The dedup key includes session_id, so two sessions on one branch file each
     # keep their own copy.
     # A row written before schema 5 has no reviewers key, so it never dedups
     # against a schema-5 row.
 
-    # Call tally: the jq, awk and git calls that can run without a timeout,
+    # Call tally: the jq, awk, git and cp calls that can run without a timeout,
     # which are the points where an append can hang.
     # Hashing is an in-memory pipe that cannot hang, so the sha256sum and awk
     # pairs that only hash are left out.
@@ -644,7 +660,8 @@ case "$SUBCOMMAND" in
     # A range-form DEFER or SETTLED source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
     # origin/HEAD resolution, and the candidate rev-parse probes.
-    # The bare git rev-parse --show-toplevel and the sweep's find are uncapped.
+    # The reviewed state adds capped git calls (the HEAD look-up, the index path look-up, write-tree, ls-files -u after a failed write-tree, the pin's update-ref, and rev-parse after a failed update-ref) and a capped cp of the index.
+    # The bare git rev-parse --show-toplevel, the sweep's find, and the reviewed-tree capture's index test, mktemp, rm and rmdir are uncapped.
     # With neither timeout nor gtimeout on PATH, each capped call above is an
     # uncapped-hang point.
 
