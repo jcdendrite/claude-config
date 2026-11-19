@@ -231,8 +231,8 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
       - `git update-ref refs/review-ledger/<YYYY-MM>/<tree id> <tree id>` pins a listed tree by hand.
       - Do not hand-pin a tree from a month you deleted. Once a later append pins a tree in a deleted month, the audit lists that month's deleted trees again.
     - Each pin runs the repository's `reference-transaction` hook, if it has one. A hook that rejects the update makes the pin print its note (`git help githooks`).
-    - The tree capture's write to the index copy can also fire the repository's `post-index-change` hook. This is unverified: it is recalled from git's behavior, not run.
-    - A slow `post-index-change` hook can show up as a `timed out` note with an empty `reviewed_tree`. This is unverified: it is recalled from git's behavior, not run.
+    - The tree capture's `write-tree` on the index copy also fires the repository's `post-index-change` hook, with `GIT_INDEX_FILE` set to the copy. Observed on git 2.50.1.
+    - The hook runs inside the capped `write-tree`, so a hook that outlasts the cap shows up as a `timed out` note with an empty `reviewed_tree`. A slow hook was not run.
     - Nothing expires a pin. `git for-each-ref --format='delete %(refname)' refs/review-ledger/<YYYY-MM>/ | git update-ref --stdin` deletes one month's pins in one transaction. When git prints an error, it deleted none of them, as when a listed pin's lock is stranded.
     - A month also holds the pins of PRs still open in it. Once their trees are gone, every pair with a round whose tree only that month pinned is not placed, whether both rounds fall in the month or the pair crosses it.
     - Run `git gc --prune=now` only while no other git command writes to the repository.
