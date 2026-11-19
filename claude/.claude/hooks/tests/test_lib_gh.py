@@ -182,11 +182,26 @@ class TestLibOriginNamesClaudeConfig:
         repo = self._repo_with_remote(tmp_path, "origin", origin_url)
         assert self._names_claude_config(repo, tmp_path) == 0
 
-    def test_returns_zero_when_a_non_last_origin_url_value_contains_either_name(self, tmp_path: Path) -> None:
-        """`remote.origin.url` is multi-valued, and the helper must read every value, not only the last."""
-        repo = self._repo_with_remote(tmp_path, "origin", "https://github.com/someone/claude-config.git")
+    @pytest.mark.parametrize(
+        ("first_url", "last_url"),
+        [
+            ("https://github.com/someone/claude-config.git", "git@github.com:someone/other-app.git"),
+            ("git@github.com:someone/other-app.git", "https://github.com/someone/claude-config.git"),
+            ("git@github.com:someone/other-app.git", "git@github.com:someone/workflow-gates.git"),
+        ],
+        ids=[
+            "matching_value_first",
+            "matching_claude_config_value_last",
+            "matching_workflow_gates_value_last",
+        ],
+    )
+    def test_returns_zero_when_any_origin_url_value_contains_either_name(
+        self, tmp_path: Path, first_url: str, last_url: str
+    ) -> None:
+        """`remote.origin.url` is multi-valued, and the helper must read every value, not only the first or last."""
+        repo = self._repo_with_remote(tmp_path, "origin", first_url)
         subprocess.run(
-            ["git", "config", "--add", "remote.origin.url", "git@github.com:someone/other-app.git"],
+            ["git", "config", "--add", "remote.origin.url", last_url],
             cwd=repo, check=True,
         )
         assert self._names_claude_config(repo, tmp_path) == 0

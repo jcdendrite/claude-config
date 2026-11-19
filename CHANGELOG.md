@@ -6,6 +6,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The repository moved to `cordova-strategy/workflow-gates`.**
+  - A clone whose origin still names the old owner and repo needs the origin repointed.
+  - With a stale origin, `pr-cost`, `review-cost-by-size` and `workstream-cost` exit 2 with a hint that does not name the origin. `require-respond-pr` skips silently for `-R cordova-strategy/workflow-gates`.
+  - The redaction and stow-reminder hooks match either name, so they keep working without the change.
+  - A clone folder may be renamed to match. The checkout folder name does not matter to the hooks.
+  - **Migration:** run `git remote set-url origin https://github.com/cordova-strategy/workflow-gates.git`, or `git remote set-url origin git@github.com:cordova-strategy/workflow-gates.git` for an SSH remote.
 - **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**
   - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.
   - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`.

@@ -138,7 +138,13 @@ Rows:
 11. Mechanism: the whole-URL substring match stays, per the Context decision. The matrix pins it with a superstring case. `anchors: root`
 12. `[verified: reading deny-private-project-refs.sh:487-488 and require-stow-reminder.sh:133-134 against the helper body]` The helper accepts every origin the staged predicate accepts. The last value is among the values `--get-all` prints, and lowercasing leaves a lowercase literal intact. Neither gate allows an input it denied at the merge-base, so the regression-only rule finds no regression. `anchors: row7`
 13. `[verified: deny-private-project-refs.sh:152-153; docs/hooks.md:55]` This gate's Known gaps already points at a shared helper's header for that helper's gaps. The commit-boundary gates record their debt in their header Known gaps, so a pointer bullet in each hook keeps both gaps in that closed set. `anchors: row2`
-14. `[verified: docs/hooks.md:20, :26]` Both gaps also exist at the merge-base, which reads the same unrewritten `origin` URL, so neither is a regression. The existing-debt rule still requires the commit message or PR body to state why both gaps are accepted. `anchors: row2`
+14. `[verified: docs/hooks.md:20, :26]` Every gap in the helper's header also exists at the merge-base, which reads the same unrewritten `origin` URL, so none is a regression. The header lists four gaps:
+    - An alias origin.
+    - No `origin` remote.
+    - A renamed fork or mirror.
+    - A failed `git config` read, which counts as "not claude-config" and so leaves the deny gate silent.
+
+    Only a missing helper function fails closed. The existing-debt rule still requires the commit message or PR body to state why the engineer-accepted gaps, the alias origin and the missing `origin`, are accepted. `anchors: row2`
 15. `[verified: claude/.claude/rules/shell-script-conventions.md; test_lib_gh.py:1, :51-131]` The URL matrix belongs in direct helper tests beside the sibling `TestLibOriginOwnerRepo`. Each hook keeps one subprocess case per branch. `anchors: row5`
 16. Mechanism: one mixed-case-origin test per hook proves the hook calls the helper. Each is written before the call-site swap, fails against the staged case-sensitive predicate, and passes after the swap. `anchors: row15`
 17. `[verified: test_shell_lib_function_liveness.py:3-8, :12-13, :153-185; test_hook_alignment.py:105, :111-125]` The liveness test requires a column-0 `name() {` definition and one non-comment reference in tracked shell or Python files. The two hook calls satisfy that. `test_hook_alignment.py` sweeps `_lib.sh` for exactly two shapes, a GNU `\s` regex and a pipe into an early-exit grep. The helper uses neither. No test there requires anything else of a single `_lib.sh` function. `anchors: row5`
@@ -167,6 +173,7 @@ Added after code-review round 2, on the engineer's selected label "Fix all three
 Added after the round 12 consult, on the engineer's selected label "Fix it in this PR (Recommended)":
 
 - `evals/comment_ab_pool_count.py`: `STUDY_REPOSITORY` at line 98 names `cordova-strategy/workflow-gates`.
+- `CHANGELOG.md`: one `[Unreleased]` entry with a `**Migration:**` bullet telling existing clones to repoint `origin`. Added on the engineer's selected label "Add the CHANGELOG entry (Recommended)".
 - `claude/.claude/hooks/tests/_lib_sh_helpers.py`: shared `copy_hooks_tree` and `remove_lib_function` helpers for the two status-127 tests.
 - `claude/.claude/tests/helpers.py`: the shared `locale_that_folds_ascii_capital_i_to_a_non_ascii_letter` finder.
 - `claude/.claude/scripts/tests/test_reconcile_project_plugins.py`: imports that finder instead of a private copy.
@@ -196,7 +203,7 @@ Projected diff: about 300 changed lines. Roughly 130 are already staged, estimat
 
 ## Verification
 
-1. Red step: first run the matrix against a helper body written as the staged predicate (`--get` and case-sensitive) and confirm the multi-value and mixed-case rows fail. Then write the two wiring tests before swapping the call sites, then run `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_stow_reminder.py -k mixed_case`. Both fail against the staged predicate, and both pass after the swap.
+1. Red step: first run the matrix against a helper body written as the staged predicate (`--get` and case-sensitive) and confirm the matching-value-first row and the mixed-case rows fail. Then write the two wiring tests before swapping the call sites, then run `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_stow_reminder.py -k mixed_case`. Both fail against the staged predicate, and both pass after the swap.
 2. Focused run: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_lib_gh.py claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_stow_reminder.py claude/.claude/hooks/tests/test_shell_lib_function_liveness.py claude/.claude/hooks/tests/test_hook_alignment.py`.
 3. The documented scoped run: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`.
 4. Lint: `scripts/venv-run.sh ruff check claude/.claude/hooks/tests/` and `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`.
@@ -206,11 +213,10 @@ Projected diff: about 300 changed lines. Roughly 130 are already staged, estimat
 ## Out of scope
 
 - A permanent tripwire test for a third inline copy of the slug list: Verification step 5's one-shot grep covers this PR, and the shell-lib liveness test already flags an unreferenced helper.
-- A separate locale-pin change for the unchanged case-insensitive comparator and the blocklist grep.
-- The helper itself carries `local LC_ALL=C`, because a Turkish locale folds `CLAUDE-CONFIG` to `claude-confıg`. The pin test in `test_lib_gh.py` runs only where a Turkic locale is installed, and CI installs one.
+- A separate locale-pin change for the unchanged case-insensitive comparator and the blocklist grep. The helper itself carries `local LC_ALL=C`, because a Turkish locale folds `CLAUDE-CONFIG` to `claude-confıg`. The pin test in `test_lib_gh.py` runs only where a Turkic locale is installed, and CI installs one.
 - `claude-skills/skills/memory-store-audit/SKILL.md:125`, whose own check requires the remote to contain `claude-config`: the engineer selected "Separate follow-up (Recommended)".
-- The false-match arm's deny text, which tells an honest agent in an unrelated repo whose origin merely contains either string to add a prefix to the public allowlist. Raised by the security review for the engineer's call.
+- The false-match arm's deny text is out of scope. In an unrelated repo whose origin merely contains either string, it tells an honest agent to add a prefix to the public allowlist. The engineer chose to keep it as is.
 - Closing either documented gap, whether by reading `git remote get-url` or by matching every remote: the engineer accepted both as documented gaps.
 - Rewording the docs' origin-scope summaries in `README.md`, `docs/hooks.md` and `docs/private-project-redaction.md` beyond the staged edits: each states a sufficient condition the helper still honors (ledger row 18).
-- The exact-slug comparators that review-pr scripts and `require-respond-pr.sh` apply to old-slug clones: the round-1 ledger deferred them because they need their own change in files this diff does not touch.
-- Owner-side GitHub repository settings, which the round-1 ledger deferred as outside the tree.
+- The exact-slug comparators that review-pr scripts and `require-respond-pr.sh` apply to old-slug clones: they need their own change in files this diff does not touch. The CHANGELOG entry tells existing clones to repoint `origin`.
+- Owner-side GitHub repository settings, which sit outside the tree.
