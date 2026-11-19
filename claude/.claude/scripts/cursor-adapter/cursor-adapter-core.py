@@ -394,7 +394,7 @@ def load_shim(path=None):
 
 
 def parse_json_bytes(data):
-    """The shim's strict parse of `data`, so this file and the shim agree on what a usable JSON file is. Raises ValueError.
+    """The shim's strict parse of `data`, so the adapter and the shim agree on what a usable JSON file is. Raises ValueError.
 
     A shim that does not load leaves the lenient parse, because `uninstall` must still read `hooks.json` then."""
     try:

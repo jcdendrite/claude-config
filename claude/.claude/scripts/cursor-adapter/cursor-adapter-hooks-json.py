@@ -196,7 +196,7 @@ def _parse_command(command, shim_path, adapter_path):
     """The command as a ParsedCommand when it is in the generated command grammar, else None.
 
     The grammar is the launch guard around the recorded python3 with `-I -S`, then either the shim's stow path with the
-    shim's arguments, or this file's stow path with exactly `check --hook-env` under the informational tail. A command
+    shim's arguments, or the adapter's stow path with exactly `check --hook-env` under the informational tail. A command
     parses whatever contract version or python3 path it carries."""
     if not isinstance(command, str) or not command.startswith(GUARD_HEAD):
         return None

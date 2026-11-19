@@ -98,7 +98,7 @@ def tool_path_refusal(tool, path, condition_index):
 
 
 def find_tool(name, *, search_path=None, directory=None):
-    """The path `shutil.which` finds, which this file calls the tool's `command -v` path. `directory` is the working
+    """The path `shutil.which` finds, which the adapter calls the tool's `command -v` path. `directory` is the working
     directory the lookup runs in, because a relative or empty PATH entry resolves against it."""
     if directory is None:
         return shutil.which(name, path=search_path)
