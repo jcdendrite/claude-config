@@ -1997,28 +1997,43 @@ class TestMain:
     def _json_report(stdout):
         return json.loads(stdout[stdout.index('{\n  "label"') :])
 
-    def test_refuses_any_repository_but_the_study_repository_before_any_graphql_call(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        ("refused_repository", "reported_url", "echoed_text_that_must_not_appear"),
+        [
+            pytest.param("other/repo", None, "other/repo", id="other-repository"),
+            pytest.param("jcdendrite/claude-config", None, "jcdendrite/claude-config", id="former-name"),
+            # Only the name comparison can refuse this: the URL is the pinned one. A real run cannot pair them, so keep it.
+            pytest.param(
+                pool.STUDY_REPOSITORY.swapcase(),
+                pool.STUDY_REPOSITORY_URL,
+                pool.STUDY_REPOSITORY.swapcase(),
+                id="case-variant-of-the-pin-with-the-pinned-url",
+            ),
+            pytest.param(
+                pool.STUDY_REPOSITORY,
+                f"https://ghe.example.test/{pool.STUDY_REPOSITORY}",
+                "ghe.example.test",
+                id="pinned-name-on-another-host",
+            ),
+        ],
+    )
+    def test_refuses_an_identity_other_than_the_pinned_one_before_any_graphql_call(
+        self, tmp_path, monkeypatch, capsys, refused_repository, reported_url, echoed_text_that_must_not_appear
+    ):
         fake = self._fake_github()
         self._forbid_any_work_after_the_identity_lookup(monkeypatch)
-        exit_code, captured = self._run(tmp_path, monkeypatch, capsys, tmp_path, fake, "other/repo")
+        exit_code, captured = self._run(tmp_path, monkeypatch, capsys, tmp_path, fake, refused_repository, url=reported_url)
         assert exit_code == 1
         assert fake.calls == []
         assert captured.out == ""
         assert len(captured.err.strip().splitlines()) == 1
         assert pool.STUDY_REPOSITORY_URL in captured.err
-        assert "other/repo" not in captured.err
+        assert echoed_text_that_must_not_appear not in captured.err
 
-    def test_refuses_the_study_repository_name_on_another_host_before_any_graphql_call(self, tmp_path, monkeypatch, capsys):
-        fake = self._fake_github()
-        other_host_url = f"https://ghe.example.test/{pool.STUDY_REPOSITORY}"
-        self._forbid_any_work_after_the_identity_lookup(monkeypatch)
-        exit_code, captured = self._run(tmp_path, monkeypatch, capsys, tmp_path, fake, pool.STUDY_REPOSITORY, url=other_host_url)
-        assert exit_code == 1
-        assert fake.calls == []
-        assert captured.out == ""
-        assert len(captured.err.strip().splitlines()) == 1
-        assert pool.STUDY_REPOSITORY_URL in captured.err
-        assert "ghe.example.test" not in captured.err
+    # Deliberate second copy of the pin's name, so changing the pin takes two coordinated edits.
+    # It fixes the name only; the host is fixed by the `--hostname` assertion in the gh argv test.
+    def test_study_repository_pin_is_the_expected_repository_name(self):
+        assert pool.STUDY_REPOSITORY == "cordova-strategy/workflow-gates"
 
     def test_refuses_a_shallow_checkout_before_any_graphql_call(self, tmp_path, monkeypatch, capsys):
         repo, _ = self._history(tmp_path, with_study_page=True)
