@@ -19,6 +19,12 @@ from test_replay_bench_runner_support import write_executable
 
 HOOK_TIMEOUT_S = 20  # a hook that has not exited by then is hung
 PROXY_WITH_CREDENTIALS = "http://user:sentinel-credential@proxy.invalid"
+# Spelled out apart from `launch.LAUNCH_ENV_ALLOWLIST` so deleting a name there fails a test.
+PASSED_ENVIRONMENT_VARIABLES = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
+    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "no_proxy", "all_proxy",
+    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+)
 
 
 def stow_style_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -168,6 +174,14 @@ class TestTheLaunchEnvironment:
         assert prefix[:2] == ["/usr/bin/env", "-i"]
         for assignment in ("https_proxy=a", "http_proxy=b", "no_proxy=c", "ALL_PROXY=d", "all_proxy=e"):
             assert assignment in prefix
+
+    @pytest.mark.parametrize("name", PASSED_ENVIRONMENT_VARIABLES)
+    def test_the_prefix_passes_each_allowlisted_variable(self, name):
+        environ = {name: f"value-of-{name}", "NOT_ALLOWLISTED": "leaked"}
+
+        prefix = launch.launch_prefix(environ, config_dir_value=None)
+
+        assert prefix == ["/usr/bin/env", "-i", f"{name}=value-of-{name}"]
 
     def test_an_unset_variable_is_left_out(self):
         prefix = launch.launch_prefix({"PATH": "/usr/bin"}, config_dir_value=None)

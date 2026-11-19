@@ -667,13 +667,24 @@ class TestTheManifestAndTheSmokeGate:
 
         assert json.loads((env.campaign_dir / "manifest.json").read_text())["k"] == 2
 
-    def test_a_campaign_refused_for_its_ceiling_pins_nothing(self, env):
-        env.world.tasks[:] = env.world.tasks[:1]
-        with pytest.raises(HarnessInvalidatedError, match="ceiling"):
-            env.run(env.world.launch(), k=2, cumulative_stop_usd=5.0, account_stop_usd=1000)
-        assert not (env.campaign_dir / "manifest.json").exists()
+    @pytest.mark.parametrize(
+        ("refused_stop_usd", "refusal"),
+        [
+            pytest.param(5.0, "one block's nominal ceiling", id="block-ceiling"),
+            pytest.param(10.0, "allow-early-stop", id="campaign-ceiling"),
+        ],
+    )
+    def test_a_campaign_refused_for_its_ceiling_pins_nothing(self, env, refused_stop_usd, refusal):
+        # At k=2 a block's ceiling is $8.00 and two incomplete blocks' is $16.00. A $5.00 stop trips the block
+        # ceiling. A $10.00 stop clears it and trips only the campaign ceiling. At k=1 the campaign's is $8.00.
+        env.world.tasks[:] = env.world.tasks[:2]
+        refused = env.world.launch()
+        with pytest.raises(HarnessInvalidatedError, match=refusal):
+            env.run(refused, k=2, cumulative_stop_usd=refused_stop_usd, account_stop_usd=1000)
+        assert refused.calls == []
+        env.assert_nothing_is_pinned_or_spent()
 
-        assert env.run(env.world.launch(), k=1, cumulative_stop_usd=5.0, account_stop_usd=1000) == 0
+        assert env.run(env.world.launch(), k=1, cumulative_stop_usd=10.0, account_stop_usd=1000) == 0
 
     def test_a_resume_with_a_different_task_set_exits_two(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
