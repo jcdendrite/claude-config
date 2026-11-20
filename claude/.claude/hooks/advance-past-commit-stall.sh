@@ -156,12 +156,18 @@ LAST_ASSISTANT_MESSAGE="${LAST_ASSISTANT_MESSAGE%"${LAST_ASSISTANT_MESSAGE##*[![
 last_line="${LAST_ASSISTANT_MESSAGE##*$'\n'}"
 last_sentence="${last_line##*[.?!][[:space:]]}"
 
-VERB_RE='(want me to|would you like me to|let me know if|shall I|should I|do you want me to)'
-OBJECT_RE='(commit|push|open (a|the) PR|create a PR)'
-FIRE_RE="${VERB_RE}[^.?!]*${OBJECT_RE}"
-EXCLUDE_RE='(merge|--force|force-push|reset --hard|close the PR|delete the branch|failing|failed|error|blocked|anyway)'
+WORD_START='(^|[^[:alnum:]_])'
+WORD_END='([^[:alnum:]_]|$)'
+PERMISSION_VERBS='(want me to|would you like me to|let me know if|shall I|should I|do you want me to)'
+SHIPPING_OBJECTS='(commit(s|ted|ting)?|push(es|ed|ing)?|open (a|the) PRs?|create a PR)'
+# The join's first and last characters are the verb's trailing and the object's leading word boundary, so one space serves as both.
+VERB_OBJECT_JOIN='[^[:alnum:]_.?!]([^.?!]*[^[:alnum:]_.?!])?'
+FIRE_RE="${WORD_START}${PERMISSION_VERBS}${VERB_OBJECT_JOIN}${SHIPPING_OBJECTS}${WORD_END}"
+VERB_RE="${WORD_START}${PERMISSION_VERBS}${WORD_END}"
+# Each exclusion phrase is bounded at its start only, so a form that extends it (merged, errors) still excludes.
+EXCLUDE_RE="${WORD_START}(merge|--force|force-push|reset --hard|close the PR|delete the branch|failing|failed|error|blocked|anyway)"
 
-# Both regexes MUST stay unquoted in [[ =~ ]] — a quoted pattern is a literal
+# These regexes MUST stay unquoted in [[ =~ ]] — a quoted pattern is a literal
 # string comparison and never matches. Case folding via shopt,
 # saved/restored, not grep -i, to stay fork-free.
 _SAVED_NOCASEMATCH=$(shopt -p nocasematch)
