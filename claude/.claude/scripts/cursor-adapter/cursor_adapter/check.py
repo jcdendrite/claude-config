@@ -1,4 +1,94 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""The hook log, the `check` and `status` commands and the sessionStart check."""
+
+import contextlib
+import fcntl
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+
+from .core import (
+    AGENT_RESTORE_SENTENCE,
+    AGENT_RESTRAINT_SENTENCE,
+    BASH_FLOOR,
+    CURSOR_VERSION_CHANGED_LINE,
+    CURSOR_VERSION_OTHER,
+    CURSOR_VERSION_PATTERN,
+    CURSOR_VERSIONS_DIR_NAME,
+    FIRST_CALL_DIR_NAME,
+    FIRST_CALL_MARK_MAX_AGE_SECONDS,
+    HOOKS_JSON_NAME,
+    HOST_WALK_BOUND_SECONDS,
+    HOST_WALK_CLAUDE_FIRST,
+    HOST_WALK_CLAUDE_FIRST_LINE,
+    HOST_WALK_FOUND,
+    HOST_WALK_NOT_FOUND,
+    HOST_WALK_NOT_FOUND_ENTRY,
+    HOST_WALK_NOT_FOUND_LINE,
+    HOST_WALK_STATUS_CLAUDE_FIRST,
+    LOAD_FAILURES,
+    LOG_FILE_NAME,
+    LOG_ROTATE_BYTES,
+    LOG_STATUS_MAX_LINES,
+    LOG_STATUS_READ_BYTES,
+    OTHER_LABEL,
+    PRINT_SET_MAX_ENTRIES,
+    PYTHON_FLOOR,
+    RESTORE_CHECKOUT_SENTENCE,
+    ROTATE_LOCK_NAME,
+    ROTATED_LOG_FILE_NAME,
+    SANDBOX_GRANT_PENDING_LINE,
+    STOW_FIX_SENTENCE,
+    TAMPER_FIX_SENTENCE,
+    TOOL_MAP_FILE_NAME,
+    WRAPPER_CANDIDATES,
+    AdapterError,
+    ProbeStalled,
+    adapter_directory,
+    cursor_directory,
+    home_directory,
+    load_shim,
+    open_regular_file,
+    probe_directory,
+    read_json_object,
+    record_directory,
+    settings_json_path,
+    stow_hook_path,
+)
+from .hooks_json import (
+    bounded_text,
+    classify_hooks,
+    drift_lines,
+    generate_entries,
+    non_owned_lines,
+    parse_command,
+    pre_image_hooks_of,
+    read_live_hooks,
+    safe_label,
+    top_level_lines,
+)
+from .install import has_owned_entry, missing_prerequisites, pre_image_state, run_mode_label, run_mode_lines
+from .sandbox import grant_pending, promoted_sandbox_record, recorded_while_pending_text, sandbox_comparison_lines
+from .tools import (
+    bash_floor_status,
+    find_tool,
+    floor_text,
+    format_version,
+    python_floor_status,
+    record_environment,
+    record_or_none,
+    record_or_reason,
+    run_self_check,
+    self_check_failure_lines,
+    shim_load_failure_text,
+    stall_text,
+    state_directory,
+    wrapper_candidate_test,
+)
+from .uninstall import failure_cause, fallback_report
 
 # --- logging, rotation and the first-call marks ---
 

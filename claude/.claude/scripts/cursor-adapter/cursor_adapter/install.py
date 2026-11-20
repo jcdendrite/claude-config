@@ -1,4 +1,85 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""The `install` command and the checks and helpers it runs."""
+
+import contextlib
+import json
+import os
+import shlex
+import stat
+
+from .core import (
+    ACCEPTANCE_ONLY_LINE,
+    BASH_FLOOR,
+    HOOKS_JSON_NAME,
+    HOOKS_JSON_VERSION,
+    INSTALL_RECORD_NAME,
+    LOAD_FAILURES,
+    MANIFEST_NAME,
+    PRE_IMAGE_NAME,
+    PRE_IMAGE_NONE_NAME,
+    RUN_MODE_ACCEPTANCE_LABEL,
+    RUN_MODE_LABEL,
+    RUN_MODE_LINE,
+    SANDBOX_PENDING_NAME,
+    SELF_CHECK_FIX_SENTENCE,
+    STATE_DIR_NAME,
+    STOW_FIX_SENTENCE,
+    TOOL_MAP_FILE_NAME,
+    VERSION_FIX_SENTENCE,
+    WRAPPER_CANDIDATES,
+    AdapterError,
+    PartialWriteError,
+    Unconfirmed,
+    adapter_directory,
+    checkpoint,
+    cursor_directory,
+    durable_write,
+    json_bytes,
+    load_error_name,
+    load_shim,
+    make_private_directory,
+    read_bytes_or_none,
+    read_bytes_or_refuse,
+    read_json_object,
+    record_directory,
+    stow_adapter_path,
+    stow_shim_path,
+    sweep_temp_debris,
+)
+from .hooks_json import (
+    bounded_text,
+    classify_hooks,
+    generate_entries,
+    has_current_version,
+    hooks_object,
+    ownership,
+    parse_command,
+    pre_image_hooks_of,
+    print_set,
+    read_live_hooks,
+    refuse_unsafe_targets,
+)
+from .sandbox import (
+    engineer_listed_sandbox_directories,
+    plan_sandbox_grant,
+    recorded_sandbox_paths,
+    write_sandbox_file,
+    write_sandbox_records,
+)
+from .tools import (
+    bare_python_check,
+    bash_floor_status,
+    discover_tools,
+    find_tool,
+    floor_text,
+    format_version,
+    probe_or_stall,
+    record_environment,
+    record_or_none,
+    run_self_check,
+    self_check_failure_lines,
+    shim_load_failure_text,
+    validate_config_directory,
+)
 
 # --- install ---
 

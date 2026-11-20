@@ -1,4 +1,39 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""The sandbox grant in the user-level sandbox.json."""
+
+import contextlib
+import os
+import stat
+
+from .core import (
+    PARITY_EXCEPTIONS_FILE_NAME,
+    SANDBOX_GRANT_MARKER_WRITE_CLAUSE,
+    SANDBOX_GRANT_PREREQUISITE,
+    SANDBOX_GRANT_PREREQUISITE_PENDING_TEXT,
+    SANDBOX_JSON_NAME,
+    SANDBOX_KEPT_SENTENCE,
+    SANDBOX_PATHS_KEY,
+    SANDBOX_PENDING_NAME,
+    SANDBOX_PRE_IMAGE_NAME,
+    SANDBOX_PRE_IMAGE_NONE_NAME,
+    SANDBOX_WRITABLE_DIRECTORIES,
+    AdapterError,
+    PartialWriteError,
+    adapter_directory,
+    checkpoint,
+    cursor_directory,
+    durable_write,
+    json_bytes,
+    json_bytes_or_refusal,
+    load_error_name,
+    make_private_directory,
+    parse_json_bytes,
+    read_bytes_or_none,
+    read_bytes_or_refuse,
+    read_json_object,
+    read_manifest,
+    sync_directory_noting,
+)
+from .hooks_json import refuse_unsafe_targets
 
 # --- the sandbox grant ---
 #

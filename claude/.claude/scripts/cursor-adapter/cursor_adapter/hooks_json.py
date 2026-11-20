@@ -1,4 +1,46 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""Generating the hooks.json entries and comparing them with the live ones."""
+
+import functools
+import json
+import os
+import re
+import shlex
+import stat
+
+from .core import (
+    ASK_ON_WRITE_SCRIPTS,
+    CHECK_ARGUMENTS,
+    CHECK_ENTRY_TIMEOUT_SECONDS,
+    CURSOR_EVENT_FOR_CLAUDE_EVENT,
+    CURSOR_TOOL_NAMES,
+    FAIL_CLOSED_EVENTS,
+    FAULT_TEXT,
+    FOREIGN_FIX_SENTENCE,
+    HOOKS_JSON_ENTRY_KEYS,
+    HOOKS_JSON_EVENTS,
+    HOOKS_JSON_VERSION,
+    PARITY_EXCEPTIONS_FILE_NAME,
+    PRINT_SET_MAX_ENTRIES,
+    PRINT_VALUE_MAX_CHARS,
+    SHIM_MODES,
+    SHIM_SWITCH_FLAGS,
+    SHIM_VALUE_FLAGS,
+    TAMPER_FIX_SENTENCE,
+    TOOL_EVENTS,
+    TOP_LEVEL_FIX_SENTENCE,
+    VERSION_FIX_SENTENCE,
+    AdapterError,
+    adapter_directory,
+    load_error_name,
+    load_shim,
+    parse_json_bytes,
+    read_bytes_or_refuse,
+    read_json_object,
+    settings_json_path,
+    stow_adapter_path,
+    stow_hook_path,
+    stow_shim_path,
+)
 
 # --- registrations and generation ---
 

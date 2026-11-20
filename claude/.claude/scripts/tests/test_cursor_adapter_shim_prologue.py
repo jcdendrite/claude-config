@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import signal
@@ -14,6 +13,7 @@ from pathlib import Path
 import pytest
 from helpers import CLAUDE_DIR
 
+from ._cursor_isolation_helpers import canary_writer, imported_non_standard_names
 from ._cursor_shim_helpers import (
     SHIM_MODULE,
     _scratch,
@@ -327,21 +327,7 @@ class TestShimPrologue:
 # --- interpreter isolation ---
 
 
-def _canary_writer(path: Path) -> str:
-    return f"from pathlib import Path\nPath({str(path)!r}).write_text('ran')\n"
-
-
 FLAG_PROBE = "import sys\nprint(sys.flags.isolated, sys.flags.no_site, 'site' in sys.modules)\n"
-
-
-def _imported_non_standard_names(source: str) -> set[str]:
-    names = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            names.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            names.add((node.module or "").split(".")[0])
-    return names - set(sys.stdlib_module_names)
 
 
 class TestShimInterpreterIsolation:
@@ -359,7 +345,7 @@ class TestShimInterpreterIsolation:
         poison = tmp_path / "poison"
         poison.mkdir()
         canary = tmp_path / "pythonpath-canary"
-        (poison / "json.py").write_text(_canary_writer(canary))
+        (poison / "json.py").write_text(canary_writer(canary))
         probe = tmp_path / "probe.py"
         probe.write_text("import json\nprint(json.dumps(1))\n")
         env = {**os.environ, "PYTHONPATH": str(poison)}
@@ -372,7 +358,7 @@ class TestShimInterpreterIsolation:
 
     def test_a_json_py_beside_the_script_is_not_imported(self, tmp_path: Path) -> None:
         canary = tmp_path / "beside-canary"
-        (tmp_path / "json.py").write_text(_canary_writer(canary))
+        (tmp_path / "json.py").write_text(canary_writer(canary))
         probe = tmp_path / "probe.py"
         probe.write_text("import json\nprint(json.dumps(1))\n")
         subprocess.run([sys.executable, str(probe)], capture_output=True, check=False)
@@ -397,7 +383,7 @@ class TestShimInterpreterIsolation:
 
     @staticmethod
     def _write_sitecustomize(path: Path, canary: Path) -> None:
-        path.write_text(_canary_writer(canary))
+        path.write_text(canary_writer(canary))
 
     @pytest.mark.parametrize(
         ("file_name", "writer"),
@@ -430,11 +416,7 @@ class TestShimInterpreterIsolation:
         assert (flagged.returncode, flagged.stdout.strip()) == (0, "ok")
 
     def test_the_shim_imports_only_standard_library_modules(self) -> None:
-        assert _imported_non_standard_names(SHIM.read_text()) == set()
-
-    def test_a_seeded_non_standard_import_is_found_by_the_scan(self) -> None:
-        assert _imported_non_standard_names("import json\ndef f():\n    import requests\n") == {"requests"}
-        assert _imported_non_standard_names("from yaml import safe_load\n") == {"yaml"}
+        assert imported_non_standard_names(SHIM.read_text()) == set()
 
 
 # --- the tool-path rule's two conditions ---

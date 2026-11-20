@@ -18,9 +18,9 @@ Size is unknown. The plan sizes the conversion first and reports where it lands.
 
 ## Approach
 
-Turn the seven part files into the modules of a `cursor_adapter` package beside `cursor-adapter.py`, each importing by name what it reads, and make the entry a loader that imports that package from its own directory under the unchanged `-I -S` launch. Tests keep reading and patching one `adapter` object: `load_adapter` returns a namespace over the entry and the package's modules whose patches rebind every module that imported the name, so no existing test body changes.
+Turn the seven part files into the modules of a `cursor_adapter` package beside `cursor-adapter.py`, each importing by name what it reads, and make the entry a loader that imports that package from its own directory under the unchanged `-I -S` launch. Tests keep reading and patching one `adapter` object: `load_adapter` returns a namespace over the entry and the package's modules whose patches rebind every module that imported the name, so no existing test body is retargeted.
 
-**Where the sizing lands.** 18 files plus this plan, about 1,380 changed lines in one PR, and no existing test body retargeted. Critical files breaks that estimate down by part. The 48 patches on the adapter namespace, the 13 on `adapter.os` or `adapter.subprocess`, and the 423 lines outside the rewritten parts test that read `adapter.<name>` stay as they are (row 12). No seam splits the change below 400 lines, because the existing patches pass only once the package and the test namespace land together (M9). No lighter shape removes the brittleness the Ask names (row 2):
+**Where the sizing lands.** 20 files plus this plan, about 1,455 changed lines in one PR, and no existing test body retargeted. The shared isolation helpers move out of the shim prologue test into one new helper module. The shim prologue test is the one existing test file besides `_cursor_payloads.py` that changes. Critical files breaks that estimate down by part. The 48 patches on the adapter namespace, the 13 on `adapter.os` or `adapter.subprocess`, and the 423 lines outside the rewritten parts test that read `adapter.<name>` stay as they are (row 12). No seam splits the change below 400 lines, because the existing patches pass only once the package and the test namespace land together (M9). No lighter shape removes the brittleness the Ask names (row 2):
 - Fixing the loader's three deferred findings in place keeps the shared namespace. The parts still carry no imports, ruff still needs its per-file-ignores row and the concatenated check, and the file-order rule stays (row 6).
 - Reading names as module attributes (`core.durable_write`) is heavier, not lighter (M2).
 - One file is the shape the engineer rejected (row 2).
@@ -67,7 +67,7 @@ def import_adapter_cli():
     spec = importlib.machinery.PathFinder.find_spec(ADAPTER_PACKAGE_NAME, [adapter_dir])
     # A directory without a regular __init__.py gets a namespace spec, whose origin is None.
     if spec is None or spec.origin is None:
-        raise ModuleNotFoundError(f"no {ADAPTER_PACKAGE_NAME} package in {adapter_dir}", name=ADAPTER_PACKAGE_NAME)
+        raise ImportError(f"no {ADAPTER_PACKAGE_NAME} package in {adapter_dir}", name=ADAPTER_PACKAGE_NAME)
     package = importlib.util.module_from_spec(spec)
     sys.modules[ADAPTER_PACKAGE_NAME] = package
     previous_dont_write_bytecode = sys.dont_write_bytecode
@@ -88,7 +88,7 @@ if __name__ == "__main__":
 
 The docstring's sentence "The module imports only the standard library, so the recorded python3 can run it under `-I -S`." becomes "Its code is the `cursor_adapter` package beside its real path, which imports only the standard library, so the recorded python3 can run it under `-I -S`." The entry binds no `main` of its own, so `_move_fidelity.py nodes` finds `main` once (M8).
 - `PathFinder.find_spec` with an explicit path searches that directory alone and leaves `sys.path` as `-I` set it (row 8, row 33).
-- A `cursor_adapter/` directory whose `__init__.py` is missing or a FIFO gets a namespace spec, whose `origin` is None, where an absent directory gets no spec at all (row 8). The entry treats that spec as a missing package and raises the same ModuleNotFoundError it raises for an absent directory, so a missing or FIFO `__init__.py` fails like a missing module. M6 relies on this.
+- A `cursor_adapter/` directory whose `__init__.py` is missing or a FIFO gets a namespace spec, whose `origin` is None, where an absent directory gets no spec at all (row 8). The entry treats that spec as a missing package and raises the same ImportError it raises for an absent directory. It raises ImportError, not ModuleNotFoundError, because Python 3.15 extends that message with a site-packages hint under `-I -S`. That avoids the hint for an absent package only. A missing module still carries it on 3.15 (the Rollback bullet on a missing module quotes only the message's start). M6 relies on this.
 - `sys.modules[ADAPTER_PACKAGE_NAME]` is set before `exec_module`, the order a package import needs (row 7). The submodules then import through the package's `__path__`.
 - The entry evicts nothing from `sys.modules`, because nothing in production registers the package before it runs (row 17). `load_adapter` owns the eviction a test process needs (M4).
 - A failed load leaves what it registered in `sys.modules`, with no unregister path, because a failed load ends the process and `load_adapter` evicts at the next load.
@@ -109,7 +109,7 @@ Set aside:
 - It exposes the modules it spans, which the span rows read.
 - Its `__file__` is the entry's.
 
-The renamed test's uniqueness row keeps every name a `def`, `class` or assignment binds at module level in one file only, which is what makes these name-keyed reads and writes unambiguous for every name the adapter defines, so `hasattr(adapter, name)` cannot mistake two conflicting definitions for an absent name. The namespace module's docstring carries the one non-obvious fact: a module that imports a name by name holds its own binding, so a patch rebinds each one.
+The renamed test's uniqueness row keeps every name a `def`, `class` or assignment binds at module level in one file only, which is what makes these name-keyed reads and writes unambiguous for every name the adapter defines, so `hasattr(adapter, name)` cannot mistake two conflicting definitions for an absent name. A second row reads every name a spanned module binds through the namespace, so a name two modules bind to different objects raises AttributeError there. The namespace module's docstring carries the one non-obvious fact: a module that imports a name by name holds its own binding, so a patch rebinds each one.
 
 `load_adapter` (`_cursor_payloads.py:124-130`) keeps its signature and its exec of the entry, evicts the registered package before that exec, and returns the namespace over what the exec registered:
 
@@ -147,13 +147,13 @@ Set aside:
 
 **`test_cursor_adapter_parts.py` becomes `test_cursor_adapter_package.py`** (M3, M4, M5, M6), by `git mv`. Its module docstring names its subject: how `cursor-adapter.py` loads its package, and the namespace tests read it through. Verification step 10 shows the rows for the guards it lists failing when each guard is removed. No other row is claimed to fail on a removed line. The `cursor_adapter/` isolation row guards the flags its test passes. The test takes `AdapterNamespace` and `ADAPTER_PACKAGE_NAME` from `_cursor_payloads`, which imports both, so it imports no further hooks-tests module (row 21).
 - `TestPartList` and `TestNamesAcrossTheFiles` go, with `combined_adapter_source`, `ruff_findings`, `finding_codes` and the constants only they use. The rows below replace their seeded detector controls.
-- A module that fails to load: the no-fault row stays. The faulted module is `cursor_adapter/sandbox.py`: missing, unreadable (skipped under root, as now), syntax-broken, or replaced by a FIFO from `os.mkfifo`. Each `check --hook-env` run under `-I -S` exits nonzero with empty stdout and a stderr matching `cursor_adapter[./]sandbox`. The FIFO row ends inside the existing 60-second timeout instead of blocking (M6).
+- A module that fails to load: the no-fault row stays. The faulted module is `cursor_adapter/sandbox.py`: missing, unreadable (skipped under root, as now), syntax-broken, empty (a zero-byte file, so the first by-name import of a name it should define fails), or replaced by a FIFO from `os.mkfifo`. Each `check --hook-env` run under `-I -S` exits nonzero with empty stdout and a stderr matching `cursor_adapter[./]sandbox`. The FIFO row ends inside the existing 60-second timeout instead of blocking (M6).
 - A package that fails to load: in a `copy_adapter` copy, the `cursor_adapter/` directory removed, its `__init__.py` removed, or its `__init__.py` replaced by a FIFO. Each `check --hook-env` run under `-I -S` exits nonzero with empty stdout and a stderr naming `cursor_adapter`, inside the 60-second timeout (M3, M6).
 - `TestALinkToTheEntryAlone` stays as it is.
-- Interpreter isolation, modelled on `test_cursor_adapter_shim.py:3030-3055` and :3104-3109 (row 34). Each subprocess row runs `check --hook-env` under `-I -S` in a `copy_adapter` copy:
+- Interpreter isolation, modelled on the shim's isolation rows in `test_cursor_adapter_shim_prologue.py` (row 34). Each subprocess row runs `check --hook-env` under `-I -S` in a `copy_adapter` copy:
   - A `json.py` that writes a canary, planted beside the entry: the flagged run exits 0 and writes no canary. Its control, the same run without the flags, writes it.
-  - The same `json.py` planted inside `cursor_adapter/`: the flagged run and its control share one environment, with `PYTHONPATH` naming the copy's `cursor_adapter/`, as `test_cursor_adapter_shim.py:3037-3043` does. They differ only in the interpreter flags. An absolute `import json` searches `sys.path` alone, and only that variable puts `cursor_adapter/` on it. The flagged run, with `-I -S`, exits 0 and writes no canary. Its control, without them, writes it.
-  - A scan of the entry and every `cursor_adapter/*.py` finds no absolute import of a module outside `sys.stdlib_module_names`, by the rule `_imported_non_standard_names` applies, which skips relative imports. A seeded control finds `requests`. The renamed test holds its own copy of that eight-line rule under the DAMP test-code exception, since no existing test body changes.
+  - The same `json.py` planted inside `cursor_adapter/`: the flagged run and its control share one environment, with `PYTHONPATH` naming the copy's `cursor_adapter/`, as the shim's isolation rows do. They differ only in the interpreter flags. An absolute `import json` searches `sys.path` alone, and only that variable puts `cursor_adapter/` on it. The flagged run, with `-I -S`, exits 0 and writes no canary. Its control, without them, writes it.
+  - A scan of the entry and every `cursor_adapter/*.py` finds no absolute import of a module outside `sys.stdlib_module_names`, by the rule `imported_non_standard_names` applies, which skips relative imports. A seeded control finds `requests`. The rule and the canary writer live once in `_cursor_isolation_helpers.py`, which the renamed test and the shim prologue test both import.
 - Process state, each row an in-process `load_adapter` of a `copy_adapter` copy's entry:
   - With `sys.dont_write_bytecode` set to False under `monkeypatch` before the load, it is False after, so the row does not depend on the ambient setting.
   - `sys.path` equals what it was before the load.
@@ -168,6 +168,7 @@ Set aside:
   - Span control: in a copy holding an extra `cursor_adapter/unimported.py` that no module imports, the span lacks exactly that file.
   - Patch reach: after `monkeypatch.setattr(adapter, "durable_write", sentinel)`, every spanned module that bound the original binds `sentinel`, and at least two do.
   - Undo: `monkeypatch.undo()` restores the original in each.
+  - No by-name import renames what it imports, across the entry and every `cursor_adapter/*.py`. The namespace finds a name by its binding, so an aliased import (`from .core import durable_write as _write`) holds a binding a patch cannot reach under the original name. The rule covers module-level `from` imports only, because a function-local import reads the owner at call time. Other module-level captures, such as `_w = durable_write` or `def f(w=durable_write)`, escape it. None exists in the tree. A seeded control over a synthetic source finds the aliased import.
   - Earlier namespaces: after a second `load_adapter()`, a patch and `monkeypatch.undo()` through the first namespace read and restore the first load's modules, and leave the second load's bindings untouched.
 - The namespace over two synthetic modules:
   - A read of a name the two bind to different objects raises AttributeError.
@@ -177,7 +178,9 @@ Set aside:
 - Uniqueness, over the entry and every `cursor_adapter/*.py`:
   - Each name a module-level `def`, `class` or assignment binds, dunders excluded, is bound in one file only. Import bindings are not counted, because a by-name import binds the importer to the same object.
   - The scanned files equal the entry plus the directory listing of `cursor_adapter/`.
+  - Every name a spanned module binds, by any statement, reads through the namespace with `hasattr`, so a name two modules bind to different objects raises AttributeError there. Verification step 10's read-through mutation fails this row.
   - A seeded control over two synthetic sources finds a function defined in both.
+  - A seeded control over two synthetic sources finds a constant assigned in both. It carries no mutation claim.
 
 **The deferred findings** (M6), each fixed only where the package removes its cause (row 4):
 - The part read has no FIFO guard. The package removes the cause. A module file that is not a regular file gets no spec from the finder, so it is never opened and its import fails as a missing module. A package directory whose `__init__.py` is not a regular file gets a namespace spec, which the entry rejects (row 8). The FIFO rows on `sandbox.py` and `__init__.py` pin both.
@@ -198,8 +201,8 @@ The PR body carries three notes:
 
 **What a user can see change.** Only diagnostics. Generated commands, the install record, entry ownership and every report stay as they are (G1).
 - The unexpected-failure line names a module file, such as `install.py:<line>`, where it named a part file.
-- A missing module fails as `ModuleNotFoundError: No module named 'cursor_adapter.sandbox'`. A FIFO in a module's place fails the same way, where the part read would block.
-- A missing package directory, or an `__init__.py` that is missing or a FIFO, fails as `ModuleNotFoundError: no cursor_adapter package in <directory>`.
+- A missing module fails with a message that begins `ModuleNotFoundError: No module named 'cursor_adapter.sandbox'`. Python 3.15 appends a site-packages hint under `-I -S`. A FIFO in a module's place fails the same way, where the part read would block.
+- A missing package directory, or an `__init__.py` that is missing or a FIFO, fails as `ImportError: no cursor_adapter package in <directory>`.
 - The exit status and the launch guard's `{}` stay.
 - Under an interpreter older than the floor, the SyntaxError names the package module that holds the syntax.
 
@@ -211,7 +214,7 @@ Each file-presence state this PR's own transition produces ends in an exception:
 
 Of the installed hook entries, only the informational sessionStart `check --hook-env` entry loads the package (row 31):
 - Its launch guard turns a nonzero exit or empty stdout into `{}` with exit 0 and sends stderr to `/dev/null`, so that session start gets no report and shows no error, as today's exec failure does.
-- `status`'s flag "the sessionStart entry looks silent", which fires once two or more shim first lines follow the last check line, is the detection route.
+- A persistent load failure shows as the load's own traceback in a terminal `check` or `status`: `ModuleNotFoundError` for an absent module, `ImportError` for an absent package or an absent imported name. `status`'s flag "the sessionStart entry looks silent", which fires once two or more shim first lines follow the last check line, covers a healed or transient failure.
 - Every fail-closed entry runs `hook-shim.py`, which imports only the standard library and never loads the package.
 - The `hook-shim.py:33` edit makes the pull rewrite the shim too. A fail-closed hook that runs during that write can find the shim missing or partial and deny, the partial-pull case `docs/cursor-adapter.md`'s Recovery section already names.
 
@@ -272,12 +275,12 @@ After this PR, by-name imports also turn a later mixed checkout of two modules i
 23. No existing test reads a part file by name or source except `test_cursor_adapter_parts.py`, and the unexpected-failure test pins a frame in its own file. `[verified: Grep of cursor-adapter- and ADAPTER_SOURCE in the test trees; test_cursor_adapter_install_write_failures.py:456]`
 24. `_move_fidelity.py nodes` takes one `--before` file and repeatable `--after` files. It checks only the `--moved` names, requires each to be defined exactly once across the after files, and compares a node not listed in `--verbatim` by AST. Its `test-ids` subcommand takes repeatable `--before` and `--after` junit files and unions each side. `[verified: _move_fidelity.py:264-348, :883-885, :928-930]`
 25. Reviews of this plan and its code use the production tier with a cooperative threat model. `[unverified: tier declared by the dispatching session, not quoted from the engineer]`
-26. The change projects about 1,380 changed lines, and no seam splits it below 400. `[unverified: an estimate from the counts in rows 12, 14 and 30, the line ranges cited and the renamed test's planned rows; plan-review puts the 400-line question to the engineer]`
+26. The change projects about 1,455 changed lines, and no seam splits it below 400. `[unverified: an estimate from the counts in rows 12, 14 and 30, the line ranges cited and the renamed test's planned rows; plan-review puts the 400-line question to the engineer]`
 27. `hook-shim.py:33` says the command grammar in `cursor-adapter.py` must stay equal to the shim's vocabulary. The grammar is `render_command` and `parse_command` in `cursor-adapter-hooks-json.py`. The adapter's copy of the vocabulary is `SHIM_VALUE_FLAGS`, `SHIM_SWITCH_FLAGS` and `SHIM_MODES` in core, which a test ties to the shim's. `[verified: hook-shim.py:33-36; cursor-adapter-hooks-json.py:118-123, :190; cursor-adapter-core.py:144-148]`
 28. The part files or `ADAPTER_PART_FILE_NAMES` are named at `docs/scripts.md:575` and `docs/cursor-adapter.md:113`, :157 and :272. `README.md:105` and `claude/.claude/hooks/_lib.sh:3695` name the program, which keeps its name. `[verified: Grep this session]`
 29. In a test tree with an `__init__.py`, a same-directory sibling import is relative, and a test fails CI on a bare one. `[verified: .claude/rules/test-tree-packaging.md; claude/.claude/tests/test_pytest_collection_config.py:469-513]`
 30. About 455 lines in the six non-core parts and the entry match a core function name or an upper-case constant shape. The shape also matches standard-library constants such as `os.O_RDONLY`, so the count runs high. `[verified: Grep count this session]`
-31. What a mixed checkout reaches at run time: `[verified: Grep of the part file names outside the test trees, this session; cursor-adapter-hooks-json.py:127-128, :135-136, :289, :295-296, :338; cursor-adapter-check.py:619-624; test_cursor_adapter_shim.py:3104; docs/cursor-adapter.md:46, :147]`
+31. What a mixed checkout reaches at run time: `[verified: Grep of the part file names outside the test trees, this session; cursor-adapter-hooks-json.py:127-128, :135-136, :289, :295-296, :338; cursor-adapter-check.py:619-624; test_cursor_adapter_shim.py:3104 before #1537's split; docs/cursor-adapter.md:46, :147]`
    - Only the entry names a part file.
    - The one installed entry that runs `cursor-adapter.py` is sessionStart `check --hook-env`, rendered with the informational tail.
    - That guard prints the command's stdout only on exit 0 with non-empty output, and otherwise prints `{}` and exits 0. It sends stderr to `/dev/null`.
@@ -286,9 +289,10 @@ After this PR, by-name imports also turn a later mixed checkout of two modules i
    - `docs/cursor-adapter.md` says the check exits 0 whatever it finds, and its Recovery section names a partial pull as a cause.
 32. No name is bound by a module-level `def`, `class` or assignment in more than one of the entry and the seven parts at the base. No file holds a module-level compound statement apart from the entry's `if __name__ == "__main__":`. `[unverified: the staff-backend-engineer and staff-sdet reviews' AST scans of the base, not rerun here; Verification step 4 re-derives the first claim]`
 33. Under `-I -S`, `sys.path` holds only the standard library's entries, and an absolute import searches `sys.path` alone. A standard-library-named file beside the entry or inside `cursor_adapter/` is therefore never imported, while the entry leaves `sys.path` alone and no relative import names a standard-library module. `[unverified: the CISO review's -I -S run on 3.15.0, not rerun here; the isolation rows pin it]`
-34. `_imported_non_standard_names` counts each `import` and each level-0 `from` import, so it skips a relative import. The shim's isolation rows pair each flagged run with an unflagged control that does import the poison. `[verified: read test_cursor_adapter_shim.py:3002-3109]`
+34. `imported_non_standard_names` counts each `import` and each level-0 `from` import, so it skips a relative import. The shim's isolation rows pair each flagged run with an unflagged control that does import the poison. `[verified: read test_cursor_adapter_shim.py:3002-3109, before #1537 split that file into test_cursor_adapter_shim_*.py]`
 35. `fast_world` patches `run_self_check` on its adapter, and `load_adapter_copy_with` replaces `world.adapter` with a second load, so a test's `monkeypatch.undo()` can write through a namespace after a later load replaced its modules in `sys.modules`. `[verified: _cursor_install_helpers.py:128, :143; that one test uses both is per the staff-backend-engineer review, at test_cursor_adapter_install_unusable_inputs.py:637 and test_cursor_adapter_install_write_failures.py:482, not reread]`
 36. CI's parallel leg runs pytest with `-m "not timing"`, and its timing leg runs `-m timing -n0` and then the Lint step, `ruff check` over the same trees. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` from the 1-minute load average and prints the count it picked on stderr. `[verified: .github/workflows/tests.yml:220, :223-225, :228-230; README.md:560-562; select-tests.py:1147]`
+37. The two isolation helpers are extracted once into a shared test module, with the shim prologue test as its second consumer, instead of a comment about the copy. `[engineer-verified: "helper extraction for sure. an ownership comment isn't hte way to handle this."]`
 
 **Mechanisms:**
 - M1: The seven parts move by `git mv` into a `cursor_adapter` package beside the entry, with a new `__init__.py` and a `cli.py` holding the entry's command-line code. `anchors: root, row1, row2, row16, row18, row19`.
@@ -309,7 +313,7 @@ After this PR, by-name imports also turn a later mixed checkout of two modules i
 - The three moved functions and `cli.py`'s two sections extracted by line range from the files in `<scratch>/base/` (for example with `sed -n`), never retyped and never cut from the working-tree files the same dispatch edits.
 - Import blocks built by a scratch script under `<scratch>`, never committed. Per module, it takes ruff's F821 findings (`ruff check --isolated --select F821 --output-format json`) and maps each name to its defining module by the base's node list. Then `scripts/venv-run.sh ruff check --fix --select I,F401` with the repo's config orders and prunes the blocks.
 - During development, `scripts/venv-run.sh pytest` on `claude/.claude/scripts/tests/test_cursor_adapter_*.py` and `claude/.claude/hooks/tests/test_cursor_adapter_*.py`. At the end, Verification steps 1-12, with their output in the return. Step 12 runs even when an earlier step fails.
-- No edit to a file outside this list, and none to an existing test file other than `_cursor_payloads.py`.
+- No edit to a file outside this list, and none to an existing test file other than `_cursor_payloads.py` and `test_cursor_adapter_shim_prologue.py`.
 
 **Rename and modify, production** (under `claude/.claude/scripts/cursor-adapter/`, mode 644): `cursor-adapter-core.py` to `cursor_adapter/core.py`, `cursor-adapter-hooks-json.py` to `cursor_adapter/hooks_json.py`, `cursor-adapter-tools.py` to `cursor_adapter/tools.py`, `cursor-adapter-install.py` to `cursor_adapter/install.py`, `cursor-adapter-sandbox.py` to `cursor_adapter/sandbox.py`, `cursor-adapter-uninstall.py` to `cursor_adapter/uninstall.py`, `cursor-adapter-check.py` to `cursor_adapter/check.py`.
 
@@ -317,9 +321,9 @@ After this PR, by-name imports also turn a later mixed checkout of two modules i
 
 **Modify, production:** `claude/.claude/scripts/cursor-adapter/cursor-adapter.py`; `claude/.claude/scripts/cursor-adapter/hook-shim.py` (:33 only).
 
-**Create, tests:** `claude/.claude/hooks/tests/_cursor_adapter_namespace.py`.
+**Create, tests:** `claude/.claude/hooks/tests/_cursor_adapter_namespace.py`; `claude/.claude/scripts/tests/_cursor_isolation_helpers.py`.
 
-**Modify, tests:** `claude/.claude/hooks/tests/_cursor_payloads.py` (`load_adapter`, its eviction loop included, and one import only).
+**Modify, tests:** `claude/.claude/hooks/tests/_cursor_payloads.py` (`load_adapter`, its eviction loop included, and one import only); `claude/.claude/scripts/tests/test_cursor_adapter_shim_prologue.py` (its canary writer and import-scan rule move to the helper module, and its seeded-scan row moves to the renamed test).
 
 **Rename and rewrite, tests:** `claude/.claude/scripts/tests/test_cursor_adapter_parts.py` to `claude/.claude/scripts/tests/test_cursor_adapter_package.py`.
 
@@ -331,18 +335,19 @@ After this PR, by-name imports also turn a later mixed checkout of two modules i
 
 **Read, not changed:** every other test file, `_cursor_install_helpers.py` and `test_select_tests.py` included; `tool-map.json`, `parity-exceptions.json` and `field-table.json`; `install.sh`; `stow-packages.sh`; `README.md`; `claude/.claude/hooks/_lib.sh`; `.claude/rules/cursor-adapter-parity.md`; `.claude/plans/cursor-adapter.md`; `claude/.claude/scripts/transcript-analysis.py`.
 
-**Reuse:** `_move_fidelity.py nodes` and `test-ids`; `copy_adapter`, `ADAPTER_DIR`, `ADAPTER_SOURCE`, `IS_ROOT` and `SHIM_INTERPRETER_FLAGS` from `_cursor_payloads.py`; the renamed test's own `run_check_hook_env`; `load_adapter`'s exec of the entry; the entry-imports-`cli` shape of `transcript-analysis.py:7`; ruff's own F821 output for the import lists; the shim tests' canary writer, flagged-and-control pairing and import-scan rule (`test_cursor_adapter_shim.py:3002-3016`, :3030-3055), copied into the renamed test as DAMP test code. No new committed helper script.
+**Reuse:** `_move_fidelity.py nodes` and `test-ids`; `copy_adapter`, `ADAPTER_DIR`, `ADAPTER_SOURCE`, `IS_ROOT` and `SHIM_INTERPRETER_FLAGS` from `_cursor_payloads.py`; the renamed test's own `run_check_hook_env`; `load_adapter`'s exec of the entry; the entry-imports-`cli` shape of `transcript-analysis.py:7`; ruff's own F821 output for the import lists; the canary writer and import-scan rule, extracted once into `_cursor_isolation_helpers.py` from the shim prologue test. No new committed helper script.
 
 **Diff estimate by part:**
-- About 440 import lines across the eight code modules.
-- About 70 for the three moved functions, out of uninstall and into core (28 definition lines plus their blank separators, each counted out and in).
-- About 135 in `cursor-adapter.py`: about 100 out, about 35 in.
-- About 95 for `cli.py`.
-- About 545 for the test rename, counted as a delete of the 184-line file and an add of about 360, because the rewrite keeps under half its lines.
-- About 55 for the namespace module.
-- About 40 across the module docstrings, `__init__.py`, `_cursor_payloads.py`, `hook-shim.py`, `pyproject.toml`, `select-tests.py` and the two docs.
+- 351 import lines across the seven renamed modules.
+- About 100 for the rest of those seven modules' changes, of which about 70 is the three moved functions, out of uninstall and into core (28 definition lines plus their blank separators, each counted out and in).
+- 140 in `cursor-adapter.py`: 112 out, 28 in.
+- 88 for `cli.py` and `__init__.py`.
+- About 629 for the test rename: a delete of the 184-line file plus an add of about 445. The rewrite keeps under half its lines, so it counts as a delete and an add. 25 of the added lines are the aliased-import and empty-module rows.
+- 49 for `_cursor_isolation_helpers.py` and the shim prologue test's port onto it.
+- 57 for the namespace module.
+- 39 across `_cursor_payloads.py`, `hook-shim.py`, `pyproject.toml`, `select-tests.py` and the two docs.
 
-Projected diff: about 1,380 lines.
+Projected diff: about 1,455 lines. The staged diff without this plan measured 1,428 (1,051 added and 377 deleted) before the aliased-import and empty-module rows, which add about 25.
 
 ## Verification
 
@@ -364,16 +369,16 @@ A base-tree pytest run is `<scratch>/base-tree/scripts/venv-run.sh pytest -c <sc
 7. Renames and unchanged tests:
    - `git diff -M --stat HEAD -- claude/.claude/scripts` reports each of the seven parts as a rename.
    - `claude/.claude/scripts/tests/test_cursor_adapter_parts.py` no longer exists, and `claude/.claude/scripts/tests/test_cursor_adapter_package.py` does. git may report the pair as a delete and an add, since the rewrite keeps under half the file.
-   - `git status --porcelain -- claude/.claude/hooks/tests claude/.claude/scripts/tests` lists only `_cursor_payloads.py`, `_cursor_adapter_namespace.py` and the two test paths, so no existing test body changed.
+   - `git status --porcelain -- claude/.claude/hooks/tests claude/.claude/scripts/tests` lists only `_cursor_payloads.py`, `_cursor_adapter_namespace.py`, `_cursor_isolation_helpers.py`, `test_cursor_adapter_shim_prologue.py` and the two renamed test paths, so no other existing test body changed.
 8. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` passes, apart from failures that also occur at the merge-base. It selects the full suite on its own (row 21).
    - Record the failing node IDs, then rerun each one on this tree and as a base-tree pytest run, per `CLAUDE.md`'s "Prove your change caused a failing check". A timing-marked ID runs as `-m timing -n0`. An ID that fails only on this tree blocks.
-   - The suites that scan `git ls-files` cannot see the new untracked files (`__init__.py`, `cli.py` and `_cursor_adapter_namespace.py`) during this step. `/ready-for-review`'s run, after the parent stages them, re-confirms those suites.
+   - The suites that scan `git ls-files` cannot see the new untracked files (`__init__.py`, `cli.py`, `_cursor_adapter_namespace.py` and `_cursor_isolation_helpers.py`) during this step. `/ready-for-review`'s run, after the parent stages them, re-confirms those suites.
    - The interpreter-flag runs among them: `check --hook-env` under `-I -S` at `test_cursor_adapter_install_session_start.py:470` and :724, the real self-check against a copied stow tree, `generate` under `-S` at `test_cursor_adapter_generate.py:51`, and the renamed test's subprocess rows.
 9. Test IDs. In each tree, run `claude/.claude/scripts/tests/test_cursor_adapter_*.py` and `claude/.claude/hooks/tests/test_cursor_adapter_*.py` twice, as CI splits them (row 36), each run with `--junitxml` to its own file under `<scratch>`:
    - Once with `-m "not timing"`, under `PYTEST_XDIST_AUTO_NUM_WORKERS=<n>`, with `<n>` the worker count step 8's `select-tests.py` printed on stderr.
    - Once with `-m timing -n0`.
    - The base tree's two runs are base-tree pytest runs.
-   - `_move_fidelity.py test-ids`, with one `--before` per base XML and one `--after` per XML here, reports only `test_cursor_adapter_parts.py`'s IDs leaving and `test_cursor_adapter_package.py`'s arriving. This also catches a pass that turned into a skip.
+   - `_move_fidelity.py test-ids`, with one `--before` per base XML and one `--after` per XML here, reports only `test_cursor_adapter_parts.py`'s IDs and the shim prologue test's seeded-scan ID leaving, and `test_cursor_adapter_package.py`'s IDs arriving. This also catches a pass that turned into a skip.
 10. Guard mutations. Before the first mutation, copy every file the mutations below edit, production guard files and test files alike, once to `<scratch>/mutation/`. Each copy's name records the file's repo-relative path with `/` replaced by `__`, and no later step rewrites it. No mutation recopies a file, because `cursor-adapter.py` is mutated five times and a copy taken while an earlier mutation is unrestored would record mutated bytes as the baseline. For each guarded line below, make the one change, run the matching rows by node ID and confirm they fail, then copy the file back from its saved copy and confirm with `cmp`. Each failing run's node ID and the assertion's first line go in the return, for the PR body, with every absolute path (temp roots, scratch paths, home paths) replaced by a placeholder before publishing.
     - Eviction: delete `load_adapter`'s eviction loop. The checkout, copy, checkout row fails.
     - Bytecode flag: delete the entry's `sys.dont_write_bytecode = True`. The subprocess bytecode row fails, and so does the in-process one unless the test process already runs with bytecode writing off.
@@ -385,6 +390,7 @@ A base-tree pytest run is `<scratch>/base-tree/scripts/venv-run.sh pytest -c <sc
     - Held references: make the namespace look its modules up in `sys.modules` on each read and write. The earlier-namespaces row fails.
     - Namespace span: drop the last submodule from the modules `over_load` spans. The span row fails.
     - Uniqueness: append a copy of one core function's definition to `cursor_adapter/check.py`. The uniqueness row fails.
+    - Read-through: append `from json import loads as adapter_directory` to `cursor_adapter/check.py`, which binds a name core defines to a different object without adding a definition. The read-through row fails, the aliased-import row fails too, and the uniqueness row passes.
 11. `find claude/.claude/scripts/cursor-adapter \( -name __pycache__ -o -name '*.pyc' \) -print` prints nothing after steps 8 to 10, whose in-process loads read the package from the checkout.
 12. Closing, whether or not an earlier step failed, including step 10 stopping partway:
     - Each file step 10 names, the production guard files and the test files it edits, equals its copy in `<scratch>/mutation/` per `cmp`, whether or not step 10 reached that file's mutation. The result goes in the return.
@@ -397,7 +403,7 @@ A base-tree pytest run is `<scratch>/base-tree/scripts/venv-run.sh pytest -c <sc
 - **Retargeting `.claude/plans/cursor-adapter.md`'s Phase 5a Critical files bullets.** Phase 5a waits for this PR (row 3), and its session retargets them when it starts. The PR body says so. The retarget lives only in the PR body by design, so a later session must read the PR body.
 - **Re-partitioning beyond M2's three cycle-breaking moves**, such as moving install's `step_reached_text`, `failing_file_text`, `post_write_failure` and `pre_image_state` into core, though uninstall calls them, or `LOG_ROTATE_BYTES` or `HOST_WALK_BOUND_SECONDS` beside their one caller. uninstall's calls into install are forward edges (row 13), and M4 makes a patch's reach independent of where a name lives.
 - **Refusing a cached bytecode file.** `sys.dont_write_bytecode` stops writes, not reads, so a `__pycache__` file would be loaded if it is timestamp-based with a recorded source mtime, in whole seconds, and size matching the source's, or hash-based with the unchecked flag, which loads with no source comparison (row 9). That is accepted at the cooperative tier (row 25), because nothing in this repo writes bytecode for the adapter, so a stale file needs a writer outside this repo.
-- **A name one module defines and another binds by a standard-library import.** The uniqueness row counts definitions only, so it does not rule this out. The namespace still raises AttributeError when a test reads or writes such a name.
+- **A name one module defines and another binds by a standard-library import.** The uniqueness row counts definitions only, so the read-through-the-namespace row guards it: the namespace raises AttributeError when a test reads or writes such a name.
 - **Retargeting test reads or patches to owning modules.** M4's alternatives give the cost.
 - **`hook-shim.py` beyond line 33**, including its split. `compile_module`, the loader that reads the shim, is defined in `cursor-adapter-core.py` and moves to `cursor_adapter/core.py` verbatim, so its behaviour does not change. Nothing in the package needs the shim changed.
 - **A file swapped between the finder's `stat` and the loader's `open`.** It needs a hostile actor, outside the cooperative tier (row 25).

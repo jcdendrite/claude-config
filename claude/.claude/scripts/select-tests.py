@@ -285,13 +285,15 @@ TRANSCRIPT_ANALYSIS_PACKAGE_DIR = "claude/.claude/scripts/transcript_analysis"
 SKILL_STRUCTURE_VALIDATOR_MODULE = "plugins/skill-management/scripts/validate_skill_structure.py"
 
 # Every module SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's test files import
-# by name from the hooks test tree, directly or through a SCRIPTS_TESTS_DIR helper module.
+# by name from the hooks test tree, directly, through a SCRIPTS_TESTS_DIR helper module,
+# or through another hooks-tree module this set lists.
 HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/__init__.py",
     "claude/.claude/hooks/tests/__init__.py",
     "claude/.claude/hooks/tests/conftest.py",
     "claude/.claude/hooks/tests/_lib_sh_helpers.py",
     "claude/.claude/hooks/tests/_cursor_payloads.py",
+    "claude/.claude/hooks/tests/_cursor_adapter_namespace.py",
     "claude/.claude/hooks/tests/_cursor_identity_fixtures.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
     "claude/.claude/hooks/tests/test_review_ledger_script.py",
@@ -338,8 +340,8 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 })
 
 # SCRIPTS_TESTS_DIR test files that import a
-# HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member by name, directly or through
-# a SCRIPTS_TESTS_DIR helper module.
+# HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member by name, directly, through
+# a SCRIPTS_TESTS_DIR helper module, or through another hooks-tree module this set lists.
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
@@ -354,7 +356,7 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_cursor_adapter_install_uninstall.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_install_unusable_inputs.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_install_write_failures.py",
-    "claude/.claude/scripts/tests/test_cursor_adapter_parts.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_package.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_shim_faults.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_shim_hook_run.py",
@@ -782,7 +784,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # through test_agent_roster.py.
 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: every
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES member imports one of these
-# hooks-test-tree modules by name, directly or through a SCRIPTS_TESTS_DIR helper module.
+# hooks-test-tree modules by name, directly, through a SCRIPTS_TESTS_DIR helper module,
+# or through another hooks-tree module this set lists.
 # CURSOR_ADAPTER_DIR: see that constant's own comment above.
 # HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS: see its own comment above for citation.
 # _is_plugin_manifest_change: test_plugin_manifests.py (SKILLS_TESTS_DIR)

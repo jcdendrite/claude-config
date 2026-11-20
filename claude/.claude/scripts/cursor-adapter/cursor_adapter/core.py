@@ -1,4 +1,15 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""The adapter's constants, paths, shim loader and durable file helpers."""
+
+import contextlib
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import tempfile
+import types
 
 # --- constants ---
 
@@ -328,6 +339,11 @@ def probe_directory():
     return directory if os.path.isdir(directory) else home_directory()
 
 
+# The directory that holds this package, hook-shim.py and the JSON files.
+def adapter_directory():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
 def checkout_claude_directory():
     return os.path.dirname(os.path.dirname(adapter_directory()))
 
@@ -527,3 +543,37 @@ def read_bytes_or_refuse(path):
         raise AdapterError(
             f"{path} cannot be read ({load_error_name(error)}). Make it a readable regular file, or remove it, then re-run."
         ) from error
+
+
+def json_bytes_or_refusal(document, path):
+    """`json_bytes(document)`, or a refusal naming `path` for a document JSON cannot write back, which only the lenient parse
+    of a shim that does not load lets through."""
+    try:
+        return json_bytes(document)
+    except (ValueError, RecursionError) as error:
+        raise AdapterError(
+            f"{path} holds a value JSON cannot write back (such as NaN or Infinity), so it was left as it is. "
+            "Fix or remove that member, then re-run."
+        ) from error
+
+
+def sweep_temp_debris(directory):
+    """Removes the `.adapter-tmp-*` regular files a killed write left in `directory`."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith(TEMP_FILE_PREFIX):
+            path = os.path.join(directory, name)
+            with contextlib.suppress(OSError):
+                if stat.S_ISREG(os.lstat(path).st_mode):
+                    os.unlink(path)
+
+
+def read_manifest(directory):
+    try:
+        manifest = read_json_object(os.path.join(directory, MANIFEST_NAME))
+    except AdapterError:
+        return None
+    return manifest if isinstance(manifest.get("files", {}), dict) else None
