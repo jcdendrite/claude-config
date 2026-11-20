@@ -113,13 +113,13 @@ def _run_prompt_sentinel_opt_in(
 def _run_configure_machine_level_opt_ins(
     env: dict, stdin: str | None
 ) -> subprocess.CompletedProcess:
-    """Define both functions and call configure_machine_level_opt_ins, the
-    real install.sh call site -- used for the TTY-gate test, where stdin is
-    None (closed pipe) rather than a piped answer string. configure_
-    machine_level_opt_ins's own `[ ! -t 0 ]` short-circuit fires before it
-    ever touches $_CONFIG_SCHEMA_FILE, so this doesn't need _config.sh
-    sourced first."""
-    script = "set -e\n" + _extract_opt_ins_block() + "\nconfigure_machine_level_opt_ins\n"
+    """Source _config.sh, define both functions, and call
+    configure_machine_level_opt_ins, the real install.sh call site, with
+    `stdin` piped in -- used for the non-tty gate tests. _config.sh is sourced
+    so that, were the `[ ! -t 0 ]` gate removed, the function would reach
+    its prompts and consume the piped answers instead of failing earlier on
+    an unset $_CONFIG_SCHEMA_FILE."""
+    script = "set -e\n" + _config_sh_prelude() + _extract_opt_ins_block() + "\nconfigure_machine_level_opt_ins\n"
     return subprocess.run(
         [_BASH, "-c", script],
         input=stdin,
@@ -262,43 +262,48 @@ class TestPathConfinementGuardRemoved:
 
 
 class TestConfigureMachineLevelOptIns:
-    def test_non_tty_stdin_skips_both_prompts_no_filesystem_change(self, tmp_path: Path) -> None:
-        """Closed/empty stdin (the `install.sh | somewhere` or CI shape) must
-        not hang on `read -r -p`, and must leave both sentinels untouched."""
+    def test_non_tty_stdin_with_no_state_file_creates_none_despite_a_y_answer(self, tmp_path: Path) -> None:
+        """A piped "y" answer on a non-tty stdin must not reach the prompt:
+        only the `[ ! -t 0 ]` gate keeps it from enabling a key and creating
+        claude-config.toml. An EOF stdin could not tell the gate from a
+        declined prompt."""
         home = tmp_path / "home"
         home.mkdir()
         env = dict(os.environ)
         env["HOME"] = str(home)
+        env.pop("CLAUDE_CONFIG_DIR", None)
 
-        result = _run_configure_machine_level_opt_ins(env, stdin="")
+        result = _run_configure_machine_level_opt_ins(env, stdin="y\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert not (home / ".claude" / "worktree-required").exists()
-        assert not (home / ".claude" / "autonomous-shipping-required").exists()
+        assert not (home / ".claude" / "claude-config.toml").exists()
         assert "skipped" in result.stdout
 
-    def test_non_tty_stdin_does_not_disable_existing_sentinels(self, tmp_path: Path) -> None:
-        """Non-interactive skip must leave a pre-existing sentinel enabled —
-        skipping is a no-op, not an implicit 'disable'."""
+    def test_non_tty_stdin_leaves_an_enabled_key_unchanged_despite_an_n_answer(self, tmp_path: Path) -> None:
+        """Non-interactive skip must leave an already-enabled key enabled even
+        when stdin carries an "n" answer that the prompt would turn into a
+        disable -- skipping is a no-op, not an implicit 'disable'."""
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
-        (home / ".claude" / "worktree-required").write_text("")
-        (home / ".claude" / "autonomous-shipping-required").write_text("")
+        state_file = home / ".claude" / "claude-config.toml"
+        state_file.write_text("worktree_required = true\n")
+        state_bytes_before = state_file.read_bytes()
         env = dict(os.environ)
         env["HOME"] = str(home)
+        env.pop("CLAUDE_CONFIG_DIR", None)
 
-        result = _run_configure_machine_level_opt_ins(env, stdin="")
+        result = _run_configure_machine_level_opt_ins(env, stdin="n\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert (home / ".claude" / "worktree-required").exists()
-        assert (home / ".claude" / "autonomous-shipping-required").exists()
+        assert state_file.read_bytes() == state_bytes_before
+        assert "skipped" in result.stdout
 
 
 class TestRealSentinelPaths:
     """`_prompt_sentinel_opt_in` exercised with the exact keys/human-names
     configure_machine_level_opt_ins's schema-driven loop actually calls it
     with -- the generic prompt-logic tests in TestPromptSentinelOptIn use a
-    single representative key; these pin four of the real promptable rows
+    single representative key; these pin three of the real promptable rows
     specifically."""
 
     def test_worktree_required_key_written_on_y(self, tmp_path: Path) -> None:
@@ -311,19 +316,9 @@ class TestRealSentinelPaths:
             home / ".claude" / "claude-config.toml"
         ).read_text() == "worktree_required = true\n"
 
-    def test_autonomous_shipping_key_written_on_y(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        result = _run_prompt_sentinel_opt_in(
-            home, "autonomous_shipping", "y\n", "Autonomous shipping", "test description"
-        )
-        assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert (
-            home / ".claude" / "claude-config.toml"
-        ).read_text() == "autonomous_shipping = true\n"
-
     def test_error_mode_nudge_key_written_on_y(self, tmp_path: Path) -> None:
         """Passes the row's real prompt-description text (not a synthetic
-        placeholder like the two tests above) — see
+        placeholder like the worktree_required test above) — see
         _real_prompt_description."""
         home = tmp_path / "home"
         result = _run_prompt_sentinel_opt_in(
@@ -340,7 +335,7 @@ class TestRealSentinelPaths:
 
     def test_cost_ledger_recording_key_written_on_y(self, tmp_path: Path) -> None:
         """Passes the row's real prompt-description text (not a synthetic
-        placeholder like the two tests above) — see
+        placeholder like the worktree_required test above) — see
         _real_prompt_description."""
         home = tmp_path / "home"
         result = _run_prompt_sentinel_opt_in(
@@ -366,7 +361,7 @@ def _run_configure_machine_level_opt_ins_with_real_pty_stdin(
     test_migrate_legacy_config.py's _run_main_with_real_pty_stdin for this
     file's own sibling writer path. `stdin_responses` is written to the
     master side before the function runs, queued in the pty's own input
-    buffer for the schema-driven loop's six sequential `read -r -p` calls."""
+    buffer for the schema-driven loop's five sequential `read -r -p` calls."""
     master_fd, slave_fd = pty.openpty()
     try:
         script = "set -e\n" + _config_sh_prelude() + _extract_opt_ins_block() + "\nconfigure_machine_level_opt_ins\n"
@@ -399,28 +394,32 @@ class TestRealPtyTTYSpoofCanary:
     change to this path's trust model is a deliberate, reviewed diff rather
     than a silent behavior change."""
 
-    def test_real_pty_stdin_enables_both_enforcement_critical_keys(self, tmp_path: Path) -> None:
+    def test_real_pty_stdin_disables_worktree_required_on_a_machine_where_it_is_enabled(
+        self, tmp_path: Path
+    ) -> None:
         home = tmp_path / "home"
-        home.mkdir()
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "claude-config.toml").write_text("worktree_required = true\n")
         env = dict(os.environ)
         env["HOME"] = str(home)
         env.pop("CLAUDE_CONFIG_DIR", None)
 
-        # Six promptable keys prompt in config-keys.psv row order (worktree_required,
-        # autonomous_shipping, permission_prompt_tracking, error_mode_nudge,
-        # cost_ledger_recording, pr_cost_recording); "y" answers the first two,
-        # a bare Enter (default N, no-op) answers the rest so the loop
-        # completes without blocking on unanswered input.
-        result = _run_configure_machine_level_opt_ins_with_real_pty_stdin(env, "y\ny\n\n\n\n\n")
+        # Five promptable keys prompt in config-keys.psv row order (worktree_required,
+        # permission_prompt_tracking, error_mode_nudge, cost_ledger_recording,
+        # pr_cost_recording); "n" answers the first (enabled, so "Keep it
+        # enabled? [Y/n]"), a bare Enter (default N on a disabled key, no-op)
+        # answers the rest so the loop completes without blocking on
+        # unanswered input.
+        result = _run_configure_machine_level_opt_ins_with_real_pty_stdin(env, "n\n\n\n\n\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         state = (home / ".claude" / "claude-config.toml").read_text()
-        assert state == "worktree_required = true\nautonomous_shipping = true\n", (
-            "a real pty as stdin must still let a scripted 'y' answer enable "
-            "worktree_required and autonomous_shipping, the same accepted "
-            "spoofing residual migrate-legacy-config.sh's own import path "
-            "already discloses -- exact equality so a routing bug that writes "
-            "a spurious extra key can't slip past a substring check"
+        assert state == "worktree_required = false\n", (
+            "a real pty as stdin must still let a scripted 'n' answer disable "
+            "worktree_required, the same accepted spoofing residual "
+            "migrate-legacy-config.sh's own import path already discloses -- "
+            "exact equality so a routing bug that writes a spurious extra key "
+            "can't slip past a substring check"
         )
 
 

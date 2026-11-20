@@ -481,37 +481,44 @@ def _iter_assistant_records(path: Path) -> Iterator[dict]:
             yield rec
 
 
-def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
+def _scan_assistant_models_and_tools(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     """Return (distinct real model IDs, distinct observed tool_use names)
-    from one subagent's own transcript.
+    from one transcript's assistant records.
 
     Mirrors _dispatch_usage_summary's observed-model walk
     (claude/.claude/scripts/transcript_analysis/subagent_mix.py) — every assistant
     record's message.model, excluding SYNTHETIC_MODEL_ID — and collects tool_use block names in the same pass for M3's
-    discriminator. Returns two empty frozensets on any read error, matching
-    that function's "dangling" convention: absence of data, not a crash.
+    discriminator. Lets an OSError propagate, so a caller can tell a read
+    failure from a transcript with no assistant records.
 
     Walks _iter_assistant_records, so a malformed or non-dict line is
     skipped rather than aborting the scan.
     """
     model_ids: set[str] = set()
     tools: set[str] = set()
+    for rec in _iter_assistant_records(path):
+        msg = rec["message"]
+        model = msg.get("model")
+        if isinstance(model, str) and model and model != SYNTHETIC_MODEL_ID:
+            model_ids.add(model)
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str) and name:
+                        tools.add(name)
+    return frozenset(model_ids), frozenset(tools)
+
+
+def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
+    """_scan_assistant_models_and_tools, returning two empty frozensets on any
+    read error, matching _dispatch_usage_summary's "dangling" convention:
+    absence of data, not a crash."""
     try:
-        for rec in _iter_assistant_records(path):
-            msg = rec["message"]
-            model = msg.get("model")
-            if isinstance(model, str) and model and model != SYNTHETIC_MODEL_ID:
-                model_ids.add(model)
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        name = block.get("name")
-                        if isinstance(name, str) and name:
-                            tools.add(name)
+        return _scan_assistant_models_and_tools(path)
     except OSError:
         return frozenset(), frozenset()
-    return frozenset(model_ids), frozenset(tools)
 
 
 def subagent_dir_for_session(session_jsonl: Path) -> Path:

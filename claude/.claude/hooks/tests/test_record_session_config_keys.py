@@ -24,8 +24,10 @@ from helpers import (
     HOOKS_DIR,
     REPO_ROOT,
     _build_subprocess_env,
+    assert_ignored_by_repo_gitignore,
     build_isolated_hook,
     build_path_without,
+    check_ignore,
     git_isolation_env,
     installed_locale_where,
 )
@@ -548,23 +550,6 @@ def trim_leftover_filename(tmp_path):
 @pytest.fixture
 def git_work_tree_env(tmp_path):
     return {**os.environ, **git_isolation_env(tmp_path)}
-
-
-def check_ignore(env: dict[str, str], repo_relative_path: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", repo_relative_path],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-
-
-def assert_ignored_by_repo_gitignore(result: subprocess.CompletedProcess[str]) -> None:
-    assert result.returncode == 0, repr(result)
-    # `-v` prints `<source>:<line>:<pattern><TAB><path>`; the source must be the repo's own .gitignore.
-    matched_rule, _, _ = result.stdout.partition("\t")
-    assert matched_rule.split(":")[0] == ".gitignore", repr(result)
 
 
 class TestLogStaysOutOfGit:

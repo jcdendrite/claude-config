@@ -2092,6 +2092,16 @@ _lib_extract_git_subcmd_args() {
   printf '%s\n' "${argv#*$'\n'}"
 }
 
+# $1 is a quote-stripped or masked fragment. A literal match, so no word inside it can hide another subcommand.
+# $2 is the raw tool-input command. A backtick in it can supply a command word in front of the fragment, so any backtick refuses.
+_lib_fragment_is_git_version_query() {
+  local version_query_re='^ *git --version *$'
+  if [[ "$2" == *'`'* ]]; then
+    return 1
+  fi
+  [[ "$1" =~ $version_query_re ]]
+}
+
 # Exit 0 when WORD holds a quote character, `$`, a backtick, `<`, `>`, `\`,
 # `{`, `}`, `?`, `[` or `]`.
 # Called on text that went through _lib_mask_shell_quotes or _lib_strip_shell_quotes.
@@ -3352,68 +3362,21 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
-# _lib_autonomous_shipping_sentinel_present
-# Returns 0 (true) iff autonomous_shipping is enabled per its config-keys.psv
-# schema row — a union across the resolved config dir and the literal
-# ~/.claude legacy location, so a sentinel armed before CLAUDE_CONFIG_DIR
-# adoption still activates. Delegates to _config_enabled, which owns the
-# union/legacy-probe logic (config-keys.psv's autonomous_shipping row).
-# Sentinel presence only: this is NOT the full autonomous-shipping-active
-# verdict, which also requires the per-repo .claude/autonomous-shipping-optout
-# check — see _lib_autonomous_shipping_active below.
-# Zero-arity: _config_enabled resolves and unions both locations itself, so
-# there is no CONFIG_DIR argument to thread through. Propagates
-# _config_enabled's exit code unchanged, including its exit code 2
-# (config-dir resolution failure), exit code 3 (config-keys.psv unreadable),
-# and exit code 4 (config-keys.psv readable but missing
-# autonomous_shipping's own row) — this function has no `case` of its own to
-# fold any of them into 1. Harmless because every caller
-# (_lib_autonomous_shipping_active, advance-past-commit-stall.sh) treats any
-# nonzero exit identically via `||`, and autonomous_shipping's own
-# documented safe direction is NOT shipping regardless of which failure
-# caused it.
-_lib_autonomous_shipping_sentinel_present() {
-  _config_enabled autonomous_shipping
-}
-
-# _lib_autonomous_shipping_active REPO_ROOT
-# Returns 0 (true) when this machine has opted into autonomous shipping
-# (commit/push/PR without asking) for the given repo.
-#
-# This function is not a generalization of _lib_worktree_enforcement_active
-# above: it has no committed-sentinel arm. That function's committed-sentinel
-# arm is safe because worktree enforcement only restricts a hostile repo.
-# Autonomous shipping removes a human checkpoint instead, so a repo's own
-# committed content must never grant it. There is no repo-level "required"
-# file in this code path; committing one has no effect. Two tiers only: (1)
-# machine sentinel, required — _lib_autonomous_shipping_sentinel_present's
-# union of the resolved config dir and the legacy ~/.claude location; (2)
-# per-repo opt-out (.claude/autonomous-shipping-optout), narrows the machine
-# default off for this repo only. Every error path fails toward NOT shipping
-# — the safe direction for a granting mechanism:
-#   - config-dir resolution failure (_lib_autonomous_shipping_sentinel_present's
-#     own fail direction, now delegated to _config_enabled)
-#   - empty REPO_ROOT
-#   - wrong argument count
-_lib_autonomous_shipping_active() {
-  [ "$#" -eq 1 ] || return 1
-  local repo_root="$1"
-  [ -n "$repo_root" ] || return 1
-  _lib_autonomous_shipping_sentinel_present || return 1
-  [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
-  return 0
-}
-
 # _lib_autonomous_shipping_root_for_cwd CWD
 # Prints the repo root a hook payload's CWD resolves to, or returns 1 when that
-# root may not carry the autonomous-shipping statement. Every hook that prints
-# the statement resolves its root here, so they agree on which roots are eligible.
-# Fails closed, because a grant must not rest on a guess:
+# root is not eligible. The Stop hook gates its forced continuation on it, and
+# the compact hook gates appending the shipping statement.
+# For a single-line CWD the two hooks agree on eligibility. The Stop hook blanks
+# a CWD that is not a single-line string before calling, and the compact hook
+# passes it through unfiltered.
+# Bounds only those two hooks. It does not limit what the agent ships, which
+# CLAUDE.md governs.
+# Fails closed, because neither hook should act on a guessed root:
 #   - CWD is empty or not absolute, so there is no fallback to the process's $PWD
 #   - CWD is not inside a git repository
 #   - HOME is empty or unresolvable
 #   - the root is HOME or one of its ancestors, since a work tree there would
-#     otherwise grant every project beneath it
+#     otherwise make both hooks act on every project beneath it
 _lib_autonomous_shipping_root_for_cwd() {
   [ "$#" -eq 1 ] || return 1
   local cwd="$1" root home_dir
@@ -3435,28 +3398,18 @@ _lib_autonomous_shipping_root_for_cwd() {
   printf '%s' "$root"
 }
 
-# _lib_autonomous_shipping_statement REPO_ROOT
-# Prints the agent-facing statement of the resolved shipping state and returns 0 only when
-# _lib_autonomous_shipping_active holds; otherwise prints nothing and returns 1.
 _lib_autonomous_shipping_statement() {
-  [ "$#" -eq 1 ] || return 1
-  _lib_autonomous_shipping_active "$1" || return 1
-  # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the printed text, not command substitution.
-  printf '%s' 'Autonomous shipping is active for this repository: `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 here (checked when this message was generated). Re-run that script before pushing to confirm. In this repository, the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. A line recording any engineer-originated restriction on shipping, however paraphrased or summarized, is such a hold, so when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding. The override applies only to a line recording absence of authorization with no engineer wait behind it. It covers only committing, a plain push of the current branch (never to the default branch), and opening a PR: merging stays human-only, and force-pushing and every other irreversible action still need the engineer'\''s in-session confirmation. A fork or subagent returns its work to its dispatcher and does not ship. In a different repository, run that script there before relying on this.'
+  printf '%s' 'Autonomous shipping is active for this repository: the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. A line recording any engineer-originated restriction on shipping, however paraphrased or summarized, is such a hold, so when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding. The override applies only to a line recording absence of authorization with no engineer wait behind it. The scope and limits CLAUDE.md sets for shipping still apply.'
 }
 
 # _lib_permission_prompt_tracking_active
 # Returns 0 (true) when this machine has opted into permission-prompt
 # tracking — gates track-permission-prompts.sh. Delegates to
-# _config_enabled's permission_prompt_tracking schema row, minus the
-# per-repo optout: this mechanism only appends to a local log and changes
-# no git/PR/tool behavior, so there is no per-repo axis to narrow (see
-# docs/permission-prompt-tracking.md). Zero-arity by design — unlike
-# _lib_autonomous_shipping_active, which takes a repo root to check a
-# per-repo optout against, this sentinel is machine-global with nothing
-# repo-scoped to look up. Fails toward NOT tracking on _config_enabled's
-# exit code 2 (unresolvable config dir), the same error direction every
-# other opt-in gate in this file takes.
+# _config_enabled's permission_prompt_tracking schema row. This mechanism only
+# appends to a local log and changes no git/PR/tool behavior, so it has no
+# per-repo axis (see docs/permission-prompt-tracking.md). Fails toward NOT
+# tracking on _config_enabled's exit code 2 (unresolvable config dir), the
+# same error direction every other opt-in gate in this file takes.
 _lib_permission_prompt_tracking_active() {
   _config_enabled permission_prompt_tracking
 }

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -36,26 +35,6 @@ def _pr_cost_export_date_only(value: str) -> str:
     merged_at/captured_at only. rate_stamp is already date-only and never
     passed through this."""
     return value.split("T", 1)[0]
-
-
-def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, int]]:
-    """One (row, correction_count) pair per distinct (host, repo, pr_number,
-    machine) key in `rows`, keeping only the current (latest by
-    captured_at) row for each key -- the append-only ledger's full history
-    collapsed to current state. Must run before tokenization: pr_number must
-    stay a typed int. Must run before date-truncation: same-day ties need
-    full-precision captured_at. correction_count is the number of other
-    rows sharing that key (total captures minus one).
-    """
-    groups: dict[tuple[str, str, int, str], list[dict]] = {}
-    for row in rows:
-        key = (row["host"], row["repo"], row["pr_number"], row["machine"])
-        groups.setdefault(key, []).append(row)
-    collapsed: list[tuple[dict, int]] = []
-    for (host, repo, pr_number, machine), group in groups.items():
-        latest = pr_cost_ledger._latest_pr_cost_row(group, host, repo, pr_number, machine)
-        collapsed.append((latest, len(group) - 1))
-    return collapsed
 
 
 def _tokens_for_export(token_object: dict) -> tuple[dict, int]:
@@ -235,18 +214,7 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
             continue
         opted_in += 1
 
-        try:
-            ledger_path = pr_cost_ledger._pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError:
-            # Not str(exc): pr_cost_ledger._pr_cost_ledger_path's own message embeds
-            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
-            # engagement path. Same discipline as this function's other
-            # account-N-only diagnostics above.
-            print(
-                f"pr-cost-export: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        ledger_path = pr_cost_ledger._pr_cost_ledger_path_or_exit("pr-cost-export", ordinal, account_config_dir)
         if not ledger_path.exists():
             continue
 
@@ -273,7 +241,7 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
         # each ledger a second time, to avoid double I/O and a result that
         # could disagree with the rows actually exported.
         corpus_identities.append(f"{raw_rows[0]['captured_at']}|{raw_rows[0]['machine']}")
-        for row, correction_count in _collapse_pr_cost_rows_to_current(raw_rows):
+        for row, correction_count in pr_cost_ledger._collapse_pr_cost_rows_to_current(raw_rows):
             # Runs post-collapse, so a same-key multi-capture correction under
             # one legacy machine value is counted once here, not once per raw capture.
             if not ledger_common._MACHINE_IDENTITY_RE.match(row["machine"]):
@@ -338,7 +306,7 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     ledger_common._refuse_unusable_out_path(out, "pr-cost-export")
 
     roots = scope._resolve_cost_roots(args, "pr-cost-export")
-    if len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+    if len(roots) > 1 and pr_cost_ledger.pr_cost_ledger_path_overridden():
         # Mirrors pr-cost's own --all-accounts + PR_COST_LEDGER_PATH refusal:
         # with it set, every account would resolve to the same forced file,
         # exporting one ledger's rows once per account under a different

@@ -73,7 +73,7 @@
 #     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
 #     interpreter write such as `python3 -c`, a tool's own output flag, such
 #     as `git diff --output=<path>`) is not inspected.
-#     GH-1103 tracks the structural fix for this closed enumeration.
+#     The structural fix for this closed enumeration is deferred under GH-1208.
 #   - Plain `ruff check` writes to disk when the target repo's ruff config
 #     sets `fix = true`, or when the command passes `--config fix=true`.
 #     This gap is accepted permanently.
@@ -133,7 +133,7 @@
 #         backticks (`echo x > $(printf src/y)`), because _lib_split_fragments
 #         splits at both spellings.
 #   - A symlink or hard link under /tmp launders the /tmp exemption.
-#     GH-1103 tracks the structural fix. The facts of this one gap:
+#     GH-1295 tracks the structural fix. The facts of this one gap:
 #       - Both arms match the literal `/tmp/*` text without resolving links.
 #       - A write through such a link changes the linked file, which can be any
 #         file the user can write, not only a tracked one.
@@ -223,6 +223,14 @@
 #     check — git absent, the resolved cwd not a repo, the timeout firing —
 #     denies rather than allows (fail-closed friction on an unusual
 #     environment, not a missed mutation).
+#   - `--shallow-file` is missing from `_LIB_GIT_GLOBAL_VALUE_FLAGS`. Git
+#     consumes the next word as the flag's value, but the gate reads that word
+#     as the subcommand.
+#   - A program-running global option or environment assignment is admitted
+#     ahead of an allowlisted subcommand.
+#     Examples are `-c core.fsmonitor=<prog>`, `--config-env=`, `--git-dir=`,
+#     `--exec-path=` and `GIT_EXTERNAL_DIFF=<prog> git diff`.
+#     GH-1295 tracks this gap and the `--shallow-file` gap above.
 #   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
 #     exit status is checked and denies with an explicit message rather than
 #     falling through to this hook's normal "no gated fragment matched"
@@ -546,6 +554,7 @@ case "$TOOL_NAME" in
       exit 0
     fi
     while IFS= read -r fragment; do
+      fragment_before_wrapper_strip="$fragment"
       if _fragment_launches_venv_run_wrapper "$fragment"; then
         _strip_venv_run_wrapper_word fragment
       fi
@@ -556,7 +565,8 @@ case "$TOOL_NAME" in
         # Unlike require-worktree-for-git-writes.sh, cwd is irrelevant here:
         # a reviewer never has a legitimate git-write target anywhere, so
         # any non-read-only subcommand denies regardless of where it runs.
-        if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
+        if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]] \
+          && ! _lib_fragment_is_git_version_query "$fragment_before_wrapper_strip" "$COMMAND"; then
           emit_deny "'git $subcmd' is not a read-only git subcommand for a review-only agent, and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
           exit 0
         fi

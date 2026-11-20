@@ -251,9 +251,9 @@ class TestConfigValue:
 
     def test_home_only_legacy_file_does_not_activate_a_diverged_config_dir(self, tmp_path, monkeypatch):
         """pr_cost_disclosure's `resolution` column is `config-dir`, not
-        `config-dir-or-home` -- unlike worktree_required/autonomous_shipping,
-        a legacy file present only at $HOME/.claude must never activate it
-        once CLAUDE_CONFIG_DIR diverges from $HOME/.claude."""
+        `config-dir-or-home` -- unlike worktree_required, a legacy file
+        present only at $HOME/.claude must never activate it once
+        CLAUDE_CONFIG_DIR diverges from $HOME/.claude."""
         home = _make_home(tmp_path, monkeypatch)
         (home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
         config_dir = tmp_path / "altconfig"
@@ -306,27 +306,17 @@ class TestUnrecognizedKeyWarning:
 # A grammar-conforming but schema-invalid `bool` value must warn and fall
 # through to the legacy-file-then-default chain, not resolve as authoritative
 # -- otherwise a typo (or a value a hand-editor would believe disables it,
-# e.g. "off") on autonomous_shipping would silently grant it, since
+# e.g. "off") on a default-false key would silently enable it, since
 # config_enabled treats any value other than the literal "false" as enabled.
 # ---------------------------------------------------------------------------
 
 
 class TestSchemaTypeValidationOnRead:
-    def test_autonomous_shipping_non_boolean_value_warns_and_falls_through(self, tmp_path, monkeypatch, capsys):
+    def test_worktree_required_non_boolean_value_warns_and_falls_through(self, tmp_path, monkeypatch, capsys):
         """Quoted, not bare: a bare `notabool` would hit the value-subset
         grammar's bareness gate first (`TestEnumValueQuotingGrammar` already
         covers that path), never reaching the schema-type check this test
         targets."""
-        home = _make_home(tmp_path, monkeypatch)
-        (home / ".claude" / "claude-config.toml").write_text('autonomous_shipping = "notabool"\n')
-        assert config_value("autonomous_shipping") == "false"
-        assert config_enabled("autonomous_shipping") is False
-        err = capsys.readouterr().err
-        assert "malformed line" in err
-        assert 'autonomous_shipping = "notabool"' in err
-
-    def test_worktree_required_non_boolean_value_warns_and_falls_through(self, tmp_path, monkeypatch, capsys):
-        """Quoted, not bare -- see the sibling test above for why."""
         home = _make_home(tmp_path, monkeypatch)
         (home / ".claude" / "claude-config.toml").write_text('worktree_required = "notabool"\n')
         assert config_value("worktree_required") == "false"
@@ -416,23 +406,26 @@ class TestEnumValueQuotingGrammar:
 class TestUnrecognizedLegacyPolarityFallback:
     """An unrecognized config-keys.psv legacy-polarity value (a schema-file
     typo, since this column has no other writer) falls through to the
-    key's schema default for four of the five enforcement-critical keys --
+    key's schema default for three of the four enforcement-critical keys --
     already that key's fail-closed direction, pinned here explicitly.
     worktree_required is the one exception: its schema default ("false") is
     the permissive direction, so _location_value fails closed to "true"
-    instead, matching _config.sh's own mirrored fallback."""
+    instead, matching _config.sh's own mirrored fallback.
+    permission_prompt_tracking is not enforcement-critical; it is the
+    default-false, non-worktree_required witness that the fallback to the
+    schema default does not force "true" for every key."""
 
     @pytest.mark.parametrize(
         "key,expected",
         [
             ("worktree_required", "true"),
-            ("autonomous_shipping", "false"),
             ("commit_stall_block", "true"),
             ("round_consult_gate", "true"),
             ("authorization_boundary_restore", "true"),
+            ("permission_prompt_tracking", "false"),
         ],
     )
-    def test_enforcement_critical_key_resolves_fail_closed(self, tmp_path, key, expected, capsys):
+    def test_unrecognized_legacy_polarity_fails_closed_for_critical_and_noncritical_keys(self, tmp_path, key, expected, capsys):
         import dataclasses
 
         from _config import _location_value
@@ -450,10 +443,10 @@ class TestUnrecognizedLegacyPolarityFallback:
         "key,schema_default",
         [
             ("worktree_required", "false"),
-            ("autonomous_shipping", "false"),
             ("commit_stall_block", "true"),
             ("round_consult_gate", "true"),
             ("authorization_boundary_restore", "true"),
+            ("permission_prompt_tracking", "false"),
         ],
     )
     def test_empty_legacy_polarity_falls_through_silently(self, tmp_path, key, schema_default, capsys):

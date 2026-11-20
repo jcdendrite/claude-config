@@ -999,15 +999,13 @@ def session_start_matchers_registering(script_name: str) -> list[str]:
 AUTONOMOUS_SHIPPING_STATEMENT_LEAD = "Autonomous shipping is active for this repository"
 
 
-def run_autonomous_shipping_statement(home: Path, *args: str) -> subprocess.CompletedProcess:
-    """Runs `_lib_autonomous_shipping_statement ARGS` with HOME set to `home` and nothing else inherited but PATH."""
+def run_autonomous_shipping_statement(home: Path) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_statement` with HOME set to `home` and nothing else inherited but PATH."""
     return subprocess.run(
         [
             "bash",
             "-c",
-            f'. {_LIB_SH}; _lib_autonomous_shipping_statement "$@"',
-            "bash",
-            *args,
+            f". {_LIB_SH}; _lib_autonomous_shipping_statement",
         ],
         capture_output=True,
         text=True,
@@ -3560,6 +3558,90 @@ def git_isolation_env(tmp_path: Path) -> dict:
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
     }
+
+
+def check_ignore(env: dict[str, str], repo_relative_path: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", repo_relative_path],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def assert_ignored_by_repo_gitignore(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 0, repr(result)
+    # `-v` prints `<source>:<line>:<pattern><TAB><path>`; the source must be the repo's own .gitignore.
+    matched_rule, _, _ = result.stdout.partition("\t")
+    assert matched_rule.split(":")[0] == ".gitignore", repr(result)
+
+
+GIT_SUBCOMMAND_LOG_NAME = "git-subcommands.log"
+GIT_ARGV_LOG_NAME = "git-argv.log"
+
+# The git shim's shell loop that finds the subcommand: it skips the global options that precede it,
+# and `-C`/`-c` consume the following argument. It then records the whole argv on its own line.
+_GIT_SUBCOMMAND_RECORDING_SHELL = """\
+skip_next=false
+for arg in "$@"; do
+  if $skip_next; then skip_next=false; continue; fi
+  case "$arg" in
+    -C|-c) skip_next=true ;;
+    -*) ;;
+    *) printf "%s\\n" "$arg" >> "{subcommand_log}"; break ;;
+  esac
+done
+printf "%s\\n" "$*" >> "{argv_log}"
+"""
+
+
+def install_recording_shims(tmp_path: Path) -> tuple[str, Path]:
+    """Returns a PATH whose git and jq shims append their name to the returned log, then exec the real tool.
+
+    The git shim also appends each call's subcommand and its space-joined argv to sibling logs, read through
+    `recorded_git_subcommands` and `recorded_git_argvs`.
+    Creates `tmp_path/recording-shims` with a bare `mkdir()`, so call it once per `tmp_path`.
+    """
+    shim_dir = tmp_path / "recording-shims"
+    shim_dir.mkdir()
+    invocation_log = tmp_path / "invocations.log"
+    subcommand_log = invocation_log.with_name(GIT_SUBCOMMAND_LOG_NAME)
+    argv_log = invocation_log.with_name(GIT_ARGV_LOG_NAME)
+    for tool in ("git", "jq"):
+        real_tool = shutil.which(tool)
+        assert real_tool is not None, f"{tool} not found in PATH"
+        subcommand_recording = (
+            _GIT_SUBCOMMAND_RECORDING_SHELL.replace("{subcommand_log}", str(subcommand_log)).replace(
+                "{argv_log}", str(argv_log)
+            )
+            if tool == "git"
+            else ""
+        )
+        shim = shim_dir / tool
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'printf "%s\\n" "{tool}" >> "{invocation_log}"\n'
+            f"{subcommand_recording}"
+            f'exec "{real_tool}" "$@"\n'
+        )
+        shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+    return f"{shim_dir}{os.pathsep}{os.environ['PATH']}", invocation_log
+
+
+def recorded_git_subcommands(invocation_log: Path) -> list[str]:
+    """The git subcommands the shims from `install_recording_shims` saw, in call order."""
+    subcommand_log = invocation_log.with_name(GIT_SUBCOMMAND_LOG_NAME)
+    return subcommand_log.read_text().split() if subcommand_log.exists() else []
+
+
+def recorded_git_argvs(invocation_log: Path) -> list[list[str]]:
+    """The argv (after `git`) of each git call the shims from `install_recording_shims` saw, in call order.
+
+    Arguments are split on whitespace, so an argument containing a space reads as several.
+    """
+    argv_log = invocation_log.with_name(GIT_ARGV_LOG_NAME)
+    return [line.split() for line in argv_log.read_text().splitlines()] if argv_log.exists() else []
 
 
 def init_reconciler_repo(repo: Path, *, enabled_plugins: dict, gitignore_settings_local: bool = True) -> None:

@@ -13,6 +13,9 @@ select = ["E", "F", "B", "I", "UP", "SIM"]
 # grows real test code with a genuinely long line.
 [tool.ruff.lint.per-file-ignores]
 "claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py" = ["E501"]
+# cursor-adapter.py and its parts share one namespace that per-file analysis cannot follow. test_cursor_adapter_parts.py
+# runs F821, F401 and F811 over the files as one source, so `ruff check` alone does not prove that names resolve.
+"claude/.claude/scripts/cursor-adapter/cursor-adapter*.py" = ["F401", "F821"]
 
 [tool.pytest.ini_options]
 pythonpath = ["claude/.claude/tests", "claude/.claude/scripts", "evals", "plugins/skill-management/scripts", "plugins/lovable-cloud/tests"]
