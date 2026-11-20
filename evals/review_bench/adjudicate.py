@@ -332,10 +332,13 @@ def install_precision_judge_fixture(
 # escape character, which a judge may add before an inner quote) removed from
 # both sides.
 _MARKDOWN_DECORATION_RE = re.compile(r"[*`\\]")
-_LABEL_SEPARATOR = r"[:\-–—]+"  # ':', '-', '--', en dash, em dash
+_LABEL_SEPARATOR_CHARS = r":\-–—"  # ':', '-', en dash, em dash
+_LABEL_SEPARATOR = rf"[{_LABEL_SEPARATOR_CHARS}]+"
 _QUOTE_CHARS = "\"“”"
 _QUOTE_RE = re.compile(rf"[{_QUOTE_CHARS}](.+)[{_QUOTE_CHARS}]")
 _QUOTE_CHAR_RE = re.compile(rf"[{_QUOTE_CHARS}]")
+_LEADING_QUOTE_RE = re.compile(rf"[\s{_LABEL_SEPARATOR_CHARS}]*[{_QUOTE_CHARS}]")
+_NON_QUOTE_NON_SPACE_RE = re.compile(rf"[^\s{_QUOTE_CHARS}]")
 _MULTILINE_QUOTE_RE = re.compile(rf"[{_QUOTE_CHARS}](.+?)[{_QUOTE_CHARS}]", re.DOTALL)
 
 
@@ -344,6 +347,20 @@ def _strip_markdown_decoration(text: str) -> tuple[str, list[int]]:
     character in `text`."""
     raw_index_by_stripped_index = [i for i, ch in enumerate(text) if not _MARKDOWN_DECORATION_RE.match(ch)]
     return "".join(text[i] for i in raw_index_by_stripped_index), raw_index_by_stripped_index
+
+
+def _stops_inside_an_inner_quotation(
+    text: str, line_match: re.Match[str], opening: str, *, next_line_start: int,
+) -> bool:
+    """Whether an odd-quote-count label line holds one opening that stops inside an inner
+    quotation (`"A "b"`), as opposed to stray quotes the greedy first-to-last match would truncate."""
+    rest = line_match.group("rest")
+    return bool(
+        _LEADING_QUOTE_RE.match(rest)
+        and _NON_QUOTE_NON_SPACE_RE.search(opening)
+        and rest.rstrip().endswith(tuple(_QUOTE_CHARS))
+        and not _QUOTE_CHAR_RE.search(text, line_match.end("rest"), next_line_start)
+    )
 
 
 def _quoted_opening(text: str, line_match: re.Match[str], *, next_line_start: int) -> str | None:
@@ -355,11 +372,16 @@ def _quoted_opening(text: str, line_match: re.Match[str], *, next_line_start: in
     quote_char_count = len(_QUOTE_CHAR_RE.findall(rest))
     single_line_quote = _QUOTE_RE.search(rest)
     if single_line_quote:
-        # An odd count of three or more quote chars is rejected: the greedy first-to-last match silently truncates the opening.
         # An even count is accepted, so a two-line quote whose first line holds an inner quote
         # (`"A \"b` then `c"`) still returns `A ` and drops the continuation.
         # The truncated opening is still a real substring of the findings text.
-        return single_line_quote.group(1) if quote_char_count % 2 == 0 else None
+        if quote_char_count % 2 == 0:
+            return single_line_quote.group(1)
+        # An odd count is rejected unless the opening stops inside an inner quotation.
+        opening = single_line_quote.group(1)
+        if _stops_inside_an_inner_quotation(text, line_match, opening, next_line_start=next_line_start):
+            return opening
+        return None
     if quote_char_count != 1:
         return None  # no quote, or an adjacent empty pair that `_QUOTE_RE` rejected
     multiline_quote = _MULTILINE_QUOTE_RE.search(text, line_match.start("rest"), next_line_start)
@@ -380,7 +402,7 @@ def _label_lines_with_quoted_openings(
 # Whitespace other than a newline, so each pattern below matches one line at a time.
 _HSPACE = r"[^\S\n]"
 _RECALL_LABEL_LINE_RE = re.compile(
-    rf"(?im)^{_HSPACE}*(?P<id>\S+?)(?:(?={_HSPACE})|(?<=[^\s:\-–—])|(?<=\s[:\-–—])|(?<=^[:\-–—]))"
+    rf"(?im)^{_HSPACE}*(?P<id>\S+?)(?:(?={_HSPACE})|(?<=[^\s{_LABEL_SEPARATOR_CHARS}])|(?<=\s[{_LABEL_SEPARATOR_CHARS}])|(?<=^[{_LABEL_SEPARATOR_CHARS}]))"
     rf"{_HSPACE}*{_LABEL_SEPARATOR}{_HSPACE}*(?P<label>NOT[ _]FOUND|FOUND)\b(?P<rest>.*)$"
 )
 
