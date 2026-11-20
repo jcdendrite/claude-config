@@ -282,6 +282,7 @@ CORPUS: list[tuple[str, bool]] = [
     ("Want me to commit this despite the errors?", False),
     ("Want me to commit this despite the warnings?", True),
     # A hyphen is a word boundary on the exclusion side too, so pre-merge still excludes through merge.
+    # Its twin is the trailing-newline "Want me to commit this?\n" row: the same ask without the exclusion token.
     ("Want me to commit this pre-merge?", False),
     # The sentence starts with an exclusion phrase; its twins are the trailing-newline and multi-line
     # "Want me to commit this?" rows, whose last sentence is the same ask without the leading "Anyway,".
@@ -292,6 +293,8 @@ CORPUS: list[tuple[str, bool]] = [
     ("Should I add push-notification support?", True),  # a hyphen is a word boundary, so the compound fires
     ("Want me to run pre-commit?", True),  # a hyphen is a word boundary, so the compound fires
     ("Want me to commit the error handling changes?", False),
+    # Known gap: an exclusion spelling such as "merging" is not matched, so the ask still fires (commit-stall-block.md).
+    ("Want me to push this after merging?", True),
 ]
 
 
