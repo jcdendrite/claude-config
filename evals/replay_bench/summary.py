@@ -5,9 +5,10 @@ What a null difference does and does not show is stated in `evals/README.md` § 
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,28 +25,77 @@ from replay_bench.spend import SpendFile, is_usable_cost
 
 TASKS_DIR_NAME = "tasks"
 EXCLUSION_KEYS = ("toolkit", "bare", "both", "code")
+PAIRED_ARM_NAMES = (TOOLKIT.name, BARE.name)
 
 
 @dataclass(frozen=True)
-class _ArmSums:
-    words: int
-    code_lines: int
+class _ArmCounts:
+    numerator: float
+    code_lines: float
 
     @property
     def ratio(self) -> float | None:
-        return self.words / self.code_lines if self.code_lines else None
+        return self.numerator / self.code_lines if self.code_lines else None
 
 
 def _valid(arm_records: Sequence[ReplayRunRecord]) -> list[ReplayRunRecord]:
     return [record for record in arm_records if record.is_ok and record.metrics is not None]
 
 
-def _sums(arm_records: Sequence[ReplayRunRecord]) -> _ArmSums:
+def _run_words(record: ReplayRunRecord) -> int:
+    return record.metrics["comment_words"]["non_test"]
+
+
+def _run_code_lines(record: ReplayRunRecord) -> int:
+    return record.metrics["line_counts"]["non_test"]["code"]
+
+
+def _run_docstring_lines(record: ReplayRunRecord) -> int:
+    return record.metrics["line_counts"]["non_test"]["docstring"]
+
+
+def _mean_counts_per_run(
+    arm_records: Sequence[ReplayRunRecord], run_numerator: Callable[[ReplayRunRecord], int] = _run_words,
+) -> _ArmCounts:
+    """A task's arm counts are per-run means, so a task with more valid runs weighs no more in a pooled ratio."""
     valid = _valid(arm_records)
-    return _ArmSums(
-        words=sum(record.metrics["comment_words"]["non_test"] for record in valid),
-        code_lines=sum(record.metrics["line_counts"]["non_test"]["code"] for record in valid),
+    return _ArmCounts(
+        numerator=statistics.fmean(run_numerator(record) for record in valid),
+        code_lines=statistics.fmean(_run_code_lines(record) for record in valid),
     )
+
+
+def _ratio_of_sums(task_counts: Iterable[_ArmCounts]) -> float | None:
+    task_counts = list(task_counts)
+    return _ArmCounts(
+        numerator=sum(counts.numerator for counts in task_counts),
+        code_lines=sum(counts.code_lines for counts in task_counts),
+    ).ratio
+
+
+def _pooled_ratio(task_ids: Iterable[str], counts_by_task: Mapping[str, _ArmCounts]) -> float | None:
+    return _ratio_of_sums(counts_by_task[task_id] for task_id in task_ids)
+
+
+@dataclass(frozen=True)
+class RunSpread:
+    standard_deviation: float | None
+    task_count: int
+
+
+def run_spread(arm_records_by_task: Iterable[Sequence[ReplayRunRecord]]) -> RunSpread:
+    """The pooled within-task standard deviation of one run's words per code line, over tasks with two or more such runs."""
+    squared_deviations, degrees_of_freedom, task_count = 0.0, 0, 0
+    for arm_records in arm_records_by_task:
+        run_ratios = [_run_words(record) / _run_code_lines(record) for record in _valid(arm_records) if _run_code_lines(record)]
+        if len(run_ratios) < 2:
+            continue
+        squared_deviations += statistics.variance(run_ratios) * (len(run_ratios) - 1)
+        degrees_of_freedom += len(run_ratios) - 1
+        task_count += 1
+    if not degrees_of_freedom:
+        return RunSpread(None, task_count)
+    return RunSpread(math.sqrt(squared_deviations / degrees_of_freedom), task_count)
 
 
 def _reasons(arm_records: Sequence[ReplayRunRecord]) -> Counter:
@@ -102,6 +152,13 @@ def _docstring_rate(metrics_list: Sequence[dict]) -> float | None:
     return 100 * docstring / code if code else None
 
 
+def _arm_docstring_rate(arm_records_by_task: Iterable[Sequence[ReplayRunRecord]]) -> float | None:
+    ratio = _ratio_of_sums(
+        _mean_counts_per_run(arm_records, _run_docstring_lines) for arm_records in arm_records_by_task if _valid(arm_records)
+    )
+    return None if ratio is None else 100 * ratio
+
+
 def _number(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.4f}"
 
@@ -109,14 +166,26 @@ def _number(value: float | None) -> str:
 @dataclass(frozen=True)
 class PairedOutcome:
     differences: dict[str, float]
-    mean: float | None
-    interval: tuple[float, float] | None
+    pooled_ratios: dict[str, float]
+    pooled_difference: float | None
+    pooled_interval: tuple[float, float] | None
+    unweighted_mean: float | None
+    unweighted_interval: tuple[float, float] | None
+    run_spreads: dict[str, RunSpread]
     excluded_counts: dict[str, int]
     excluded_records: dict[str, list[ReplayRunRecord]]
 
 
+def _interval_over_tasks(task_ids: Sequence[str], statistic: Callable[[Sequence[str]], float]) -> tuple[float, float] | None:
+    return analysis.bootstrap_interval(
+        list(task_ids), statistic, cluster_by_defect={task_id: (task_id, "") for task_id in task_ids},
+    )
+
+
 def paired_outcome(block_records: Mapping[str, Sequence[ReplayRunRecord]]) -> PairedOutcome:
     differences: dict[str, float] = {}
+    counts: dict[str, dict[str, _ArmCounts]] = {arm_name: {} for arm_name in PAIRED_ARM_NAMES}
+    paired_records: dict[str, list[Sequence[ReplayRunRecord]]] = {arm_name: [] for arm_name in PAIRED_ARM_NAMES}
     excluded: dict[str, list[ReplayRunRecord]] = {key: [] for key in EXCLUSION_KEYS}
     excluded_counts = dict.fromkeys(excluded, 0)
     for task_id, task_records in block_records.items():
@@ -129,18 +198,52 @@ def paired_outcome(block_records: Mapping[str, Sequence[ReplayRunRecord]]) -> Pa
             missing_side = {"toolkit": toolkit_records, "bare": bare_records, "both": task_records}[key]
             excluded[key].extend(record for record in missing_side if not record.is_ok)
             continue
-        toolkit_ratio, bare_ratio = _sums(toolkit_records).ratio, _sums(bare_records).ratio
-        if toolkit_ratio is None or bare_ratio is None:
+        toolkit_counts, bare_counts = _mean_counts_per_run(toolkit_records), _mean_counts_per_run(bare_records)
+        if toolkit_counts.ratio is None or bare_counts.ratio is None:
             excluded_counts["code"] += 1
             continue
-        differences[task_id] = toolkit_ratio - bare_ratio
+        differences[task_id] = toolkit_counts.ratio - bare_counts.ratio
+        counts[TOOLKIT.name][task_id], counts[BARE.name][task_id] = toolkit_counts, bare_counts
+        paired_records[TOOLKIT.name].append(toolkit_records)
+        paired_records[BARE.name].append(bare_records)
+    run_spreads = {arm_name: run_spread(paired_records[arm_name]) for arm_name in PAIRED_ARM_NAMES}
     if not differences:
-        return PairedOutcome(differences, None, None, excluded_counts, excluded)
-    interval = analysis.bootstrap_interval(
-        list(differences), lambda ids: statistics.fmean(differences[task_id] for task_id in ids),
-        cluster_by_defect={task_id: (task_id, "") for task_id in differences},
+        return PairedOutcome(differences, {}, None, None, None, None, run_spreads, excluded_counts, excluded)
+
+    def pooled_difference(task_ids: Sequence[str]) -> float:
+        return _pooled_ratio(task_ids, counts[TOOLKIT.name]) - _pooled_ratio(task_ids, counts[BARE.name])
+
+    def unweighted_mean(task_ids: Sequence[str]) -> float:
+        return statistics.fmean(differences[task_id] for task_id in task_ids)
+
+    paired_ids = list(differences)
+    return PairedOutcome(
+        differences=differences,
+        pooled_ratios={arm_name: _pooled_ratio(paired_ids, counts[arm_name]) for arm_name in PAIRED_ARM_NAMES},
+        pooled_difference=pooled_difference(paired_ids),
+        pooled_interval=_interval_over_tasks(paired_ids, pooled_difference),
+        unweighted_mean=unweighted_mean(paired_ids),
+        unweighted_interval=_interval_over_tasks(paired_ids, unweighted_mean),
+        run_spreads=run_spreads, excluded_counts=excluded_counts, excluded_records=excluded,
     )
-    return PairedOutcome(differences, statistics.fmean(differences.values()), interval, excluded_counts, excluded)
+
+
+def _reference_pooled_ratio(paired_ids: Iterable[str], reference: Mapping[str, dict]) -> float | None:
+    return _ratio_of_sums(
+        _ArmCounts(
+            numerator=reference[task_id]["comment_words"]["non_test"],
+            code_lines=reference[task_id]["line_counts"]["non_test"]["code"],
+        )
+        for task_id in paired_ids if task_id in reference
+    )
+
+
+def _difference_text(difference: float | None, interval: tuple[float, float] | None) -> str:
+    if difference is None:
+        return "n/a"
+    if interval is None:
+        return f"{difference:.4f}, no interval for fewer than two paired tasks"
+    return f"{difference:.4f}, 95% interval [{interval[0]:.4f}, {interval[1]:.4f}]"
 
 
 def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> list[str]:
@@ -166,15 +269,30 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
 
     paired = paired_outcome(block_records)
 
-    lines.append("primary outcome: comment-plus-docstring words per added non-test code line (ratio of sums per task and arm)")
-    if paired.mean is not None:
-        interval_text = (
-            f", 95% interval [{paired.interval[0]:.4f}, {paired.interval[1]:.4f}]" if paired.interval
-            else ", no interval for fewer than two paired tasks"
+    manifest, manifest_problem = _read_manifest(campaign_dir / MANIFEST_NAME)
+    reference, reference_problem = _read_reference_metrics(local_dir, manifest.get("tasks_name"), manifest.get("task_set_hash"))
+    reference_problem = manifest_problem or reference_problem
+
+    lines.append(
+        "primary outcome: comment-plus-docstring words per added non-test code line, pooled over the paired tasks "
+        "(a task's counts are its valid runs' means)"
+    )
+    for arm_name in PAIRED_ARM_NAMES:
+        lines.append(f"  {arm_name} words per code line: {_number(paired.pooled_ratios.get(arm_name))}")
+    reference_ratio = _reference_pooled_ratio(paired.differences, reference)
+    lines.append(f"  reference (the merged commits) words per code line: {_number(reference_ratio)}")
+    lines.append(f"paired difference toolkit - bare: {_difference_text(paired.pooled_difference, paired.pooled_interval)}")
+    lines.append(
+        "  sensitivity, unweighted mean of per-task differences: "
+        f"{_difference_text(paired.unweighted_mean, paired.unweighted_interval)}"
+    )
+    lines.append("  run-to-run spread, the within-task standard deviation of one run's words per code line:")
+    for arm_name in PAIRED_ARM_NAMES:
+        spread = paired.run_spreads[arm_name]
+        lines.append(
+            f"    {arm_name}: {_number(spread.standard_deviation)} over {spread.task_count} paired tasks "
+            "with two or more runs that added code"
         )
-        lines.append(f"paired difference toolkit - bare: {paired.mean:.4f}{interval_text}")
-    else:
-        lines.append("paired difference toolkit - bare: n/a")
     lines.append(f"paired {len(paired.differences)} of {len(complete_ids)} complete tasks")
     labels = {
         "toolkit": "toolkit with no valid run", "bare": "bare with no valid run",
@@ -184,17 +302,18 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
         suffix = f" (missing reasons: {_format_reasons(_reasons(paired.excluded_records[key]))})" if key != "code" else ""
         lines.append(f"  excluded, {label}: {paired.excluded_counts[key]}{suffix}")
 
-    manifest, manifest_problem = _read_manifest(campaign_dir / MANIFEST_NAME)
-    reference, reference_problem = _read_reference_metrics(local_dir, manifest.get("tasks_name"), manifest.get("task_set_hash"))
-    reference_problem = manifest_problem or reference_problem
-    lines.append("secondary outcome: Python docstring lines per 100 added non-test code lines")
+    lines.append(
+        "secondary outcome: Python docstring lines per 100 added non-test code lines "
+        "(a task's counts are its valid runs' means)"
+    )
     reference_rate = _docstring_rate([reference[task_id] for task_id in complete_ids if task_id in reference])
     lines.append(f"  reference (the merged commits) docstring lines per 100 code lines: {_number(reference_rate)}")
     if reference_problem:
         lines.append(f"  reference unavailable: {reference_problem}")
     for arm_name in arm_names:
-        valid = _valid([record for record in all_records if record.arm == arm_name])
-        arm_rate = _docstring_rate([record.metrics for record in valid])
+        arm_rate = _arm_docstring_rate(
+            [record for record in task_records if record.arm == arm_name] for task_records in block_records.values()
+        )
         lines.append(f"  {arm_name} docstring lines per 100 code lines: {_number(arm_rate)}")
 
     lines.append("diagnostics per arm:")
