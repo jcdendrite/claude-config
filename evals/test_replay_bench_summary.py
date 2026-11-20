@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+import statistics
 from pathlib import Path
 
 import pytest
@@ -16,10 +18,15 @@ ACCOUNT = "/synthetic/account"
 CAP = 3.0
 
 
-def metrics(*, words=10, code=10, docstring=0, unclassified=0, ast_rejected=0, non_file=0, undecodable=0) -> dict:
+def metrics(
+    *, words=10, code=10, docstring=0, unclassified=0, ast_rejected=0, non_file=0, undecodable=0,
+    test_words=0, test_code=0, test_docstring=0,
+) -> dict:
     synthetic = CommentMetrics()
     synthetic.comment_words["non_test"] = words
     synthetic.line_counts["non_test"].update(code=code, docstring=docstring, unclassified=unclassified)
+    synthetic.comment_words["test"] = test_words
+    synthetic.line_counts["test"].update(code=test_code, docstring=test_docstring)
     synthetic.python_files_ast_rejected = ast_rejected
     synthetic.non_file_entries = non_file
     synthetic.undecodable_files = undecodable
@@ -89,6 +96,85 @@ class TestThePrimaryOutcome:
 
         assert re.fullmatch(r"paired difference toolkit - bare: -?\d+\.\d{4}, 95% interval \[-?\d+\.\d{4}, -?\d+\.\d{4}\]", line)
 
+    def test_each_arms_pooled_ratio_the_sensitivity_mean_and_the_run_spread_are_printed(self, campaign):
+        campaign.add_block(
+            "small",
+            record("small", "toolkit", run_metrics=metrics(words=40, code=2)),
+            record("small", "bare", run_metrics=metrics(words=0, code=2)),
+        )
+        campaign.add_block(
+            "large",
+            record("large", "toolkit", run_metrics=metrics(words=5, code=98)),
+            record("large", "toolkit", run_index=1, run_metrics=metrics(words=15, code=98)),
+            record("large", "bare", run_metrics=metrics(words=0, code=98)),
+        )
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  toolkit words per code line:") == pytest.approx(0.5)
+        assert number_after(lines, "  bare words per code line:") == pytest.approx(0.0)
+        assert number_after(lines, "paired difference toolkit - bare:") == pytest.approx(0.5)
+        assert number_after(lines, "  sensitivity, unweighted mean of per-task differences:") == pytest.approx(
+            (40 / 2 + 10 / 98) / 2, abs=1e-4,
+        )
+        assert number_after(lines, "    toolkit:") == pytest.approx(statistics.stdev([5 / 98, 15 / 98]), abs=1e-4)
+        toolkit_spread_line = next(line for line in lines if line.startswith("    toolkit: "))
+        assert toolkit_spread_line.endswith(" over 1 paired tasks with two or more runs that added code")
+        assert "    bare: n/a over 0 paired tasks with two or more runs that added code" in lines
+
+    def test_an_arms_runs_of_equal_ratio_print_a_spread_of_zero(self, campaign):
+        """Kills: printing a measured spread of zero as n/a, from run_spread returning none or from formatting a falsy 0.0."""
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit", run_metrics=metrics(words=20, code=10)),
+            record("t1", "toolkit", run_index=1, run_metrics=metrics(words=20, code=10)),
+            record("t1", "bare"),
+        )
+
+        lines = campaign.summarize()
+
+        assert "    toolkit: 0.0000 over 1 paired tasks with two or more runs that added code" in lines
+
+    def test_each_difference_line_prints_its_own_interval(self, campaign):
+        """Only tasks of unequal code lines give the two lines different intervals."""
+        blocks = {"small": [
+            record("small", "toolkit", run_metrics=metrics(words=40, code=2)),
+            record("small", "bare", run_metrics=metrics(words=0, code=2)),
+        ]}
+        for task_id in ("large-1", "large-2", "large-3"):
+            blocks[task_id] = [
+                record(task_id, "toolkit", run_metrics=metrics(words=10, code=98)),
+                record(task_id, "bare", run_metrics=metrics(words=0, code=98)),
+            ]
+        for task_id, task_records in blocks.items():
+            campaign.add_block(task_id, *task_records)
+        outcome = summary.paired_outcome(blocks)
+        assert outcome.pooled_interval != outcome.unweighted_interval, "the fixture tells the two intervals apart"
+
+        lines = campaign.summarize()
+
+        def printed_interval(prefix: str) -> tuple[float, float]:
+            line = next(line for line in lines if line.startswith(prefix))
+            low, high = re.search(r"95% interval \[(-?\d+\.\d{4}), (-?\d+\.\d{4})\]", line).groups()
+            return float(low), float(high)
+
+        assert printed_interval("paired difference toolkit - bare:") == pytest.approx(outcome.pooled_interval, abs=1e-4)
+        assert printed_interval("  sensitivity, unweighted mean of per-task differences:") == pytest.approx(
+            outcome.unweighted_interval, abs=1e-4,
+        )
+
+    def test_a_campaign_with_no_paired_task_prints_each_figure_as_not_available(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare", ok=False, reason="timeout"))
+
+        lines = campaign.summarize()
+
+        assert "  toolkit words per code line: n/a" in lines
+        assert "  bare words per code line: n/a" in lines
+        assert "paired difference toolkit - bare: n/a" in lines
+        assert "  sensitivity, unweighted mean of per-task differences: n/a" in lines
+        assert "    toolkit: n/a over 0 paired tasks with two or more runs that added code" in lines
+        assert "    bare: n/a over 0 paired tasks with two or more runs that added code" in lines
+
 
 class TestThePairedOutcomeAsValues:
     def blocks(self, *differences_in_words):
@@ -105,7 +191,7 @@ class TestThePairedOutcomeAsValues:
         outcome = summary.paired_outcome(self.blocks(20, 30, 70))
 
         assert outcome.differences == {"t0": pytest.approx(2.0), "t1": pytest.approx(3.0), "t2": pytest.approx(7.0)}
-        assert outcome.mean == pytest.approx(4.0)
+        assert outcome.unweighted_mean == pytest.approx(4.0)
 
     def test_a_nonzero_bare_ratio_is_subtracted_and_a_two_run_bare_arm_is_a_ratio_of_sums(self):
         """Kills: dropping or adding the bare term, and averaging a two-run arm's per-run ratios."""
@@ -127,26 +213,136 @@ class TestThePairedOutcomeAsValues:
             "two-run-bare": pytest.approx(toolkit_ratio - bare_ratio),
             "one-run-bare": pytest.approx(30 / 10 - 9 / 6),
         }
-        assert outcome.mean == pytest.approx(((toolkit_ratio - bare_ratio) + (30 / 10 - 9 / 6)) / 2)
+        assert outcome.unweighted_mean == pytest.approx(((toolkit_ratio - bare_ratio) + (30 / 10 - 9 / 6)) / 2)
 
     def test_the_interval_of_two_paired_tasks_spans_exactly_their_two_differences(self):
         """Kills: a bootstrap statistic that ignores the resampled IDs, which would collapse the interval to the mean."""
         outcome = summary.paired_outcome(self.blocks(20, 30))
 
-        assert outcome.interval == (pytest.approx(2.0), pytest.approx(3.0))
+        assert outcome.unweighted_interval == (pytest.approx(2.0), pytest.approx(3.0))
+        assert outcome.pooled_interval == (pytest.approx(2.0), pytest.approx(3.0))
 
     def test_the_interval_of_several_tasks_lies_within_their_differences(self):
         outcome = summary.paired_outcome(self.blocks(20, 30, 70, 10))
 
-        low, high = outcome.interval
-        assert min(outcome.differences.values()) <= low < high <= max(outcome.differences.values())
+        for low, high in (outcome.unweighted_interval, outcome.pooled_interval):
+            assert min(outcome.differences.values()) <= low < high <= max(outcome.differences.values())
 
     def test_one_paired_task_has_no_interval(self):
         single = summary.paired_outcome(self.blocks(20))
         nothing = summary.paired_outcome({})
 
-        assert single.mean == pytest.approx(2.0) and single.interval is None
-        assert nothing.mean is None and nothing.interval is None and nothing.differences == {}
+        assert single.unweighted_mean == pytest.approx(2.0) and single.unweighted_interval is None
+        assert single.pooled_difference == pytest.approx(2.0) and single.pooled_interval is None
+        assert nothing.unweighted_mean is None and nothing.unweighted_interval is None and nothing.differences == {}
+        assert nothing.pooled_difference is None and nothing.pooled_interval is None and nothing.pooled_ratios == {}
+
+    def test_the_pooled_difference_gives_a_task_the_weight_of_its_code_lines(self):
+        """Kills: pooling as the mean of per-task differences, which the two-line task would dominate."""
+        outcome = summary.paired_outcome({
+            "small": [
+                record("small", "toolkit", run_metrics=metrics(words=40, code=2)),
+                record("small", "bare", run_metrics=metrics(words=1, code=2)),
+            ],
+            "large": [
+                record("large", "toolkit", run_metrics=metrics(words=10, code=98)),
+                record("large", "bare", run_metrics=metrics(words=4, code=48)),
+            ],
+        })
+
+        assert outcome.pooled_ratios == {"toolkit": pytest.approx(50 / 100), "bare": pytest.approx(5 / 50)}
+        assert outcome.pooled_difference == pytest.approx(50 / 100 - 5 / 50)
+        assert outcome.unweighted_mean == pytest.approx(((40 / 2 - 1 / 2) + (10 / 98 - 4 / 48)) / 2)
+
+    def test_a_task_with_more_valid_runs_has_no_more_weight_in_the_pooled_ratio(self):
+        """Kills: pooling a task's run sums instead of its run means."""
+        outcome = summary.paired_outcome({
+            "three-runs": [
+                *(record("three-runs", "toolkit", run_index=index, run_metrics=metrics(words=10, code=10)) for index in range(3)),
+                record("three-runs", "bare", run_metrics=metrics(words=0, code=10)),
+            ],
+            "one-run": [
+                record("one-run", "toolkit", run_metrics=metrics(words=0, code=10)),
+                record("one-run", "bare", run_metrics=metrics(words=0, code=10)),
+            ],
+        })
+
+        assert outcome.pooled_ratios["toolkit"] == pytest.approx(10 / 20)
+
+    def test_a_tasks_counts_are_the_means_of_its_runs(self):
+        """Kills: a median over the runs, which three skewed runs tell from the mean."""
+        outcome = summary.paired_outcome({
+            "skewed": [
+                record("skewed", "toolkit", run_metrics=metrics(words=0, code=10)),
+                record("skewed", "toolkit", run_index=1, run_metrics=metrics(words=3, code=10)),
+                record("skewed", "toolkit", run_index=2, run_metrics=metrics(words=27, code=40)),
+                record("skewed", "bare", run_metrics=metrics(words=0, code=10)),
+            ],
+        })
+
+        assert outcome.pooled_ratios["toolkit"] == pytest.approx(10 / 20)
+
+    def test_a_missing_run_stays_out_of_its_tasks_mean_counts(self):
+        """Kills: dividing a task's counts by all of its runs, which would shrink its weight in the pooled ratio."""
+        outcome = summary.paired_outcome({
+            "one-missing": [
+                record("one-missing", "toolkit", run_metrics=metrics(words=10, code=10)),
+                record("one-missing", "toolkit", run_index=1, run_metrics=metrics(words=30, code=10)),
+                record("one-missing", "toolkit", run_index=2, ok=False, reason="timeout"),
+                record("one-missing", "bare", run_metrics=metrics(words=0, code=10)),
+            ],
+            "one-run": [
+                record("one-run", "toolkit", run_metrics=metrics(words=0, code=20)),
+                record("one-run", "bare", run_metrics=metrics(words=0, code=20)),
+            ],
+        })
+
+        assert outcome.pooled_ratios["toolkit"] == pytest.approx(20 / 30)
+
+    def test_each_interval_resamples_its_own_statistic(self):
+        """Kills: swapping the two bootstrap statistics, which only tasks of unequal code lines tell apart."""
+        blocks = {
+            "small": [
+                record("small", "toolkit", run_metrics=metrics(words=40, code=2)),
+                record("small", "bare", run_metrics=metrics(words=0, code=2)),
+            ],
+        }
+        for task_id in ("large-1", "large-2", "large-3"):
+            blocks[task_id] = [
+                record(task_id, "toolkit", run_metrics=metrics(words=10, code=98)),
+                record(task_id, "bare", run_metrics=metrics(words=0, code=98)),
+            ]
+
+        outcome = summary.paired_outcome(blocks)
+
+        assert outcome.pooled_interval[1] < 2 < outcome.unweighted_interval[1]
+
+    def test_test_scope_counts_stay_out_of_every_figure(self):
+        """Kills: reading a run's words or code lines as the sum of its test and non-test scopes."""
+        outcome = summary.paired_outcome({
+            "two-toolkit-runs": [
+                record("two-toolkit-runs", "toolkit", run_metrics=metrics(words=10, code=10, test_words=500, test_code=300)),
+                record(
+                    "two-toolkit-runs", "toolkit", run_index=1,
+                    run_metrics=metrics(words=30, code=10, test_words=700, test_code=100),
+                ),
+                record("two-toolkit-runs", "bare", run_metrics=metrics(words=2, code=10, test_words=40, test_code=60)),
+            ],
+            "one-run-each": [
+                record("one-run-each", "toolkit", run_metrics=metrics(words=6, code=20, test_words=90, test_code=50)),
+                record("one-run-each", "bare", run_metrics=metrics(words=4, code=20, test_words=30, test_code=5)),
+            ],
+        })
+
+        assert outcome.pooled_ratios == {
+            "toolkit": pytest.approx((20 + 6) / (10 + 20)), "bare": pytest.approx((2 + 4) / (10 + 20)),
+        }
+        assert outcome.pooled_difference == pytest.approx((20 + 6) / (10 + 20) - (2 + 4) / (10 + 20))
+        assert outcome.differences == {
+            "two-toolkit-runs": pytest.approx(20 / 10 - 2 / 10), "one-run-each": pytest.approx(6 / 20 - 4 / 20),
+        }
+        assert outcome.unweighted_mean == pytest.approx(((20 / 10 - 2 / 10) + (6 / 20 - 4 / 20)) / 2)
+        assert outcome.run_spreads["toolkit"] == summary.RunSpread(pytest.approx(statistics.stdev([10 / 10, 30 / 10])), 1)
 
     def test_each_exclusion_is_tallied_with_its_records(self):
         blocks = {
@@ -167,6 +363,76 @@ class TestThePairedOutcomeAsValues:
         assert [run.missing_reason for run in outcome.excluded_records["toolkit"]] == ["timeout"]
         assert [run.missing_reason for run in outcome.excluded_records["bare"]] == ["arm-leak"]
         assert sorted(run.missing_reason for run in outcome.excluded_records["both"]) == ["result-error", "timeout"]
+
+
+class TestTheRunSpread:
+    def runs(self, task_id, *words_and_code, arm="toolkit"):
+        return [
+            record(task_id, arm, run_index=index, run_metrics=metrics(words=words, code=code))
+            for index, (words, code) in enumerate(words_and_code)
+        ]
+
+    def test_it_pools_each_tasks_variance_by_its_degrees_of_freedom(self):
+        spread = summary.run_spread([
+            self.runs("t1", (10, 10), (30, 10)),
+            self.runs("t2", (10, 10), (20, 10), (60, 10)),
+        ])
+
+        assert spread.task_count == 2
+        assert spread.standard_deviation == pytest.approx(math.sqrt((2.0 * 1 + 7.0 * 2) / 3))
+
+    def test_a_task_with_fewer_than_two_runs_holding_code_adds_nothing(self):
+        spread = summary.run_spread([
+            self.runs("one-run", (10, 10)),
+            self.runs("one-run-with-code", (10, 10), (30, 0)),
+        ])
+
+        assert spread == summary.RunSpread(None, 0)
+
+    def test_a_missing_run_is_left_out(self):
+        runs = [*self.runs("t1", (10, 10), (30, 10)), record("t1", "toolkit", run_index=2, ok=False, reason="timeout")]
+
+        assert summary.run_spread([runs]).standard_deviation == pytest.approx(math.sqrt(2.0))
+
+    @pytest.mark.parametrize(("arm_with_runs", "other_arm"), [("toolkit", "bare"), ("bare", "toolkit")])
+    @pytest.mark.parametrize(
+        "other_arm_run",
+        [{"ok": False, "reason": "timeout"}, {"run_metrics": metrics(words=0, code=0)}],
+        ids=["no-valid-run", "no-code-line"],
+    )
+    def test_the_paired_outcome_reports_it_per_arm_over_the_paired_tasks_only(self, arm_with_runs, other_arm, other_arm_run):
+        outcome = summary.paired_outcome({
+            "paired": [*self.runs("paired", (10, 10), (30, 10), arm=arm_with_runs), record("paired", other_arm)],
+            "unpaired": [
+                *self.runs("unpaired", (0, 10), (90, 10), arm=arm_with_runs),
+                record("unpaired", other_arm, **other_arm_run),
+            ],
+        })
+
+        assert list(outcome.differences) == ["paired"]
+        assert outcome.run_spreads[arm_with_runs] == summary.RunSpread(pytest.approx(math.sqrt(2.0)), 1)
+        assert outcome.run_spreads[other_arm] == summary.RunSpread(None, 0)
+
+    def test_it_is_the_spread_of_each_runs_own_ratio(self):
+        """Kills: dividing the spread of a task's words by the task's mean code lines."""
+        spread = summary.run_spread([self.runs("t1", (10, 10), (30, 20))])
+
+        assert spread.standard_deviation == pytest.approx(statistics.stdev([10 / 10, 30 / 20]))
+
+    def test_runs_of_equal_ratio_give_a_spread_of_zero_not_an_unavailable_one(self):
+        """Kills: guarding the unavailable spread on the summed squared deviations, not the degrees of freedom."""
+        spread = summary.run_spread([self.runs("t1", (20, 10), (20, 10))])
+
+        assert spread == summary.RunSpread(pytest.approx(0.0), 1)
+
+    def test_a_run_with_no_code_line_adds_no_degree_of_freedom(self):
+        spread = summary.run_spread([
+            self.runs("one-run-without-code", (10, 10), (30, 10), (5, 0)),
+            self.runs("t2", (20, 10), (20, 10), (20, 10)),
+        ])
+
+        assert spread.task_count == 2
+        assert spread.standard_deviation == pytest.approx(math.sqrt((2.0 * 1 + 0.0 * 2) / 3))
 
 
 class TestTheExclusionLine:
@@ -326,6 +592,53 @@ class TestSecondaryAndDiagnostics:
         assert "bare: unclassified-line share 0.0278," in text, "3 of 108 lines"
         assert "non_file_entries 1" in text and "undecodable_files 4" in text and "ignored_paths 7" in text
 
+    def test_an_arms_docstring_rate_pools_each_complete_tasks_mean_counts_over_its_valid_runs(self, campaign):
+        """Kills: summing runs across tasks, a mean of task rates, counting the missing run, and dropping the unpaired task."""
+        campaign.add_block(
+            "varied-runs",
+            record("varied-runs", "toolkit", run_metrics=metrics(code=10, docstring=2)),
+            record("varied-runs", "toolkit", run_index=1, run_metrics=metrics(code=30, docstring=18)),
+            record("varied-runs", "toolkit", run_index=2, run_metrics=metrics(code=80, docstring=40)),
+            record("varied-runs", "bare"),
+        )
+        campaign.add_block(
+            "unpaired-with-a-missing-run",
+            record("unpaired-with-a-missing-run", "toolkit", run_metrics=metrics(code=60, docstring=6)),
+            record("unpaired-with-a-missing-run", "toolkit", run_index=1, ok=False, reason="timeout"),
+            record("unpaired-with-a-missing-run", "bare", ok=False, reason="timeout"),
+        )
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(100 * (20 + 6) / (40 + 60))
+        assert "  bare docstring lines per 100 code lines: 0.0000" in lines
+
+    def test_test_scope_counts_stay_out_of_an_arms_docstring_rate(self, campaign):
+        """Kills: reading a run's docstring or code lines as the sum of its test and non-test scopes."""
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit", run_metrics=metrics(code=10, docstring=2, test_code=100, test_docstring=50)),
+            record("t1", "toolkit", run_index=1, run_metrics=metrics(code=30, docstring=18, test_code=20, test_docstring=30)),
+            record("t1", "bare", run_metrics=metrics(code=100, docstring=5, test_code=900, test_docstring=400)),
+        )
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(100 * (2 + 18) / (10 + 30))
+        assert number_after(lines, "  bare docstring lines per 100 code lines:") == pytest.approx(100 * 5 / 100)
+
+    def test_an_arm_with_no_code_line_or_no_valid_run_has_no_docstring_rate(self, campaign):
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit", run_metrics=metrics(code=0, docstring=0)),
+            record("t1", "bare", ok=False, reason="timeout"),
+        )
+
+        lines = campaign.summarize()
+
+        assert "  toolkit docstring lines per 100 code lines: n/a" in lines
+        assert "  bare docstring lines per 100 code lines: n/a" in lines
+
     def test_a_missing_run_still_counts_its_denials_and_ignored_paths(self, campaign):
         """The two counts are diagnostics of a run that went wrong, which a missing run is the likeliest to be."""
         campaign.add_block(
@@ -341,7 +654,7 @@ class TestSecondaryAndDiagnostics:
         assert "runs with a permission-rule denial 1," in bare_line
         assert "ignored_paths 3," in bare_line
 
-    def test_a_run_with_no_non_test_code_line_enters_its_tasks_sums(self, campaign):
+    def test_a_run_with_no_non_test_code_line_enters_its_tasks_counts(self, campaign):
         campaign.add_block(
             "t1",
             record("t1", "toolkit", run_metrics=metrics(words=10, code=10)),
@@ -393,13 +706,20 @@ class TestAnUnavailableReferenceNamesItsCause:
 
 
 class TestAReadableReferenceIsReportedWithoutAWarning:
-    def reference_task(self, *, code, docstring) -> tasks.ReplayTask:
-        source_repo, commit = "/synthetic/source-repo", "a" * 40
+    def reference_task(
+        self, *, code, docstring, words=10, commit="a" * 40, test_words=0, test_code=0, test_docstring=0,
+    ) -> tasks.ReplayTask:
+        source_repo = "/synthetic/source-repo"
         return tasks.ReplayTask(
             id=tasks.make_task_id(Path(source_repo), commit), source_repo=source_repo, base_commit="b" * 40, commit=commit,
             brief="synthetic brief", changed_paths=("src/app.py",), author_email="author@example.invalid",
             committer_email="committer@example.invalid",
-            reference_metrics=CommentMetrics.from_dict(metrics(code=code, docstring=docstring)),
+            reference_metrics=CommentMetrics.from_dict(
+                metrics(
+                    words=words, code=code, docstring=docstring,
+                    test_words=test_words, test_code=test_code, test_docstring=test_docstring,
+                ),
+            ),
             base_density=None, base_tree_bytes=0, base_tree_entries=0,
         )
 
@@ -419,6 +739,57 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
         assert number_after(lines, "  reference (the merged commits) docstring lines per 100 code lines:") == pytest.approx(
             expected_rate,
         )
+        assert not any("reference unavailable" in line for line in lines)
+
+    def test_the_primary_outcome_prints_the_merged_commits_pooled_ratio_over_the_paired_tasks(self, campaign):
+        """Kills: a docstring-line numerator, a mean of per-task ratios, and counting an unpaired task's commit."""
+        small = self.reference_task(code=40, docstring=3, words=10)
+        large = self.reference_task(code=160, docstring=5, words=90, commit="c" * 40)
+        unpaired = self.reference_task(code=10, docstring=1, words=500, commit="d" * 40)
+        task_set = (small, large, unpaired)
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", list(task_set))
+        (campaign.dir / "manifest.json").write_text(
+            json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash(task_set)}),
+        )
+        for task in (small, large):
+            campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare"))
+        campaign.add_block(
+            unpaired.id, record(unpaired.id, "toolkit"), record(unpaired.id, "bare", ok=False, reason="timeout"),
+        )
+
+        lines = campaign.summarize()
+
+        reference_ratio = number_after(lines, "  reference (the merged commits) words per code line:")
+        assert reference_ratio == pytest.approx((10 + 90) / (40 + 160))
+        assert not any("reference unavailable" in line for line in lines)
+
+    def test_a_merged_commits_test_scope_counts_stay_out_of_both_reference_figures(self, campaign):
+        """Kills: reading the reference's words, code lines or docstring lines as the sum of its test and non-test scopes."""
+        task = self.reference_task(code=40, docstring=10, words=10, test_words=300, test_code=200, test_docstring=60)
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
+        (campaign.dir / "manifest.json").write_text(
+            json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
+        )
+        campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare"))
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  reference (the merged commits) words per code line:") == pytest.approx(10 / 40)
+        assert number_after(lines, "  reference (the merged commits) docstring lines per 100 code lines:") == pytest.approx(
+            100 * 10 / 40,
+        )
+
+    def test_an_unpaired_tasks_merged_commit_stays_out_of_the_pooled_reference(self, campaign):
+        task = self.reference_task(code=40, docstring=10)
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
+        (campaign.dir / "manifest.json").write_text(
+            json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
+        )
+        campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare", ok=False, reason="timeout"))
+
+        lines = campaign.summarize()
+
+        assert "  reference (the merged commits) words per code line: n/a" in lines
         assert not any("reference unavailable" in line for line in lines)
 
     @pytest.mark.parametrize(
@@ -441,6 +812,7 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
 
         assert f"  reference unavailable: {reason}" in lines
         assert "  reference (the merged commits) docstring lines per 100 code lines: n/a" in lines
+        assert "  reference (the merged commits) words per code line: n/a" in lines
         assert any(line.startswith("paired difference toolkit - bare:") for line in lines)
         assert "paired 1 of 1 complete tasks" in lines
 

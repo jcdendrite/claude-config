@@ -1488,6 +1488,20 @@ tasks. A null difference shows only that the writing agent's instructions leave
 its first draft's comment density unchanged on these tasks: no arm runs the
 review loop through which the toolkit also shapes comments.
 
+Reading `summarize`'s primary outcome:
+
+- Each arm's figure is the sum over paired tasks of the task's mean words per
+  valid run, divided by the sum of its mean code lines per valid run. A task
+  therefore weighs by its code lines, not by how many of its runs were valid.
+- The reference line is the same ratio for the merged commits of the paired
+  tasks.
+- The sensitivity line is the unweighted mean of the per-task differences. A
+  task whose runs add few code lines on average can dominate it, so a gap
+  between it and the paired difference points at such a task.
+- The run-to-run spread is the standard deviation of one run's ratio within a
+  task, pooled over the paired tasks, per arm. It shows how far one run's ratio
+  moves with no change of arm. It needs `--k 2` or more.
+
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
 repository root's `README.md` § "Requirements", git 2.32 or newer,
