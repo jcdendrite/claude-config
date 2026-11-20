@@ -48,11 +48,10 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 # stowed path (agents/, hooks/, rules/, scripts/, skills/), which resolves
 # identically under every account; the directory alternation mirrors
 # enforce-marker-script-shape.sh's own _marker_shape_match glob pair.
-# worktree_required and autonomous_shipping are deliberately excluded —
-# those two config-keys.psv keys carry resolution: config-dir-or-home, a
-# union with the literal $HOME/.claude location rather than a fully
-# migrated-away path (see docs/config-file.md and README's "Worktree
-# enforcement").
+# worktree_required is deliberately excluded — that config-keys.psv key
+# carries resolution: config-dir-or-home, a union with the literal
+# $HOME/.claude location rather than a fully migrated-away path (see
+# docs/config-file.md and README's "Worktree enforcement").
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
     r"(handoffs/|briefs/|issue-triage/|plans/|projects/|sessions/"
