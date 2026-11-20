@@ -111,7 +111,7 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
   - It touches the file's history, followed across renames.
 - The program prints counts only.
 - The ceiling-edit load is the number of distinct commits in the window that changed some offender's length, meaning its added and deleted line counts differ. A pure rename does not count.
-- Merges to `main` are squashes, so a commit there is roughly a PR.
+- The window holds no merge commit and every commit subject in it ends with a pull-request number, so a commit there is roughly a PR.
 
 **Verdict rule.** Every row gets one verdict.
 - **Structural exception.** Splitting is blocked by something outside the file's current state, and the reason cites a `file:line`, an issue, or the engineer's ruling on this report's PR. Three kinds qualify:
@@ -166,9 +166,9 @@ These files are over the limit and stay over it, each for a cited reason. Rows r
 
 | Path | Physical | Non-comment | 90-day commits | Subject | Seams | Verdict | Tracking or reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `claude/.claude/hooks/_lib.sh` | 6233 | ≥2918 | 74 | Shared library every hook sources, holding command parsing, push parsing, worktree locks, resume context and review helpers | In-file sections by concern and consumer-sourced siblings, both sequenced by #1117; no further seam is assessed here | structural exception | In-file reorganization and the gate for moving any cluster are recorded in #1117, which governs this file's shape and ceiling. |
-| `claude/.claude/tests/helpers.py` | 4124 | 2477 | 52 | Shared test helpers imported by hook, script and skill test trees: path constants, parsers, hook runners, repo builders, marker writers and shims | Families named in #1015 (path constants, parsers, `run_hook` runners, `init_git_repo` builders, `install_shell_exec_guard` shims, marker writers); the engineer rules where #1015 and #1396 differ | structural exception | #1015 declines decomposition until its data and mapping gates hold, and GH-1119 defers to it; #1396 proposes decomposing the file, so the two issues disagree and the engineer rules. |
-| `claude/.claude/scripts/cursor-adapter/hook-shim.py` | 1897 | 1401 | 3 | Cursor hook shim that translates one Cursor payload into an unchanged Claude hook run and maps the output back | Sections inside the file are payload parsing (`parse_strict_json`), translation (`build_claude_payload`), output mapping (`map_hook_output`), the hook run (`run_wrapped_hook`) and the self-check (`self_check`); none can move to a sibling file | structural exception | Generated commands run it as `python3 -I -S hook-shim.py`, so no neighbouring module reaches it (`docs/scripts.md:580`, `claude/.claude/scripts/cursor-adapter/hook-shim.py:9`). |
+| `claude/.claude/hooks/_lib.sh` | 6233 | ≥2918 | 74 | Shared library every hook sources, holding command parsing, push parsing, worktree locks, resume context and review helpers | In-file sections by concern and consumer-sourced siblings, both sequenced by #1117 | structural exception | In-file reorganization and the gate for moving any cluster are recorded in #1117, which governs this file's shape and ceiling. No further seam is assessed here. |
+| `claude/.claude/tests/helpers.py` | 4124 | 2477 | 52 | Shared test helpers imported by hook, script and skill test trees: path constants, parsers, hook runners, repo builders, marker writers and shims | Families named in #1015 (path constants, parsers, `run_hook` runners, `init_git_repo` builders, `install_shell_exec_guard` shims, marker writers) | structural exception | #1015 declines decomposition until its data and mapping gates hold, and GH-1119 defers to it. #1396 proposes decomposing the file. The two issues disagree, so the engineer rules. |
+| `claude/.claude/scripts/cursor-adapter/hook-shim.py` | 1897 | 1401 | 3 | Cursor hook shim that translates one Cursor payload into an unchanged Claude hook run and maps the output back | Sections inside the file are payload parsing (`parse_strict_json`), translation (`build_claude_payload`), output mapping (`map_hook_output`), the hook run (`run_wrapped_hook`) and the self-check (`self_check`) | structural exception | Generated commands run it as `python3 -I -S hook-shim.py`, so no neighbouring module reaches it (`docs/scripts.md:580`, `claude/.claude/scripts/cursor-adapter/hook-shim.py:9`). |
 
 ## Split pending
 
@@ -339,7 +339,7 @@ These files sit at 900 to 1,000 physical lines, so one more change may cross the
 
 ## Appendix
 
-The measuring program, saved as `measure.py` and run as `python3 measure.py ab85a627` from a checkout of the repository. Python 3.12 changed how `tokenize` splits f-strings, so another interpreter may print different non-comment counts.
+The measuring program, saved as `measure.py` and run as `python3 measure.py ab85a627` from a checkout of the repository. Python 3.12 changed how `tokenize` splits f-strings (PEP 701), so another interpreter may print different non-comment counts.
 
 ~~~python
 """Print code-file size measurements for one commit as tab-separated records.
