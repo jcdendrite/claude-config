@@ -1505,6 +1505,15 @@ Reading `summarize`'s primary outcome:
 A paired difference is meaningful when the `toolkit` arm's figure is at least
 20% above or below the `bare` arm's.
 
+`summarize` also reports a secondary outcome, Python docstring lines per 100
+added non-test code lines. It covers only the tasks the primary difference
+pairs, so a task with no valid run in one arm enters neither arm's rate. It
+prints each arm's rate pooled over the paired tasks, the merged commits'
+(reference) rate over the same tasks, and for each paired task the `toolkit` and
+`bare` rates. A task's rate is its valid runs' mean docstring lines over their
+mean code lines, and the pooled rate weights each task by its code lines. The
+rates carry no interval.
+
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
 repository root's `README.md` § "Requirements", git 2.32 or newer,
@@ -1578,6 +1587,13 @@ once the set changes.
   limit below 1 is refused.
 - `--max-base-mb` bounds the base tree's blobs, in units of 10^6 bytes, and
   `--max-base-entries` bounds its entry count. They default to 100 and 12,500.
+- A task's fixture drops every `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`,
+  the root `.claude` directory and the root `.mcp.json`, each matched
+  case-insensitively. A `.claude` directory below the root keeps its `scripts`
+  subdirectory and loses every other entry, so a commit that changes only files
+  under `claude/.claude/scripts/` stays a task. A `.claude` nested under a kept
+  `scripts` subdirectory goes in full. A changed path the fixture drops does not
+  count as a task's changed path.
 - `tasks` prints the kept and skipped counts by reason, the largest kept tasks
   by base-tree size and by entry count, and every raw author and committer
   identity among the commits examined, so you can see whom the trust list
@@ -1759,6 +1775,28 @@ The `campaign <id>` line, the uncharged-attempts line, a resume's spend line,
 the ceiling line and each progress line are flushed as they print, so a
 detached run's redirected output shows them as they happen.
 
+The `campaign <id>` line ends with the runner commit, which is the `HEAD` of the
+checkout the bench's code runs from, not the config checkout. It adds
+`with uncommitted changes under evals/` when `git status` lists a change or an
+untracked, unignored file there. `summarize` prints the same clause on its
+`campaign '<id>'` line. The runner commit is recorded and never compared:
+
+- The manifest holds it as `runner_commit` and `runner_dirty` from the first
+  start, and each run record holds the reading its block began under.
+- A new campaign prints this checkout's reading. A resume prints the manifest's,
+  and adds this checkout's reading when it differs.
+- `summarize` names every distinct reading across the manifest and the run
+  records, with the number of records at each, when they disagree. Records
+  with no reading are listed as `no runner reading` once any other reading
+  exists, so a campaign that mixes the two never prints one lone commit.
+- An edit to `evals/` between a start and a resume halts nothing.
+- A manifest written before these fields existed resumes and prints
+  `runner commit not recorded`.
+- A reading that git could not produce is null in the manifest and record, and
+  prints as unreadable.
+- The flag sees only `evals/`, so an edit elsewhere in the checkout does not set
+  it.
+
 After each block `run` prints one progress line: the task, each arm's `ok` and
 `missing` counts, the arms with no valid run and their reasons, the tasks
 dropped per arm since this invocation started, the block's spend, and the
@@ -1839,6 +1877,16 @@ missing with its reason.
     `arm-leak` and `fixture-instruction-load`.
   - `result-error`, `budget` and `api-error-final-record` count as reaching the
     end.
+- A run whose transcript's last text block is blank or absent is not a failure
+  here, unlike a review bench run's `empty-findings`, because a replay run's
+  deliverable is the change it leaves in the tree:
+  - Its change is captured and measured as for any other valid run, it never
+    retries, and the record's `empty_final_text` flag is set.
+  - `summarize` counts these runs per arm in its diagnostics line.
+  - Every other check still applies, including `api-error-final-record`, whose
+    final record is an error message and not an empty turn.
+  - A run that narrated in an earlier turn and then ended on a tool-only or
+    thinking-only turn has a last text block, so its flag stays clear.
 
 ### Accepted residuals
 

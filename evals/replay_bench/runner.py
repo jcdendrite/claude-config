@@ -18,6 +18,7 @@ from replay_bench import tasks
 from replay_bench.account import Account
 from replay_bench.arms import ARMS
 from replay_bench.attempt import NO_RETRY_REASONS, AttemptResult, BlockContext, RunSettings, run_attempt
+from replay_bench.provenance import read_runner_provenance
 from replay_bench.records import ReplayRunRecord
 from replay_bench.spend import SpendAppendError
 
@@ -70,6 +71,8 @@ def _build_record(
         out_of_session_paths=list(final.out_of_session_paths),
         ignored_paths_count=final.capture.ignored_path_count if final.capture is not None else 0,
         ignored_paths=list(final.capture.ignored_paths) if final.capture is not None else [],
+        empty_final_text=final.empty_final_text, runner_commit=block.runner.commit,
+        runner_dirty=block.runner.has_uncommitted_changes,
     )
 
 
@@ -184,7 +187,7 @@ def run_block(
     checkout_root = checkout_root_for(account)
     environment = read_environment(checkout_root)
     environment_reference.require_match(environment, where=f"{task.id}'s block start")
-    block = BlockContext(task, account, environment, live_checkout_roots_for(task))
+    block = BlockContext(task, account, environment, live_checkout_roots_for(task), read_runner_provenance())
     plan = review_runner.build_block_plan(task.id, arm_names, k, seed)
 
     def run_one(arm_and_index: tuple[str, int]) -> RunOutcome:

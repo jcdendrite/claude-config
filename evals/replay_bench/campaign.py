@@ -19,6 +19,7 @@ from replay_bench import tasks as tasks_mod
 from replay_bench.account import Account
 from replay_bench.attempt import Launch, RunSettings
 from replay_bench.checks import INSTRUMENT_REASONS
+from replay_bench.provenance import NO_READING, RunnerProvenance, describe, describe_resume, read_runner_provenance
 from replay_bench.runner import BlockOutcome, checkout_root_for, read_environment, run_block
 from replay_bench.spend import SpendAppendError, SpendFile
 
@@ -33,6 +34,8 @@ _DISCARDED_BLOCK_TEXT = (
     "the block is not marked complete, so summarize leaves it out of the arm counts and the paired difference, "
     "and a resume reruns the block and pays for it again"
 )
+# `runner_commit` and `runner_dirty` are recorded in the manifest and deliberately not compared, so a manifest
+# that lacks them still resumes.
 _MANIFEST_COMPARED_FIELDS = ("task_set_hash", "arms", "k", "seed", "model_id", "budget_cap_usd", "timeout_s")
 
 
@@ -71,6 +74,7 @@ def block_ceiling_usd(config: CampaignConfig) -> float:
 
 def _manifest_for(
     config: CampaignConfig, accounts_by_repo: Mapping[str, Account], readings: Mapping[str, review_runner.EnvironmentRecord],
+    runner_provenance: RunnerProvenance,
 ) -> dict:
     return {
         "task_set_hash": task_set_hash(config.tasks), "tasks_name": config.tasks_name, "arms": list(config.arm_names),
@@ -81,7 +85,24 @@ def _manifest_for(
             key: {"cli_version": reading.cli_version, "ambient_config_commit": reading.ambient_config_commit}
             for key, reading in readings.items()
         },
+        **runner_provenance.manifest_fields(),
     }
+
+
+def runner_clause_for(campaign_dir: Path) -> str:
+    """What the `campaign <id>` line says of the runner: this checkout's reading for a campaign with no manifest yet,
+    and for a resume the manifest's, plus this checkout's when it differs."""
+    manifest_path = campaign_dir / MANIFEST_NAME
+    if not manifest_path.exists():
+        return describe(read_runner_provenance())
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return describe(None)
+    manifest_reading = RunnerProvenance.from_manifest(manifest) if isinstance(manifest, dict) else None
+    if manifest_reading is None:
+        return describe(None)
+    return describe_resume(manifest_reading, read_runner_provenance())
 
 
 def _check_manifest(manifest: dict, expected: dict, *, path: Path) -> None:
@@ -202,7 +223,8 @@ def run_campaign(
         key: read_environment(checkout_root_for(account))
         for key, account in accounts.items()
     }
-    expected_manifest = _manifest_for(config, accounts_by_repo, readings)
+    # A resume never compares the runner fields, so the probe waits until the lock shows a first start.
+    expected_manifest = _manifest_for(config, accounts_by_repo, readings, NO_READING)
     run_store = RunStore(campaign_dir / STORE_DIR_NAME)
     run_store.acquire_lock()
     try:
@@ -216,6 +238,8 @@ def run_campaign(
             except (OSError, ValueError) as exc:
                 raise HarnessInvalidatedError(f"{manifest_path}: cannot read the manifest: {exc}") from exc
             _check_manifest(manifest, expected_manifest, path=manifest_path)
+        else:
+            expected_manifest = {**expected_manifest, **read_runner_provenance().manifest_fields()}
         _refuse_without_smoke_pass(config, readings)
         return _run_locked(
             config, accounts, accounts_by_repo, readings, run_store, runner_environ, launch,

@@ -21,6 +21,7 @@ from review_bench.runner import HarnessInvalidatedError, RunStore
 from replay_bench import account as account_mod
 from replay_bench import checks, diffing, launch, tasks
 from replay_bench.arms import Arm
+from replay_bench.provenance import RunnerProvenance
 from replay_bench.render import safe_text
 from replay_bench.spend import SpendAppendError, SpendFile, SpendLine, is_usable_cost
 
@@ -77,6 +78,7 @@ class BlockContext:
     account: account_mod.Account
     environment: review_runner.EnvironmentRecord
     live_checkout_roots: tuple[Path, ...]
+    runner: RunnerProvenance
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,9 @@ class AttemptResult:
     fixture_build_s: float | None = None
     observed_model: str | None = None
     capture: diffing.ChangeCapture | None = None
+    # The transcript's last text block is blank or absent, so a text-less final turn after earlier narration leaves it
+    # False. A replay run's deliverable is the change it leaves in the tree.
+    empty_final_text: bool = False
     first_turn_prompt_size: int | None = None
     subagent_loads: Mapping = field(default_factory=dict)
     permission_denials: int = 0
@@ -347,8 +352,9 @@ def _evaluate_launched(
             agent_declared_tools=account.code_writer_tools, fixture_dir=fixture_dir,
             own_dirs=(fixture_dir, *own_session_paths), projects_root=projects_root,
             own_session_paths=own_session_paths, live_checkout_roots=block.live_checkout_roots,
-            changed_relpaths=task.changed_paths,
+            changed_relpaths=task.changed_paths, allow_empty_final_text=True,
         )
+    empty_final_text = validity.ok and not (validity.findings_text or "").strip()
 
     transcript = path_check = None
     if session_jsonl is not None:
@@ -404,6 +410,7 @@ def _evaluate_launched(
     return AttemptResult(
         reason=reason, detail=detail, session_id=session_id, completed=session_jsonl is not None and not timed_out,
         observed_model=validity.observed_model, capture=capture,
+        empty_final_text=empty_final_text,
         first_turn_prompt_size=transcript.first_turn_prompt_size if transcript is not None else None,
         subagent_loads=load_check.subagent_loads_by_class,
         permission_denials=transcript.permission_denials if transcript is not None else 0,

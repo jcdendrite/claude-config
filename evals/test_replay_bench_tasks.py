@@ -522,6 +522,26 @@ class TestSkippedCommits:
 
         assert _mine_one_task(repo).changed_paths == ("src/app.py",)
 
+    def test_a_commit_whose_only_changed_files_sit_under_a_nested_claude_scripts_directory_is_kept(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _change(repo, {"claude/.claude/scripts/tool.py": _app_with(12)})
+
+        task = _mine_one_task(repo)
+
+        assert task.changed_paths == ("claude/.claude/scripts/tool.py",)
+
+    def test_a_nested_claude_directory_keeps_only_its_scripts_paths_among_the_changed_paths(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _change(repo, {
+            "claude/.claude/scripts/tool.py": _app_with(12),
+            "claude/.claude/settings.json": "{}\n",
+            "claude/.claude/rules/r.md": "rules\n",
+            "claude/.claude/scripts/CLAUDE.md": "rules\n",
+            ".claude/scripts/root_tool.py": _app_with(12),
+        })
+
+        assert _mine_one_task(repo).changed_paths == ("claude/.claude/scripts/tool.py",)
+
     def test_a_commit_that_only_edits_pruned_paths_is_skipped_for_too_few_code_lines(self, tmp_path):
         repo = _make_repo(tmp_path, {"CLAUDE.md": "old\n"})
         _change(repo, {"CLAUDE.md": "new\n"})
@@ -1458,6 +1478,12 @@ class TestInnerPrompt:
         ("sub/.mcp.json/x.js", False),
         (".claude/settings.json", True), ("a/.Claude/agents/x.md", True), (".claude", False), ("sub/.claude", False),
         ("src/rules/x.md", False), ("agents/x.md", False), ("skills/x.md", False), (".claude-plugin/x.json", False),
+        ("claude/.claude/scripts/x.py", False), ("claude/.Claude/Scripts/sub/x.py", False),
+        ("claude/.claude/scripts/CLAUDE.md", True), ("claude/.claude/scripts/sub/agents.md", True),
+        ("claude/.claude/scripts/.claude/y", True), ("claude/.claude/scripts/sub/.claude/scripts/y.py", True),
+        ("claude/.claude/settings.json", True), ("claude/.claude/rules/r.md", True), ("claude/.claude/agents/a.md", True),
+        ("claude/.claude/hooks/h.sh", True), ("claude/.claude/scripts", True), ("claude/.claude/.claude/scripts/x.py", True),
+        (".claude/scripts/x.py", True), ("scripts/.claude/x.py", True), ("claude/scripts/x.py", False),
     ],
 )
 def test_is_pruned_path_matches_what_the_prune_removes(path, pruned):
@@ -1473,6 +1499,14 @@ _PRUNE_PARITY_ROWS = [
     (".claude", "file"), (".claude", "directory"), (".claude", "symlink"),
     ("pkg/.Claude", "file"), ("pkg/.Claude", "directory"), ("pkg/.Claude", "symlink"),
     (".claude/settings.json", "file"), ("a/.Claude/agents/x.md", "file"),
+    ("claude/.claude/scripts/x.py", "file"), ("claude/.claude/scripts/x.py", "symlink"),
+    ("claude/.claude/scripts/CLAUDE.md", "file"), ("claude/.claude/scripts/CLAUDE.md", "directory"),
+    ("claude/.claude/settings.json", "file"), ("claude/.claude/rules/r.md", "file"), ("claude/.claude/agents/a.md", "file"),
+    ("claude/.claude/hooks/h.sh", "file"), ("claude/.claude/hooks/h.sh", "symlink"),
+    (".claude/scripts/x.py", "file"), ("claude/.claude/scripts/.claude/y", "file"),
+    ("claude/.claude/scripts/.claude", "directory"), ("claude/.claude/scripts/.claude", "symlink"),
+    ("claude/.claude/scripts", "directory"), ("claude/.claude/scripts", "symlink"), ("claude/.claude/scripts", "file"),
+    ("claude/.Claude/Scripts/x.py", "file"),
     ("src/rules/x.md", "file"), ("agents/x.md", "file"), (".claude-plugin/x.json", "file"),
 ]
 
@@ -1527,6 +1561,44 @@ class TestPruneOnAPlainDirectory:
 
         with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="resolves outside"):
             tasks.prune_instruction_files(fixture)
+
+    def test_a_kept_nested_scripts_link_that_resolves_outside_the_fixture_makes_the_prune_raise(self, tmp_path):
+        """A nested `.claude/scripts` link survives the prune, so the realpath check is the only barrier."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        fixture = tmp_path / "fixture"
+        (fixture / "pkg" / ".claude").mkdir(parents=True)
+        os.symlink(outside, fixture / "pkg" / ".claude" / "scripts")
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="resolves outside"):
+            tasks.prune_instruction_files(fixture)
+
+    def test_a_link_under_a_kept_scripts_directory_that_resolves_outside_the_fixture_makes_the_prune_raise(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        fixture = tmp_path / "fixture"
+        (fixture / "pkg" / ".claude" / "scripts").mkdir(parents=True)
+        os.symlink(outside, fixture / "pkg" / ".claude" / "scripts" / "helper")
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="resolves outside"):
+            tasks.prune_instruction_files(fixture)
+
+    def test_links_inside_the_fixture_under_a_kept_scripts_directory_survive_the_prune(self, tmp_path):
+        fixture = tmp_path / "fixture"
+        (fixture / "pkg" / ".claude" / "scripts").mkdir(parents=True)
+        (fixture / "src").mkdir()
+        os.symlink("../../../src", fixture / "pkg" / ".claude" / "scripts" / "helper")
+        (fixture / "real-scripts").mkdir()
+        os.symlink("../../real-scripts", fixture / "pkg" / ".claude" / "linked-scripts")
+        (fixture / "pkg" / ".claude" / "scripts" / ".claude").mkdir()
+        (fixture / "pkg" / ".claude" / "settings.json").write_text("{}\n")
+
+        tasks.prune_instruction_files(fixture)
+
+        assert (fixture / "pkg" / ".claude" / "scripts" / "helper").is_symlink()
+        assert not (fixture / "pkg" / ".claude" / "scripts" / ".claude").exists()
+        assert not (fixture / "pkg" / ".claude" / "settings.json").exists()
+        assert not os.path.lexists(fixture / "pkg" / ".claude" / "linked-scripts")
 
     def test_symlink_loops_inside_the_fixture_pass_the_realpath_check(self, tmp_path):
         fixture = tmp_path / "fixture"
@@ -1590,6 +1662,8 @@ class TestBuildTaskFixture:
         [
             "CLAUDE.md", "claude.md", "CLAUDE.local.md", "claude.LOCAL.md", "AGENTS.md", "agents.md",
             ".mcp.json", ".MCP.JSON", ".Claude/settings.json", "sub/deep/.claude/agents/x.md", "sub/dir/CLAUDE.md",
+            ".claude/scripts/x.py", "claude/.claude/settings.json", "claude/.claude/rules/r.md", "claude/.claude/hooks/h.sh",
+            "claude/.claude/scripts/CLAUDE.md", "claude/.claude/scripts/.claude/y",
         ],
     )
     def test_each_pruned_name_is_absent_from_the_work_tree_and_the_fixture_commit(self, tmp_path, pruned_name):
@@ -1611,6 +1685,30 @@ class TestBuildTaskFixture:
         fixture, _baseline, _commit = _build_fixture(tmp_path, _mine_one_task(repo))
 
         assert set(lookalikes) <= set(_tracked_paths(fixture))
+
+    def test_a_nested_claude_directory_keeps_its_scripts_and_loses_every_other_entry(self, tmp_path):
+        repo = _make_source_repo(tmp_path, {
+            "claude/.claude/scripts/tool.py": "VALUE = 1\n",
+            "claude/.claude/scripts/lib/helper.py": "VALUE = 2\n",
+            "claude/.claude/settings.json": "{}\n",
+            "claude/.claude/rules/r.md": "rules\n",
+            "claude/.claude/agents/a.md": "agent\n",
+            "claude/.claude/skills/s/SKILL.md": "skill\n",
+            "claude/.claude/commands/c.md": "command\n",
+            "claude/.claude/hooks/h.sh": "hook\n",
+            "claude/.claude/plugins/p.json": "{}\n",
+            "claude/.claude/other.txt": "other\n",
+            "claude/.claude/scripts/CLAUDE.md": "rules\n",
+            "claude/.claude/scripts/.claude/y": "y\n",
+            "claude/docs/.claude/rules/r.md": "rules\n",
+        })
+        _change(repo)
+
+        fixture, _baseline, _commit = _build_fixture(tmp_path, _mine_one_task(repo))
+
+        tracked_under_nested_claude = {path for path in _tracked_paths(fixture) if path.startswith("claude/")}
+        assert tracked_under_nested_claude == {"claude/.claude/scripts/tool.py", "claude/.claude/scripts/lib/helper.py"}
+        assert not os.path.lexists(fixture / "claude" / "docs" / ".claude")
 
     def test_a_nested_claude_link_is_unlinked_and_an_in_tree_relative_link_stays(self, tmp_path):
         repo = _make_source_repo(

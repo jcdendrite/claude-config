@@ -55,6 +55,13 @@ class ReplayRunRecord:
     out_of_session_paths: list[str] = field(default_factory=list)
     ignored_paths_count: int = 0
     ignored_paths: list[str] = field(default_factory=list)
+    # The transcript's last text block is blank or absent, so a text-less final turn after earlier narration leaves it
+    # False; the run's change is measured all the same.
+    empty_final_text: bool = False
+    # The runner checkout's HEAD and whether `evals/` had uncommitted changes when the run's block began. None when
+    # unreadable, and in a record written before these fields existed.
+    runner_commit: str | None = None
+    runner_dirty: bool | None = None
 
     @property
     def is_ok(self) -> bool:

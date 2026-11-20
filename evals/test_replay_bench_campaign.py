@@ -24,6 +24,7 @@ from review_bench.runner import HarnessInvalidatedError, RunStore
 from test_replay_bench_runner_support import (
     MODEL_ID,
     READING,
+    RUNNER,
     Scenario,
     add_second_account,
     build_replay_world,
@@ -184,6 +185,9 @@ class TestACompletedCampaign:
                 "toolkit-0.json", "toolkit-0.diff", "bare-0.json", "bare-0.diff",
             }
         assert env.completed() == {task.id for task in env.world.tasks}
+        for task in env.world.tasks:
+            for record in records.read_block_records(env.campaign_dir, task.id):
+                assert (record.runner_commit, record.runner_dirty) == (RUNNER.commit, RUNNER.has_uncommitted_changes)
         printed = capsys.readouterr().out
         assert printed.count("arms with no valid run: none") == 2
         assert "cumulative $2.00 of $100.00" in printed
@@ -194,6 +198,91 @@ class TestACompletedCampaign:
         env.run(env.world.launch())
 
         assert "2 runs in 1 blocks; nominal ceiling $4.00" in capsys.readouterr().out
+
+
+class TestTheRunnerProvenanceInTheManifest:
+    @pytest.mark.parametrize("has_uncommitted_changes", [False, True])
+    def test_a_new_campaign_pins_the_runners_commit_and_dirty_flag(self, env, monkeypatch, has_uncommitted_changes):
+        env.world.tasks[:] = env.world.tasks[:1]
+        reading = dataclasses.replace(RUNNER, has_uncommitted_changes=has_uncommitted_changes)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: reading)
+
+        env.run(env.world.launch())
+
+        manifest = json.loads((env.campaign_dir / "manifest.json").read_text())
+        assert (manifest["runner_commit"], manifest["runner_dirty"]) == (RUNNER.commit, has_uncommitted_changes)
+
+    def test_a_resume_does_not_rewrite_the_pinned_provenance(self, env, monkeypatch):
+        assert env.run(env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, allow_early_stop=True) == 1
+        pinned = (env.campaign_dir / "manifest.json").read_text()
+        edited = dataclasses.replace(RUNNER, commit="edited-runner-commit", has_uncommitted_changes=True)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: edited)
+        monkeypatch.setattr(replay_runner, "read_runner_provenance", lambda: edited)
+
+        assert env.run(env.world.launch(), cumulative_stop_usd=100.0) == 0
+
+        assert (env.campaign_dir / "manifest.json").read_text() == pinned
+        readings_of_records = {
+            (record.runner_commit, record.runner_dirty)
+            for task in env.world.tasks for record in records.read_block_records(env.campaign_dir, task.id)
+        }
+        assert readings_of_records == {
+            (RUNNER.commit, RUNNER.has_uncommitted_changes), ("edited-runner-commit", True),
+        }, "each block records the state it ran under"
+
+
+class TestTheRunnerProbeOfACampaignStart:
+    def test_only_a_first_start_probes_the_runner_checkout(self, env, monkeypatch):
+        probes = []
+
+        def counting_probe():
+            probes.append(1)
+            return RUNNER
+
+        monkeypatch.setattr(campaign, "read_runner_provenance", counting_probe)
+        assert env.run(env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, allow_early_stop=True) == 1
+        assert len(probes) == 1
+
+        assert env.run(env.world.launch(), cumulative_stop_usd=100.0) == 0
+
+        assert len(probes) == 1, "run_campaign probes nothing on a resume; each block still reads its own provenance"
+
+
+class TestTheRunnerClauseOfTheCampaignLine:
+    def test_a_campaign_with_no_manifest_describes_this_checkout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
+
+        assert campaign.runner_clause_for(tmp_path / "absent") == f"runner commit {RUNNER.commit}"
+
+    def test_a_resume_at_the_recorded_reading_describes_it_once(self, pinned, monkeypatch):
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
+
+        assert campaign.runner_clause_for(pinned.manifest_path.parent) == f"runner commit {RUNNER.commit}"
+
+    def test_a_resume_at_another_reading_names_both_the_recorded_and_the_current_one(self, pinned, monkeypatch):
+        edited = dataclasses.replace(RUNNER, commit="edited-runner-commit", has_uncommitted_changes=True)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: edited)
+
+        assert campaign.runner_clause_for(pinned.manifest_path.parent) == (
+            f"runner commit {RUNNER.commit} at the first start; this resume runs "
+            "runner commit edited-runner-commit, with uncommitted changes under evals/"
+        )
+
+    @pytest.mark.parametrize(
+        "manifest_text",
+        [
+            pytest.param(lambda manifest: json.dumps(
+                {key: value for key, value in manifest.items() if not key.startswith("runner_")},
+            ), id="written-before-the-fields-existed"),
+            pytest.param(lambda manifest: "not json", id="unparseable"),
+            pytest.param(lambda manifest: "null", id="json-null"),
+            pytest.param(lambda manifest: "5", id="json-number"),
+        ],
+    )
+    def test_a_manifest_that_records_no_provenance_says_so(self, pinned, manifest_text):
+        pinned.manifest_path.write_text(manifest_text(json.loads(pinned.manifest_path.read_text())))
+
+        assert campaign.runner_clause_for(pinned.manifest_path.parent) == "runner commit not recorded"
 
 
 class BlockBufferedStream(io.StringIO):
@@ -438,7 +527,7 @@ class PinnedCampaign:
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
         self.manifest_path.parent.mkdir(parents=True)
         self.manifest_path.write_text(json.dumps(campaign._manifest_for(
-            self.config(), self.accounts, {self.account.key: READING},
+            self.config(), self.accounts, {self.account.key: READING}, RUNNER,
         )))
 
     def config(self, **overrides) -> campaign.CampaignConfig:
@@ -516,6 +605,24 @@ class TestAResumeAgainstThePinnedManifest:
     def test_a_resume_with_the_pinned_inputs_is_not_refused_on_the_manifest(self, pinned):
         """The control for the refusals above: with nothing changed the manifest check passes and the resume goes on,
         here to the smoke gate, which no smoke record passes."""
+        with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
+            pinned.resume()
+
+
+class TestAResumeOfAManifestWithoutRunnerProvenance:
+    def test_it_is_not_refused_on_the_missing_fields(self, pinned):
+        """A manifest written before the runner fields existed resumes: they are recorded, not compared."""
+        manifest = json.loads(pinned.manifest_path.read_text())
+        without_runner_fields = {key: value for key, value in manifest.items() if not key.startswith("runner_")}
+        pinned.manifest_path.write_text(json.dumps(without_runner_fields))
+
+        with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
+            pinned.resume()
+
+    def test_a_changed_runner_commit_is_not_refused_either(self, pinned, monkeypatch):
+        edited = dataclasses.replace(RUNNER, commit="edited-runner-commit", has_uncommitted_changes=True)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: edited)
+
         with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
             pinned.resume()
 

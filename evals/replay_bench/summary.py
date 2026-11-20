@@ -20,6 +20,7 @@ from replay_bench import records
 from replay_bench import tasks as tasks_mod
 from replay_bench.arms import BARE, TOOLKIT
 from replay_bench.campaign import CAMPAIGNS_DIR_NAME, MANIFEST_NAME, SPEND_NAME, STORE_DIR_NAME, task_set_hash
+from replay_bench.provenance import RunnerProvenance, describe_campaign
 from replay_bench.records import ReplayRunRecord
 from replay_bench.spend import SpendFile, is_usable_cost
 
@@ -152,10 +153,13 @@ def _docstring_rate(metrics_list: Sequence[dict]) -> float | None:
     return 100 * docstring / code if code else None
 
 
-def _arm_docstring_rate(arm_records_by_task: Iterable[Sequence[ReplayRunRecord]]) -> float | None:
-    ratio = _ratio_of_sums(
-        _mean_counts_per_run(arm_records, _run_docstring_lines) for arm_records in arm_records_by_task if _valid(arm_records)
-    )
+def _arm_docstring_counts(task_records: Sequence[ReplayRunRecord], arm_name: str) -> _ArmCounts:
+    arm_records = [record for record in task_records if record.arm == arm_name]
+    return _mean_counts_per_run(arm_records, _run_docstring_lines)
+
+
+def _docstring_rate_of_counts(task_counts: Iterable[_ArmCounts]) -> float | None:
+    ratio = _ratio_of_sums(task_counts)
     return None if ratio is None else 100 * ratio
 
 
@@ -260,7 +264,15 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
     all_records = [record for task_records in block_records.values() for record in task_records]
     _refuse_mixed_environments(all_records)
 
-    lines = [f"campaign {campaign_dir.name!r}: {len(complete_ids)} complete blocks, {incomplete_blocks} incomplete blocks"]
+    manifest, manifest_problem = _read_manifest(campaign_dir / MANIFEST_NAME)
+    runner_clause = describe_campaign(
+        RunnerProvenance.from_manifest(manifest),
+        (RunnerProvenance(record.runner_commit, record.runner_dirty) for record in all_records),
+    )
+    lines = [
+        f"campaign {campaign_dir.name!r}: {len(complete_ids)} complete blocks, {incomplete_blocks} incomplete blocks; "
+        f"{runner_clause}"
+    ]
     arm_names = sorted({record.arm for record in all_records})
     for arm_name in arm_names:
         arm_records = [record for record in all_records if record.arm == arm_name]
@@ -302,19 +314,26 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
         suffix = f" (missing reasons: {_format_reasons(_reasons(paired.excluded_records[key]))})" if key != "code" else ""
         lines.append(f"  excluded, {label}: {paired.excluded_counts[key]}{suffix}")
 
+    # The primary outcome's own pairs, so an arm's rate is not skewed by a task the other arm has no valid run for.
+    paired_ids = list(paired.differences)
     lines.append(
-        "secondary outcome: Python docstring lines per 100 added non-test code lines "
-        "(a task's counts are its valid runs' means)"
+        "secondary outcome: Python docstring lines per 100 added non-test code lines, over the paired tasks "
+        "of the primary outcome (a task's counts are its valid runs' means)"
     )
-    reference_rate = _docstring_rate([reference[task_id] for task_id in complete_ids if task_id in reference])
-    lines.append(f"  reference (the merged commits) docstring lines per 100 code lines: {_number(reference_rate)}")
+    reference_rate = _docstring_rate([reference[task_id] for task_id in paired_ids if task_id in reference])
+    lines.append(f"  reference (the merged commits), paired tasks pooled: {_number(reference_rate)}")
     if reference_problem:
         lines.append(f"  reference unavailable: {reference_problem}")
-    for arm_name in arm_names:
-        arm_rate = _arm_docstring_rate(
-            [record for record in task_records if record.arm == arm_name] for task_records in block_records.values()
+    for arm in (TOOLKIT, BARE):
+        pooled_rate = _docstring_rate_of_counts(
+            _arm_docstring_counts(block_records[task_id], arm.name) for task_id in paired_ids
         )
-        lines.append(f"  {arm_name} docstring lines per 100 code lines: {_number(arm_rate)}")
+        lines.append(f"  {arm.name}, paired tasks pooled: {_number(pooled_rate)}")
+    for task_id in paired_ids:
+        toolkit_rate, bare_rate = (
+            _docstring_rate_of_counts([_arm_docstring_counts(block_records[task_id], arm.name)]) for arm in (TOOLKIT, BARE)
+        )
+        lines.append(f"  paired task {task_id}: toolkit {_number(toolkit_rate)}, bare {_number(bare_rate)}")
 
     lines.append("diagnostics per arm:")
     for arm_name in arm_names:
@@ -328,6 +347,7 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
             f"python files ast.parse rejected {sum(r.metrics['python_files_ast_rejected'] for r in valid)}, "
             f"runs with a permission-rule denial {sum(1 for r in arm_records if r.permission_denials)}, "
             f"runs with no non-test code line {no_code_runs}, "
+            f"runs with an empty final text {sum(1 for r in arm_records if r.empty_final_text)}, "
             f"non_file_entries {sum(r.metrics['non_file_entries'] for r in valid)}, "
             f"ignored_paths {sum(r.ignored_paths_count for r in arm_records)}, "
             f"undecodable_files {sum(r.metrics['undecodable_files'] for r in valid)}"

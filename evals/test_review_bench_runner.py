@@ -169,7 +169,7 @@ def _evaluate(
     scenario_dir: Path, *, own_dirs: tuple[Path, ...] | None = None,
     live_checkout_roots: tuple[Path, ...] = (), changed_relpaths: tuple[str, ...] = (),
     agent_declared_tools: frozenset[str] = DECLARED_TOOLS, timed_out: bool = False,
-    fixture_dir: Path | None = None, fix_commit_relpaths: tuple[str, ...] = (),
+    fixture_dir: Path | None = None, fix_commit_relpaths: tuple[str, ...] = (), allow_empty_final_text: bool = False,
 ) -> runner.RunValidity:
     session_jsonl = scenario_dir / "session-1.jsonl"
     # A sibling of scenario_dir, not nested inside it, so a relative "."
@@ -182,7 +182,7 @@ def _evaluate(
         own_dirs=own_dirs if own_dirs is not None else (scenario_dir,),
         projects_root=projects_root, own_session_paths=_own_session_paths(scenario_dir),
         live_checkout_roots=live_checkout_roots, changed_relpaths=changed_relpaths,
-        fix_commit_relpaths=fix_commit_relpaths,
+        fix_commit_relpaths=fix_commit_relpaths, allow_empty_final_text=allow_empty_final_text,
     )
 
 
@@ -2346,6 +2346,71 @@ class TestApiErrorFinalRecord:
         assert attempt.record.missing_reason == runner.VALIDITY_FAIL_API_ERROR_FINAL_RECORD
         assert attempt.record.findings_text is None
         assert attempt.record.attempts == 2
+
+
+class TestAllowEmptyFinalText:
+    """`allow_empty_final_text` lifts only the empty-findings check, so every check that reads the transcript before
+    it still fails a run whose final text is blank."""
+
+    @staticmethod
+    def blank_the_final_text(scenario: Path) -> None:
+        _rewrite_records(
+            scenario / "session-1" / "subagents" / "agent-1.jsonl",
+            lambda block: {**block, "text": " "} if block.get("type") == "text" else block,
+        )
+
+    def test_a_blank_final_text_is_ok_with_an_empty_findings_text_when_allowed(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        self.blank_the_final_text(scenario)
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",), allow_empty_final_text=True)
+
+        assert result.ok is True
+        assert result.findings_text.strip() == ""
+
+    def test_a_blank_final_text_still_fails_as_empty_findings_by_default(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        self.blank_the_final_text(scenario)
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.failure_reason == runner.VALIDITY_FAIL_EMPTY_FINDINGS
+
+    def test_a_blank_final_text_does_not_hide_a_live_checkout_leak(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "live-checkout-leak")
+        self.blank_the_final_text(scenario)
+
+        result = _evaluate(
+            scenario, live_checkout_roots=(scenario,), changed_relpaths=("fake-live-checkout/changed_file.py",),
+            allow_empty_final_text=True,
+        )
+
+        assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    def test_a_blank_final_text_does_not_hide_a_config_dir_leak(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "out-of-session-read")
+        self.blank_the_final_text(scenario)
+
+        result = runner.evaluate_run_validity(
+            dispatcher_session_jsonl=scenario / "session-1.jsonl", stream_lines=SUCCESS_STREAM_LINES, timed_out=False,
+            expected_agent_name=AGENT_NAME, expected_inner_prompt=INNER_PROMPT, expected_model_id=MODEL_ID,
+            agent_declared_tools=DECLARED_TOOLS, fixture_dir=scenario, own_dirs=(scenario,),
+            projects_root=scenario / "unrelated-sibling", own_session_paths=_own_session_paths(scenario),
+            live_checkout_roots=(), changed_relpaths=(), allow_empty_final_text=True,
+        )
+
+        assert result.failure_reason == runner.VALIDITY_FAIL_CONFIG_DIR_LEAK
+
+    def test_a_blank_final_text_does_not_hide_an_api_error_final_record(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        self.blank_the_final_text(scenario)
+        _append_subagent_records(
+            scenario, _assistant_text_record(API_ERROR_TEXT, model=msmr.SYNTHETIC_MODEL_ID, isApiErrorMessage=True),
+        )
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",), allow_empty_final_text=True)
+
+        assert result.failure_reason == runner.VALIDITY_FAIL_API_ERROR_FINAL_RECORD
 
 
 def _result_event_line(**fields) -> bytes:

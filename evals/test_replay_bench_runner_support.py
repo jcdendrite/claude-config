@@ -17,9 +17,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from replay_bench import arms, attempt, tasks
+from replay_bench import arms, attempt, campaign, tasks
+from replay_bench import runner as replay_runner
 from replay_bench.account import Account
 from replay_bench.comment_metrics import CommentMetrics
+from replay_bench.provenance import RunnerProvenance
 from replay_bench.spend import SpendFile
 from review_bench import runner as review_runner
 from review_bench.runner import EnvironmentRecord, RunStore
@@ -42,6 +44,7 @@ AGENT_ID = "synthetic-agent-id"
 TOOLKIT_FIRST_TURN_SIZE = 6000
 BARE_FIRST_TURN_SIZE = 1000
 READING = EnvironmentRecord("2.1.322", "synthetic-commit")
+RUNNER = RunnerProvenance("synthetic-runner-commit", False)
 # A sleeping fake outlasts its timeout by far more than a loaded host can stall a spawn.
 SLEEP_PAST_TIMEOUT_S = 60
 SLEEP_REFUSAL_BOUND_S = 30
@@ -83,6 +86,12 @@ class Scenario:
     # Keys that replace the clean `result` event's, such as `is_error` or `terminal_reason`.
     result_event_fields: dict | None = None
     observed_model: str = MODEL_ID
+    # The text of the subagent's last message; "" writes a message with no text block.
+    final_text: str = "src/new_module.py"
+    # Text the subagent wrote before its first tool call, so a test can tell "the last message" from "any message".
+    narration: str = ""
+    # The last record is one Claude Code synthesized for an API failure.
+    api_error_final: bool = False
     # How a denied tool call is recorded: on the user entry or on the `tool_result_meta` block, the shapes
     # `checks.read_subagent_transcript` describes.
     denial_shape: str = ENTRY_DENIAL
@@ -270,9 +279,10 @@ def write_transcripts(
     entries: list[dict] = []
     for index, (name, tool_input, denied) in enumerate(tool_calls):
         tool_use_id = f"toolu_{index}"
+        narration_blocks = [{"type": "text", "text": scenario.narration}] if scenario.narration and index == 0 else []
         entries.append({"type": "assistant", "message": {
             "model": scenario.observed_model, "usage": usage,
-            "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": tool_input}],
+            "content": [*narration_blocks, {"type": "tool_use", "id": tool_use_id, "name": name, "input": tool_input}],
         }})
         result_block: dict = {"type": "tool_result", "tool_use_id": tool_use_id, "content": "synthetic"}
         result_entry: dict = {"type": "user", "message": {"content": [result_block]}}
@@ -281,9 +291,13 @@ def write_transcripts(
         elif denied:
             result_block["tool_result_meta"] = [{"non_execution_kind": "permission-rule"}]
         entries.append(result_entry)
-    entries.append({"type": "assistant", "message": {
-        "model": scenario.observed_model, "usage": usage, "content": [{"type": "text", "text": "src/new_module.py"}],
-    }})
+    final_content = [{"type": "text", "text": scenario.final_text}] if scenario.final_text else []
+    final_entry: dict = {"type": "assistant", "message": {
+        "model": scenario.observed_model, "usage": usage, "content": final_content,
+    }}
+    if scenario.api_error_final:
+        final_entry["isApiErrorMessage"] = True
+    entries.append(final_entry)
     lines = [json.dumps(entry) for entry in entries]
     if scenario.damage_sidecar == "skip":
         lines.insert(len(lines) - 1, "this is not json")
@@ -379,6 +393,9 @@ def build_replay_world(
         _change(repo, {f"src/mod_{index}.py": _app_with(12)}, message=f"Add module {index}")
     task_list = list(_mine(repo, max_tasks=task_count + 1).tasks)
     monkeypatch.setattr(review_runner, "_worktree_top_levels", lambda checkout: ())
+    # Only the provenance tests probe git for real, over their own throwaway repositories.
+    monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
+    monkeypatch.setattr(replay_runner, "read_runner_provenance", lambda: RUNNER)
     return ReplayWorld(tmp_path, home, config_dir, local_dir, repo, task_list, make_account(config_dir, home))
 
 
@@ -411,8 +428,9 @@ def make_settings(
 
 def make_block(
     world: ReplayWorld, task: tasks.ReplayTask | None = None, live_checkout_roots: tuple[Path, ...] = (),
+    runner: RunnerProvenance = RUNNER,
 ) -> attempt.BlockContext:
-    return attempt.BlockContext(task or world.task, world.account, READING, live_checkout_roots)
+    return attempt.BlockContext(task or world.task, world.account, READING, live_checkout_roots, runner)
 
 
 def spend_lines(settings: attempt.RunSettings) -> list[dict]:

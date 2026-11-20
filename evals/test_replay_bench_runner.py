@@ -36,6 +36,7 @@ from test_replay_bench_runner_support import (
     ENTRY_DENIAL,
     MODEL_ID,
     READING,
+    RUNNER,
     SLEEP_PAST_TIMEOUT_S,
     SLEEP_REFUSAL_BOUND_S,
     Scenario,
@@ -94,10 +95,86 @@ class TestAValidRun:
         assert record.metrics["line_counts"]["non_test"]["docstring"] == 1
         assert record.metrics["comment_words"]["non_test"] > 0
         assert record.first_turn_prompt_size > 0
+        assert record.empty_final_text is False
         assert [line["cost_usd"] for line in spend_lines(settings)] == [0.5]
         assert leftovers(world, launch_stub) == []
         assert any((world.config_dir / "sessions").iterdir()), "the account's sessions/ file stays"
         assert not list((world.config_dir / "projects").glob("*/*.jsonl")), "the dispatcher transcript is deleted"
+
+    @pytest.mark.parametrize("has_uncommitted_changes", [False, True, None])
+    @pytest.mark.parametrize("arm_name", ARM_NAMES)
+    def test_the_record_carries_the_runner_provenance_of_its_block(self, world, arm_name, has_uncommitted_changes):
+        """Kills: a `runner_dirty` that does not follow the block's reading, such as a hard-coded False."""
+        runner = dataclasses.replace(RUNNER, has_uncommitted_changes=has_uncommitted_changes)
+        launch_stub = world.launch()
+        outcome = execute_run(make_settings(world, launch_stub), make_block(world, runner=runner), arm_name, 0)
+
+        assert (outcome.record.runner_commit, outcome.record.runner_dirty) == (RUNNER.commit, has_uncommitted_changes)
+
+    @pytest.mark.parametrize("final_text", ["", "  \n"], ids=["no-text-block", "blank-text-block"])
+    @pytest.mark.parametrize("arm_name", ARM_NAMES)
+    def test_a_run_that_edited_the_tree_and_ended_with_no_text_is_measured_and_flagged(self, world, arm_name, final_text):
+        """The deliverable is the change in the tree, so a blank closing message does not fail the run, unlike a
+        review bench run, whose closing message is its findings."""
+        outcome, _launch_stub, _settings = run(world, arm_name, lambda _n, _a: Scenario(final_text=final_text))
+
+        record = outcome.record
+        assert (record.status, record.missing_reason, record.attempts) == ("ok", None, 1)
+        assert record.empty_final_text is True
+        assert "new_module.py" in outcome.diff_text
+        assert record.metrics["line_counts"]["non_test"]["docstring"] == 1
+
+    @pytest.mark.parametrize("arm_name", ARM_NAMES)
+    def test_a_run_that_changed_nothing_and_ended_with_no_text_is_ok_with_no_code(self, world, arm_name):
+        """Pins that a silent run is not `missing`: the flag and the zero code lines are what mark it, and the
+        summary excludes it from the paired outcome as having no non-test code line."""
+        outcome, _launch_stub, _settings = run(
+            world, arm_name, lambda _n, _a: Scenario(final_text="", edit=lambda _fixture_dir: None),
+        )
+
+        record = outcome.record
+        assert (record.status, record.missing_reason) == ("ok", None)
+        assert record.empty_final_text is True
+        assert record.metrics["line_counts"]["non_test"]["code"] == 0
+
+    @pytest.mark.parametrize("arm_name", ARM_NAMES)
+    def test_earlier_narration_before_a_text_less_final_turn_leaves_the_flag_clear(self, world, arm_name):
+        """`extract_final_text` returns the last text block of the whole transcript, and the flag follows it."""
+        outcome, _launch_stub, _settings = run(
+            world, arm_name, lambda _n, _a: Scenario(final_text="", narration="Adding the module now."),
+        )
+
+        assert outcome.record.status == "ok"
+        assert outcome.record.empty_final_text is False
+
+    @pytest.mark.parametrize(
+        ("scenario_for_copy", "expected_reason"),
+        [
+            pytest.param(
+                lambda _copy: Scenario(final_text="", api_error_final=True),
+                review_runner.VALIDITY_FAIL_API_ERROR_FINAL_RECORD, id="api-error-final-record",
+            ),
+            pytest.param(
+                lambda copy: Scenario(final_text="", tool_calls=[("Read", {"file_path": str(copy)}, False)]),
+                review_runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK, id="live-checkout-leak",
+            ),
+        ],
+    )
+    def test_a_blank_final_text_does_not_hide_a_failure_the_validity_check_makes_later(
+        self, world, scenario_for_copy, expected_reason,
+    ):
+        """Kills: letting `allow_empty_final_text` skip the checks that run before the empty-findings check."""
+        live = world.root / "live-checkout"
+        copy_of_changed_file = live / world.task.changed_paths[0]
+        copy_of_changed_file.parent.mkdir(parents=True)
+        copy_of_changed_file.write_text("x = 1\n")
+
+        outcome, _launch_stub, _settings = run(
+            world, arms.BARE.name, lambda _n, _a: scenario_for_copy(copy_of_changed_file), live_checkout_roots=(live,),
+        )
+
+        assert outcome.record.missing_reason == expected_reason
+        assert outcome.record.empty_final_text is False
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
     def test_the_launch_argv_is_wired(self, world, arm_name):
@@ -1428,7 +1505,7 @@ class TestTheCommandLine:
         code = main_run(*self.RUN_ARGV)
 
         printed = capsys.readouterr()
-        generated = re.search(r"^campaign (run-[0-9a-f]{8})$", printed.out, flags=re.M)[1]
+        generated = re.search(r"^campaign (run-[0-9a-f]{8}) \(runner commit ", printed.out, flags=re.M)[1]
         assert code == 130
         assert f"resume with --campaign-id {generated}" in printed.err
 
@@ -1712,7 +1789,9 @@ class TestTheCommandLine:
             code = main_run(*self.RUN_ARGV, "--campaign-id", "detached")
 
         assert code == 0
-        assert len(seen_while_running) == 1 and seen_while_running[0].endswith("campaign detached\n")
+        assert len(seen_while_running) == 1 and seen_while_running[0].endswith(
+            f"campaign detached (runner commit {RUNNER.commit})\n",
+        )
 
     def test_a_hostile_refusal_reaches_stderr_escaped(
         self, run_ready, monkeypatch, capsys,

@@ -1,6 +1,8 @@
 """Tests for the on-disk run record and diff a block's runs leave under a campaign directory."""
 from __future__ import annotations
 
+import json
+
 from replay_bench import records
 from test_replay_bench_summary import record
 
@@ -29,3 +31,17 @@ class TestWriteRun:
 
         assert records.diff_path(tmp_path, "t1", "toolkit", 0).read_text(encoding="utf-8") == "diff --git a/x b/x\n"
         assert records.read_block_records(tmp_path, "t1") == [record("t1", "toolkit")]
+
+
+class TestReadingARecordWrittenBeforeNewFieldsExisted:
+    def test_a_record_without_the_runner_and_empty_text_fields_reads_with_their_defaults(self, tmp_path):
+        records.write_run(tmp_path, record("t1", "toolkit"), None)
+        path = records.record_path(tmp_path, "t1", "toolkit", 0)
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        for key in ("runner_commit", "runner_dirty", "empty_final_text"):
+            del stored[key]
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        (read_back,) = records.read_block_records(tmp_path, "t1")
+
+        assert (read_back.runner_commit, read_back.runner_dirty, read_back.empty_final_text) == (None, None, False)
