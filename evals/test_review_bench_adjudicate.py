@@ -820,6 +820,13 @@ class TestRecallAnswerParser:
         assert result["r1"].quoted_opening == "Leaks a connection\n  on every error"
         assert result["r2"].label == "NOT_FOUND"
 
+    def test_accepts_a_two_line_quote_after_a_quoted_run_id(self) -> None:
+        """Guards the multiline search starting at the label's rest, not at the line start where the ID's quotes pair up."""
+        findings = {"r1": "Leaks a connection\n  on every error path."}
+        answer = '"r1": FOUND -- "Leaks a connection\n  on every error"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == "Leaks a connection\n  on every error"
+
     @pytest.mark.parametrize(
         "quoted_first_line",
         [

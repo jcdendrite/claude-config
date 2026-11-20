@@ -57,4 +57,4 @@ other header. Do not add commentary before, between, or after these
 sections.
 
 Quote one line only, with no added backslashes.
-Findings may share an identical opening, because the harness matches openings in order.
+Findings may share an identical opening when the run's text repeats it, because the harness matches openings in order.
