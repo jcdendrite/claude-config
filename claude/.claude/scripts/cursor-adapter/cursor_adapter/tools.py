@@ -1,4 +1,53 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""Host probes, the self-check subcommand, the install record and tool discovery."""
+
+import contextlib
+import json
+import os
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+
+from .core import (
+    BASH_FLOOR,
+    CONFIG_DIR_PATTERN,
+    FILE_FIX_SENTENCE,
+    LOAD_FAILURES,
+    OPTIONAL_TOOLS,
+    PATH_FIX_SENTENCE,
+    PROBE_BASH_PROGRAM,
+    PROBE_BOUND_SECONDS,
+    PROBE_PYTHON_PROGRAM,
+    PROBE_VERSION_FIELD_MAX_DIGITS,
+    PYTHON_EXECUTABLE_FIX_SENTENCE,
+    PYTHON_FLOOR,
+    QUERY_PYTHON_PROGRAM,
+    RECORDED_TOOLS,
+    REPLACE_WRAPPER_SENTENCE,
+    RERUN_WRAPPER_SENTENCE,
+    SELF_CHECK_FIX_SENTENCE,
+    SELF_CHECK_INTERPRETER_KEYS,
+    SELF_CHECK_NAMES,
+    SELF_CHECK_SUBCOMMAND,
+    STATE_DIR_NAME,
+    STOW_FIX_SENTENCE,
+    TOOL_PATH_CONDITION_TEXT,
+    WRAPPER_CANDIDATES,
+    AdapterError,
+    ProbeStalled,
+    compile_module,
+    install_record_path,
+    is_valid_tool_path,
+    load_error_name,
+    load_shim,
+    probe_directory,
+    read_json_object,
+    stow_adapter_path,
+    stow_shim_path,
+)
+from .hooks_json import bounded_text
 
 # --- probes and tools ---
 

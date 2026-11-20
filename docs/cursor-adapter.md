@@ -110,7 +110,7 @@ A write that newly takes a worktree lock prints no "run `git worktree unlock <pa
 - **Python:** the recorded python3 and the `python3` the hooks run both meet the toolkit's Python floor, which `README.md` § "Requirements" states.
   - `install` records `sys.executable` of the first `python3` on `PATH`, resolved from `~/.cursor/` or `$HOME` when `~/.cursor` does not exist yet, and refuses a virtual environment's interpreter.
   - The fix for a recorded python3 below the floor is to put a newer `python3` first on `PATH` and re-run `install`. The refusal names that interpreter's path and version.
-  - The same fix serves a Python `SyntaxError` from an older interpreter that cannot parse `cursor-adapter.py` or one of its parts.
+  - The same fix serves a Python `SyntaxError` from an older interpreter that cannot parse `cursor-adapter.py` or a module of its `cursor_adapter` package.
   - The hooks' `PATH` holds each recorded tool's directory in record order, python3's first, then `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`. The bare-name `python3` the hooks call is therefore the recorded interpreter whenever its directory holds it as `python3`. When that directory holds no file named `python3`, or an older one, the refusal names the directory and its own fix.
   - A tool in python3's directory shadows the recorded one for the hooks. In practice that needs python3 to share a system or package-manager `bin` directory with other tools.
 - **GNU coreutils `timeout` or `gtimeout`:** stricter than the `timeout` bullet in `README.md` § "Requirements". `install` records the first of `timeout` and `gtimeout` whose `--version` first line names GNU coreutils, because BusyBox returns a TERM-trapping hook's own status, as the `_lib_capped_for` header in `claude/.claude/hooks/_lib.sh` states, and a timed-out hook could then read as an allow. On macOS, `brew install coreutils` provides `gtimeout`. Otherwise put GNU's directory first on `PATH`, then re-run `install`.
@@ -154,7 +154,7 @@ The way out, in order:
 3. For a checkout cause, restore the checkout.
 4. Otherwise, or until then, run `uninstall`, or follow the manual restore above.
 
-`install`, `check` and `uninstall` run `cursor-adapter.py`, which needs a python3 at the floor. Under an older one it can stop with Python's own `SyntaxError` in `cursor-adapter.py` or one of its parts, for example when a directory's `.python-version` pin puts a bare `python3` below the floor. Run the file under the recorded interpreter instead: its path is the `python3` entry of `~/.cursor/cursor-adapter/install.json`, and the form is `<recorded python3> -I -S ~/.claude/scripts/cursor-adapter/cursor-adapter.py uninstall`. The manual restore needs no interpreter.
+`install`, `check` and `uninstall` run `cursor-adapter.py`, which needs a python3 at the floor. Under an older one it can stop with Python's own `SyntaxError` in `cursor-adapter.py` or a module of its `cursor_adapter` package, for example when a directory's `.python-version` pin puts a bare `python3` below the floor. Run the file under the recorded interpreter instead: its path is the `python3` entry of `~/.cursor/cursor-adapter/install.json`, and the form is `<recorded python3> -I -S ~/.claude/scripts/cursor-adapter/cursor-adapter.py uninstall`. The manual restore needs no interpreter.
 
 ### An install-record deny, or a deny that the hook script is missing or not executable
 
@@ -269,7 +269,7 @@ Outcome: `unknown-tool`.
 Cursor sent a tool name that neither the recorded tool map nor a `parity-exceptions.json` `cursor-tool` entry lists, such as a new or renamed tool, or WebFetch or WebSearch under a spelling the files do not hold. Classify the name in the stowed checkout:
 
 - A name added to `parity-exceptions.json` as a `cursor-tool` entry with reason `unsupported` or `declined` attaches no gate. The shim reads that file on each call, so the deny lifts live.
-- A name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map. That lifts the unknown-tool deny but attaches no gate: a name that should carry the Edit, Write or other gates also needs an entry in the `CURSOR_TOOL_NAMES` table in `cursor-adapter-core.py` before `install`. Until `install`, the shim keeps the recorded map, and `check` reports the drift.
+- A name added to `tool-map.json`, or a remapped one, takes effect only after `install`, which records the map. That lifts the unknown-tool deny but attaches no gate: a name that should carry the Edit, Write or other gates also needs an entry in the `CURSOR_TOOL_NAMES` table in `cursor_adapter/core.py` before `install`. Until `install`, the shim keeps the recorded map, and `check` reports the drift.
 
 ### A stale-install deny
 

@@ -29,6 +29,8 @@ from pathlib import Path
 import pytest
 from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT, init_git_repo_with_commit
 
+from ._cursor_adapter_namespace import ADAPTER_PACKAGE_NAME, AdapterNamespace
+
 SETTINGS_JSON = CLAUDE_DIR / "settings.json"
 ADAPTER_DIR = REPO_ROOT / "claude" / ".claude" / "scripts" / "cursor-adapter"
 LIB_SH = HOOKS_DIR / "_lib.sh"
@@ -121,13 +123,15 @@ def compile_shim_module(shim: Path = SHIM) -> types.ModuleType:
     return module
 
 
-def load_adapter(source: Path = ADAPTER_SOURCE, name: str = "cursor_adapter_under_test") -> types.ModuleType:
-    """cursor-adapter.py compiled into a fresh module on every call, so no module state leaks between tests and no bytecode
-    file is written."""
+def load_adapter(source: Path = ADAPTER_SOURCE, name: str = "cursor_adapter_under_test") -> AdapterNamespace:
+    """cursor-adapter.py executed into a fresh module on every call, over a fresh import of the package beside it, so no
+    module state leaks between tests and no bytecode file is written."""
+    for registered in [module_name for module_name in sys.modules if module_name.partition(".")[0] == ADAPTER_PACKAGE_NAME]:
+        del sys.modules[registered]
     module = types.ModuleType(name)
     module.__file__ = str(source)
     exec(compile(Path(source).read_bytes(), str(source), "exec"), module.__dict__)  # loading the file under test
-    return module
+    return AdapterNamespace.over_load(module)
 
 
 @pytest.fixture(name="adapter")

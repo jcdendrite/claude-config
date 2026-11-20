@@ -30,7 +30,8 @@ from types import MappingProxyType
 CONTRACT_VERSION = "1"
 STALE_INSTALL_DETAIL = "stale install: the engineer quits Cursor, re-runs install and relaunches."
 
-# The command-line vocabulary. The command grammar in cursor-adapter.py must stay equal to it.
+# The command-line vocabulary. The adapter's copy in cursor_adapter/core.py, which its command grammar reads, must stay
+# equal to it.
 VALUE_FLAGS = ("--contract-version", "--claude-event", "--mode", "--matcher", "--script", "--label", "--deadline")
 SWITCH_FLAGS = ("--fail-closed", "--fail-open")
 MODES = ("hook", "pin", "pin-check", "classify")

@@ -1,4 +1,60 @@
-# cursor-adapter.py executes this file into its own namespace, so names it or its other parts define need no import here.
+"""The `uninstall` command and the steps it runs."""
+
+import contextlib
+import os
+import shutil
+import stat
+import sys
+
+from .core import (
+    FOREIGN_FIX_SENTENCE,
+    GENERATED_FILE_DIRECTORIES,
+    HOOKS_JSON_NAME,
+    HOOKS_JSON_VERSION,
+    INSTALL_RECORD_NAME,
+    INSTALLED_THINGS_TEXT,
+    LOAD_FAILURES,
+    MANIFEST_NAME,
+    PRE_IMAGE_NAME,
+    PRE_IMAGE_NONE_NAME,
+    PRINT_SET_MAX_ENTRIES,
+    SANDBOX_JSON_NAME,
+    SANDBOX_PENDING_NAME,
+    SANDBOX_PRE_IMAGE_NAME,
+    SANDBOX_PRE_IMAGE_NONE_NAME,
+    STATE_DIR_NAME,
+    AdapterError,
+    Unconfirmed,
+    checkpoint,
+    cursor_directory,
+    durable_write,
+    json_bytes_or_refusal,
+    load_error_name,
+    load_shim,
+    read_bytes_or_none,
+    read_manifest,
+    record_directory,
+    sha256_hex,
+    sweep_temp_debris,
+    sync_directory_noting,
+)
+from .hooks_json import (
+    HooksReport,
+    bounded_text,
+    classify_hooks,
+    entry_signature,
+    generate_entries,
+    label_of,
+    ownership,
+    pre_image_document_of,
+    pre_image_hooks_of,
+    print_set,
+    read_live_hooks,
+    refuse_unsafe_targets,
+)
+from .install import failing_file_text, post_write_failure, pre_image_state
+from .sandbox import apply_sandbox_action, sandbox_restore_plan
+from .tools import record_or_none, validate_config_directory
 
 # --- uninstall ---
 
@@ -77,32 +133,6 @@ def entries_for_uninstall():
         return generate_entries(python_path=sys.executable), None
     except LOAD_FAILURES as error:
         return None, ("generating the expected entries failed", failure_cause(error))
-
-
-def json_bytes_or_refusal(document, path):
-    """`json_bytes(document)`, or a refusal naming `path` for a document JSON cannot write back, which only the lenient parse
-    of a shim that does not load lets through."""
-    try:
-        return json_bytes(document)
-    except (ValueError, RecursionError) as error:
-        raise AdapterError(
-            f"{path} holds a value JSON cannot write back (such as NaN or Infinity), so it was left as it is. "
-            "Fix or remove that member, then re-run."
-        ) from error
-
-
-def sweep_temp_debris(directory):
-    """Removes the `.adapter-tmp-*` regular files a killed write left in `directory`."""
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        return
-    for name in names:
-        if name.startswith(TEMP_FILE_PREFIX):
-            path = os.path.join(directory, name)
-            with contextlib.suppress(OSError):
-                if stat.S_ISREG(os.lstat(path).st_mode):
-                    os.unlink(path)
 
 
 def fallback_report(live_hooks):
@@ -313,14 +343,6 @@ def uninstall_failure_instruction(reached):
         "hooks.json is already handled, so do not restore it by hand, and leave the saved pre-install file in place. "
         "Fix the cause (permissions or ownership of the file named first). Re-run `uninstall`."
     )
-
-
-def read_manifest(directory):
-    try:
-        manifest = read_json_object(os.path.join(directory, MANIFEST_NAME))
-    except AdapterError:
-        return None
-    return manifest if isinstance(manifest.get("files", {}), dict) else None
 
 
 def report_state_dir_left(state_dir, reason):
