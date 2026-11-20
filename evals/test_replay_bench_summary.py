@@ -18,10 +18,15 @@ ACCOUNT = "/synthetic/account"
 CAP = 3.0
 
 
-def metrics(*, words=10, code=10, docstring=0, unclassified=0, ast_rejected=0, non_file=0, undecodable=0) -> dict:
+def metrics(
+    *, words=10, code=10, docstring=0, unclassified=0, ast_rejected=0, non_file=0, undecodable=0,
+    test_words=0, test_code=0, test_docstring=0,
+) -> dict:
     synthetic = CommentMetrics()
     synthetic.comment_words["non_test"] = words
     synthetic.line_counts["non_test"].update(code=code, docstring=docstring, unclassified=unclassified)
+    synthetic.comment_words["test"] = test_words
+    synthetic.line_counts["test"].update(code=test_code, docstring=test_docstring)
     synthetic.python_files_ast_rejected = ast_rejected
     synthetic.non_file_entries = non_file
     synthetic.undecodable_files = undecodable
@@ -312,6 +317,33 @@ class TestThePairedOutcomeAsValues:
 
         assert outcome.pooled_interval[1] < 2 < outcome.unweighted_interval[1]
 
+    def test_test_scope_counts_stay_out_of_every_figure(self):
+        """Kills: reading a run's words or code lines as the sum of its test and non-test scopes."""
+        outcome = summary.paired_outcome({
+            "two-toolkit-runs": [
+                record("two-toolkit-runs", "toolkit", run_metrics=metrics(words=10, code=10, test_words=500, test_code=300)),
+                record(
+                    "two-toolkit-runs", "toolkit", run_index=1,
+                    run_metrics=metrics(words=30, code=10, test_words=700, test_code=100),
+                ),
+                record("two-toolkit-runs", "bare", run_metrics=metrics(words=2, code=10, test_words=40, test_code=60)),
+            ],
+            "one-run-each": [
+                record("one-run-each", "toolkit", run_metrics=metrics(words=6, code=20, test_words=90, test_code=50)),
+                record("one-run-each", "bare", run_metrics=metrics(words=4, code=20, test_words=30, test_code=5)),
+            ],
+        })
+
+        assert outcome.pooled_ratios == {
+            "toolkit": pytest.approx((20 + 6) / (10 + 20)), "bare": pytest.approx((2 + 4) / (10 + 20)),
+        }
+        assert outcome.pooled_difference == pytest.approx((20 + 6) / (10 + 20) - (2 + 4) / (10 + 20))
+        assert outcome.differences == {
+            "two-toolkit-runs": pytest.approx(20 / 10 - 2 / 10), "one-run-each": pytest.approx(6 / 20 - 4 / 20),
+        }
+        assert outcome.unweighted_mean == pytest.approx(((20 / 10 - 2 / 10) + (6 / 20 - 4 / 20)) / 2)
+        assert outcome.run_spreads["toolkit"] == summary.RunSpread(pytest.approx(statistics.stdev([10 / 10, 30 / 10])), 1)
+
     def test_each_exclusion_is_tallied_with_its_records(self):
         blocks = {
             "paired": [record("paired", "toolkit"), record("paired", "bare")],
@@ -581,6 +613,20 @@ class TestSecondaryAndDiagnostics:
         assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(100 * (20 + 6) / (40 + 60))
         assert "  bare docstring lines per 100 code lines: 0.0000" in lines
 
+    def test_test_scope_counts_stay_out_of_an_arms_docstring_rate(self, campaign):
+        """Kills: reading a run's docstring or code lines as the sum of its test and non-test scopes."""
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit", run_metrics=metrics(code=10, docstring=2, test_code=100, test_docstring=50)),
+            record("t1", "toolkit", run_index=1, run_metrics=metrics(code=30, docstring=18, test_code=20, test_docstring=30)),
+            record("t1", "bare", run_metrics=metrics(code=100, docstring=5, test_code=900, test_docstring=400)),
+        )
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(100 * (2 + 18) / (10 + 30))
+        assert number_after(lines, "  bare docstring lines per 100 code lines:") == pytest.approx(100 * 5 / 100)
+
     def test_an_arm_with_no_code_line_or_no_valid_run_has_no_docstring_rate(self, campaign):
         campaign.add_block(
             "t1",
@@ -660,13 +706,20 @@ class TestAnUnavailableReferenceNamesItsCause:
 
 
 class TestAReadableReferenceIsReportedWithoutAWarning:
-    def reference_task(self, *, code, docstring, words=10, commit="a" * 40) -> tasks.ReplayTask:
+    def reference_task(
+        self, *, code, docstring, words=10, commit="a" * 40, test_words=0, test_code=0, test_docstring=0,
+    ) -> tasks.ReplayTask:
         source_repo = "/synthetic/source-repo"
         return tasks.ReplayTask(
             id=tasks.make_task_id(Path(source_repo), commit), source_repo=source_repo, base_commit="b" * 40, commit=commit,
             brief="synthetic brief", changed_paths=("src/app.py",), author_email="author@example.invalid",
             committer_email="committer@example.invalid",
-            reference_metrics=CommentMetrics.from_dict(metrics(words=words, code=code, docstring=docstring)),
+            reference_metrics=CommentMetrics.from_dict(
+                metrics(
+                    words=words, code=code, docstring=docstring,
+                    test_words=test_words, test_code=test_code, test_docstring=test_docstring,
+                ),
+            ),
             base_density=None, base_tree_bytes=0, base_tree_entries=0,
         )
 
@@ -709,6 +762,22 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
         reference_ratio = number_after(lines, "  reference (the merged commits) words per code line:")
         assert reference_ratio == pytest.approx((10 + 90) / (40 + 160))
         assert not any("reference unavailable" in line for line in lines)
+
+    def test_a_merged_commits_test_scope_counts_stay_out_of_both_reference_figures(self, campaign):
+        """Kills: reading the reference's words, code lines or docstring lines as the sum of its test and non-test scopes."""
+        task = self.reference_task(code=40, docstring=10, words=10, test_words=300, test_code=200, test_docstring=60)
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
+        (campaign.dir / "manifest.json").write_text(
+            json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
+        )
+        campaign.add_block(task.id, record(task.id, "toolkit"), record(task.id, "bare"))
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  reference (the merged commits) words per code line:") == pytest.approx(10 / 40)
+        assert number_after(lines, "  reference (the merged commits) docstring lines per 100 code lines:") == pytest.approx(
+            100 * 10 / 40,
+        )
 
     def test_an_unpaired_tasks_merged_commit_stays_out_of_the_pooled_reference(self, campaign):
         task = self.reference_task(code=40, docstring=10)
