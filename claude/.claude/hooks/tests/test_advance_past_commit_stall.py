@@ -242,7 +242,8 @@ CORPUS: list[tuple[str, bool]] = [
     # An underscore joins a word, so commit inside commit_hook does not count.
     ("Want me to rename the commit_hook helper?", False),
     ("Want me to rename my_commit?", False),  # an underscore before the object joins it to the word
-    ("_Want me to commit this?_", False),  # an underscore before the verb joins it to the word
+    # Accepted miss: an underscore before the verb joins it to the word, so the agent's question stands.
+    ("_Want me to commit this?_", False),
     ("Want me to_commit this?", False),  # an underscore right after the verb is not a join separator
     ("Want me to commit the parse_error fix?", True),  # parse_error is one word, so no exclusion phrase starts in it
     ("Want me to push the emergency fix?", True),  # merge inside emergency
@@ -874,13 +875,19 @@ def test_non_matching_turn_with_a_non_repo_cwd_writes_no_root_denied_line(isolat
         ("_Want me to profile it?_", False),  # an underscore before the verb joins it to the word
         ("Should I_ do it?", False),  # an underscore after the verb fails the verb's trailing boundary
         ("**Want me to profile it?**", True),  # a markdown bold marker before the verb is a word boundary
+        ("Should I recommit this?", True),  # a prefixed object does not match but the verb half does
+        ("Want me to reopen the PR?", True),  # a prefixed object does not match but the verb half does
+        ("Should I _commit_ this?", True),  # an underscore-wrapped object does not match but the verb half does
+        ("Want me to update README.md and commit?", True),  # a dot ends the verb-to-object join but the verb half matches
+        ("Want me to call repo.push()?", True),  # a dot directly before the object ends the join but the verb half matches
     ],
 )
 def test_phrasing_drift_logs_a_whole_word_verb_without_an_object(
     isolated_home, dirty_repo, message, expected_drift
 ):
-    """A whole-word permission verb with no shipping object logs phrasing-drift.
+    """A whole-word permission verb logs phrasing-drift when the shipping-object pattern does not match the sentence.
 
+    The object may be missing, or present but fail the verb-to-object join or a word boundary, such as recommit.
     A verb inside a longer word, or joined to a word by an underscore, does not.
     """
     _fire(
