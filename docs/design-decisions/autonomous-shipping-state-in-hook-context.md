@@ -2,6 +2,15 @@
 
 *2026-11-05.*
 
+**Superseded in part (2026-11-19):** autonomous shipping is now unconditional, so these no longer exist:
+
+- The resolver script and its `_lib_autonomous_shipping_active` gate.
+- The startup announcement.
+- The statement that opened the Stop hook's block reason.
+- The `/handoff` and `/brief` exception.
+
+Only the compact hook still prints the statement.
+
 Where autonomous shipping is active, code resolves that fact and states it to the agent through every hook surface that shapes its commit, push and PR behavior.
 `claude/.claude/CLAUDE.md` § "Shipping" already holds the rule, and it asks the agent to run `autonomous-shipping-active.sh` itself.
 It adds delivery of the resolved state.

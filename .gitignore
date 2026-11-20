@@ -95,6 +95,15 @@ claude/.claude/.consume-durable-continuity-disabled
 claude/.claude/.session-title-disabled
 claude/.claude/pr-cost-disclosure
 
+# Same belt-and-suspenders for the per-machine config state file that
+# _config.sh reads from the config dir. Under stow directory-fold, a write to
+# ~/.claude/claude-config.toml lands physically inside the repo, so without
+# this entry one machine's opt-ins would show up in `git status` and could be
+# committed and shipped to every stow user. The writer's temp file sits beside
+# the state file and is covered by the second pattern.
+claude/.claude/claude-config.toml
+claude/.claude/.claude-config.*
+
 # Review-gate marker state is per-machine session bookkeeping written by
 # ~/.claude/scripts/marker.sh, never content that ships with the package.
 # Under stow directory-fold (~/.claude is a symlink to the package rather than

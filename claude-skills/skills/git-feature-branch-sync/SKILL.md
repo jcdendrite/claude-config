@@ -55,7 +55,7 @@ decision](#the-decision) below.
 - **Rebase** — `git fetch origin && git rebase origin/main`. Replays commits on top of the current base tip. Linear history. Rewrites SHAs → force-push required.
 - **Merge** — `git merge --no-ff origin/main`. Creates a merge commit. Preserves SHAs. No force-push. (`--no-ff` matters: plain `git merge origin/main` fast-forwards if the feature branch is strictly behind.) `git pull --rebase` is equivalent to `fetch + rebase`; prefer the explicit two-step form.
 
-**Default is rebase on personal feature branches** — common choice, but not universal. Switch to merge when any *merge-required condition* applies. Defer to per-project policy when it contradicts this default.
+**Default is rebase on solo-contributor feature branches** — common choice, but not universal. Switch to merge when any *merge-required condition* applies. Defer to per-project policy when it contradicts this default.
 
 ## Merge-required conditions
 
@@ -76,7 +76,7 @@ For long-lived branches, set `rerere.enabled=true` — `rerere` caches conflict 
 | `--force-with-lease` | Fails if the remote ref moved since your last fetch. | Default for rebased feature branches. |
 | `--force-if-includes` | Also fails if local branch doesn't contain the remote's tip. | Pair with `--force-with-lease`. |
 
-Recommended command after rebasing a personal branch:
+Recommended command after rebasing a solo-contributor branch:
 
 ```
 git push --force-with-lease --force-if-includes
@@ -101,7 +101,7 @@ Refuse to force-push to any of these regardless of flavor:
 - **The remote's default branch** — check `git symbolic-ref refs/remotes/origin/HEAD`. `main` is common but not universal (`master`, `trunk`, `develop` are all possible).
 - `release/*`, `hotfix/*`, `staging`, `production`, `qa`, `uat`, or any other shared / environment-tracking branch
 - **Tags** (`refs/tags/*`) — supply-chain anchor for releases and SBOMs; never rewrite.
-- Any branch the user has not explicitly said is personal
+- Any branch that pre-flight item 1 has not established as solo-contributor
 
 For these branches, rebasing the branch itself is also off the table — they keep merge history.
 
@@ -113,7 +113,7 @@ For these branches, rebasing the branch itself is also off the table — they ke
 - **Required status checks** — force-pushing invalidates in-flight check runs and can knock PRs out of auto-merge queues.
 - **Actor-specific rules** — bot tokens may be excluded from force-push; a 403 from `--force-with-lease` when humans can push indicates this.
 
-Query `GET /repos/:owner/:repo/rulesets/rules/branches/<branch>` before acting on non-personal branches. If unreachable or ambiguous in automation, fail closed — merge instead.
+Query `GET /repos/:owner/:repo/rulesets/rules/branches/<branch>` before acting on a branch that is not solo-contributor. If unreachable or ambiguous in automation, fail closed — merge instead.
 
 ## Interaction with PR merge strategy
 
@@ -127,7 +127,7 @@ Check the PR merge strategy before recommending rebase on history-cleanliness gr
 
 Before running `git push --force-with-lease` on a feature branch:
 
-1. Is this branch personal? Verify with `git log --format='%ae %ce' origin/<branch> | sort -u` (include `%ce` for committer, not just `%ae` author — on a shallow clone, `git fetch --unshallow` first).
+1. Is this branch solo-contributor? On a shallow clone, run `git fetch --unshallow` first. Then run `git fetch origin` and `git log --format='%ae %ce' origin/main..origin/<branch>` (`%ce` catches a teammate who rebased). It is solo-contributor when the log prints at least one line and every address is the engineer's own. Otherwise → ask the engineer, or merge when nobody can be asked.
 2. Has anyone stacked a branch on this one? If yes → coordinate or merge.
 3. Is PR review in flight with SHA-anchored comments? If yes → rework commits, not rebase.
 4. Is the branch in the never-force-push list? → stop.
@@ -151,4 +151,4 @@ Post a PR comment with the pre- and post-force SHAs and a `git range-diff <old-s
 
 ## Rule of thumb
 
-On a personal branch with no stacked dependents and no in-flight review anchoring: `git fetch origin && git rebase origin/main && git push --force-with-lease --force-if-includes`. Anywhere else: merge, or stop and ask.
+On a solo-contributor branch with no stacked dependents and no in-flight review anchoring: `git fetch origin && git rebase origin/main && git push --force-with-lease --force-if-includes`. Anywhere else: merge, or stop and ask.
