@@ -2034,7 +2034,7 @@ class TestCursorAdapterSelection:
             "claude/.claude/scripts/cursor-adapter/parity-exceptions.json",
         ],
     )
-    def test_any_path_under_the_adapter_directory_selects_the_two_reading_hooks_tests_and_the_scripts_tests(self, changed_path):
+    def test_any_path_under_the_adapter_directory_selects_the_reading_hooks_tests_and_the_scripts_tests(self, changed_path):
         """The whole hooks tests tree is not selected. The scripts tests come from the blanket SCRIPTS_DIR domain rule."""
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False

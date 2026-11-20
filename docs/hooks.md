@@ -305,7 +305,7 @@ A new gate registers every handler with `"onFailure": "block"` and ends its scri
     4. Cut `claude/.claude/hooks/tests/test_steer_compaction_summary.py` down to the stub's assertions: exit 0, empty stdout for a `PreCompact` payload, and the executable bit, so the suite stays green.
     5. Replace this bullet and every sub-item under it with a statement that the script is a stub registered nowhere, because the alignment suite requires the bullet to stay.
   - **Around the rollback:**
-    - The rollback leaves the `EVENT_SPEC_IDS["PreCompact"]` entry in `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`, because it is a lookup keyed on a registration that no longer exists and is harmless.
+    - The rollback leaves the `EVENT_SPEC_IDS["PreCompact"]` entry in `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_arms.py`, because it is a lookup keyed on a registration that no longer exists and is harmless.
     - The rollback also updates the prose in `README.md` and `docs/handoff-nudge.md` that describes the hook as live, including the layer count and item 5 under Context management in `README.md`.
     - It adds its own `CHANGELOG.md` entry that records the removal instead of editing the earlier entry, whose pointers to this bullet then name a stub.
     - The stub stays, so a session still holding the old registration never names a deleted file.
