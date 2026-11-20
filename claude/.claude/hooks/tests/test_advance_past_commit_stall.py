@@ -231,32 +231,65 @@ CORPUS: list[tuple[str, bool]] = [
     ("Want me to commit this now that the build passed?", True),  # failed twin
     ("Want me to commit the fix for this typo?", True),  # error twin
     ("Want me to push this while the release is pending?", True),  # blocked twin
-    # Known gap: OBJECT_RE has no word boundaries, so an object token inside another word or phrase fires when
-    # the final sentence also carries a permission verb (commit-stall-block.md).
-    ("Should I push back on the spec change?", True),  # known gap: "push back", phrase-level
-    ("Want me to raise the commitment question with the team?", True),  # known gap: "commitment", word-boundary
-    ("Should I add push notification support next?", True),  # known gap: "push notification", phrase-level
-    ("Let me know if the committee wants a different layout.", True),  # known gap: "committee", word-boundary
-    ("Want me to open a project?", True),  # known gap: "open a PR" matches inside "open a project", word-boundary
-    # Known gap: "create a PR" matches inside "create a profile page", word-boundary.
-    ("Want me to create a profile page?", True),
-    # Known gap: VERB_RE "should I" has no trailing word boundary, so "should include" matches.
-    ("The fix should include a commit.", True),
-    # Real stalls: the inflected stems "committing" and "pushing" fire only through the bare-substring match, so a
-    # word-boundary fix to OBJECT_RE must stay stem-aware.
+    # Whole-word matching: a verb or object inside a longer word, or an exclusion phrase that starts mid-word, does not count.
+    ("Want me to raise the commitment question with the team?", False),  # commit inside commitment
+    ("Let me know if the committee wants a different layout.", False),  # commit inside committee
+    ("Want me to open a project?", False),  # open a PR inside open a project
+    ("Want me to create a profile page?", False),  # create a PR inside create a profile
+    ("The fix should include a commit.", False),  # should I inside should include
+    ("The release shall include a push to staging.", False),  # shall I inside shall include
+    ("Marshall I commit this?", False),  # shall I inside Marshall
+    # An underscore joins a word, so commit inside commit_hook does not count.
+    ("Want me to rename the commit_hook helper?", False),
+    ("Want me to rename my_commit?", False),  # an underscore before the object joins it to the word
+    ("_Want me to commit this?_", False),  # an underscore before the verb joins it to the word
+    ("Want me to_commit this?", False),  # an underscore right after the verb is not a join separator
+    ("Want me to commit the parse_error fix?", True),  # parse_error is one word, so no exclusion phrase starts in it
+    ("Want me to push the emergency fix?", True),  # merge inside emergency
+    ("Want me to commit this now that CI is unblocked?", True),  # blocked inside unblocked
+    # Accepted miss: a prefixed object has no word boundary before it, so the agent's question stands.
+    ("Should I recommit this?", False),
+    ("Want me to reopen the PR?", False),
+    # Accepted miss: a dot ends the verb-to-object join, so a dotted file name between them is not blocked.
+    # It still logs phrasing-drift because the verb half matches.
+    ("Want me to update README.md and commit?", False),
+    # Accepted miss: a dot directly before the object also ends the join, so a dotted call such as repo.push() is not blocked.
+    # It still logs phrasing-drift because the verb half matches.
+    ("Want me to call repo.push()?", False),
+    # Inflections the object half accepts.
     ("Want me to start committing this?", True),
     ("Shall I start pushing this?", True),
-    # Real stalls whose only object is a PR alternative, so a word-boundary fix to OBJECT_RE must keep them firing.
+    ("Want me to get this committed?", True),
+    ("Want me to squash these commits?", True),
+    ("Want me to get this pushed?", True),
+    ("Want me to batch these pushes?", True),
+    ("Want me to open the PRs?", True),
+    ("Want me to run `git push`?", True),  # a backtick is a word boundary
+    ("Want me to run `commit`?", True),  # a backtick on either side of the object is a word boundary
+    ("Should I open a PR", True),  # no terminal punctuation: the end of the string closes the word
+    # Permission verbs beyond "want me to" and "should I": each row carries no other verb alternative.
+    ("Would you like me to commit this?", True),  # would you like me to
+    ("Let me know if I can commit this.", True),  # let me know if
+    # Real stalls whose only object is a PR alternative.
     ("Should I open a PR?", True),
     ("Want me to open the PR?", True),
     ("Want me to create a PR?", True),
-    # Known gap: EXCLUDE_RE has no word boundaries either, so an exclusion token inside another word, or a whole
-    # word in an unrelated sense, silences a real stall (commit-stall-block.md).
-    # Known gap: real stall silenced by a whole-word, unrelated-sense exclusion match (error).
+    # An exclusion phrase is bounded only at its start, so a suffixed form still excludes. Each excluded row has a fire twin.
+    ("Want me to push this once it is merged?", False),
+    ("Want me to push this once it is reviewed?", True),
+    ("Want me to commit this despite the errors?", False),
+    ("Want me to commit this despite the warnings?", True),
+    # A hyphen is a word boundary on the exclusion side too, so pre-merge still excludes through merge.
+    ("Want me to commit this pre-merge?", False),
+    # The sentence starts with an exclusion phrase; its twins are the trailing-newline and multi-line
+    # "Want me to commit this?" rows, whose last sentence is the same ask without the leading "Anyway,".
+    ("Anyway, want me to commit this?", False),
+    # Known gap: a whole word in an unrelated sense still fires or excludes (commit-stall-block.md).
+    ("Should I push back on the spec change?", True),
+    ("Should I add push notification support next?", True),
+    ("Should I add push-notification support?", True),  # a hyphen is a word boundary, so the compound fires
+    ("Want me to run pre-commit?", True),  # a hyphen is a word boundary, so the compound fires
     ("Want me to commit the error handling changes?", False),
-    ("Want me to push the emergency fix?", False),  # known gap: real stall silenced by in-word exclusion match (merge)
-    # Known gap: real stall silenced by an in-word exclusion match (blocked in "unblocked").
-    ("Want me to commit this now that CI is unblocked?", False),
 ]
 
 
@@ -826,6 +859,36 @@ def test_non_matching_turn_with_a_non_repo_cwd_writes_no_root_denied_line(isolat
     assert result is None
     log_file = isolated_home / ".claude" / ".commit-stall-block.log"
     assert not log_file.exists() or "root-denied" not in log_file.read_text()
+
+
+@pytest.mark.parametrize(
+    "message,expected_drift",
+    [
+        ("Want me to profile it?", True),
+        ("Want me to raise the commitment question with the team?", True),
+        ("The fix should include tests.", False),
+        ("Want me to commit this?", False),
+        ("Let me know if", True),  # ends on the verb, so the $ branch of the trailing word boundary closes it
+        ("Marshall I profile it?", False),  # a verb inside a longer word's tail fails the verb's leading boundary
+        ("_Want me to profile it?_", False),  # an underscore before the verb joins it to the word
+        ("Should I_ do it?", False),  # an underscore after the verb fails the verb's trailing boundary
+    ],
+)
+def test_phrasing_drift_logs_a_whole_word_verb_without_an_object(
+    isolated_home, dirty_repo, message, expected_drift
+):
+    """A whole-word permission verb with no shipping object logs phrasing-drift.
+
+    A verb inside a longer word, or joined to a word by an underscore, does not.
+    """
+    _fire(
+        stop_input(message, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    log_file = isolated_home / ".claude" / ".commit-stall-block.log"
+    log_text = log_file.read_text() if log_file.exists() else ""
+    assert ("phrasing-drift session=s prompt=p1\n" in log_text) == expected_drift
 
 
 def test_cwd_containing_a_newline_fails_closed(isolated_home, dirty_repo, tmp_path):

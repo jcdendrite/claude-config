@@ -26,6 +26,13 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`transcript-analysis.py pr-cost` read mode prints three per-skill round-count columns after `CapturedAt`.**
   - The columns are `code-review-rounds`, `plan-review-rounds` and `ready-for-review-rounds`, each counting that skill's rounds not flagged after merge, as `docs/pr-cost.md` § "The `review_rounds` cell" defines. A row with no cell prints `-` in all three.
   - **Migration:** each row widens from about 96 characters to about 158. The first six fields keep their positions, and `CapturedAt` is no longer the last field. No consumer in the tree parses read mode's table.
+- **The commit-stall Stop hook (`advance-past-commit-stall.sh`) now matches permission verbs, objects and exclusion phrases as whole words.**
+  - Stops firing on a word that merely contains a verb or object: "commitment", "committee", "should include" and "open a project".
+  - Starts firing where an in-word exclusion match used to silence a real stall: "emergency" (through "merge") and "unblocked" (through "blocked").
+  - Inflections still count: "committing", "pushed" and "open the PRs" fire. An exclusion phrase is bounded only at its start, so "merged" and "errors" still exclude.
+  - A prefixed object, such as "recommit" or "reopen the PR", no longer fires. An underscore-wrapped question such as `_Want me to commit this?_` no longer fires either.
+  - A whole word in an unrelated sense still counts ("push back", "error handling"); see [`docs/commit-stall-block.md`](docs/commit-stall-block.md) § "Known limitations".
+  - The change is live on `git pull`.
 - **`deny-reviewer-tree-mutation.sh` and `deny-invisible-commit-content.sh` now allow a fragment that is exactly `git --version`, with no read-only subcommand.**
   - Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
   - The change is live on `git pull`.
