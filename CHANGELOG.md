@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`git-feature-branch-sync` now decides whether a branch is solo-contributor from the commits unique to it.**
+  - Pre-flight item 1 ran `git log` with no range, so it also walked the base branch's history and reported almost any branch in a multi-contributor repo as shared. It now runs `git fetch origin`, then `git log --format='%ae %ce' origin/main..origin/<branch>`.
+  - **Migration:** pre-flight item 1 can establish a branch as solo-contributor from that log, so the engineer no longer needs to say so.
+  - The skill's word "personal" becomes "solo-contributor" throughout. The change is live on `git pull`.
 - **`transcript-analysis.py review-cost-by-size` now reads the pr-cost ledger's `review_rounds` cells instead of transcripts, so a PR's round series outlives transcript retention.**
   - It keeps each PR's one current ledger row for this checkout's origin repository, re-prices each round's stored token splits at this checkout's rate table, and excludes and counts the PRs it cannot trust. See `docs/transcript-analysis.md` § "review-cost-by-size".
   - **Migration:** `gh` is no longer required, and transcripts are no longer read.
