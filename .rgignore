@@ -1,0 +1,4 @@
+# Claude Code's Grep tool honours this file, so a Grep rooted at an ancestor of .claude/plans skips plan files.
+# A search rooted at .claude/plans itself still reads them.
+# git grep and Claude Code's Glob and Read tools do not consult this file.
+.claude/plans/
