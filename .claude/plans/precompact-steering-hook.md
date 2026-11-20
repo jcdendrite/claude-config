@@ -164,11 +164,12 @@ Narrower alternatives inside the chosen design:
     - The test reads `handoff/SKILL.md` by repo path, as `test_restore_authorization_boundary_on_compact.py:35-36` does. It selects the six `## §<number> ` heading lines by exact number token, then strips the token. The tokens must match exactly because §2.5 sits between §2 and §2.6.
     - From the stdout it takes only whole lines matching `## Continuity` or `### <name>`, so prose mentions of the same words do not count.
     - It asserts exactly one `## Continuity` line, before the `### ` lines, whose names equal the six in order.
-    - A seeded negative runs the same comparison on a copy of the stdout with one heading renamed and asserts a mismatch. A seeded negative is a deliberately broken input that shows the check can fail.
+    - A seeded negative runs the same comparison on a copy of the stdout with one `### ` heading appended and asserts a mismatch. A seeded negative is a deliberately broken input that shows the check can fail.
   - Pinned literals, each found in the stdout after collapsing runs of whitespace, so a hard-wrapped heredoc still matches:
     - the boundary clause, `mutates shared state in a way no other command undoes, or has effects observable outside this repository` (row 16), which covers both predicates and which the test also asserts as an exact substring of `restore-authorization-boundary-on-compact.sh`'s `additionalContext` for a `compact` source;
-    - M2's sourcing, pending, claim and carry-forward literals;
-    - one token per remaining attribution rule: `own directive sentences`, `agent wording`, `counts as selected` and `unanswered agent question`.
+    - M2's pending literal (`PENDING_LITERAL`) and the sentence asking for the engineer's held actions (`ENGINEER_HOLD_LITERAL`), each pinned whole under the pending heading;
+    - one token per clause family of M2's sourcing paragraph (`SOURCING_TOKENS`), pinned under the next-step heading;
+    - one token per clause family of M2's whole attribution block (`ATTRIBUTION_TOKENS`): the quote, selection, unanswered-question, decision-source, claim and carry-forward rules.
   - What the pins show:
     - Each literal and token pin is a tripwire, an assertion that only shows a clause is present. Whether the summarizer follows a clause is model behavior, which only M7 checks.
     - The boundary-clause pin is drift-only evidence. It fails when the two copies of row 16's sentence diverge. It shows nothing about what a summary reproduces or what the resumed agent receives.

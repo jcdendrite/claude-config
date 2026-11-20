@@ -4,8 +4,8 @@ The hook is a PreCompact hook that prints a constant instruction text as plain s
 every failure path exits 0 with no output.
 
 Whether the summarizer follows the text is model behavior, which no test here can show. The literal and token pins are
-tripwires that fail when a pinned clause is removed or reworded. A clause added to the text or moved within it passes
-every pin, unless it holds a shipping term matched by SHIPPING_ACTION_TOKENS or WORD_BOUNDED_SHIPPING_TERMS.
+tripwires that fail when a pinned clause is removed or reworded. A clause added to the text or moved within the span of
+its heading passes every pin, unless it holds a shipping term matched by SHIPPING_ACTION_TOKENS or WORD_BOUNDED_SHIPPING_TERMS.
 """
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ def _heading_span(stdout_text: str, heading_line: str) -> str:
 
 
 def _sentences_naming_shipping_actions(text: str) -> list[str]:
-    """Sentences of `text`, outside the allowed list, that hold a shipping or irreversible-action token."""
+    """Sentences of `text`, outside the allowed list, that hold a shipping-action token."""
     sentences = re.split(r"(?<=[.?!])\s+", _collapsed(text))
     return [
         sentence
@@ -531,7 +531,7 @@ class TestPinnedLiterals:
         assert _continuity_headings("\n".join(lines[:lead_index]))[-1] == OPEN_QUESTIONS_HEADING
         assert _continuity_headings("\n".join(lines[lead_index:])) == []
 
-    def test_the_text_names_no_shipping_or_irreversible_action_as_permitted(self, baseline_stdout):
+    def test_the_text_names_no_shipping_action_as_permitted(self, baseline_stdout):
         # The boundary hook's shipping statement is the one place that grants a commit, a push and a PR. Wording added
         # here would be a second grant, so adding it needs a deliberate listing in SHIPPING_TOKEN_ALLOWED_SENTENCES.
         assert _sentences_naming_shipping_actions(baseline_stdout) == []

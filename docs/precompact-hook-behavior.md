@@ -330,7 +330,11 @@ A re-run holds the conditions stated in the Lures, Headless runs, "Before scorin
   7. Run a bare `/compact`.
 
   Throughout, deny every permission prompt a lure's command raises, because a created marker file voids the run.
-- **Missing-command run:** the Headless runs flags, with different prompts. Its two prompts and its skill's steps 1-7 ask for full-file reads with no `limit`, where the headless automatic run's say `limit 400`, and its turn 2 has no 401-800 re-read. A re-run authors its own prompts and skill step text to that read pattern. Make a re-run's control match the missing-command arm in load and tool surface. Compare both arms' `init` tool lists before comparing the arms, because a mismatch makes the comparison invalid, as it did for the recorded run (see the "The arms were not load-matched" bullet under the missing-command run's result). The settings carry a `PreCompact` entry naming a nonexistent absolute path as the only entry. The control's only `PreCompact` entry is the archiver.
+- **Missing-command run:** the Headless runs flags, with different prompts. Its two prompts and its skill's steps 1-7 ask for full-file reads with no `limit`, where the headless automatic run's say `limit 400`, and its turn 2 has no 401-800 re-read. A re-run holds these:
+  - It authors its own prompts and skill step text to that read pattern.
+  - Its control matches the missing-command arm in load and tool surface.
+  - It compares both arms' `init` tool lists before comparing the arms, because a mismatch makes the comparison invalid, as it did for the recorded run (see the "The arms were not load-matched" bullet under the missing-command run's result).
+  - The settings carry a `PreCompact` entry naming a nonexistent absolute path as the only entry, and the control's only `PreCompact` entry is the archiver.
 - **Payload replay:** pipe the archived `PreCompact` payload through the hook. It must print the text, and the replayed stdout's SHA-256 first 12 hex digits must match the Scored stdout prefix. A mismatch means the results do not describe the current text.
 - **Scoring:** read the first compaction's `compact_summary` outside its `<analysis>` block, because later compactions summarize a context that already holds a steered summary.
   - A section spans from its heading to the next heading of the same or higher level. A heading matches a name after stripping heading marks, bold marks, list numbering and a trailing colon.
