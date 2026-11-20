@@ -58,12 +58,20 @@
 #   - A `git` reached only through an alias, a wrapper script, or another
 #     level of indirection this parser cannot see is undecidable — a
 #     command containing no literal `git`/`*/git` token produces no GIT
-#     record and is allowed, same as any non-git command.
+#     record and is allowed, same as any non-git command. A command word
+#     supplied by a `$(...)` or backtick substitution in front of a `git` segment is not seen, so
+#     `$(echo rm) git --version` is judged on `git --version` alone and allowed.
 #   - The `cd`/`git rev-parse` resolution calls below have no timeout of
 #     their own (unlike the `python3` parser spawn) — a path backed by a
 #     stalled network filesystem could hang the call. Accepted for a
 #     developer-machine guardrail; not guarded against network-mount
 #     hangs the way the parser spawn is guarded against a runaway parse.
+#   - A newline does not split segments in the parser, so a command followed
+#     by a newline and a git write is judged as one segment. After a
+#     read-only subcommand or `cd <dir>` the write is never judged.
+#   - A same-line heredoc opener drops the rest of that line from the
+#     parser's input, so a git write after the opener is never judged
+#     (`echo <<X; <write>`, `<<X <write>`, `git status <<X; <write>`).
 #   - No cap on the size of the command string handed to the parser —
 #     bounded in practice by the 5s parser timeout, not by an explicit
 #     size check.

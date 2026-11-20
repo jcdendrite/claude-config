@@ -29,6 +29,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`deny-reviewer-tree-mutation.sh` and `deny-invisible-commit-content.sh` now allow a fragment that is exactly `git --version`, with no read-only subcommand.**
   - Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
   - The change is live on `git pull`.
+- **`require-worktree-for-git-writes.sh` now allows a segment that is exactly `git --version`, instead of denying it as an undeterminable subcommand, and `evaluate-code-writer-self-review.py` now counts `git --version && git diff` as a diff re-read.**
+  - The parser reports that two-word segment as the read-only `version` subcommand, so the worktree hook allows it in the main checkout and in a linked worktree whatever the lock state.
+  - In the main checkout, bare `git`, `git -v`, `git --help`, `git -c k=v --version`, a path-qualified `git` and the literal `env git --version` still deny.
+  - A command word supplied by a substitution in front of a literal `git --version` segment is judged on that segment alone.
+  - The change is live on `git pull`.
 - **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**
   - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.
   - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`.
