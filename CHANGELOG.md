@@ -6,6 +6,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The documented `claude-config.toml` append one-liners now start with a newline, `.gitignore` covers six more legacy sentinel filenames, and `git-feature-branch-sync`'s explicit `--force-with-lease` recipe uses a pre-rewrite SHA.**
+  - Every `printf 'key = value\n' >> .../claude-config.toml` copy in `README.md`, `docs/`, and the `advance-past-commit-stall.sh` block reason is now `printf '\nkey = value\n'`. Without the leading newline, a file lacking a trailing newline fused the new key onto its last line, and `_config.sh` skipped both as a malformed line. `docs/config-file.md` states the requirement.
+  - **Migration:** a one-liner copied before this change still fuses lines on such a file. Re-copy it from the docs, or add the leading `\n`.
+  - `.gitignore` now lists `claude/.claude/.cost-ledger-enabled`, `.pr-cost-enabled`, `pr-description-tighten-prose-optout`, `.round-consult-gate-disabled`, `.round-consult-round2-pilot` and `.authorization-boundary-disabled`, the legacy filenames in `config-keys.psv` that were not ignored.
+  - The explicit form in `git-feature-branch-sync` set the lease to the tip it had just fetched, so the lease no longer guarded against commits the engineer had not seen. It now records the remote tip with `git ls-remote` before the rewrite and pushes with that SHA, so the lease guards against commits pushed after that recording.
 - **`git-feature-branch-sync` now decides whether a branch is solo-contributor from the commits unique to it.**
   - Pre-flight item 1 ran `git log` with no range, so it also walked the base branch's history and reported almost any branch in a multi-contributor repo as shared. It now runs `git fetch origin`, then `git log --format='%ae %ce' origin/main..origin/<branch>`.
   - **Migration:** pre-flight item 1 can establish a branch as solo-contributor from that log, so the engineer no longer needs to say so.

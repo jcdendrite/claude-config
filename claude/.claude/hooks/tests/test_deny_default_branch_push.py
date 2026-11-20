@@ -542,11 +542,10 @@ class TestComputedDestination:
         "command",
         [
             "git push --force-with-lease --force-if-includes",
-            'git push --force-with-lease="feature:$(git rev-parse origin/feature)" \\\n'
-            "         --force-if-includes origin feature",
+            'git push --force-with-lease="feature:' + "a" * 40 + '" origin feature',
             "git push --force-with-lease origin " + "a" * 40 + ":feature",
         ],
-        ids=["lease-and-includes", "explicit-lease-backslash-newline", "recovered-sha-restore"],
+        ids=["lease-and-includes", "explicit-lease", "recovered-sha-restore"],
     )
     def test_allows_the_sync_recipes_on_a_feature_branch(self, shared_scenario, command):
         """Copies the pushes git-feature-branch-sync/SKILL.md prescribes, with its placeholders filled in."""

@@ -9,13 +9,13 @@
 The hook is **opt-in** — dormant unless the `error_mode_nudge` config key resolves true:
 
 ```bash
-printf 'error_mode_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\nerror_mode_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 Set it back to `false` to disable it again — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
-printf 'error_mode_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\nerror_mode_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 Without this key resolving true, every invocation exits before reading the transcript or spawning `transcript-analysis.py`. Unlike the sibling `nudge-handoff-near-context-cap.sh` hook (opt-out, on by default), this nudge is off by default for every contributor and must be explicitly turned on per machine.

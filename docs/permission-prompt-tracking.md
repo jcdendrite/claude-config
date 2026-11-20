@@ -3,7 +3,7 @@
 ## Activation
 
 ```bash
-printf 'permission_prompt_tracking = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\npermission_prompt_tracking = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 Opt-in, per machine, off by default. Shipped to every stow user of this repo but inert until the `permission_prompt_tracking` config key resolves true — see [`claude/.claude/hooks/_lib.sh`](../claude/.claude/hooks/_lib.sh)'s `_lib_permission_prompt_tracking_active` and [`docs/config-file.md`](config-file.md) for the file's hand-edit contract.
@@ -25,7 +25,7 @@ On each fire, the hook:
 Set the key back to `false` — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
-printf 'permission_prompt_tracking = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\npermission_prompt_tracking = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 There is no per-repo opt-out. This mechanism only appends to a local log and changes no git/PR/tool behavior, and its whole purpose is a cross-repo frequency view — a per-repo opt-out would fragment the aggregate the feature exists to produce, for no privacy benefit the config key above doesn't already provide.

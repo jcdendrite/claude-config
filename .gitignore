@@ -94,6 +94,12 @@ claude/.claude/.handoff-nudge-disabled
 claude/.claude/.consume-durable-continuity-disabled
 claude/.claude/.session-title-disabled
 claude/.claude/pr-cost-disclosure
+claude/.claude/.cost-ledger-enabled
+claude/.claude/.pr-cost-enabled
+claude/.claude/pr-description-tighten-prose-optout
+claude/.claude/.round-consult-gate-disabled
+claude/.claude/.round-consult-round2-pilot
+claude/.claude/.authorization-boundary-disabled
 
 # Same belt-and-suspenders for the per-machine config state file that
 # _config.sh reads from the config dir. Under stow directory-fold, a write to
