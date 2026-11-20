@@ -1,12 +1,14 @@
 # Agent branch records
 
-With the `agent_branch_records` key on, `cleanup-merged-branches.sh` and `cleanup-idle-open-pr-worktrees.sh` copy a worktree's gitignored `agent-reviews/` directory into an archive before `git worktree remove` deletes it. The key is a per-account `bool` in `claude-config.toml` and defaults to `false`. The archive root is `~/.local/state/agent-branch-records/`, fixed in code.
+With the `agent_branch_records` key on, `cleanup-merged-branches.sh` and `cleanup-idle-open-pr-worktrees.sh` copy a worktree's gitignored `agent-reviews/` directory into an archive before `git worktree remove` deletes it. The review-ledger retention sweep in `review-ledger.sh` is the archive's third writer: it copies each stale `review-narrative-ledger/*.jsonl` file before it deletes the file. The key is a per-account `bool` in `claude-config.toml` and defaults to `false`. The archive root is `~/.local/state/agent-branch-records/`, fixed in code.
 
 ## Setup
 
 The commands take `<volume path>` as a bare word, so quote it if it has a space, as in `/Volumes/My Drive`. With no larger volume, run `mkdir -p -m 700 ~/.local/state/agent-branch-records`, skip steps 1 and 2 and continue at step 3. Moving an existing root to another volume is manual and not covered here.
 
 Before step 5, exclude the root, and the step 1 target if you use a volume, from any sync or backup client that copies off the machine.
+
+The review-ledger sweep writes the archive from whichever process runs `review-ledger.sh append` or `clear-stale`, so that process needs write access to the archive root until the account directory exists, write access to the account directory once it does, and write and search access to the account directory's `review-narrative-ledger/` subdirectory.
 
 1. Create the target on the volume first, because a link to a missing target reads as a missing sentinel: `mkdir -m 700 <volume path>/agent-branch-records`. Also run `mkdir -p ~/.local/state`, since a macOS home may lack it.
 2. Link the root to it: `ln -s <volume path>/agent-branch-records ~/.local/state/agent-branch-records`. The root must not exist yet, because `ln -s` onto an existing directory links inside it.
@@ -25,6 +27,8 @@ Before step 5, exclude the root, and the step 1 target if you use a volume, from
 
 ## What a run prints
 
+These bullets cover the worktree cleanup scripts. The review-ledger sweep's output is under "Ledger copies".
+
 - `Archive: ready (<account directory>)` means the key is on and the root passed its checks. It does not promise that a copy will succeed.
 - `Archive: unavailable (<reason>)` on `--dry-run` previews the refusal and exits 0.
 - A real run that finds the archive unavailable prints the reason on stderr and exits 1 before removing anything in that repo. Under `--all-projects`, the sweep continues with the next repo and the overall exit is 1.
@@ -33,13 +37,13 @@ Before step 5, exclude the root, and the step 1 target if you use a volume, from
 
 ## When a script refuses
 
-A cleanup script that cannot archive a worktree keeps it and exits 1. The first column is the printed reason.
+A cleanup script that cannot archive a worktree keeps it and exits 1. The review-ledger sweep that cannot archive a ledger file keeps the file and does not change the trigger's exit status. The first column is the printed reason.
 
 | Reason | Fix |
 |---|---|
 | `the config directory or the archive setting could not be resolved` | Use an absolute `CLAUDE_CONFIG_DIR`, set `HOME`, or repair the install: the config schema is unreadable, lacks the key's row, or the config directory cannot be canonicalized. |
 | `the archive root is missing its readiness marker` | Create the sentinel (step 3).<br>If the root is a dangling link, mount the volume first.<br>If `HOME` is unset, set it. |
-| `a filesystem call under the archive root did not answer in time` | A call hit the 5-second cap, usually a stalled mount: check the volume and rerun. |
+| `a filesystem call under the archive root did not answer in time` | A call hit the 5-second cap, usually a stalled mount: check the volume and rerun.<br>A ledger copy that outlives the cap also shows it, and it ends archiving for that sweep. |
 | `the archive root is not writable` | Fix the root's mode, or remount it writable. |
 | `this account's archive directory is not writable` | Fix its mode, or remount the volume writable. |
 | `the worktree's repository root or ledger key could not be resolved` | Repair the worktree so `git rev-parse --show-toplevel` succeeds, then rerun. |
@@ -49,17 +53,25 @@ A cleanup script that cannot archive a worktree keeps it and exits 1. The first 
 | `copying agent-reviews failed` | Free space, fix an unreadable file, or rerun the step 4 smoke test. |
 | `the snapshot copy of agent-reviews differs from the original` | Rerun, and if it repeats, run the step 4 smoke test. |
 | `the snapshot manifest could not be written` | Check the volume's space and permissions, then rerun. |
+| `copying a review ledger file failed` | Free space, or fix ownership or permissions so the running user can read the ledger file and write and search the account directory's `review-narrative-ledger/` subdirectory. Do not widen group or other permission bits. The next sweep retries. |
+| `the archived copy of a review ledger file differs from the original` | The volume returned different bytes than were written: run the step 4 smoke test. The next sweep retries. |
 | `the archive setting in claude-config.toml could not be read as true or false` | A `_config.sh: warning: skipping malformed line` on stderr names the line.<br>A line that mentions the key but does not parse, or whose value is not bare `true` or `false`: fix that line and restore the value you set.<br>`claude-config.toml` is unreadable: restore read permission.<br>A directory on its path is not searchable: restore search permission.<br>A regular file sits where a directory belongs on its path: replace it with a directory.<br>A dangling or looping link sits on its path: repair the link or fix `CLAUDE_CONFIG_DIR`.<br>A directory or FIFO sits at its path: replace it with a regular file. |
 
 ## Fail direction
 
-- Key off: the scripts print no `Archive:` line and refuse nothing, though `_config.sh` still warns on stderr about any bad line in `claude-config.toml`. A config directory or schema that cannot be resolved is the exception and refuses regardless of the key (the first table row, except its canonicalization cause, which refuses only with the key on).
+- Key off: the cleanup scripts and `review-ledger.sh clear-stale` print no `Archive:` line and refuse nothing, though `_config.sh` still warns on stderr about any bad line in `claude-config.toml`. That warning can also appear on an `append` with a due ledger file. A config directory or schema that cannot be resolved is the exception and refuses regardless of the key (the first table row, except its canonicalization cause, which refuses only with the key on). For the ledger sweep, a config schema that is unreadable or lacks the key's row keeps the due ledger files and warns. An unresolvable config directory makes `review-ledger.sh` exit 2 before any sweep.
 - A key that cannot be read as on or off refuses: a malformed or non-boolean `agent_branch_records` line, or a `claude-config.toml` that cannot be read (see the last table row).
 - Some failures read as off and remove worktrees with no snapshot, and a missing `Archive: ready` line is the sign of each. The cases:
   - A misspelled key name, including `agent-branch-records`, is not detected, and only `_config.sh`'s stderr warning marks the line.
   - A transient read failure inside the config reader reads as off.
   - A stat error such as EIO, ESTALE or ETIMEDOUT under a searchable parent directory reads as off.
-- The copy steps are not time-capped. A stalled volume hangs the run but never reaches removal.
+- The same three cases also delete due ledger files with no copy:
+  - The `append` sweep prints no `Archive:` line, so for the misspelled key only `_config.sh`'s stderr warning marks it.
+  - `review-ledger.sh clear-stale --dry-run` detects only a persistent cause, such as the misspelled key.
+  - A transient config-reader or stat failure leaves no sign for `append`.
+- The snapshot copy steps are not time-capped. A stalled volume hangs the run but never reaches removal.
+- A ledger copy's calls on the archive are capped at 5 seconds where `timeout` or `gtimeout` is on PATH. A stall ends archiving for that sweep and keeps the due files. The cap bounds each call, not the sweep, so a volume that answers slowly within it has no sweep-level bound. A kept file is due again on every later `append`, which pays a stalled call's cap again. Some calls stay uncapped. A call blocked in uninterruptible I/O ignores the cap. Either can hang `append` while it holds its ledger lock.
+- An `unavailable` archive keeps every due ledger file. A file the sweep can never copy stays and warns on every `append` until someone removes it.
 
 ## Snapshots
 
@@ -69,12 +81,42 @@ A cleanup script that cannot archive a worktree keeps it and exits 1. The first 
 
 To find one, search `<account directory>/branches/*/*/manifest.json`, using the directory the `Archive: ready (...)` line prints, for the `branch` and `main_worktree_path` fields. No script restores a snapshot, so restoring is a manual `cp -R` of its `agent-reviews/`.
 
-Account directories are not an access boundary, because every account runs as the same OS user. Snapshots are created owner-only, which a volume that ignores POSIX modes does not enforce. The manifest is a plain JSON file that any process of the same OS user can write.
+Account directories are not an access boundary, because every account runs as the same OS user. Snapshots and ledger copies are created owner-only, which a volume that ignores POSIX modes does not enforce. The manifest is a plain JSON file that any process of the same OS user can write.
+
+## Ledger copies
+
+With the key on, the retention sweep copies each stale regular `review-narrative-ledger/*.jsonl` file into the archive before it removes the file. Both `review-ledger.sh append` (at the end of each successful call, with the fixed 30-day floor) and `review-ledger.sh clear-stale` run it. It covers every repo hash in the ledger directory. A file whose copy fails stays. `.lock` files and `*.jsonl` symlinks and FIFOs are removed without a copy.
+
+- Layout: `<account directory>/review-narrative-ledger/<stem>.<UTC stamp>.jsonl`. `<stem>` is the ledger file's name without `.jsonl`, and the stamp is the file's last write.
+- A repeat sweep of an unchanged file rewrites the same copy.
+- A stem's copies are segments. A sweep that removes a file leaves the next `append` to start a new one, so one stem's copies can hold disjoint rows.
+- To read a stem's full history, concatenate its copies in stamp order, skipping each copy that is a byte prefix of the next.
+- No script restores a ledger copy, and this doc gives no procedure for writing rows back into the live ledger.
+- Read the stem before deleting the ledger file, which the Reset bullet in `docs/scripts.md` has the reader do. Find the stem in one of these places:
+  - The file name after `files=` in `show`'s header, minus `.jsonl`. The Reset bullet covers a header with one path.
+  - After a sweep has removed the branch file, `show` prints `review-ledger.sh: no ledger for this branch (<path>).` with an empty `files=` header. The file name of `<path>`, minus `.jsonl`, is the stem.
+  - A real `clear-stale` prints `archive and evict: <name>` for each file it copied and removed. `<name>` minus `.jsonl` is the stem.
+- `<ledger_key>.*.jsonl` finds a branch's copies from a snapshot manifest's `ledger_key`.
+- Failure: `append` prints at most one stderr line per sweep, `review-ledger.sh: retention sweep kept <N> ledger file(s) past retention because they could not be archived: <reason> (see docs/agent-branch-records.md)`, and its exit status does not change. `<N>` counts every kept file, but `<reason>` is the first kept file's, so other kept files can carry different reasons. The line repeats on every `append` until the cause is fixed.
+- A kept file remains the branch's ledger file, and the next `append` for that branch writes onto it.
+- A real `clear-stale` reports the sweep as follows:
+  - It names each kept file with the reason it was kept (`keep: <name> (<reason>)`).
+  - After a stall or a directory failure ends archiving, `clear-stale` gives later files that reason without a copy attempt.
+  - `clear-stale` also prints the stderr line above.
+  - `clear-stale` prints `Archive: ready (<account directory>)` or `Archive: unavailable (<reason>)` first, even before any ledger directory exists.
+  - Its exit status does not change.
+- `append` sweeps at a fixed 30 days, and `clear-stale` sweeps at Claude Code's `cleanupPeriodDays` setting, floored at 30. When the setting is above 30, `clear-stale` lists only files older than that window. To list the files `append` is keeping, run `find <config-dir>/review-narrative-ledger -name '*.jsonl' -mtime +30`.
+- `--dry-run` copies nothing and prints no stderr line. It previews the archive state and the files due, not whether each copy will succeed.
+- A copy holds every field of each ledger row, including the finding text, the rationale and the engineer's verbatim decision quote, for every repo on the account. A copy has no 30-day deletion bound. Once the sweep removes a source, the archive holds the only copy, and only a hand removal clears it.
+- To stop ledger copies, set `agent_branch_records` to false. There is no ledger-only switch, and the same key stops worktree snapshots. Copies already made stay until removed by hand. With the key false, the next sweep deletes every due ledger file with no copy, including files kept because the archive was unavailable, so fix the archive instead if those rows matter.
+- See "Fail direction" for how the key is read.
 
 ## Known limits
 
-- The ledger sweep deletes `review-narrative-ledger/*.jsonl` files after at least 30 days without an append, and this archive does not cover them.
-- The archive is not crash-consistent, because nothing flushes the copy to disk before removal. A power loss or kernel panic soon after a run can leave empty files in a snapshot that reads as complete.
+- The ledger sweep checks that a copy matches its source and that the source is still stale, then removes it. An `append` that lands between that staleness check and the removal is lost with the file.
+- Two sweeps can run on one file at once. If one sweep's `cp` rewrites a copy in place and fails partway after the other has removed the source, the archive keeps a truncated copy.
+- A failed or cap-killed `cp`, or a `cmp` mismatch, leaves the incomplete or differing file at the copy's final name, because the sweep's copy step removes nothing under the archive. Once the source is gone, nothing can prove a copy complete, and the sweep prints nothing about a truncated one. A truncated copy can be empty, cut mid-row or cut at a row boundary.
+- The archive is not crash-consistent, because nothing flushes the copy to disk before removal. A power loss, a kernel panic or an unflushed volume unplugged without ejecting it, soon after a run, can leave empty files in a snapshot or ledger copy that reads as complete. Eject the volume only while no review or cleanup runs.
 - A worktree removed by other means gets no snapshot, such as a `--list-removable` consumer or a manual `git worktree remove`.
 - `cleanup-merged-branches.sh` reads the key and account from each repo's own environment, so a repo on a key-off account is removed with no snapshot and no output.
-- Nothing prunes the archive. Delete old snapshot directories by hand.
+- Nothing prunes the archive. Delete old snapshot directories and ledger copies by hand.

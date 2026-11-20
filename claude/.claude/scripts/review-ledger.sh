@@ -16,6 +16,12 @@ set -u
   exit 2
 }
 
+# shellcheck source=_branch-records-lib.sh
+. "$(dirname "$0")/_branch-records-lib.sh" || {
+  printf 'review-ledger.sh: could not load _branch-records-lib.sh beside this script. Ask the user to run ./install.sh from the claude-config checkout, or to re-run whichever installer stows the packages that claude/.claude/scripts/stow-packages.sh lists (./install.sh stows into the home directory only).\n' >&2
+  exit 2
+}
+
 # ${#VAR} below counts codepoints under a UTF-8 locale but bytes under
 # C/POSIX -- these caps are not pinned to either, so the effective limit
 # tracks whichever locale invokes this script.
@@ -121,6 +127,11 @@ Subcommands:
              already exists.
              --authoring-agent and --authoring-effort are optional; an
              absent flag never aborts the append, but an invalid value does.
+             A successful append may also print the retention sweep's one stderr
+             line, `review-ledger.sh: retention sweep kept <N> ledger file(s)
+             past retention because they could not be archived: <reason> (see
+             docs/agent-branch-records.md)`. <reason> is the first kept file's.
+             The line never changes the exit status.
   show [--out <path> [--trend]]
              Print this branch's ledger rows (this session's rows on a
              detached HEAD or the default branch) sorted by event_time, each
@@ -182,7 +193,12 @@ Subcommands:
              Remove ledger (.jsonl) and orphaned lock (.lock) files older
              than the resolved sweep window (Claude Code's cleanupPeriodDays
              setting, floored at 30 days), across every repo-hash.
-             --dry-run reports without removing.
+             With the agent_branch_records key on, each ledger file is copied
+             into the branch-records archive first and kept, with a `keep:`
+             line, when the copy cannot be made. An `Archive:` line reports
+             the archive's state before any per-file line. A real run also
+             prints append's stderr line when it keeps a file.
+             --dry-run reports without removing or copying.
 
 What a failure under --out leaves at <path>, for show and render alike,
 depends on the step, not the exit code, and exit 2 and exit 1 each occur on
@@ -291,6 +307,39 @@ ledger line under this script's round-scoped dedup key. Abort without writing.
 EOF
 }
 
+# _sweep_read_archive_status
+# Sets the calling sweep's archive_state, archive_reason and archive_account_dir locals.
+_sweep_read_archive_status() {
+  branch_records_status
+  archive_state="$BRANCH_RECORDS_STATE"
+  archive_reason="$BRANCH_RECORDS_REASON"
+  archive_account_dir="$BRANCH_RECORDS_ACCOUNT_DIR"
+}
+
+# _sweep_archive_ledger_file ENTRY WINDOW_DAYS ACCOUNT_DIR
+# Copies ENTRY into the archive, then removes it only when the copy compared equal and ENTRY is still stale.
+# Sets the calling sweep's file_outcome (archived, kept or vanished) and file_reason locals.
+# Sets its archive_stop_reason local when the copy returned a status that every later file would also meet.
+# vanished covers a file a concurrent sweep removed, one written since the sweep's find listed it, and a staleness find that failed.
+_sweep_archive_ledger_file() {
+  local entry="$1" window_days="$2" account_dir="$3" archive_status=0 still_stale=''
+  branch_records_archive_ledger_file "$account_dir" "$entry" || archive_status=$?
+  file_reason="$BRANCH_RECORDS_REASON"
+  if [ "$archive_status" -ne 0 ] && [ -z "$file_reason" ]; then
+    file_reason="$_BRANCH_RECORDS_REASON_LEDGER_COPY_FAILED"
+  fi
+  [ "$archive_status" -gt 1 ] && archive_stop_reason="$file_reason"
+  still_stale=$(find "$entry" -maxdepth 0 -mtime "+$window_days" -print 2>/dev/null) || still_stale=''
+  if [ -z "$still_stale" ]; then
+    file_outcome=vanished
+  elif [ "$archive_status" -eq 0 ]; then
+    rm -f "$entry" 2>/dev/null
+    file_outcome=archived
+  else
+    file_outcome=kept
+  fi
+}
+
 # _sweep_stale_ledger_files LEDGER_DIR WINDOW_DAYS DRY_RUN REPORT
 # Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
 # *.lock file under LEDGER_DIR older than WINDOW_DAYS by mtime, across every
@@ -299,22 +348,73 @@ EOF
 # window is a caller-resolved value rather than a fixed 30. The best-effort
 # append path passes the fixed _LEDGER_SWEEP_FLOOR_DAYS floor directly.
 # clear-stale resolves _ledger_sweep_window_days' dynamic settings.json read
-# itself and passes the result. REPORT=1 prints per-file and summary lines
-# (clear-stale). REPORT=0 is silent (the best-effort sweep append performs
-# on every invocation).
+# itself and passes the result.
+# REPORT=1 (clear-stale) prints the `Archive:` line, one line per file and a
+# summary line, plus the stderr line below.
+# REPORT=0 prints only the `review-ledger.sh: retention sweep kept` stderr line.
+# append runs this best-effort REPORT=0 sweep on every invocation.
+# With the agent_branch_records key on, a regular .jsonl file is archived before
+# removal and stays when it cannot be.
+# See docs/agent-branch-records.md § "Ledger copies".
+# Always returns 0, because the status is the caller's exit status.
 _sweep_stale_ledger_files() {
   local ledger_dir="$1" window_days="$2" dry_run="$3" report="$4"
+  local archive_state=disabled archive_reason='' archive_account_dir='' archive_stop_reason='' archive_resolved=0
+  local file_outcome='' file_reason='' keep_reason='' first_keep_reason=''
+  local evicted=0 stay_count=0 entry='' entry_name='' dry_run_label=''
+  [ "$dry_run" -eq 1 ] && dry_run_label=' (dry-run)'
+  if [ "$report" -eq 1 ]; then
+    _sweep_read_archive_status
+    archive_resolved=1
+    case "$archive_state" in
+      ready) printf 'Archive: ready (%s)\n' "$archive_account_dir" ;;
+      unavailable) printf 'Archive: unavailable (%s)\n' "$archive_reason" ;;
+    esac
+  fi
   [ -d "$ledger_dir" ] || return 0
-  local evicted=0 entry
   while IFS= read -r -d '' entry; do
+    entry_name="${entry##*/}"
+    if [ "${entry%.jsonl}" != "$entry" ] && [ -f "$entry" ] && [ ! -L "$entry" ]; then
+      if [ "$archive_resolved" -eq 0 ]; then
+        _sweep_read_archive_status
+        archive_resolved=1
+      fi
+      if [ "$archive_state" != disabled ]; then
+        keep_reason="$archive_reason"
+        [ "$archive_state" = ready ] && keep_reason="$archive_stop_reason"
+        if [ -z "$keep_reason" ]; then
+          if [ "$dry_run" -eq 1 ]; then
+            file_outcome=archived
+          else
+            _sweep_archive_ledger_file "$entry" "$window_days" "$archive_account_dir"
+            keep_reason="$file_reason"
+          fi
+          case "$file_outcome" in
+            archived)
+              evicted=$((evicted + 1))
+              [ "$report" -eq 1 ] && printf '  archive and evict%s: %s\n' "$dry_run_label" "$entry_name"
+              continue
+              ;;
+            vanished) continue ;;
+          esac
+        fi
+        stay_count=$((stay_count + 1))
+        [ -n "$first_keep_reason" ] || first_keep_reason="$keep_reason"
+        [ "$report" -eq 1 ] && printf '  keep%s: %s (%s)\n' "$dry_run_label" "$entry_name" "$keep_reason"
+        continue
+      fi
+    fi
     evicted=$((evicted + 1))
     if [ "$dry_run" -eq 1 ]; then
-      [ "$report" -eq 1 ] && printf '  evict (dry-run): %s\n' "$(basename "$entry")"
+      [ "$report" -eq 1 ] && printf '  evict (dry-run): %s\n' "$entry_name"
     else
       rm -f "$entry" 2>/dev/null
-      [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
+      [ "$report" -eq 1 ] && printf '  evict: %s\n' "$entry_name"
     fi
   done < <(find "$ledger_dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime "+$window_days" -print0 2>/dev/null)
+  if [ "$stay_count" -gt 0 ] && [ "$dry_run" -eq 0 ]; then
+    printf 'review-ledger.sh: retention sweep kept %d ledger file(s) past retention because they could not be archived: %s (see docs/agent-branch-records.md)\n' "$stay_count" "$first_keep_reason" >&2
+  fi
   if [ "$report" -eq 1 ]; then
     if [ "$dry_run" -eq 1 ]; then
       printf 'clear-stale: would evict %d file(s)\n' "$evicted"
@@ -322,6 +422,7 @@ _sweep_stale_ledger_files() {
       printf 'clear-stale: evicted %d file(s)\n' "$evicted"
     fi
   fi
+  return 0
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -644,15 +745,15 @@ case "$SUBCOMMAND" in
     # A row written before schema 5 has no reviewers key, so it never dedups
     # against a schema-5 row.
 
-    # Call tally: the jq, awk, git and cp calls that can run without a timeout,
-    # which are the points where an append can hang.
+    # Call tally: the calls that can run without a timeout, which are the points where an append can hang.
     # Hashing is an in-memory pipe that cannot hang, so the sha256sum and awk
     # pairs that only hash are left out.
     # Each append makes capped _lib_jq calls to build LINE, to parse it back and
     # for the dedup check. An engineer SETTLED and a carry add one more to clean
     # the text they print.
     # The retention sweep passes a fixed floor rather than resolving one
-    # dynamically, so it adds no further call.
+    # dynamically, so it adds no further call for the window.
+    # A due ledger file adds the calls in _sweep_stale_ledger_files and the _branch-records-lib.sh functions it reaches, some of them uncapped tests on the archive volume.
     # A --ref adds capped _lib_jq passes over the resolved file (read, then look
     # up), and a retired --ref adds a read and a compare. A --ref naming a carry
     # repeats the read and look-up once for its rejection advice.
