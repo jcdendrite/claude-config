@@ -56,4 +56,5 @@ by nothing). Every run listed gets exactly one header, in this order, and no
 other header. Do not add commentary before, between, or after these
 sections.
 
-Quote one line only, copied character for character with no added backslashes; findings may share an identical opening, since the harness matches openings in order.
+Quote one line only, with no added backslashes.
+Findings may share an identical opening, because the harness matches openings in order.

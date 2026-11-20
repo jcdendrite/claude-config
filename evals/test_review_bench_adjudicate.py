@@ -820,6 +820,20 @@ class TestRecallAnswerParser:
         assert result["r1"].quoted_opening == "Leaks a connection\n  on every error"
         assert result["r2"].label == "NOT_FOUND"
 
+    @pytest.mark.parametrize(
+        "quoted_first_line",
+        [
+            pytest.param('"Calls \\"foo\\" and', id="escaped-inner-quotes"),
+            pytest.param('"Calls "foo" and', id="unescaped-inner-quotes"),
+        ],
+    )
+    def test_rejects_a_two_line_quote_whose_first_line_holds_three_quote_chars_instead_of_truncating_it(
+        self, quoted_first_line: str,
+    ) -> None:
+        findings = {"r1": 'Calls "foo" and\n  then leaks the handle.'}
+        answer = f'r1: FOUND -- {quoted_first_line}\n  then leaks the handle"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
     def test_rejects_a_found_line_whose_opening_quote_never_closes(self) -> None:
         findings = {"r1": "Leaks a connection on error.", "r2": "Drops a message."}
         answer = 'r1: FOUND -- "Leaks a connection\nr2: FOUND -- "Drops a message"'
@@ -844,7 +858,12 @@ class TestRecallAnswerParser:
 
     @pytest.mark.parametrize(
         ("open_quote", "close_quote"),
-        [pytest.param('"', '"', id="ascii"), pytest.param("“", "”", id="curly")],
+        [
+            pytest.param('"', '"', id="ascii"),
+            pytest.param("“", "”", id="curly"),
+            pytest.param('"', "”", id="ascii-open-curly-close"),
+            pytest.param("“", '"', id="curly-open-ascii-close"),
+        ],
     )
     @pytest.mark.parametrize(
         ("quoted_text", "findings_text"),
@@ -1243,6 +1262,21 @@ class TestPrecisionAnswerParser:
         answer = '### Run r1\n1. VALID -- "Leaks a connection\n    on every error"\n'
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
 
+    @pytest.mark.parametrize(
+        "quoted_first_line",
+        [
+            pytest.param('"Calls \\"foo\\" and', id="escaped-inner-quotes"),
+            pytest.param('"Calls "foo" and', id="unescaped-inner-quotes"),
+        ],
+    )
+    def test_rejects_a_two_line_quote_whose_first_line_holds_three_quote_chars_instead_of_truncating_it(
+        self, quoted_first_line: str,
+    ) -> None:
+        findings_by_id = {"r1": 'Calls "foo" and\n  then leaks the handle.'}
+        answer = f'### Run r1\n1. VALID -- {quoted_first_line}\n  then leaks the handle"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
     def test_rejects_a_finding_line_whose_opening_quote_never_closes(self) -> None:
         findings_by_id = {"r1": "First problem here.\n2. INVALID -- Second problem here."}
         answer = '### Run r1\n1. VALID -- "First problem here.\n2. INVALID -- "Second problem"\n'
@@ -1293,7 +1327,12 @@ class TestPrecisionAnswerParser:
 
     @pytest.mark.parametrize(
         ("open_quote", "close_quote"),
-        [pytest.param('"', '"', id="ascii"), pytest.param("“", "”", id="curly")],
+        [
+            pytest.param('"', '"', id="ascii"),
+            pytest.param("“", "”", id="curly"),
+            pytest.param('"', "”", id="ascii-open-curly-close"),
+            pytest.param("“", '"', id="curly-open-ascii-close"),
+        ],
     )
     @pytest.mark.parametrize(
         ("quoted_text", "findings_text"),
