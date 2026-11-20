@@ -85,8 +85,8 @@ A decline at the HEAD check (default branch, detached HEAD, or unreadable HEAD) 
   - A prefixed object does not match, so "Should I recommit this?" and "Want me to reopen the PR?" are not blocked. They may log `phrasing-drift`, because the verb half still matches.
   - An underscore joins a word, so `commit_hook` does not count and an underscore-wrapped question (`_Want me to commit this?_`) is not blocked.
   - An underscore-wrapped question logs no `phrasing-drift` line, because the verb half fails too.
-  - An underscore-wrapped single object such as `_commit_` does not match: "Should I _commit_ this?" is not blocked and logs `phrasing-drift` because the verb half still matches.
-  - An underscore joins a word, so `parse_error` does not exclude, and the _error_ path does not exclude.
+  - An underscore-wrapped single object such as `_commit_` does not match: `Should I _commit_ this?` is not blocked and logs `phrasing-drift` because the verb half still matches.
+  - An underscore joins a word, so `parse_error` does not exclude. An underscore-wrapped `_error_` does not exclude either.
   - A dot between the permission verb and the object ends the match, so "Want me to update README.md and commit?" is not blocked. It logs `phrasing-drift` because the verb half still matches.
   - Word boundaries follow the process locale, so a letter outside ASCII counts as part of a word under a UTF-8 locale.
   - A question that fires in an unrelated sense is routed back only by the reason's carve-out, and whether the agent follows it is not measured.
