@@ -3,7 +3,7 @@
 **Date:** 2026-11-19
 **Pin:** `ab85a627` (merge-base with `main`). Every count below is read from blobs and history at this commit, not from a working tree.
 **Scope:** every tracked `.py` and `.sh` file over 1,000 physical lines, as GH-1119 scopes it. Files without those suffixes are not measured.
-**Reproduce:** the Appendix holds the measuring program and the cross-check commands. The program prints every measured figure; the three verdict and proposed-issue rows are tallied from the tables below.
+**Reproduce:** the Appendix holds the measuring program and the cross-check commands. The program prints every measured figure.
 
 ## Summary for the Revisit ruling
 
@@ -63,7 +63,7 @@ The assessment's own reading follows. It is the assessment's judgment, not a mea
 - Verdicts are judgments from outlines and targeted reads, not whole-file reads. A build check confirmed that each named seam symbol occurs in the file at the pin. It did not confirm the seam is a good place to cut.
 - Split pending says a seam exists, not that the split is cheap, safe or worth the churn.
 - The commit counts cover one 90-day window at one pin. They cannot show whether that window is typical.
-- `ceiling_edit_load` counts commits that changed an offender's length. It does not count the pull requests that would carry a ceiling edit, and a squash merge makes the two only roughly equal.
+- `ceiling_edit_load` counts commits that changed an offender's length, not the pull requests that would carry a ceiling edit. The two are roughly equal because a commit in the window is roughly a PR, as Method's "Window and commits" explains.
 - The Figures table cannot say whether this number or shape of exceptions is "unreasonable". That ruling is the engineer's, and this assessment makes none.
 
 **For the engineer.**
@@ -109,7 +109,7 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
   - It is not a merge.
   - It falls inside the window.
   - It touches the file's history, followed across renames.
-- The program prints counts only.
+- The program prints commit counts only, never an author name or email address.
 - The ceiling-edit load is the number of distinct commits in the window that changed some offender's length, meaning its added and deleted line counts differ. A pure rename does not count.
 - The window holds no merge commit and every commit subject in it ends with a pull-request number, so a commit there is roughly a PR.
 
@@ -428,7 +428,7 @@ def docstring_spans(tree, lines):
 
 
 def python_noncomment(source):
-    """Lines holding code, counting string bodies; None when the file does not parse."""
+    """Lines holding code, counting the non-blank lines of non-docstring strings. None when the file does not parse."""
     try:
         text = source.decode("utf-8-sig")
         lines = text.split("\n")
