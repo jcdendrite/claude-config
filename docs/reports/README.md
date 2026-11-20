@@ -24,6 +24,7 @@ acting on a `file:line` citation.
 
 | Date | Report | Subject |
 |---|---|---|
+| 2026-11-19 | [Code-file size offenders](2026-11-19-code-file-size-offenders/findings.md) | Every tracked `.py` and `.sh` file over the 1,000-line code-file limit, with each file's counts, 90-day churn, seams, verdict and proposed exception ceiling, for the engineer's ruling on the limit's Revisit condition. |
 | 2026-08-22 | [Discovery audit](2026-08-22-discovery-audit/findings.md) | This repo's first severity-rated, security-inclusive audit applying an external audit-methodology playbook's S/I/C/SC/D taxonomy — 8 domain-auditor passes, a baseline reconciliation of the 2026-08-10 report's 8 findings, and 4 specialist-verification passes. |
 | 2026-08-10 | [Repo quality audit](2026-08-10-repo-quality-audit/findings.md) | Repo-wide audit of hooks, scripts, skills, the instruction surface, docs, and CI after five months of feature and bug-fix PRs. Ships a prioritised cleanup backlog. |
 | 2026-05-20 | [/code-review trend audit](2026-05-20-code-review-trend-audit/findings.md) | Whether the `/code-review` gate rate diverges by `permissionMode`, measured across session transcripts. Produced the `commit-gate` subcommand in `transcript-analysis.py`. |
