@@ -1490,14 +1490,14 @@ review loop through which the toolkit also shapes comments.
 
 Reading `summarize`'s primary outcome:
 
-- Each arm's figure pools the paired tasks: the arm's words summed over tasks,
-  divided by its code lines. A task counts the means of its valid runs, so a
-  task weighs by its code lines and not by how many of its runs were valid.
+- Each arm's figure is the sum over paired tasks of the task's mean words per
+  valid run, divided by the sum of its mean code lines per valid run. A task
+  therefore weighs by its code lines, not by how many of its runs were valid.
 - The reference line is the same ratio for the merged commits of the paired
   tasks.
-- The sensitivity line is the unweighted mean of the per-task differences. One
-  run that adds few code lines can dominate it, so a gap between it and the
-  paired difference points at such a task.
+- The sensitivity line is the unweighted mean of the per-task differences. A
+  task whose runs add few code lines on average can dominate it, so a gap
+  between it and the paired difference points at such a task.
 - The run-to-run spread is the standard deviation of one run's ratio within a
   task, per arm. It shows how far one run's ratio moves with no change of arm.
   It needs `--k 2` or more.

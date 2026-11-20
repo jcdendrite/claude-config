@@ -250,7 +250,6 @@ class TestThePairedOutcomeAsValues:
         })
 
         assert outcome.pooled_ratios["toolkit"] == pytest.approx(10 / 20)
-        assert outcome.pooled_ratios["toolkit"] != pytest.approx(30 / 40)
 
     def test_a_tasks_counts_are_the_means_of_its_runs(self):
         """Kills: a median over the runs, which three skewed runs tell from the mean."""
@@ -322,9 +321,9 @@ class TestThePairedOutcomeAsValues:
 
 
 class TestTheRunSpread:
-    def runs(self, task_id, *words_and_code):
+    def runs(self, task_id, *words_and_code, arm="toolkit"):
         return [
-            record(task_id, "toolkit", run_index=index, run_metrics=metrics(words=words, code=code))
+            record(task_id, arm, run_index=index, run_metrics=metrics(words=words, code=code))
             for index, (words, code) in enumerate(words_and_code)
         ]
 
@@ -350,21 +349,30 @@ class TestTheRunSpread:
 
         assert summary.run_spread([runs]).standard_deviation == pytest.approx(math.sqrt(2.0))
 
-    def test_the_paired_outcome_reports_it_per_arm_over_the_paired_tasks_only(self):
+    @pytest.mark.parametrize(("arm_with_runs", "other_arm"), [("toolkit", "bare"), ("bare", "toolkit")])
+    @pytest.mark.parametrize(
+        "other_arm_run",
+        [{"ok": False, "reason": "timeout"}, {"run_metrics": metrics(words=0, code=0)}],
+        ids=["no-valid-run", "no-code-line"],
+    )
+    def test_the_paired_outcome_reports_it_per_arm_over_the_paired_tasks_only(self, arm_with_runs, other_arm, other_arm_run):
         outcome = summary.paired_outcome({
-            "paired": [*self.runs("paired", (10, 10), (30, 10)), record("paired", "bare")],
-            "unpaired": [*self.runs("unpaired", (0, 10), (90, 10)), record("unpaired", "bare", ok=False, reason="timeout")],
+            "paired": [*self.runs("paired", (10, 10), (30, 10), arm=arm_with_runs), record("paired", other_arm)],
+            "unpaired": [
+                *self.runs("unpaired", (0, 10), (90, 10), arm=arm_with_runs),
+                record("unpaired", other_arm, **other_arm_run),
+            ],
         })
 
-        assert outcome.run_spreads["toolkit"] == summary.RunSpread(pytest.approx(math.sqrt(2.0)), 1)
-        assert outcome.run_spreads["bare"] == summary.RunSpread(None, 0)
+        assert list(outcome.differences) == ["paired"]
+        assert outcome.run_spreads[arm_with_runs] == summary.RunSpread(pytest.approx(math.sqrt(2.0)), 1)
+        assert outcome.run_spreads[other_arm] == summary.RunSpread(None, 0)
 
     def test_it_is_the_spread_of_each_runs_own_ratio(self):
         """Kills: dividing the spread of a task's words by the task's mean code lines."""
         spread = summary.run_spread([self.runs("t1", (10, 10), (30, 20))])
 
         assert spread.standard_deviation == pytest.approx(statistics.stdev([10 / 10, 30 / 20]))
-        assert spread.standard_deviation != pytest.approx(statistics.stdev([10, 30]) / 15)
 
     def test_a_run_with_no_code_line_adds_no_degree_of_freedom(self):
         spread = summary.run_spread([
