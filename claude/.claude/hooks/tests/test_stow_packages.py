@@ -1,8 +1,11 @@
-"""Tests pinning stow-packages.sh's manifest against its two consumers:
+"""Tests pinning stow-packages.sh's manifest against its consumers:
 
 - every row must name a package directory that actually exists on disk
 - every row the manifest prints must actually be stowed, not silently
   dropped by install.sh's loop
+- relocate-claude-config.sh's copy of the rows other than `claude` must equal
+  the manifest's, and the `claude` row must target `.` as that script's
+  `stow` calls assume
 
 Applies the inventory-versus-consumer shape
 test_install_sh_sentinel_inventory.py uses for SENTINEL_INVENTORY to the
@@ -11,6 +14,7 @@ stow-package manifest instead.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +24,7 @@ from helpers import REPO_ROOT, SCRIPTS_DIR, link_bash_into
 
 _INSTALL_SH = REPO_ROOT / "install.sh"
 _STOW_PACKAGES_SH = SCRIPTS_DIR / "stow-packages.sh"
+_RELOCATE_SH = SCRIPTS_DIR / "relocate-claude-config.sh"
 _STOW = shutil.which("stow")
 
 _FIXTURE_START = "# INSTALL_TEST_FIXTURE: stow-adopt-ignore — start\n"
@@ -76,6 +81,42 @@ class TestManifestRowsNameRealPackageDirectories:
                 f"stow-packages.sh printed package directory {package_dir!r}, "
                 f"which does not exist under {REPO_ROOT}"
             )
+
+
+class TestRelocateRelinkPackagesMatchManifest:
+    def test_relink_packages_equal_the_manifest_rows_other_than_claude(self, tmp_path: Path) -> None:
+        """Without this pin, a package added to stow-packages.sh would be
+        linked by install.sh but silently skipped by relocate-claude-config's
+        re-link, leaving it dangling after a relocation."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; declare -p RELINK_PACKAGES; printf "%s\\n" "${RELINK_PACKAGES[@]}"',
+                "_",
+                str(_RELOCATE_SH),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "HOME": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        lines = result.stdout.split("\n")[:-1]
+        assert re.match(r"declare -[a-zA-Z]*a[a-zA-Z]* RELINK_PACKAGES=", lines[0]), (
+            f"{_RELOCATE_SH} must declare RELINK_PACKAGES as an array; got {lines[0]!r}"
+        )
+        manifest_rows = _manifest_rows()
+        assert ("claude", ".") in manifest_rows, (
+            f"{_STOW_PACKAGES_SH} must list the row 'claude' with target '.': "
+            f"all four `stow ... claude` calls in {_RELOCATE_SH} hardcode $HOME as their target"
+        )
+        expected_rows = [f"{package}\t{target}" for package, target in manifest_rows if package != "claude"]
+        assert lines[1:] == expected_rows, (
+            f"RELINK_PACKAGES in {_RELOCATE_SH} must equal the rows other than 'claude' "
+            f"that {_STOW_PACKAGES_SH} prints"
+        )
 
 
 class TestRefusesWhenResolvedRootLacksAPackage:

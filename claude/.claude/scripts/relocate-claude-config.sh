@@ -32,14 +32,52 @@
 # Exit codes:
 #   0  success
 #   1  a precondition failed (bad current-repo state, failed validation,
-#      claude-config not found)
-#   2  bad arguments
+#      claude-config not found, an unusable backup dir), or --repair could not
+#      move a dangling link into the backup dir (`could not move ... into ...`).
+#      That move fails mid-run, so entries moved before it stay in the backup
+#      dir and the output names each. Otherwise the last of the `unstowing`,
+#      `moving` and `mv failed` lines the primary form printed says what state
+#      it left, since an error line or Stow's own output always follows it:
+#      - No such line: nothing changed.
+#      - `unstowing` and no `moving`: the unstow itself failed, so some
+#        `claude` links may be absent. The exit status is Stow's own, so it can
+#        be 2. Fix it and re-run the primary form.
+#      - `mv failed`: nothing moved. Fix it and re-run the primary form.
+#        The restore stow after that line can itself fail. It then exits with
+#        Stow's own status, so not necessarily 1, and the `claude` links may be
+#        absent. Re-running the primary form still recovers.
+#      - `moving` with no `mv failed` line: the checkout moved. The
+#        `mkdir` of ~/.claude and ~/.local/bin, the `claude` stow or the
+#        manifest or installed-copy write failed. Run
+#        `relocate-claude-config --repair [--allow-outside-home] <new-path>`.
+#        The flag is needed when the primary run passed it.
+#      A failing `claude` stow or write exits with its own status, so it can be
+#      1 or 2. It is 1 for a Stow conflict. It is 2 for a missing package
+#      directory, as Stow 2.4.1 was observed to return, and neither this script
+#      nor Stow defines or documents that code. Whatever the status, after
+#      `re-stowing at` the checkout moved and the retry is the --repair command
+#      above. After --repair's `stowing at`, the retry is re-running the same
+#      command, since only the primary form prints `re-stowing at`.
+#   2  bad arguments. A failing `claude` stow or write after the move can also
+#      return 2 as its own status, as the `1` entry says.
+#   3  the checkout moved, or --repair linked the `claude` package, but
+#      linking a package named on stderr failed. Fix it, then run the
+#      --repair command the output ends with. A checkout with no
+#      claude-skills/ directory is the exception: update it to a commit that
+#      has one, then run ./install.sh from it, because the run already
+#      installed the checkout's own copy of this script. A failing `claude`
+#      stow or write after the move can also return 3 as its own status, and
+#      then the output has no closing --repair line.
 
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 MANIFEST="$HOME/.claude-config-source"
 BACKUP_DIR="$HOME/.claude-config-relocate-backup"
+# Rows in stow-packages.sh's format for every package it lists except `claude`.
+# A test keeps this equal to that script's rows.
+RELINK_PACKAGES=($'claude-skills\t.claude')
+RELINK_FAILED_PACKAGES=()
 
 usage() {
   cat >&2 <<EOF
@@ -277,37 +315,58 @@ validate_destination_for_repair() {
   validate_destination_common "$1"
 }
 
-# Refuse a pre-planted symlink at the fixed, predictable BACKUP_DIR path —
-# quarantined entries must land in a real directory this script creates and
-# the user can find, not wherever a symlink there happens to already point.
-_ensure_backup_dir_is_not_a_symlink() {
+# Refuse a pre-planted symlink, or anything that is not a directory, at the
+# fixed, predictable BACKUP_DIR path — quarantined entries must land in a real
+# directory this script creates and the user can find, not wherever a symlink
+# there happens to already point.
+_ensure_backup_dir_is_usable() {
   if [ -L "$BACKUP_DIR" ]; then
     err "'$BACKUP_DIR' already exists as a symlink — refusing to quarantine into it. Remove it or replace it with a real directory first."
     exit 1
   fi
+  if [ -e "$BACKUP_DIR" ] && [ ! -d "$BACKUP_DIR" ]; then
+    err "'$BACKUP_DIR' exists and is not a directory — refusing to quarantine into it. Remove it or replace it with a real directory first."
+    exit 1
+  fi
 }
 
-# Quarantine-move (never delete) every symlink directly inside $1 whose
-# target does not exist; a live symlink or real file/directory is left
-# untouched. Quarantine instead of delete because a dangling-symlink check
-# alone can false-positive on a target that's merely temporarily
-# unreachable (unmounted volume, offline share, mid-sync cloud path), not
-# genuinely broken — quarantining keeps a wrongly-triggered repair
-# reversible. Echoes true/false on stdout (not a bare return status) so the
-# caller's `&&`-chained bookkeeping reads cleanly regardless of shell option
-# state.
+# Quarantine-move (never delete) $1 when it is a symlink whose target does not
+# exist, and return 1 without touching anything for any other path.
+# Quarantine instead of delete because a dangling-symlink check alone can
+# false-positive on a target that's merely temporarily unreachable (unmounted
+# volume, offline share, mid-sync cloud path), not genuinely broken —
+# quarantining keeps a wrongly-triggered repair reversible.
+# Links with the same basename quarantined in one run share one backup name,
+# so the later move replaces the earlier backup.
+# Callers run it with errexit off, so a failed move exits here instead of
+# returning a status.
+_quarantine_if_dangling() {
+  local dangling_path="$1"
+  if [ ! -L "$dangling_path" ] || [ -e "$dangling_path" ]; then
+    return 1
+  fi
+  _ensure_backup_dir_is_usable
+  local backup_path
+  backup_path="$BACKUP_DIR/$(basename -- "$dangling_path").$$"
+  echo "[relocate-claude-config] quarantining dangling $dangling_path -> $backup_path"
+  if ! { mkdir -p -- "$BACKUP_DIR" && mv -- "$dangling_path" "$backup_path"; }; then
+    err "could not move $dangling_path into $BACKUP_DIR"
+    exit 1
+  fi
+}
+
+# Quarantine every dangling symlink directly inside $1; a live symlink or real
+# file/directory is left untouched. The exit status, not stdout, reports
+# whether anything was quarantined: 0 when something was, 1 when nothing was.
 _quarantine_dangling_children() {
   local dir="$1" found=false
-  _ensure_backup_dir_is_not_a_symlink
+  _ensure_backup_dir_is_usable
   local nullglob_was_set=0
   if shopt -q nullglob; then nullglob_was_set=1; fi
   shopt -s nullglob
   local entry
   for entry in "$dir"/*; do
-    if [ -L "$entry" ] && [ ! -e "$entry" ]; then
-      mkdir -p -- "$BACKUP_DIR"
-      echo "[relocate-claude-config] quarantining dangling $entry -> $BACKUP_DIR/$(basename -- "$entry").$$"
-      mv -- "$entry" "$BACKUP_DIR/$(basename -- "$entry").$$"
+    if _quarantine_if_dangling "$entry"; then
       found=true
     fi
   done
@@ -324,14 +383,11 @@ _quarantine_dangling_children() {
 # is relevant there.
 quarantine_dangling_claude_entries() {
   local quarantined_any=false
-  _ensure_backup_dir_is_not_a_symlink
+  _ensure_backup_dir_is_usable
 
   if claude_is_tree_folded; then
     if [ ! -e "$HOME/.claude" ]; then
-      mkdir -p -- "$BACKUP_DIR"
-      echo "[relocate-claude-config] quarantining dangling ~/.claude -> $BACKUP_DIR/.claude.$$"
-      mv -- "$HOME/.claude" "$BACKUP_DIR/.claude.$$"
-      quarantined_any=true
+      _quarantine_if_dangling "$HOME/.claude" && quarantined_any=true
     fi
   elif [ -d "$HOME/.claude" ]; then
     _quarantine_dangling_children "$HOME/.claude" && quarantined_any=true
@@ -400,9 +456,129 @@ finish_relocation() {
   install -m 755 -- "$new_path/claude/.claude/scripts/relocate-claude-config.sh" "$HOME/.local/bin/relocate-claude-config"
 }
 
+# Re-link package $2 of the checkout at $1 into directory $3. The stow runs
+# only once every top-level path of the package passed its check and every
+# move succeeded. The body is a subshell, so an exit or shopt change ends with
+# it. Callers run it as an `if` condition, where errexit is off, so each step
+# checks its own status.
+_relink_package() (
+  local new_path="$1" package="$2" target_dir="$3"
+
+  if [ -L "$target_dir" ]; then
+    local link_text
+    link_text=$(readlink -- "$target_dir") || link_text="unreadable"
+    err "$target_dir is a symlink, such as the legacy tree-folded form that points into the checkout (link text: $link_text), so stowing $package would write through it into the checkout. Outside a Claude Code session, replace the link with a real directory, move into it the untracked content the folded directory holds, then run the --repair command this output ends with."
+    exit 1
+  fi
+
+  shopt -s nullglob dotglob
+  local entry entry_path
+  for entry in "$new_path/$package"/*; do
+    entry_path="$target_dir/$(basename -- "$entry")"
+    if [ -d "$entry_path" ] && [ ! -L "$entry_path" ]; then
+      err "$entry_path is a real directory, so $package is not merged into it. Move it aside, then run the --repair command this output ends with."
+      exit 1
+    fi
+    _quarantine_if_dangling "$entry_path" || true
+  done
+
+  # The .DS_Store ignore matches install.sh's stow of a non-claude package.
+  cd -- "$new_path" && stow -v --ignore='(^|/)\.DS_Store$' -t "$target_dir" "$package"
+)
+
+# Re-link every RELINK_PACKAGES row from the checkout at $1. A failed package
+# is reported and recorded in RELINK_FAILED_PACKAGES, never aborts the run.
+relink_packages() {
+  local new_path="$1" row package target
+  RELINK_FAILED_PACKAGES=()
+  for row in "${RELINK_PACKAGES[@]}"; do
+    package="${row%%$'\t'*}"
+    target="${row#*$'\t'}"
+    echo "[relocate-claude-config] linking $package at $new_path"
+    if ! _relink_package "$new_path" "$package" "$HOME/$target"; then
+      err "re-linking $package failed"
+      RELINK_FAILED_PACKAGES+=("$package")
+    fi
+  done
+  return 0
+}
+
+print_primary_reminders() {
+  cat <<EOF
+Reminders:
+  - Other open shells or Claude Code sessions still have the OLD path as
+    their working directory — reopen them, or 'cd $1' manually.
+  - Do not run this command while other Claude Code sessions are active:
+    every hook under ~/.claude/hooks/ is briefly absent between the unstow
+    and re-stow steps above, and a concurrent session's tool call in that
+    window gets a hard deny (fails closed, but visibly disruptive).
+EOF
+}
+
+# Steps this command leaves to the user.
+print_manual_steps() {
+  cat <<'EOF'
+Not done by this command:
+  - Other accounts' config dirs, including any listed in ~/.claude/transcript-config-dirs, keep their links into the old location.
+    A session under such an account loads none of this repo's settings, hooks or skills until its dir is re-linked.
+    CLAUDE_CONFIG_DIR=<dir> register-marketplace re-points its marketplace registration once that account's settings.json resolves.
+  - Every linked worktree still records the old location: run `git worktree repair` in the moved checkout, naming each linked worktree's current path.
+  - Anything outside this repo that names the old path, such as a scheduled job or a shell startup file, still names it.
+  See README "Repo relocation".
+EOF
+}
+
+# Print the closing text for the run's outcome: stdout when every package
+# linked, stderr with a --repair retry line when one failed. $2 is "primary"
+# or "repair".
+report_relink_outcome() {
+  local new_path="$1" mode="$2"
+
+  if [ "${#RELINK_FAILED_PACKAGES[@]}" -eq 0 ]; then
+    if [ "$mode" = primary ]; then
+      printf '\nDone. This checkout now lives at: %s\n\n' "$new_path"
+      print_primary_reminders "$new_path"
+      echo
+    else
+      cat <<EOF
+
+Done. ~/.claude and ~/.local/bin now point at: $new_path
+
+EOF
+    fi
+    print_manual_steps
+    return 0
+  fi
+
+  local retry_path retry_allow_flag=""
+  retry_path=$(canonicalize_for_comparison "$new_path")
+  if $ALLOW_OUTSIDE_HOME; then
+    retry_allow_flag=" --allow-outside-home"
+  fi
+
+  {
+    echo
+    if [ "$mode" = primary ]; then
+      echo "The checkout moved to $new_path and the claude package is linked, but re-linking failed for: ${RELINK_FAILED_PACKAGES[*]}"
+    else
+      echo "The claude package is linked from $new_path, but re-linking failed for: ${RELINK_FAILED_PACKAGES[*]}"
+    fi
+    echo "The primary form must not be re-run."
+    if [ "$mode" = primary ]; then
+      print_primary_reminders "$new_path"
+    fi
+    print_manual_steps
+    echo "The --repair retry also moves other dangling entries (those whose name does not start with a dot) directly under ~/.claude and ~/.local/bin into $BACKUP_DIR, not only those the move broke."
+    echo "Resolve each failure named above first, because the retry fails the same way until then: a symlinked ~/.claude needs the replacement its error describes. Anything else at ~/.claude/skills that is not this checkout's link must be moved aside, and a failed move into $BACKUP_DIR needs that directory fixed."
+    echo "A missing claude-skills/ directory is the exception: update the checkout to a commit that has it, then run ./install.sh from it. This run already replaced the installed script with the checkout's own, so a retry before then runs that script and links nothing."
+    printf 'relocate-claude-config --repair%s %q\n' "$retry_allow_flag" "$retry_path"
+  } >&2
+}
+
 relocate_repo() {
   local new_path="$1"
 
+  _ensure_backup_dir_is_usable
   validate_destination_for_relocate "$new_path" || exit 1
 
   local current_repo
@@ -440,20 +616,12 @@ relocate_repo() {
   echo "[relocate-claude-config] re-stowing at $new_path"
   ( cd -- "$new_path" && stow -v --adopt -t "$HOME" claude )
 
+  relink_packages "$new_path"
   finish_relocation "$new_path"
-
-  cat <<EOF
-
-Done. This checkout now lives at: $new_path
-
-Reminders:
-  - Other open shells or Claude Code sessions still have the OLD path as
-    their working directory — reopen them, or 'cd $new_path' manually.
-  - Do not run this command while other Claude Code sessions are active:
-    every hook under ~/.claude/hooks/ is briefly absent between the unstow
-    and re-stow steps above, and a concurrent session's tool call in that
-    window gets a hard deny (fails closed, but visibly disruptive).
-EOF
+  report_relink_outcome "$new_path" primary
+  if [ "${#RELINK_FAILED_PACKAGES[@]}" -gt 0 ]; then
+    exit 3
+  fi
 }
 
 repair_repo() {
@@ -472,12 +640,12 @@ repair_repo() {
   echo "[relocate-claude-config] stowing at $new_path"
   ( cd -- "$new_path" && stow -v --adopt -t "$HOME" claude )
 
+  relink_packages "$new_path"
   finish_relocation "$new_path"
-
-  cat <<EOF
-
-Done. ~/.claude and ~/.local/bin now point at: $new_path
-EOF
+  report_relink_outcome "$new_path" repair
+  if [ "${#RELINK_FAILED_PACKAGES[@]}" -gt 0 ]; then
+    exit 3
+  fi
 }
 
 main() {
