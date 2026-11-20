@@ -132,6 +132,12 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
+      # Several tests skip when jq is not on PATH, the `requires_jq` marker among them, so a runner image without jq would pass CI with those tests skipped.
+      # This step fails the job in that case.
+      - name: Require jq
+        if: steps.detect.outputs.changed == 'true'
+        run: jq --version
+
       # The pin is one Ubuntu 24.04 (noble) build version of git and git-man, installed by name from the runner's apt sources, which apt verifies against the signed index.
       # When Ubuntu supersedes the build, the install fails with a "Version ... was not found" error, and that failure is the signal to bump.
       # test_ci_git_equals_the_floor fails when the test steps run without this step.

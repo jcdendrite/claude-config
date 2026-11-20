@@ -38,6 +38,7 @@ from ._cursor_identity_fixtures import clear_adapter_environment
 # test's own timeout.
 TIMEOUT_SHIM_SLEEP_SECONDS = 10
 
+# The "Require jq" step in .github/workflows/tests.yml turns a missing jq into a CI failure instead of a skip.
 requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
 
 
