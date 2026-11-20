@@ -1038,6 +1038,108 @@ class TestRequireWorktreeForGitWrites:
         assert "worktree-ensure.sh" not in sentinel_reason
 
 
+class TestGitVersionLiteral:
+    """Only the exact token pair `git --version` is allowed past the flags-only SENTINEL deny.
+
+    The `session_cwd` allow rows and the `git -v` control run in the main tree, an
+    unlocked linked worktree and a linked worktree locked by a live foreign session,
+    because the latter two reach the parser only after the fast path declines.
+    The stays-unlocked row runs in the unlocked worktree only. The substitution
+    row and the other deny rows run in the main tree only.
+    """
+
+    @pytest.fixture(params=["main-tree", "unlocked-worktree", "foreign-locked-worktree"])
+    def session_cwd(self, request, isolated_home):
+        if request.param == "main-tree":
+            return request.getfixturevalue("opted_in_repo")
+        _, worktree = request.getfixturevalue("opted_in_with_worktree")
+        if request.param == "foreign-locked-worktree":
+            _lock_worktree(worktree, f"claude-code pid {request.getfixturevalue('live_pid')}")
+        return worktree
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --version",
+            "git --version | head -1",
+            "git --version && git status",
+        ],
+        ids=["version", "version-piped-to-head", "version-then-status"],
+    )
+    def test_git_version_literal_allowed(self, session_cwd, command):
+        assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=session_cwd) == "allow"
+
+    def test_unlocked_worktree_stays_unlocked_after_the_allow(self, opted_in_with_worktree):
+        _, worktree = opted_in_with_worktree
+
+        assert run_hook(WORKTREE_HOOK, bash_input("git --version"), cwd=worktree) == "allow"
+        assert _worktree_lock_reason(worktree) is None
+
+    # Control: `git -v` reaches the parser in each context and denies, so the allow rows above are not a fast-path pass.
+    def test_git_short_version_flag_denied_in_every_context(self, session_cwd):
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git -v"), cwd=session_cwd)
+        assert reason is not None
+        assert "could not determine the git subcommand" in reason
+
+    # An id ending in `accepted-over-deny` marks a shape that writes nothing if
+    # run: the gate denies it because the segment is not exactly `git --version`.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git",
+            "git -v",
+            "git --help",
+            "git -c k=v --version",
+            "/x/git --version",
+            "env git --version",
+        ],
+        ids=[
+            "bare-git-accepted-over-deny",
+            "short-version-accepted-over-deny",
+            "help-accepted-over-deny",
+            "config-flag-then-version-accepted-over-deny",
+            "path-qualified-git-accepted-over-deny",
+            "env-wrapper-accepted-over-deny",
+        ],
+    )
+    def test_git_flags_only_shape_other_than_the_literal_denied(self, opted_in_repo, command):
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo)
+        assert reason is not None
+        assert "could not determine the git subcommand" in reason
+
+    # These parse to a non-allowlisted subcommand, and only the main-tree outcome is pinned.
+    @pytest.mark.parametrize(
+        "command",
+        ["git --version extra", "git --version ''", "git '' --version"],
+        ids=[
+            "version-with-extra-word-accepted-over-deny",
+            "version-then-empty-quote-accepted-over-deny",
+            "empty-quote-before-version-accepted-over-deny",
+        ],
+    )
+    def test_shape_other_than_the_exact_pair_denied_on_main_tree(self, opted_in_repo, command):
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo)
+        assert reason is not None
+        assert "could not determine the git subcommand" not in reason
+        assert "is not on the read-only allowlist" in reason
+
+    # A substitution-supplied command word before the literal does not stop the literal being allowed in the main tree.
+    def test_substitution_supplied_command_word_before_the_literal_allowed_on_main_tree(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("$(echo rm) git --version"), cwd=opted_in_repo) == "allow"
+
+    # A write chained after the literal is judged on its own record. Only the main-tree outcome is pinned.
+    def test_write_chained_after_git_version_denied_on_main_tree(self, opted_in_repo):
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git --version && git commit -m foo"), cwd=opted_in_repo)
+        assert reason is not None
+        assert "'git commit' is not on the read-only allowlist" in reason
+
+    # A write inside a substitution beside the literal keeps its in-group record. Only the main-tree outcome is pinned.
+    def test_write_inside_a_substitution_beside_git_version_denied_on_main_tree(self, opted_in_repo):
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git --version $(git commit -m foo)"), cwd=opted_in_repo)
+        assert reason is not None
+        assert "'git commit' is a write whose effective working directory cannot be safely determined" in reason
+
+
 class TestMachineLevelMarker:
     """Tests for the machine-level ~/.claude/worktree-required marker."""
 

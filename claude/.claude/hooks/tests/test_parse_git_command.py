@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 
+import pytest
 from helpers import HOOKS_DIR
 
 from ._lib_sh_helpers import _run_lib_call
@@ -262,6 +263,148 @@ class TestGlobalFlags:
         assert printed_flags.returncode == 0, printed_flags.stderr
         assert printed_flags.stdout.split(), "_LIB_GIT_GLOBAL_VALUE_FLAGS empty or undefined in _lib.sh"
         assert set(printed_flags.stdout.split()) == _parse_git_command.GIT_FLAGS_WITH_ARG
+
+
+class TestGitVersionLiteral:
+    """Only the exact token pair `git --version` is synthesized to the `version` subcommand.
+
+    Every other flags-only shape yields the SENTINEL record."""
+
+    def test_literal_is_the_version_subcommand(self):
+        assert parse("git --version") == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    def test_literal_piped_keeps_its_own_record(self):
+        assert parse("git --version | head -1") == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    def test_literal_chained_before_a_write_keeps_the_write_record(self):
+        assert parse("git --version && git commit -m foo") == [
+            rec("GIT", "version", "", "NONE", "START", "0"),
+            rec("GIT", "commit", "", "NONE", "&&", "0"),
+        ]
+
+    def test_literal_after_an_operator_carries_the_operator(self):
+        assert parse("git status && git --version") == [
+            rec("GIT", "status", "", "NONE", "START", "0"),
+            rec("GIT", "version", "", "NONE", "&&", "0"),
+        ]
+
+    def test_literal_inside_a_group_is_marked_in_group(self):
+        assert parse("(git --version)") == [rec("GIT", "version", "", "NONE", "START", "1")]
+
+    # Characterizes a known gap documented in require-worktree-for-git-writes.sh:
+    # the opener line's tail is dropped, so the write after it is never judged.
+    def test_heredoc_opener_tail_is_dropped_so_the_literal_stays_read_only(self):
+        assert parse("git --version <<X; git commit -m foo\nX") == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    # Tokenization drops the quotes and collapses repeated spacing.
+    @pytest.mark.parametrize("command", ['git "--version"', "git  --version"], ids=["quoted-flag", "double-space"])
+    def test_tokenization_drops_the_quote_and_collapses_the_spacing(self, command):
+        assert parse(command) == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    # shlex treats a tab or CR as a separator, which the shell helper's single-space regex does not.
+    # Pins parser tokenization only.
+    @pytest.mark.parametrize("command", ["git\t--version", "git\r--version"], ids=["tab-separator", "cr-separator"])
+    def test_tab_or_cr_between_the_tokens_is_still_the_version_subcommand(self, command):
+        assert parse(command) == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    # A substitution before the literal supplies a command word the parser cannot
+    # see, so the literal is judged on its own tokens, the same exposure as a read
+    # after an opaque substitution. A substitution after it supplies only an
+    # argument, and the segment stays `version`.
+    @pytest.mark.parametrize(
+        "command",
+        ["`echo env` git --version", "$(echo rm) git --version", "git --version $(echo foo)"],
+        ids=["backtick-before", "dollar-paren-before", "dollar-paren-after"],
+    )
+    def test_substitution_around_the_literal_keeps_the_bare_version_record(self, command):
+        assert parse(command) == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    # A write inside a substitution beside the literal keeps its own in-group record.
+    @pytest.mark.parametrize(
+        "command",
+        ["git --version $(git commit -m x)", "git --version `git commit -m x`"],
+        ids=["dollar-paren-write-after", "backtick-write-after"],
+    )
+    def test_write_inside_a_substitution_beside_the_literal_keeps_its_in_group_record(self, command):
+        assert parse(command) == [
+            rec("GIT", "version", "", "NONE", "START", "0"),
+            rec("GIT", "commit", "", "NONE", "START", "1"),
+        ]
+
+    # The parser drops a bare `$` token, so a stray `$` leaves the literal intact.
+    @pytest.mark.parametrize(
+        "command",
+        ["git --version $", "$ git --version", "git $ --version"],
+        ids=["stray-dollar-after", "stray-dollar-before", "stray-dollar-between"],
+    )
+    def test_stray_dollar_token_leaves_the_bare_version_record(self, command):
+        assert parse(command) == [rec("GIT", "version", "", "NONE", "START", "0")]
+
+    # Pins the parser result for the newline gap documented in require-worktree-for-git-writes.sh:
+    # a newline does not split segments, so the second `git` is read as the subcommand.
+    # The require-worktree hook denies that segment in the main checkout.
+    def test_literal_then_newline_then_a_write_is_not_classified_version(self):
+        assert parse("git --version\ngit commit -m foo") == [rec("GIT", "git", "", "NONE", "START", "0")]
+
+    def test_config_flag_with_value_then_short_flag_keeps_the_fetch_subcommand(self):
+        assert parse("git -c core.sshCommand=ssh -v fetch") == [rec("GIT", "fetch", "", "NONE", "START", "0")]
+
+    def test_version_flag_before_a_write_subcommand_keeps_the_write_subcommand(self):
+        assert parse("git --version reset --hard") == [rec("GIT", "reset", "", "NONE", "START", "0")]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git",
+            "git -v",
+            "git --help",
+            "git -c k=v --version",
+            "git -C /tmp --version",
+            "/x/git --version",
+            "env git --version",
+            "GIT_DIR=x git --version",
+            "git --version --help",
+        ],
+        ids=[
+            "bare-git",
+            "short-version",
+            "help",
+            "config-flag-then-version",
+            "dash-C-then-version",
+            "path-qualified-git",
+            "env-wrapper",
+            "env-assignment-prefix",
+            "version-then-help",
+        ],
+    )
+    def test_flags_only_shape_other_than_the_literal_stays_sentinel(self, command):
+        assert parse(command) == [rec("SENTINEL", "could not determine the git subcommand")]
+
+    @pytest.mark.parametrize(
+        ("command", "subcmd"),
+        [
+            ("git --version extra", "extra"),
+            ("git --version ''", ""),
+            ("git '' --version", ""),
+            # The redirect rows are accepted false positives: the redirect token is read as the subcommand.
+            ("git --version 2>&1", "2"),
+            ("git --version > out", ">"),
+        ],
+        ids=[
+            "version-with-extra-word",
+            "version-then-empty-quote",
+            "empty-quote-before-version",
+            "version-with-fd-redirect",
+            "version-with-output-redirect",
+        ],
+    )
+    def test_shape_other_than_the_exact_pair_keeps_its_own_subcommand_not_version(self, command, subcmd):
+        """These rows characterize the current fail-closed scan.
+
+        The invariant they protect is that these shapes are not classified `version`.
+        A later change that reads `--version` plus operands as the version query may delete them deliberately.
+        """
+        assert parse(command) == [rec("GIT", subcmd, "", "NONE", "START", "0")]
 
 
 class TestWrappersAndChains:

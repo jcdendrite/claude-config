@@ -13,6 +13,7 @@ from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
+from helpers import write_prewarmed_stub
 from process_test_helpers import is_running
 from replay_bench import arms, launch
 from test_replay_bench_runner_support import write_executable
@@ -211,16 +212,19 @@ class TestTheLaunchEnvironment:
     def test_the_group_kill_reaches_a_forked_child(self, tmp_path, monkeypatch):
         pid_file = tmp_path / "child.pid"
         fake_bin = tmp_path / "bin"
-        write_executable(
+        fake_bin.mkdir()
+        write_prewarmed_stub(
             fake_bin / "claude",
-            f"sh -c 'echo $$ > {shlex.quote(str(pid_file))}; exec sleep 30' &\nexec sleep 30\n",
+            f"#!/bin/sh\nsh -c 'echo $$ > {shlex.quote(str(pid_file))}; exec sleep 30' &\nexec sleep 30\n",
         )
         prefix = launch.launch_prefix({"PATH": f"{fake_bin}:/usr/bin:/bin"}, config_dir_value=None)
 
         _lines, timed_out = msmr._run_claude_to_completion([*prefix, "claude"], tmp_path, 3)
 
         assert timed_out
-        child_pid = int(pid_file.read_text())
+        pid_text = pid_file.read_text().strip() if pid_file.exists() else ""
+        assert pid_text, "the forked child wrote no pid before the timeout"
+        child_pid = int(pid_text)
         deadline = time.monotonic() + 10
         while is_running(child_pid) and time.monotonic() < deadline:
             time.sleep(0.1)

@@ -26,8 +26,20 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`transcript-analysis.py pr-cost` read mode prints three per-skill round-count columns after `CapturedAt`.**
   - The columns are `code-review-rounds`, `plan-review-rounds` and `ready-for-review-rounds`, each counting that skill's rounds not flagged after merge, as `docs/pr-cost.md` § "The `review_rounds` cell" defines. A row with no cell prints `-` in all three.
   - **Migration:** each row widens from about 96 characters to about 158. The first six fields keep their positions, and `CapturedAt` is no longer the last field. No consumer in the tree parses read mode's table.
+- **The commit-stall Stop hook (`advance-past-commit-stall.sh`) now matches permission verbs, objects and exclusion phrases as whole words.**
+  - Stops firing on a word that merely contains a verb or object: "commitment", "committee", "should include" and "open a project".
+  - Starts firing where an in-word exclusion match used to silence a real stall: "emergency" (through "merge") and "unblocked" (through "blocked").
+  - Inflections still count: "committing", "pushed" and "open the PRs" fire. An exclusion phrase is bounded only at its start, so "merged" and "errors" still exclude.
+  - A prefixed object, such as "recommit" or "reopen the PR", no longer fires. An underscore-wrapped question such as `_Want me to commit this?_` no longer fires either.
+  - A whole word in an unrelated sense still counts ("push back", "error handling"); see [`docs/commit-stall-block.md`](docs/commit-stall-block.md) § "Known limitations".
+  - The change is live on `git pull`.
 - **`deny-reviewer-tree-mutation.sh` and `deny-invisible-commit-content.sh` now allow a fragment that is exactly `git --version`, with no read-only subcommand.**
   - Bare `git`, `git -v`, `git --help` and every other flags-only shape still deny.
+  - The change is live on `git pull`.
+- **`require-worktree-for-git-writes.sh` now allows a segment that is exactly `git --version`, instead of denying it as an undeterminable subcommand, and `evaluate-code-writer-self-review.py` now counts `git --version && git diff` as a diff re-read.**
+  - The parser reports that two-word segment as the read-only `version` subcommand, so the worktree hook allows it in the main checkout and in a linked worktree whatever the lock state.
+  - In the main checkout, bare `git`, `git -v`, `git --help`, `git -c k=v --version`, a path-qualified `git` and the literal `env git --version` still deny.
+  - A command word supplied by a substitution in front of a literal `git --version` segment is judged on that segment alone.
   - The change is live on `git pull`.
 - **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**
   - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.

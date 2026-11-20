@@ -801,6 +801,92 @@ class TestRecallAnswerParser:
         answer = 'r1: FOUND -- "1. Contract compatibility -- src/a.py:99 -- leaks"'
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
 
+    def test_accepts_backslash_escaped_inner_quotes_against_unescaped_findings(self) -> None:
+        findings = {"r1": 'Calls A "b" c without checking the result.'}
+        answer = 'r1: FOUND -- "A \\"b\\" c"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == 'A "b" c'
+
+    def test_accepts_findings_with_a_literal_backslash_quoted_verbatim(self) -> None:
+        findings = {"r1": r"Joins C:\dir\file without escaping the separator."}
+        answer = 'r1: FOUND -- "Joins C:\\dir\\file without"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == "Joins C:dirfile without"
+
+    def test_accepts_a_two_line_quote_whose_continuation_indentation_matches_the_findings(self) -> None:
+        findings = {"r1": "Leaks a connection\n  on every error path.", "r2": "Nothing wrong here."}
+        answer = 'r1: FOUND -- "Leaks a connection\n  on every error"\nr2: NOT_FOUND'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == "Leaks a connection\n  on every error"
+        assert result["r2"].label == "NOT_FOUND"
+
+    def test_accepts_a_two_line_quote_after_a_quoted_run_id(self) -> None:
+        """Guards the multiline search starting at the label's rest, not at the line start where the ID's quotes pair up."""
+        findings = {"r1": "Leaks a connection\n  on every error path."}
+        answer = '"r1": FOUND -- "Leaks a connection\n  on every error"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == "Leaks a connection\n  on every error"
+
+    @pytest.mark.parametrize(
+        "quoted_first_line",
+        [
+            pytest.param('"Calls \\"foo\\" and', id="escaped-inner-quotes"),
+            pytest.param('"Calls "foo" and', id="unescaped-inner-quotes"),
+        ],
+    )
+    def test_rejects_a_two_line_quote_whose_first_line_holds_three_quote_chars_instead_of_truncating_it(
+        self, quoted_first_line: str,
+    ) -> None:
+        findings = {"r1": 'Calls "foo" and\n  then leaks the handle.'}
+        answer = f'r1: FOUND -- {quoted_first_line}\n  then leaks the handle"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    def test_rejects_a_found_line_whose_opening_quote_never_closes(self) -> None:
+        findings = {"r1": "Leaks a connection on error.", "r2": "Drops a message."}
+        answer = 'r1: FOUND -- "Leaks a connection\nr2: FOUND -- "Drops a message"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    def test_an_unclosed_quote_on_a_not_found_line_does_not_swallow_the_next_label_line(self) -> None:
+        findings = {"r1": "Nothing wrong here.", "r2": "Drops a message."}
+        answer = 'r1: NOT_FOUND "stray\nr2: FOUND -- "Drops a message"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening is None
+        assert result["r2"].quoted_opening == "Drops a message"
+
+    def test_rejects_a_found_line_with_no_quote_even_when_a_later_non_label_line_quotes_the_findings(self) -> None:
+        findings = {"r1": "foo bar is mishandled."}
+        answer = 'r1: FOUND -- trust me\nNote: "foo bar" is what I meant\n'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    def test_rejects_a_found_line_whose_empty_quote_pair_precedes_a_later_quoted_line(self) -> None:
+        findings = {"r1": 'Quoted "\nNote: here is the leak.'}
+        answer = 'r1: FOUND -- ""\nNote: "here" is what I meant\n'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    @pytest.mark.parametrize(
+        ("open_quote", "close_quote"),
+        [
+            pytest.param('"', '"', id="ascii"),
+            pytest.param("“", "”", id="curly"),
+            pytest.param('"', "”", id="ascii-open-curly-close"),
+            pytest.param("“", '"', id="curly-open-ascii-close"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("quoted_text", "findings_text"),
+        [
+            pytest.param("One problem", "One problem here.", id="single-line"),
+            pytest.param("Leaks a connection\n  on every error", "Leaks a connection\n  on every error path.", id="multiline"),
+        ],
+    )
+    def test_accepts_a_quoted_opening_in_either_quote_style_on_one_or_two_lines(
+        self, open_quote: str, close_quote: str, quoted_text: str, findings_text: str,
+    ) -> None:
+        findings = {"r1": findings_text}
+        answer = f"r1: FOUND -- {open_quote}{quoted_text}{close_quote}"
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == quoted_text
+
 
 @pytest.mark.timing
 class TestAnswerFormatMatchingIsLinearTime:
@@ -853,6 +939,18 @@ class TestAnswerFormatMatchingIsLinearTime:
     def test_many_blank_lines_parse_as_precision_findings_quickly(self) -> None:
         section_text = "\n" * self._BLANK_LINE_COUNT + "no finding follows"
         assert self._timed(lambda: adjudicate.parse_precision_findings(section_text)) == []
+
+    def test_many_unclosed_quote_precision_finding_lines_do_not_trigger_a_quadratic_scan(self) -> None:
+        section_text = '1. VALID -- "unclosed opening\n' * self._BLANK_LINE_COUNT
+        assert self._timed(lambda: adjudicate.parse_precision_findings(section_text)) is None
+
+    def test_many_unclosed_quote_recall_label_lines_do_not_trigger_a_quadratic_scan(self) -> None:
+        run_ids = [f"r{line_number}" for line_number in range(self._BLANK_LINE_COUNT)]
+        raw_text = "".join(f'{run_id}: FOUND -- "unclosed opening\n' for run_id in run_ids)
+        parsed = self._timed(
+            lambda: adjudicate.parse_recall_answer(raw_text, expected_ids=run_ids, normalized_findings_by_id={})
+        )
+        assert parsed is None
 
     def test_a_long_separator_line_parses_as_recall_answer_quickly(self) -> None:
         raw_text = "-" * self._LONG_LINE_LENGTH
@@ -1128,6 +1226,136 @@ class TestPrecisionAnswerParser:
         answer = '### Run r1\n1. VALID -- "1. Contract compatibility -- src/a.py:99 -- leaks"\n'
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
 
+    def test_accepts_backslash_escaped_inner_quotes_against_unescaped_run_text(self) -> None:
+        findings_by_id = {"r1": 'Calls A "b" c without checking the result.'}
+        answer = '### Run r1\n1. VALID -- "A \\"b\\" c"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [adjudicate.PrecisionFinding(label="VALID", quoted_opening='A "b" c')]
+
+    def test_keeps_unescaped_inner_quotes_inside_the_quoted_opening(self) -> None:
+        findings_by_id = {"r1": 'A "b" c is mishandled.'}
+        answer = '### Run r1\n1. VALID -- "A "b" c"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [adjudicate.PrecisionFinding(label="VALID", quoted_opening='A "b" c')]
+
+    def test_accepts_run_text_with_a_literal_backslash_quoted_verbatim(self) -> None:
+        findings_by_id = {"r1": r"Joins C:\dir\file without escaping the separator."}
+        answer = '### Run r1\n1. VALID -- "Joins C:\\dir\\file without"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [adjudicate.PrecisionFinding(label="VALID", quoted_opening="Joins C:dirfile without")]
+
+    def test_accepts_backslash_escaped_markdown_inside_the_quote(self) -> None:
+        findings_by_id = {"r1": "Multiplies a * b without bounds."}
+        answer = '### Run r1\n1. VALID -- "Multiplies a \\* b without"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [adjudicate.PrecisionFinding(label="VALID", quoted_opening="Multiplies a  b without")]
+
+    def test_accepts_emphasis_inside_the_quote_against_undecorated_run_text(self) -> None:
+        findings_by_id = {"r1": "One bold problem here."}
+        answer = '### Run r1\n1. VALID -- "One **bold** problem"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [adjudicate.PrecisionFinding(label="VALID", quoted_opening="One bold problem")]
+
+    def test_accepts_a_two_line_quote_whose_continuation_indentation_matches_the_findings(self) -> None:
+        findings_by_id = {"r1": "Leaks a connection\n  on every error path."}
+        answer = '### Run r1\n1. VALID -- "Leaks a connection\n  on every error"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="VALID", quoted_opening="Leaks a connection\n  on every error"),
+        ]
+
+    def test_rejects_a_two_line_quote_whose_continuation_indentation_differs_from_the_findings(self) -> None:
+        findings_by_id = {"r1": "Leaks a connection\n  on every error path."}
+        answer = '### Run r1\n1. VALID -- "Leaks a connection\n    on every error"\n'
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    @pytest.mark.parametrize(
+        "quoted_first_line",
+        [
+            pytest.param('"Calls \\"foo\\" and', id="escaped-inner-quotes"),
+            pytest.param('"Calls "foo" and', id="unescaped-inner-quotes"),
+        ],
+    )
+    def test_rejects_a_two_line_quote_whose_first_line_holds_three_quote_chars_instead_of_truncating_it(
+        self, quoted_first_line: str,
+    ) -> None:
+        findings_by_id = {"r1": 'Calls "foo" and\n  then leaks the handle.'}
+        answer = f'### Run r1\n1. VALID -- {quoted_first_line}\n  then leaks the handle"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_rejects_a_finding_line_whose_opening_quote_never_closes(self) -> None:
+        findings_by_id = {"r1": "First problem here.\n2. INVALID -- Second problem here."}
+        answer = '### Run r1\n1. VALID -- "First problem here.\n2. INVALID -- "Second problem"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_parses_a_two_line_quote_followed_by_a_second_finding_line(self) -> None:
+        findings_by_id = {"r1": "First problem\n  spans two lines. Second problem here."}
+        answer = '### Run r1\n1. VALID -- "First problem\n  spans two lines"\n2. INVALID -- "Second problem"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="VALID", quoted_opening="First problem\n  spans two lines"),
+            adjudicate.PrecisionFinding(label="INVALID", quoted_opening="Second problem"),
+        ]
+
+    def test_rejects_trailing_commentary_with_quotes_after_the_closing_quote(self) -> None:
+        findings_by_id = {"r1": "One problem here."}
+        answer = '### Run r1\n1. VALID -- "One problem" and "more"\n'
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_a_two_line_quote_with_trailing_quoted_text_keeps_the_text_to_the_first_close_and_is_still_substring_checked(
+        self,
+    ) -> None:
+        findings_by_id = {"r1": "Leaks a connection\n  on every error path."}
+        answer = '### Run r1\n1. VALID -- "Leaks a connection\n  on every error" and "more"\n'
+        accepted = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert accepted["r1"] == [
+            adjudicate.PrecisionFinding(label="VALID", quoted_opening="Leaks a connection\n  on every error"),
+        ]
+        unrelated_findings_by_id = {"r1": "Something else entirely."}
+        assert adjudicate.parse_precision_answer(
+            answer, expected_ids=["r1"], normalized_findings_by_id=unrelated_findings_by_id,
+        ) is None
+
+    def test_rejects_a_finding_line_with_no_quote_even_when_a_later_non_label_line_quotes_the_run_text(self) -> None:
+        findings_by_id = {"r1": "foo bar is mishandled."}
+        section_text = '1. VALID -- trust me\nNote: "foo bar" is what I meant\n'
+        assert adjudicate.parse_precision_findings(section_text) is None
+        answer = f"### Run r1\n{section_text}"
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_rejects_a_finding_line_whose_empty_quote_pair_precedes_a_later_quoted_line(self) -> None:
+        findings_by_id = {"r1": 'Quoted "\n  and here is the leak.'}
+        section_text = '1. VALID -- ""\n  and "here" is what I meant\n'
+        assert adjudicate.parse_precision_findings(section_text) is None
+        answer = f"### Run r1\n{section_text}"
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    @pytest.mark.parametrize(
+        ("open_quote", "close_quote"),
+        [
+            pytest.param('"', '"', id="ascii"),
+            pytest.param("“", "”", id="curly"),
+            pytest.param('"', "”", id="ascii-open-curly-close"),
+            pytest.param("“", '"', id="curly-open-ascii-close"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("quoted_text", "findings_text"),
+        [
+            pytest.param("One problem", "One problem here.", id="single-line"),
+            pytest.param("Leaks a connection\n  on every error", "Leaks a connection\n  on every error path.", id="multiline"),
+        ],
+    )
+    def test_accepts_a_quoted_opening_in_either_quote_style_on_one_or_two_lines(
+        self, open_quote: str, close_quote: str, quoted_text: str, findings_text: str,
+    ) -> None:
+        findings_by_id = {"r1": findings_text}
+        answer = f"### Run r1\n1. VALID -- {open_quote}{quoted_text}{close_quote}\n"
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [adjudicate.PrecisionFinding(label="VALID", quoted_opening=quoted_text)]
+
 
 class TestPrecisionSpotCheckCandidates:
     def test_marked_span_wraps_the_raw_decorated_opening(self) -> None:
@@ -1200,6 +1428,62 @@ class TestPrecisionSpotCheckCandidates:
         assert candidate.display_text == (
             "**" + adjudicate._SPAN_OPEN + "Bold** start" + adjudicate._SPAN_CLOSE + " of the finding."
         )
+
+    def test_backslashes_inside_the_opening_are_marked_and_those_bordering_it_are_not(self) -> None:
+        run_text = 'Calls \\A \\"b\\" c\\ without checking.'
+        parsed = {"r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening='A "b" c')]}
+
+        [candidate] = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert candidate.display_text == (
+            "Calls \\" + adjudicate._SPAN_OPEN + 'A \\"b\\" c' + adjudicate._SPAN_CLOSE + "\\ without checking."
+        )
+
+    def test_a_multiline_opening_is_marked_across_the_newline(self) -> None:
+        run_text = "Leaks a connection\n  on every error path."
+        parsed = {"r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening="Leaks a connection\n  on every error")]}
+
+        [candidate] = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert candidate.display_text == (
+            adjudicate._SPAN_OPEN + "Leaks a connection\n  on every error" + adjudicate._SPAN_CLOSE + " path."
+        )
+
+    @pytest.mark.parametrize(
+        ("run_text", "answer_line", "expected_marked_span"),
+        [
+            pytest.param(
+                'Calls A \\"b\\" c without checking.',
+                '1. VALID -- "A \\"b\\" c"',
+                'A \\"b\\" c',
+                id="backslash-escaped-inner-quotes",
+            ),
+            pytest.param(
+                "Leaks a connection\n  on every error path.",
+                '1. VALID -- "Leaks a connection\n  on every error"',
+                "Leaks a connection\n  on every error",
+                id="two-line-quote",
+            ),
+        ],
+    )
+    def test_marks_the_raw_span_of_an_opening_the_answer_parser_accepted(
+        self, run_text: str, answer_line: str, expected_marked_span: str,
+    ) -> None:
+        findings_by_id = {"r1": run_text}
+        parsed = adjudicate.parse_precision_answer(
+            f"### Run r1\n{answer_line}\n", expected_ids=["r1"], normalized_findings_by_id=findings_by_id,
+        )
+
+        [candidate] = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, findings_by_id,
+        )
+
+        marked_span = candidate.display_text.split(adjudicate._SPAN_OPEN)[1].split(adjudicate._SPAN_CLOSE)[0]
+        assert marked_span == expected_marked_span
 
     def test_raises_naming_the_run_and_opening_when_the_opening_is_absent_from_the_run_text(self) -> None:
         parsed = {"r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening="not in the text")]}
