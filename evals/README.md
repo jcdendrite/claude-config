@@ -462,6 +462,11 @@ live run requires `--repo-dir` naming a clean checkout whose `HEAD` starts
 with the fixture's `pinned_commit` (an abbreviated SHA), validated at
 startup.
 
+Some of the fixture's keys name `.claude/plans/` paths. The fixture predates
+the repo-root `.rgignore`, so those keys were derived while Grep still
+returned plan files from the repo root. A re-pin to a commit that carries
+`.rgignore` must drop those paths from the keys, or expect lower recall.
+
 ```bash
 # Build every dispatch command and prompt without launching anything:
 scripts/venv-run.sh python3 evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json --dry-run
