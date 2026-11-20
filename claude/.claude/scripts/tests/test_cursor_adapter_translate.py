@@ -1,5 +1,5 @@
 """Translation core of the Cursor adapter: the output table, the field table, repo resolution, the parity
-exceptions, and the Delete and Write translations. The shim's own behavior is in test_cursor_adapter_shim.py."""
+exceptions, and the Delete and Write translations. The shim's own behavior is in the test_cursor_adapter_shim_*.py files."""
 
 from __future__ import annotations
 

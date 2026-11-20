@@ -70,6 +70,7 @@ Add one helper, `_lib_origin_names_claude_config REPO_ROOT`, to `claude/.claude/
     - a `workflow-gates` URL under a remote named `upstream` only, which pins the no-origin gap, with a positive control asserting the `upstream` remote's URL holds the slug
     - origin `wg:` with `url.git@github.com:someone/workflow-gates.git.insteadOf` set to `wg:`, which pins the alias gap, with a positive control asserting `git remote get-url origin` shows the rewritten slug
 - Add a deny case in `test_deny_private_project_refs.py` where the helper returns 127, per ledger row 20.
+- Add a fail-open case in `test_require_stow_reminder.py` where the helper is missing (status 127), asserting the hook allows, per its header and ledger row 19.
 - Add one wiring case per hook, an origin of `git@github.com:Someone/Workflow-Gates.git`:
   - `test_mixed_case_origin_gates` beside `test_workflow_gates_fork_origin_gates`, which asserts deny.
   - `test_origin_in_mixed_case_still_gates` beside `test_origin_with_the_new_slug_still_gates`, through `assert_live_deny_control`.
@@ -101,7 +102,7 @@ Rows:
 3. `[verified: Grep for *claude-config*, *workflow-gates* and remote.origin.url over every .sh and .py file]` Only `deny-private-project-refs.sh:487-488` and `require-stow-reminder.sh:133-134` test the origin slug. No third sibling arm needs the fix. `anchors: root`
 4. `[verified: .claude/rules/bash-unit-test-seams.md]` A helper that two hooks need belongs in `claude/.claude/hooks/_lib.sh`. A new `_*-lib.sh` sidecar under `hooks/` fails `test_hook_alignment.py` today. `anchors: row3`
 5. Mechanism: `_lib_origin_names_claude_config REPO_ROOT` in `_lib.sh` holds the only copy of both literals. The lighter option was two inline copies plus a parity test. It fails because it guards a duplication the helper removes, and the next rename would still need two edits. `anchors: row4`
-6. `[verified: Grep "toolkit" under claude/.claude/hooks: 4 files, all the transcript-toolkit nudge hook and its tests]` The name departs from the dispatching session's proposed `_lib_origin_names_toolkit_repo`. "toolkit" already names a different thing in the hooks tree. Both hook headers, `README.md:473` and `docs/hooks.md:140` call this repository claude-config. `anchors: row5`
+6. `[verified: Grep "toolkit" under claude/.claude/hooks: 4 files, all the transcript-toolkit nudge hook and its tests]` The name departs from the dispatching session's proposed `_lib_origin_names_toolkit_repo`. "toolkit" already names a different thing in the hooks tree. Both hook headers, `README.md:460` and `docs/hooks.md:140` call this repository claude-config. `anchors: row5`
 7. Mechanism: the helper takes a required REPO_ROOT and reads `git -C "$repo_root" config --get-all remote.origin.url`, uncapped per the Context decision. `--get-all` closes the multi-value miss. `anchors: root`
 8. `[verified: deny-private-project-refs.sh:474, :487; require-stow-reminder.sh:127, :133]` Each hook's REPO_ROOT is the `git rev-parse --show-toplevel` of the directory its origin read runs in today, so `git -C "$REPO_ROOT"` reads the same repository's config. Both callers exit before the call when REPO_ROOT is empty (`deny-private-project-refs.sh:475-477`, `require-stow-reminder.sh:128-130`). `anchors: row7`
 9. Mechanism: `${origin_urls,,}` against lowercase literals folds case. Each alternative fails:
@@ -110,7 +111,7 @@ Rows:
    - `_lib_case_insensitive_ne` tests equality, not a substring.
 
    `anchors: root`
-10. `[verified: .claude/rules/shell-floor.md; _lib.sh:25 sources _config.sh, whose floor check is at _config.sh:40; _lib.sh:2145-2147 already uses ${var,,}]` The bash-4 lowercase expansion is allowed here, and it runs only after the floor check. `anchors: row9`
+10. `[verified: .claude/rules/shell-floor.md; _lib.sh:25 sources _config.sh, whose floor check is at _config.sh:40; _lib.sh:2183-2185 already uses ${var,,}]` The bash-4 lowercase expansion is allowed here, and it runs only after the floor check. `anchors: row9`
 11. Mechanism: the whole-URL substring match stays, per the Context decision. The matrix pins it with a superstring case. `anchors: root`
 12. `[verified: reading deny-private-project-refs.sh:487-488 and require-stow-reminder.sh:133-134 against the helper body]` The helper accepts every origin the staged predicate accepts. The last value is among the values `--get-all` prints, and lowercasing leaves a lowercase literal intact. Neither gate allows an input it denied at the merge-base, so the regression-only rule finds no regression. `anchors: row7`
 13. `[verified: deny-private-project-refs.sh:152-153; docs/hooks.md:55]` This gate's Known gaps already points at a shared helper's header for that helper's gaps. The commit-boundary gates record their debt in their header Known gaps, so a pointer bullet in each hook keeps the helper's known gaps in that closed set. `anchors: row2`
@@ -124,8 +125,8 @@ Rows:
 15. `[verified: claude/.claude/rules/shell-script-conventions.md; test_lib_gh.py:1, :51-131]` The URL matrix belongs in direct helper tests beside the sibling `TestLibOriginOwnerRepo`. Each hook keeps one subprocess case per branch. `anchors: row5`
 16. Mechanism: one mixed-case-origin test per hook proves the hook calls the helper. Each is written before the call-site swap, fails against the staged case-sensitive predicate, and passes after the swap. `anchors: row15`
 17. `[verified: test_shell_lib_function_liveness.py:3-8, :12-13, :153-185; test_hook_alignment.py:105, :111-125]` The liveness test requires a column-0 `name() {` definition and one non-comment reference in tracked shell or Python files. The two hook calls satisfy that. `test_hook_alignment.py` sweeps `_lib.sh` for exactly two shapes, a GNU `\s` regex and a pipe into an early-exit grep. The helper uses neither. No test there requires anything else of a single `_lib.sh` function. `anchors: row5`
-18. `[verified: README.md:473; docs/hooks.md:140, :147; docs/private-project-redaction.md:12-16, :402-407, :548-549, :678-684]` Each doc passage states that an origin URL containing either name scopes the repo in. The helper still honors that sufficient condition, so no passage needs an edit beyond the staged one. `anchors: row12`
-19. `[verified: ciso-reviewer and staff-platform-engineer findings, plan-review round 1; deny-private-project-refs.sh:461 and its status checks]` With `if !`, a helper status other than 0 or 1, such as 127 from a missing function, reads as "origin does not match" and silences the irreversible deny gate. In `deny-private-project-refs.sh` only status 1 means "not claude-config" and any other non-zero status denies through `emit_deny`, as the hook does at line 461 for its other helper. `require-stow-reminder.sh` keeps the plain `if !` because its header makes it fail-open. `anchors: row7`
+18. `[verified: README.md:460; docs/hooks.md:140, :147; docs/private-project-redaction.md:12-16, :416-419, :560, :690-696; docs/security-hardening.md:548]` Each doc passage except the last states that an origin URL containing either name scopes the repo in. The helper still honors that sufficient condition, so those passages need no edit beyond the staged one. `docs/security-hardening.md:548` arrived from `origin/main` naming only `claude-config`, which understates the gate for a `workflow-gates` origin, so it is edited in this PR (Critical files). `anchors: row12`
+19. `[verified: ciso-reviewer and staff-platform-engineer findings, plan-review round 1; deny-private-project-refs.sh:461 and its status checks]` In `deny-private-project-refs.sh` only status 1 means "not claude-config", and any other non-zero status denies through `emit_deny`, as the hook does at line 461 for its other helper. With `if !`, 127 from a missing function would read as "origin does not match" and silence the irreversible deny gate. `require-stow-reminder.sh` keeps the plain `if !` because its header makes it fail-open. `anchors: row7`
 20. Mechanism: the deny hook's call site captures `$?` instead of using `if !`. A test runs the hook against a stubbed helper that returns 127 and expects deny, using the hook's existing helper-stub seam, or a copy of the hooks directory without the function when no seam exists. `anchors: row19`
 21. `[engineer-verified: "Fix all three (Recommended)"]` Code-review round 2 found three files outside the first Critical files list that name the old owner or the old origin test: `claude-skills/skills/review-pr/REFERENCES.md`, `docs/precompact-hook-behavior.md` and `docs/cost-levers-considered.md`. The quote covers only that they are fixed in this PR. The option description naming the exact edits was the session's own proposal. `anchors: root`
 
@@ -154,6 +155,10 @@ Added after the round 12 consult, on the engineer's selected label "Fix it in th
 - `claude/.claude/tests/helpers.py`: the shared `locale_that_folds_ascii_capital_i_to_a_non_ascii_letter` finder.
 - `claude/.claude/scripts/tests/test_reconcile_project_plugins.py`: imports that finder instead of a private copy.
 
+Added after the round 25 merge of `origin/main`, on the engineer's selected label "Edit it and amend the plan (Recommended)":
+
+- `docs/security-hardening.md`: the bullet main added about the gated-repo scans names `_lib_origin_names_claude_config` and points at `docs/private-project-redaction.md` § "Opting in another repository" instead of restating the origin-URL literal.
+
 Already staged, with no further change:
 
 - `.github/workflows/tests.yml`
@@ -177,7 +182,10 @@ Projected diff: about 300 changed lines. Roughly 130 are already staged, estimat
 
 ## Verification
 
-1. Red step: first run the matrix against a helper body written as the staged predicate (`--get` and case-sensitive) and confirm the matching-value-first row and the mixed-case rows fail. Then write the two wiring tests before swapping the call sites, then run `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_stow_reminder.py -k mixed_case`. Both fail against the staged predicate, and both pass after the swap.
+1. Red-then-green order:
+   1. Run the matrix against a helper body written as the staged predicate (`--get` and case-sensitive). The matching-value-first row and the mixed-case rows must fail.
+   2. Write the two wiring tests before swapping the call sites. Run `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_stow_reminder.py -k mixed_case`. Both must fail.
+   3. Swap the call sites and rerun the same command. Both must pass.
 2. Focused run: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_lib_gh.py claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_stow_reminder.py claude/.claude/hooks/tests/test_shell_lib_function_liveness.py claude/.claude/hooks/tests/test_hook_alignment.py`.
 3. The documented scoped run: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`.
 4. Lint: `scripts/venv-run.sh ruff check claude/.claude/hooks/tests/` and `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`.
@@ -193,4 +201,5 @@ Projected diff: about 300 changed lines. Roughly 130 are already staged, estimat
 - Closing either documented gap, whether by reading `git remote get-url` or by matching every remote: the engineer accepted both as documented gaps.
 - Rewording the docs' origin-scope summaries in `README.md`, `docs/hooks.md` and `docs/private-project-redaction.md` beyond the staged edits: each states a sufficient condition the helper still honors (ledger row 18).
 - The exact-slug comparators that review-pr scripts and `require-respond-pr.sh` apply to old-slug clones: they need their own change in files this diff does not touch. The CHANGELOG entry tells existing clones to repoint `origin`.
+- A CI check that fails when the helper rejects the upstream repository's own origin URL, so a future rename or a revert of this PR leaves the gates silent without a signal. It is the existing renamed-fork gap applied to the upstream itself, not a regression, and the tripwire in the first bullet was already declined.
 - Owner-side GitHub repository settings, which sit outside the tree.

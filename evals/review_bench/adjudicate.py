@@ -7,15 +7,9 @@ the review bench.
 module builds their per-defect input files, launches their runs, and parses
 their answers mechanically.
 
-Reuses runner.py's generic per-run primitives -- RunStore, RunRecord,
-build_dispatcher_prompt, build_dispatch_command, evaluate_run_validity,
-read_environment_record, and session-store lookup by session ID -- rather
-than runner.execute_run/run_one_with_retry, which are hardwired to the
-reviewer's own REVIEW_PROMPT_TEMPLATE. runner.py's own module docstring
-scopes only its per-run validity checks and RunRecord schema as generic
-across reviewer and judge runs, not its review-specific orchestration, so
-this module writes its own judge-run orchestration around those primitives
-instead of touching runner.py.
+runner.execute_run/run_one_with_retry are hardwired to the reviewer's own
+REVIEW_PROMPT_TEMPLATE and thin dispatcher, so this module writes its own
+judge-run orchestration around runner.py's per-run primitives.
 """
 from __future__ import annotations
 
@@ -30,7 +24,7 @@ import time
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from review_bench import fixture_repo, runner
@@ -334,18 +328,53 @@ def install_precision_judge_fixture(
 # Tolerant of markdown emphasis/code-span decoration around a label or ID,
 # following run_skill_evals.parse_disposition_answer's own strip-then-match
 # pattern rather than requiring byte-exact judge output. A quoted opening is
-# compared against the findings text with `*` and backtick removed from both
-# sides.
-_MARKDOWN_DECORATION_RE = re.compile(r"[*`]")
+# compared against the findings text with `*`, backtick, and backslash (markdown's
+# escape character, which a judge may add before an inner quote) removed from
+# both sides.
+_MARKDOWN_DECORATION_RE = re.compile(r"[*`\\]")
 _LABEL_SEPARATOR = r"[:\-–—]+"  # ':', '-', '--', en dash, em dash
-_QUOTE_RE = re.compile(r"[\"“”](.+)[\"“”]")
+_QUOTE_CHARS = "\"“”"
+_QUOTE_RE = re.compile(rf"[{_QUOTE_CHARS}](.+)[{_QUOTE_CHARS}]")
+_QUOTE_CHAR_RE = re.compile(rf"[{_QUOTE_CHARS}]")
+_MULTILINE_QUOTE_RE = re.compile(rf"[{_QUOTE_CHARS}](.+?)[{_QUOTE_CHARS}]", re.DOTALL)
 
 
 def _strip_markdown_decoration(text: str) -> tuple[str, list[int]]:
-    """`text` without `*` and backtick characters, plus for each character of
-    the stripped text the index of that character in `text`."""
+    """The stripped text, plus for each of its characters the index of that
+    character in `text`."""
     raw_index_by_stripped_index = [i for i, ch in enumerate(text) if not _MARKDOWN_DECORATION_RE.match(ch)]
     return "".join(text[i] for i in raw_index_by_stripped_index), raw_index_by_stripped_index
+
+
+def _quoted_opening(text: str, line_match: re.Match[str], *, next_line_start: int) -> str | None:
+    """The quoted opening on a label line. A quote left unclosed on its line
+    runs to the first closing quote but stops before `next_line_start`, so it
+    never swallows the next label line. Whitespace is not normalized, so a
+    continuation line must match the findings text exactly."""
+    rest = line_match.group("rest")
+    quote_char_count = len(_QUOTE_CHAR_RE.findall(rest))
+    single_line_quote = _QUOTE_RE.search(rest)
+    if single_line_quote:
+        # An odd count of three or more quote chars is rejected: the greedy first-to-last match silently truncates the opening.
+        # An even count is accepted, so a two-line quote whose first line holds an inner quote
+        # (`"A \"b` then `c"`) still returns `A ` and drops the continuation.
+        # The truncated opening is still a real substring of the findings text.
+        return single_line_quote.group(1) if quote_char_count % 2 == 0 else None
+    if quote_char_count != 1:
+        return None  # no quote, or an adjacent empty pair that `_QUOTE_RE` rejected
+    multiline_quote = _MULTILINE_QUOTE_RE.search(text, line_match.start("rest"), next_line_start)
+    return multiline_quote.group(1) if multiline_quote else None
+
+
+def _label_lines_with_quoted_openings(
+    text: str, label_line_re: re.Pattern[str],
+) -> list[tuple[re.Match[str], str | None]]:
+    line_matches = list(label_line_re.finditer(text))
+    labeled: list[tuple[re.Match[str], str | None]] = []
+    for index, line_match in enumerate(line_matches):
+        next_line_start = line_matches[index + 1].start() if index + 1 < len(line_matches) else len(text)
+        labeled.append((line_match, _quoted_opening(text, line_match, next_line_start=next_line_start)))
+    return labeled
 
 
 # Whitespace other than a newline, so each pattern below matches one line at a time.
@@ -369,19 +398,13 @@ def parse_recall_answer(
     """None on any invalid condition: a missing ID, a duplicated ID, an ID
     not in expected_ids, a label other than FOUND or NOT_FOUND, or a FOUND
     whose quoted opening does not occur in that ID's own normalized findings,
-    comparing with `*` and backtick characters ignored on both sides."""
+    comparing with decoration characters ignored on both sides."""
     text = _MARKDOWN_DECORATION_RE.sub("", raw_text)
     matches: dict[str, list[RecallLabel]] = defaultdict(list)
-    for m in _RECALL_LABEL_LINE_RE.finditer(text):
+    for m, quoted_opening in _label_lines_with_quoted_openings(text, _RECALL_LABEL_LINE_RE):
         run_id = m.group("id").strip("\"'")
         label = m.group("label").upper().replace(" ", "_")
-        quote_match = _QUOTE_RE.search(m.group("rest"))
-        matches[run_id].append(
-            RecallLabel(
-                opaque_run_id=run_id, label=label,
-                quoted_opening=quote_match.group(1) if quote_match else None,
-            )
-        )
+        matches[run_id].append(RecallLabel(opaque_run_id=run_id, label=label, quoted_opening=quoted_opening))
 
     if set(matches) - set(expected_ids):
         return None  # names an ID not in the input
@@ -446,11 +469,10 @@ def parse_precision_findings(section_text: str) -> list[PrecisionFinding] | None
     denominator."""
     text = _MARKDOWN_DECORATION_RE.sub("", section_text)
     findings: list[PrecisionFinding] = []
-    for m in _PRECISION_FINDING_RE.finditer(text):
-        quote_match = _QUOTE_RE.search(m.group("rest"))
-        if quote_match is None:
+    for m, quoted_opening in _label_lines_with_quoted_openings(text, _PRECISION_FINDING_RE):
+        if quoted_opening is None:
             return None
-        findings.append(PrecisionFinding(label=m.group("label").upper(), quoted_opening=quote_match.group(1)))
+        findings.append(PrecisionFinding(label=m.group("label").upper(), quoted_opening=quoted_opening))
     return findings
 
 
@@ -458,8 +480,8 @@ def check_precision_split(findings: Sequence[PrecisionFinding], normalized_run_t
     """True when every finding's quoted opening occurs in normalized_run_text
     in order, each one strictly after the previous -- a repeat of an opening
     the text contains only once fails here, since the second search starts
-    past the first match's own end. The parsed openings carry no `*` or
-    backtick characters, so the caller passes text with those stripped too."""
+    past the first match's own end. The parsed openings carry no decoration
+    characters, so the caller passes text with those stripped too."""
     cursor = 0
     for finding in findings:
         index = normalized_run_text.find(finding.quoted_opening, cursor)
@@ -528,16 +550,33 @@ class JudgeRunContext:
     fix_commit_relpaths: tuple[str, ...] = ()
 
 
+def _validity_without_transcript(lines: list[bytes], *, timed_out: bool) -> runner.RunValidity:
+    """The failure for a judge run with no session transcript. A run the
+    timeout killed may never have flushed one, so the timeout, not the absent
+    store, is its cause. Otherwise a failing result event in the stream, when
+    there is one, names the cause."""
+    if not timed_out:
+        result_failure = runner._check_final_result(lines)
+        if result_failure is not None and result_failure.failure_reason != runner.VALIDITY_FAIL_NO_RESULT_EVENT:
+            return replace(result_failure, prompt_verbatim=None)
+    missing_reason = runner.MISSING_REASON_TIMEOUT if timed_out else runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
+    return runner.RunValidity(
+        ok=False, failure_reason=missing_reason, observed_model=None,
+        observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
+        prompt_verbatim=None,
+    )
+
+
 def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> runner.RunRecord:
     """Launch one judge run and evaluate its validity -- mirrors
-    runner.execute_run's own shape, with a fixed judge inner prompt in place
-    of a rendered review prompt. Never retries; the caller owns
+    runner.execute_run's own shape, except the judge is the top-level session
+    rather than a dispatched subagent. Never retries; the caller owns
     retry-then-missing."""
     launch = launch if launch is not None else runner.msmr._run_claude_to_completion
     inner_prompt = build_judge_inner_prompt(ctx.data_file_name)
-    dispatch_prompt = runner.build_dispatcher_prompt(ctx.agent_name, inner_prompt)
-    cmd = runner.build_dispatch_command(
-        dispatch_prompt, model_id=ctx.model_id, session_id=session_id, budget_cap_usd=ctx.budget_cap_usd,
+    cmd = runner.build_judge_command(
+        inner_prompt, agent_name=ctx.agent_name, declared_tools=ctx.agent_declared_tools, model_id=ctx.model_id,
+        effort=runner.JUDGE_EFFORT, session_id=session_id, budget_cap_usd=ctx.budget_cap_usd,
     )
 
     start = time.monotonic()
@@ -548,29 +587,25 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
     blocked_detail = runner.blocked_prompt_detail(lines)
     session_jsonl = (
         None if blocked_detail is not None
-        else runner.wait_for_session_flush(projects_root, session_id, timed_out=timed_out)
+        else runner.wait_for_session_flush(
+            projects_root, session_id, timed_out=timed_out, requires_subagent_sidecar=False,
+        )
     )
 
     if blocked_detail is not None:
         validity = runner.RunValidity(
             ok=False, failure_reason=runner.MISSING_REASON_BLOCKED_PROMPT, observed_model=None,
             observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
-            failure_detail=blocked_detail,
+            failure_detail=blocked_detail, prompt_verbatim=None,
         )
     elif session_jsonl is None:
-        # A run the timeout killed may never have flushed a transcript; the
-        # timeout, not the absent store, is its recorded cause.
-        missing_reason = runner.MISSING_REASON_TIMEOUT if timed_out else runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
-        validity = runner.RunValidity(
-            ok=False, failure_reason=missing_reason, observed_model=None,
-            observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
-        )
+        validity = _validity_without_transcript(lines, timed_out=timed_out)
     else:
         own_session_paths = runner.own_session_paths_for(session_jsonl)
-        validity = runner.evaluate_run_validity(
-            dispatcher_session_jsonl=session_jsonl, stream_lines=lines, timed_out=timed_out,
-            expected_agent_name=ctx.agent_name, expected_inner_prompt=inner_prompt,
-            expected_model_id=ctx.model_id, agent_declared_tools=ctx.agent_declared_tools,
+        validity = runner.evaluate_judge_run_validity(
+            session_jsonl=session_jsonl, stream_lines=lines, timed_out=timed_out,
+            expected_agent_name=ctx.agent_name, expected_model_id=ctx.model_id,
+            expected_effort=runner.JUDGE_EFFORT, agent_declared_tools=ctx.agent_declared_tools,
             fixture_dir=ctx.fixture_dir, own_dirs=(ctx.fixture_dir, *own_session_paths),
             projects_root=projects_root, own_session_paths=own_session_paths,
             live_checkout_roots=ctx.live_checkout_roots, changed_relpaths=ctx.changed_relpaths,
@@ -793,10 +828,11 @@ def build_precision_spot_check_candidates(
 ) -> list[SpotCheckCandidate]:
     """One candidate per finding, its display_text the whole run output with
     that finding's own span marked. The span covers the raw text from the
-    first to the last quoted character, so `*` and backtick inside the opening
-    are included and those bordering it are not. Raises ValueError if an
-    opening does not occur after the previous finding's opening in its run's
-    text (it is absent, or appears only before that point)."""
+    first to the last quoted character, so decoration characters inside the
+    opening are included and those bordering it are not. Raises
+    ValueError if an opening does not occur after the previous finding's
+    opening in its run's text (it is absent, or appears only before that
+    point)."""
     candidates: list[SpotCheckCandidate] = []
     for run_id, findings in findings_by_run_id.items():
         run_text = normalized_findings_by_id.get(run_id, "")

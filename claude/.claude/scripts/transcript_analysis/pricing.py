@@ -15,8 +15,9 @@ from typing import NamedTuple
 
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
-# Labels persist in pr-cost ledger model_breakdown cells; never rename or remove one. Older checkouts read an added label,
-# because the ledger parser checks labels for key shape only.
+# Labels persist in pr-cost ledger model_breakdown and review_rounds cells; never rename or remove one.
+# Older checkouts read an added label, because the ledger parser checks labels for key shape only.
+# A new class also needs a mapping in _token_counts, _price_turn and _usage_for_token_group.
 _TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
 
 _PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
@@ -43,8 +44,11 @@ _CACHE_READ_MULTIPLIER_OVERRIDES: dict[str, float] = {
 # Multipliers applied to every dollar class when usage.speed/usage.inference_geo
 # report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
 # and .../about-claude/pricing's data-residency section.
-# A new multiplier condition in _price_turn must also become a _pricing_variant outcome and a _PRICING_VARIANTS label,
-# or pr-cost ledger cells file its turns under the wrong variant.
+# A new multiplier condition in _price_turn also needs:
+# - A _pricing_variant outcome and a _PRICING_VARIANTS label, or pr-cost ledger cells file the condition's turns
+#   under the wrong variant.
+# - A _USAGE_FIELDS_BY_PRICING_VARIANT entry, or _usage_for_token_group cannot rebuild the variant and re-pricing
+#   excludes the PR.
 _FAST_MODE_RATE_MULTIPLIER = 2
 _INFERENCE_GEO_US_RATE_MULTIPLIER = 1.1
 
@@ -57,8 +61,11 @@ _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 # to message.model. Source: _PRICING_SOURCE_URL, fetched _PRICING_FETCH_DATE.
 # Output/cache-write/cache-read rates are derived from this one base rate per
 # model by _model_rates, so each model needs only its base rate kept current.
-# Keys persist verbatim in pr-cost ledger rows and exports; add vendor-published model IDs only.
-# A key must match pr_cost_ledger._MODEL_BREAKDOWN_KEY_RE, or the ledger cannot read back any row that carries it.
+# Key rules, each with its consequence:
+# - Keys persist verbatim in pr-cost ledger rows and exports, so add vendor-published model IDs only.
+# - A key must match pr_cost_ledger._MODEL_BREAKDOWN_KEY_RE, or the ledger cannot read back any row that carries it.
+# - Removing or renaming a key leaves every recorded round that holds that model unpriceable
+#   (see ledger_rounds.EXCLUDED_UNPRICEABLE_ROUND).
 _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     "claude-opus-5-5": 4.00,
     "claude-opus-5": 5.00,
@@ -652,6 +659,48 @@ def _token_counts(usage: dict) -> dict[str, int]:
         "cache_write_1h": eph_1h,
         "cache_write_5m": eph_5m,
     }
+
+
+_USAGE_FIELDS_BY_PRICING_VARIANT: dict[str, dict[str, str]] = {
+    "standard": {},
+    "fast": {"speed": "fast"},
+    "us_geo": {"inference_geo": "us"},
+    "fast_us_geo": {"speed": "fast", "inference_geo": "us"},
+}
+
+
+def _usage_for_token_group(variant: str, counts_by_class: dict[str, int]) -> dict | None:
+    """A usage dict that _price_turn prices as `counts_by_class` under `variant` -- the inverse of
+    _pricing_variant and _token_counts. None for a variant or class label this checkout does not know."""
+    variant_fields = _USAGE_FIELDS_BY_PRICING_VARIANT.get(variant)
+    if variant_fields is None or not set(counts_by_class) <= set(_TOKEN_CLASSES):
+        return None
+    return {
+        "input_tokens": counts_by_class.get("input", 0),
+        "output_tokens": counts_by_class.get("output", 0),
+        "cache_read_input_tokens": counts_by_class.get("cache_read", 0),
+        "cache_creation": {
+            "ephemeral_1h_input_tokens": counts_by_class.get("cache_write_1h", 0),
+            "ephemeral_5m_input_tokens": counts_by_class.get("cache_write_5m", 0),
+        },
+        **variant_fields,
+    }
+
+
+def _reprice_token_splits(token_splits: dict[str, dict[str, dict[str, int]]]) -> float | None:
+    """Dollars for a stored `{model: {variant: {class: int}}}` token object at the current rate table, or None when
+    any group's model, variant or class is one this checkout cannot price."""
+    total_dollars = 0.0
+    for model, counts_by_variant in token_splits.items():
+        for variant, counts_by_class in counts_by_variant.items():
+            usage = _usage_for_token_group(variant, counts_by_class)
+            if usage is None:
+                return None
+            dollars_by_class, _context_at_turn, _unpriced_tokens = _price_turn(model, usage)
+            if dollars_by_class is None:
+                return None
+            total_dollars += sum(dollars_by_class.values())
+    return total_dollars
 
 
 def _session_peak_context(main_thread_turns: Sequence[tuple[int, int, int]]) -> tuple[float, int]:

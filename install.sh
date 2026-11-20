@@ -630,7 +630,7 @@ configure_machine_level_opt_ins() {
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: sentinel-inventory — start
-# The four repo-scope committed markers only -- every machine/account-scope
+# The three repo-scope committed markers only -- every machine/account-scope
 # row moved to config-keys.psv: a committed file is the git-native idiom
 # for a repo-level toggle, and moving these into the per-machine state file
 # would break exactly the property they exist for. Flat, pipe-delimited
@@ -642,7 +642,6 @@ configure_machine_level_opt_ins() {
 REPO_MARKER_INVENTORY=(
   ".claude/worktree-required|Worktree enforcement (committed, this repo)|README.md § Worktree enforcement"
   ".claude/worktree-optout|Worktree enforcement opt-out (this repo)|README.md § Worktree enforcement"
-  ".claude/autonomous-shipping-optout|Autonomous-shipping opt-out (this repo)|README.md § Autonomous shipping"
   ".claude/session-title-disabled|Branch-based session-title suppression (this repo)|docs/hooks.md § Utility hooks"
 )
 
@@ -692,8 +691,8 @@ _config_key_source() {
 
 # Schema-driven, replacing the old scope=machine-promptable/machine/account
 # reporters: every key's effective value now resolves through
-# _config_value, so one function reports all 22. For a
-# config-dir-or-home key (worktree_required, autonomous_shipping), also
+# _config_value, so one function reports all 21. For a
+# config-dir-or-home key (worktree_required), also
 # prints $HOME/.claude's own value/source alongside the resolved config
 # dir's when the two differ -- the union means either can be the reason a
 # key reads as enabled, and the old reporter's "DIVERGED" display existed
@@ -739,7 +738,7 @@ _report_config_key() {
 }
 
 # Read-only: creates and removes nothing. Reports every config-keys.psv key
-# (schema order), then the four repo markers. Called after
+# (schema order), then the three repo markers. Called after
 # configure_machine_level_opt_ins so a value it just wrote is reflected in
 # the same run's report.
 report_sentinel_inventory() {

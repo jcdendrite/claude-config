@@ -94,7 +94,7 @@ class TestFileWriteTools:
         assert run_hook(HOOK, write_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_write_to_review_pr_findings_directory_under_tmp_allowed(self):
-        """A narrowing of the /tmp arm (GH-1103) that stops admitting this path
+        """A narrowing of the /tmp arm (GH-1295) that stops admitting this path
         string fails here. The path does not exist on disk, so a check of link
         or ownership state is not exercised."""
         path = "/tmp/review-pr-reviewer-findings-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d/staff-sdet-1700000000-branch.md"
@@ -372,6 +372,99 @@ class TestBashGitWrites:
         allow on the git vector so a future refactor moving the agent-type
         check into the Bash arm would break this test, not ship silently."""
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="code-writer")) == "allow"
+
+
+class TestBashGitVersionQuery:
+    """Only a fragment that is exactly `git --version` is allowed without a read-only subcommand."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --version",
+            "git --version | head -1",
+            "git --version && git status",
+            # The quote strip reduces this to the literal; the commit gate's masked walk denies it.
+            "git --version ''",
+        ],
+        ids=[
+            "version",
+            "version-piped-to-head",
+            "version-then-status",
+            "version-then-empty-argument-after-quote-strip",
+        ],
+    )
+    def test_reviewer_git_version_query_allowed(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    # An id ending in `accepted-over-deny` marks a shape that writes nothing if
+    # run: the gate denies it because the fragment is not exactly `git --version`.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git",
+            "git ''",
+            "git ';add'",
+            # The quote strip leaves the quoted row's `$(` unquoted, so both rows deny on the
+            # same empty-subcommand `git ` fragment and the second duplicates the first.
+            'git "$(echo checkout)"',
+            "git $(echo checkout) -- x",
+            "git `echo checkout` -- x",
+            "git \\\ncheckout -- x",
+            "git --version; git checkout -- x",
+            "git --version && git init",
+            "git -C --version checkout",
+            "git '' --version",
+            "git --version & git checkout -- x",
+            "git --shallow-file --version checkout -- x",
+            "git -c 'a.b=c --version' checkout -- x",
+            "env 'A= git --version' git push",
+            "git -c 'core.sshCommand=ssh -v' fetch",
+            "git -v",
+            "git -c k=v --version",
+            "/tmp/x/git --version",
+            "GIT_DIR=x git --version",
+            "PATH=/tmp/x git --version",
+            "git --version $(git add f)",
+            "git --version `git add f`",
+            "git --version 2>&1 | head -1",
+            "`echo env` git --version",
+            # The wrapper strip rejoins words with single spaces, which would collapse this
+            # shape to the literal; the row pins that the predicate reads the pre-strip fragment.
+            "scripts/venv-run.sh git '' --version",
+            "scripts/venv-run.sh git --version",
+        ],
+        ids=[
+            "bare-git-accepted-over-deny",
+            "empty-quote-pair-accepted-over-deny",
+            "quoted-separator-accepted-over-deny",
+            "quoted-command-substitution-subcommand",
+            "unquoted-command-substitution-subcommand",
+            "unquoted-backtick-substitution-subcommand",
+            "backslash-newline-continuation-subcommand",
+            "version-then-write-semicolon",
+            "version-then-write-and",
+            "value-flag-consumes-version-accepted-over-deny",
+            "empty-quote-before-version-flag-accepted-over-deny",
+            "version-then-write-background",
+            "shallow-file-value-then-write",
+            "quoted-config-value-holding-version-flag",
+            "wrapper-quoted-version-then-push",
+            "quoted-config-value-holding-short-version-flag",
+            "short-version-accepted-over-deny",
+            "config-flag-then-version-accepted-over-deny",
+            "path-qualified-git-word",
+            "env-assignment-prefix-accepted-over-deny",
+            "path-env-assignment-prefix",
+            "version-then-command-substitution-write",
+            "version-then-backtick-write",
+            "version-then-redirect-accepted-over-deny",
+            "backtick-supplies-command-word",
+            "venv-run-wrapper-empty-quote-before-version-flag-accepted-over-deny",
+            "venv-run-wrapper-version-accepted-over-deny",
+        ],
+    )
+    def test_reviewer_git_non_version_query_shape_denied(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
 
 
 class TestBashGitModeDependentWrites:
@@ -1295,10 +1388,10 @@ class TestKnownGapBypass:
         assert reason is not None
         assert "writes to 'src/x'" in reason
 
-    # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
+    # GH-1295: the three tests below pin the CURRENT (imperfect) allow verdicts
     # for the /tmp link gap in the header's known-gaps list. The hook matches
     # `/tmp/*` as literal text and never resolves links, so each form launders
-    # a write onto a file outside /tmp. When GH-1103 closes the gap, flip the
+    # a write onto a file outside /tmp. When GH-1295 closes the gap, flip the
     # matching assertion to "deny" instead of silently accepting it.
     def test_reviewer_hard_link_into_tmp_allowed(self):
         assert run_hook(HOOK, bash_input("ln src/x /tmp/y", agent_type="ciso-reviewer")) == "allow"

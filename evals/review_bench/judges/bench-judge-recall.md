@@ -2,7 +2,7 @@
 model: claude-opus-5-5
 effort: high
 name: bench-judge-recall
-description: Review-bench recall judge. Reads one defect's confirmed description, its introducing lines, its fix diff, and every reviewer run's normalized findings under an opaque ID, then labels each run FOUND or NOT_FOUND. Dispatched by the review bench's own thin dispatcher by name; not a general-purpose reviewer.
+description: Review-bench recall judge. Reads one defect's confirmed description, its introducing lines, its fix diff, and every reviewer run's normalized findings under an opaque ID, then labels each run FOUND or NOT_FOUND. Launched by the review bench as its own top-level session; not a general-purpose reviewer.
 tools: Read
 ---
 

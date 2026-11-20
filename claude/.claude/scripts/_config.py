@@ -321,7 +321,7 @@ def _location_value(key: str, row: SchemaRow, directory: Path, known_keys: froze
     # worktree_required's own default ("false") is the permissive direction
     # for this enforcement-critical key, so this case fails closed to
     # "true" instead.
-    # The other four enforcement-critical keys' schema defaults are already
+    # The other three enforcement-critical keys' schema defaults are already
     # their own fail-closed direction, so they fall through unchanged.
     print(
         f"_config.py: warning: unrecognized legacy-polarity value for {key}: "

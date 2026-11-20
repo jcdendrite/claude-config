@@ -724,7 +724,7 @@ _config_location_value() {
       # worktree_required's own default ("false") is the permissive
       # direction for this enforcement-critical key, so this case fails
       # closed to "true" instead.
-      # The other four enforcement-critical keys' schema defaults are
+      # The other three enforcement-critical keys' schema defaults are
       # already their own fail-closed direction, so they fall through
       # unchanged.
       printf '_config.sh: warning: unrecognized legacy-polarity value for %s: %s -- falling back to schema default\n' \
@@ -845,8 +845,7 @@ _config_resolve_fail_safe() {
 # CONFIG_DIR_OVERRIDE lets a caller that already has its own config dir (or
 # needs a specific one — e.g. transcript-analysis.py's --all-accounts loop,
 # via _config.py's config_dir_override parameter) skip re-resolving it and
-# skip the config-dir-or-home union below entirely, mirroring
-# _lib_autonomous_shipping_sentinel_present's own CONFIG_DIR argument.
+# skip the config-dir-or-home union below entirely.
 #
 # Union semantics: for a config-dir-or-home key, the value is OR'd
 # across BOTH locations' own independently-resolved effective value (each
@@ -967,11 +966,11 @@ _config_resolve() {
     return 0
   fi
 
-  # Primary resolution failed. Only worktree_required's row carries
-  # legacy-probe-on-resolution-failure: true today — every other
-  # key (including autonomous_shipping, deliberately) returns 2 here rather
-  # than granting on a resolution failure, since that would be the wrong
-  # direction for a mechanism that removes a human checkpoint.
+  # Primary resolution failed. Only a config-dir-or-home row whose
+  # legacy-probe-on-resolution-failure is true probes the literal
+  # $HOME/.claude. Every other key returns 2 (unresolvable), and each caller
+  # chooses its own fail direction (recorded per key in
+  # tests/config-schema-audit.md).
   if [ -z "$config_dir_override" ] && [ "$resolution" = "config-dir-or-home" ] && [ "$legacy_probe" = "true" ] && [ -n "${HOME:-}" ]; then
     local home_only_value
     home_only_value=$(_config_location_value "$key" "${HOME%/}/.claude" \

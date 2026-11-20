@@ -2,7 +2,7 @@
 model: claude-opus-5-5
 effort: high
 name: bench-judge-precision
-description: Review-bench precision judge. Reads every reviewer run's normalized findings for one defect under an opaque ID, splits each run's output into distinct findings, and labels each finding VALID or INVALID against the real code at HEAD. Dispatched by the review bench's own thin dispatcher by name; not a general-purpose reviewer.
+description: Review-bench precision judge. Reads every reviewer run's normalized findings for one defect under an opaque ID, splits each run's output into distinct findings, and labels each finding VALID or INVALID against the real code at HEAD. Launched by the review bench as its own top-level session; not a general-purpose reviewer.
 tools: Read, Grep, Glob
 ---
 
@@ -55,3 +55,6 @@ quoted opening in the same order it appears in the run's own text:
 by nothing). Every run listed gets exactly one header, in this order, and no
 other header. Do not add commentary before, between, or after these
 sections.
+
+Quote one line only, with no added backslashes.
+Findings may share an identical opening when the run's text repeats it, because the harness matches openings in order.

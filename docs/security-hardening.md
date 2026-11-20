@@ -538,6 +538,20 @@ naming pattern is itself sensitive. Treat them as sensitive artifacts:
   belt-and-suspenders entries for all four in case one is created in the
   wrong place by mistake.
 
+## What unconditional autonomous shipping leaves unchecked
+
+CLAUDE.md's Shipping bullet tells the agent to commit, push the current branch and open a PR without pausing, in every repository and with no per-repo or per-machine switch. The guards below bound only parts of that. Each item names a limit that stays open.
+
+- **Server-side branch protection is a precondition.** `deny-default-branch-push.sh` reads command text and misses some pushes (see § "Required server-side branch protection"). Where the remote does not protect the default branch, nothing else stops a push the hook misses.
+- **The root guard checks the path's shape, not who owns the remote.** `_lib_autonomous_shipping_root_for_cwd` rejects a relative or non-repo `.cwd`, an unresolvable `HOME`, and a root at or above `HOME`. It reads nothing about `origin`, so a cloned third-party repository passes.
+- **The root guard bounds only two hooks.** Only the Stop hook (`advance-past-commit-stall.sh`) and the compact hook (`restore-authorization-boundary-on-compact.sh`) call it. The CLAUDE.md rule applies to the agent in every directory.
+- **The tracker-ID, structural and project-name scans run only in a gated repo.** `deny-private-project-refs.sh` runs them where `_lib_origin_names_claude_config` accepts the origin URL or the repo commits `.claude/private-projects-optin`, and is silent in every other repo (see `docs/private-project-redaction.md` § "Opting in another repository").
+- **The blocklist scan and the PII scan wait on files.** The project-name blocklist scan needs a populated `<config-dir>/private-projects.md`, and the PII tier of `deny-pii-in-commits.sh` needs `<config-dir>/pii-patterns.md`. Each file is read from `<config-dir>` and, when absent there, from `~/.claude`. In an ungated repo the blocklist scan never runs, whatever `private-projects.md` holds.
+- **Only the credential-value scan fires in every repo.** It is the credential-value tier of `deny-pii-in-commits.sh`, and it covers the commit-concluding forms only: `git commit` and `git merge`, `rebase`, `cherry-pick` or `revert` with `--continue`. In an ungated repo, a PR or issue body goes unscanned by `deny-private-project-refs.sh`.
+- **The compact hook's statement defers to CLAUDE.md for its limits.** The statement states no default-branch, merge, force-push or fork limit of its own. CLAUDE.md's Shipping bullet carries the push scope and the force-push limit, and Agent Core carries the human-only merge and the rule that a fork or subagent returns its work. Whether CLAUDE.md stays in the agent's context after compaction is not verified.
+- **The Stop hook's block reason hands the agent a config write.** The reason prints a shell command, a Bash append (`>>`) of the permissive value `commit_stall_block = false` to `<config-dir>/claude-config.toml`, that turns the hook off for the whole config dir. What gates an agent write to that file, and what is not established, is stated in `docs/config-file.md` § "Writing a value".
+- **A PR body can carry engineer quotes to whatever repository the PR is opened against.** The review-narrative ledger logs engineer quotes at review stops, and `review-ledger.sh render` puts the live decisions, quotes included, into the PR body when given `--pr-json`. See [`hooks.md`](hooks.md)'s `session-marker-dashboard.sh` entry and [`scripts.md`](scripts.md)'s `review-ledger.sh` entry.
+
 ## Required server-side branch protection
 
 This section backstops the `deny-default-branch-push.sh` hook at `claude/.claude/hooks/deny-default-branch-push.sh` (see [`hooks.md`](hooks.md) for its entry).

@@ -435,7 +435,7 @@ def _enforcement_critical_keys() -> frozenset[str]:
     BASH_SOURCE guard keeps this from running main(). Ground-truthed
     against the actual bash variable rather than duplicated as a Python
     literal: a hardcoded copy's len()-only usage below would silently pass
-    a future edit that swapped which five keys are enforcement-critical
+    a future edit that swapped which four keys are enforcement-critical
     while leaving the count unchanged.
     """
     script_path = REPO_ROOT / _MIGRATE_LEGACY_CONFIG_REL_PATH

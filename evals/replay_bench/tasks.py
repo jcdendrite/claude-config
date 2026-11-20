@@ -46,9 +46,10 @@ _ROOT_MCP_CONFIG_NAME = ".mcp.json"
 
 _WORKTREE_OPTOUT_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "worktree-optout"
 BARE_WRITER_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "agents" / "bare-writer.md"
+FIXTURE_SETTINGS_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "settings.json"
 _PROJECT_CONFIG_EXCLUDE_LINE = f"/{fixture_repo._PROJECT_CONFIG_DIR_NAME}/\n"
 
-_TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
+TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
 _TASK_KEYS = (
     "id", "source_repo", "base_commit", "commit", "brief", "changed_paths", "author_email", "committer_email",
     "reference_metrics", "base_density", "base_tree_bytes", "base_tree_entries",
@@ -72,7 +73,8 @@ _EXPORT_ATTRIBUTES = (b"export-ignore", b"export-subst")
 
 
 class TaskSourceError(ValueError):
-    """A source repository, rev or trusted-author argument the miner refuses, or a commit it cannot read safely."""
+    """A source repository, rev, trusted-author or selection-limit argument the miner refuses, or a commit it
+    cannot read safely."""
 
 
 class TaskFileError(ValueError):
@@ -98,6 +100,7 @@ class SkipReason(StrEnum):
     BASE_TREE_TOO_MANY_ENTRIES = "base-tree-too-many-entries"
     MISSING_OBJECT = "missing-object"
     CLAUDE_DIR_SYMLINK = "claude-dir-symlink"
+    CLAUDE_DIR_FILE = "claude-dir-file"
     ABSOLUTE_SYMLINK = "absolute-symlink"
     ESCAPING_SYMLINK = "escaping-symlink"
     GIT_PATH_COMPONENT = "git-path-component"
@@ -118,6 +121,26 @@ class SelectionLimits:
     # Basis: the fixture-build timing measured for 12,500 files totaling 100 MB, in the Fixture section of
     # .claude/plans/docstring-verbosity-experiment.md.
     max_base_entries: int = 12_500
+
+    def __post_init__(self) -> None:
+        """A negative `max_count` would make `git log -n` walk the whole history."""
+        for field_name in _INTEGER_LIMIT_FIELDS:
+            if getattr(self, field_name) < 1:
+                raise TaskSourceError(f"{_flag_for(field_name)} must be at least 1, got {getattr(self, field_name)}")
+        if self.min_code_lines > self.max_code_lines:
+            raise TaskSourceError(
+                f"--min-code-lines {self.min_code_lines} is above --max-code-lines {self.max_code_lines}"
+            )
+
+
+_INTEGER_LIMIT_FIELDS = (
+    "max_count", "max_tasks", "max_files", "min_code_lines", "max_code_lines", "max_prompt_chars", "max_base_mb",
+    "max_base_entries",
+)
+
+
+def _flag_for(field_name: str) -> str:
+    return "--" + field_name.replace("_", "-")
 
 
 DEFAULT_LIMITS = SelectionLimits()
@@ -170,7 +193,7 @@ class ReplayTask:
         missing_keys = [key for key in _TASK_KEYS if key not in data]
         if missing_keys:
             raise ValueError(f"task lacks keys {missing_keys}")
-        if not isinstance(data["id"], str) or not _TASK_ID_RE.fullmatch(data["id"]):
+        if not isinstance(data["id"], str) or not TASK_ID_RE.fullmatch(data["id"]):
             raise ValueError(f"task ID {data['id']!r} does not match <8 hex>-<12 hex>")
         for string_field in ("source_repo", "base_commit", "commit", "brief", "author_email", "committer_email"):
             if not isinstance(data[string_field], str):
@@ -334,19 +357,23 @@ def _refuse_symlinks_leaving(dest_dir: Path) -> None:
 
 def build_task_fixture(
     task: ReplayTask, dest_dir: Path, baseline_git_dir: Path, *, bare_writer_markdown: str, timeout_s: float,
+    settings_text: str | None = None,
 ) -> str:
     """Builds `dest_dir` as a one-commit repository of the task's base tree, pruned by
     `prune_instruction_files`, and returns that commit's SHA.
 
     `dest_dir` must exist and be empty. `baseline_git_dir` must not exist.
 
-    After the commit it writes the worktree opt-out and `.claude/agents/bare-writer.md`.
-    It lists `.claude/` in `.git/info/exclude`, so neither file reaches a diff.
+    After the commit it writes the worktree opt-out and `.claude/agents/bare-writer.md`, plus
+    `.claude/settings.json` when `settings_text` is given.
+    It lists `.claude/` in `.git/info/exclude`, so none of them reaches a diff.
     It then copies the repository's `.git` to `baseline_git_dir`.
 
     Raises:
-    - TaskSourceError: the source repository has become a partial clone or sets an export
-      attribute in `info/attributes` since mining.
+    - TaskSourceError: the source repository has become a partial clone, or its `info/attributes`
+      holds the text `export-ignore` or `export-subst` since mining (a plain text match, comments
+      and unset forms included). It also raises when `git config` exits with a status other than 0
+      or 1, when `git rev-parse --git-path` fails, or when `info/attributes` exists but cannot be read.
     - UnsafeFixtureConfigError: a refused archive member, or a symlink resolving outside the fixture.
     - ValueError: a commit that is not a 40-hex SHA.
     - CalledProcessError, TimeoutExpired or OSError: a failed step.
@@ -361,6 +388,8 @@ def build_task_fixture(
     (dest_dir / BARE_WRITER_RELPATH).parent.mkdir(parents=True)
     (dest_dir / _WORKTREE_OPTOUT_RELPATH).write_text("")
     (dest_dir / BARE_WRITER_RELPATH).write_text(bare_writer_markdown)
+    if settings_text is not None:
+        (dest_dir / FIXTURE_SETTINGS_RELPATH).write_text(settings_text)
     exclude_path = dest_dir / ".git" / "info" / "exclude"
     exclude_path.parent.mkdir(parents=True, exist_ok=True)
     existing_excludes = exclude_path.read_text() if exclude_path.exists() else ""
@@ -457,8 +486,7 @@ def _is_directory_or_link_entry(entry: comment_metrics.ChangedEntry) -> bool:
 
 
 def _path_is_unsafe_in_prompt(path: str) -> bool:
-    """The inner prompt lists paths comma-separated, and a path that does not round-trip through
-    UTF-8 would not survive the task file."""
+    """The inner prompt lists paths comma-separated."""
     try:
         path.encode("utf-8")
     except UnicodeEncodeError:
@@ -491,6 +519,16 @@ def base_tree_refusal(path: str, link_target: str | None) -> SkipReason | None:
     if resolved_lexically == ".." or resolved_lexically.startswith("../"):
         return SkipReason.ESCAPING_SYMLINK
     return None
+
+
+def _is_root_claude_file(entry: TreeEntry) -> bool:
+    """The prune keeps a regular file named `.claude`, and the fixture build then cannot create
+    `.claude/agents` beneath it. Case is folded like the sibling rules, since the collision holds on
+    case-insensitive volumes."""
+    return (
+        entry.mode in comment_metrics.REGULAR_FILE_MODES
+        and entry.path.casefold() == fixture_repo._PROJECT_CONFIG_DIR_NAME
+    )
 
 
 # --- base density ------------------------------------------------------------
@@ -549,8 +587,10 @@ def resolve_source_repo(path: Path) -> Path:
     - A non-repository path or a bare repository.
     - A partial clone: git fetches a missing object on demand, which would put untimed network
       I/O into mining and fixture builds.
-    - A repository whose `info/attributes` sets an export attribute: it would reach every
-      commit's archive."""
+    - A repository whose `info/attributes` holds the text `export-ignore` or `export-subst`, a
+      comment or an unset form included: it could reach every commit's archive.
+    - A `git config` exit other than 0 or 1, a failed `git rev-parse --git-path`, or an
+      `info/attributes` file that exists but cannot be read."""
     resolved = Path(os.path.realpath(path))
     result = subprocess.run(
         ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
@@ -598,7 +638,7 @@ def _refuse_export_attributes_in_info_file(path: Path, repo: Path, *, timeout_s:
     except OSError as exc:
         raise TaskSourceError(f"{path}: cannot read {info_attributes}: {exc}") from exc
     if _holds_export_attribute(content):
-        raise TaskSourceError(f"{path}: {info_attributes} sets an export attribute, which would reach every archive")
+        raise TaskSourceError(f"{path}: {info_attributes} names export-ignore or export-subst, which could reach every archive")
 
 
 def _holds_export_attribute(content: bytes) -> bool:
@@ -686,7 +726,8 @@ def _measure_change(
 
 
 def _inspect_base_tree(repo: Path, base_commit: str, limits: SelectionLimits) -> list[TreeEntry] | SkipReason:
-    """The base tree's entries, or the first bound, export-attribute or extraction refusal the tree hits."""
+    """The base tree's entries, or the first bound, export-attribute, extraction refusal or root `.claude`
+    regular file the tree hits."""
     # Known boundary: the entry bound is checked after the whole listing is read, and changed blobs have no
     # size ceiling. Both are acceptable at the interactive, local scale this miner runs at.
     base_entries = _list_tree(repo, base_commit)
@@ -711,6 +752,8 @@ def _inspect_base_tree(repo: Path, base_commit: str, limits: SelectionLimits) ->
     }
     for entry in base_entries:
         refusal = base_tree_refusal(entry.path, link_target_by_path.get(entry.path))
+        if refusal is None and _is_root_claude_file(entry):
+            refusal = SkipReason.CLAUDE_DIR_FILE
         if refusal is not None:
             return refusal
     return base_entries
@@ -800,8 +843,8 @@ def mine_tasks(
       task set twice under two IDs.
     - An invalid or unknown `limits.rev`, or a `git log` that fails.
     - A control character in an author, committer or merged-author email.
-    - A partial clone, or a repo whose `info/attributes` sets an export attribute, as
-      `resolve_source_repo` refuses.
+    - A partial clone, or a repo whose `info/attributes` holds the text `export-ignore` or
+      `export-subst`, as `resolve_source_repo` refuses.
     - A commit whose git read or parse fails, naming the repo and commit."""
     if not trusted_authors or "" in trusted_authors:
         raise TaskSourceError("--trusted-author must name at least one non-empty author email")

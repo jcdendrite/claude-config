@@ -12,7 +12,6 @@ import copy
 import fcntl
 import fnmatch
 import json
-import os
 import re
 import subprocess
 import sys
@@ -27,6 +26,7 @@ from transcript_analysis import (
     cost,
     gh_cli,
     ledger_common,
+    ledger_rounds,
     pr_cost_ledger,
     pricing,
     redaction,
@@ -591,6 +591,19 @@ def _new_pr_cost_row(
     }
 
 
+def _review_round_counts(review_rounds_cell: dict | None) -> tuple[int, ...] | None:
+    """Each review skill's rounds not flagged after_merge, in review_rounds.REVIEW_SKILLS order, or None for a row with
+    no cell. The count ignores the cell's `rule` and the row's `join_confidence`, so it can differ from the rounds
+    `review-cost-by-size` reports for the same PR."""
+    if review_rounds_cell is None:
+        return None
+    rounds_by_skill = review_rounds_cell["rounds"]
+    return tuple(
+        sum(1 for review_round in rounds_by_skill.get(skill, []) if not ledger_rounds._round_is_after_merge(review_round))
+        for skill in review_rounds.REVIEW_SKILLS
+    )
+
+
 def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict, repo_map: dict) -> None:
     """Read-mode's existing-rows preview -- scrubbed repo, no branch column
     at all (head_branch is already the scrubbed placeholder stored in the
@@ -599,12 +612,21 @@ def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict,
         print("\nNo rows recorded yet.")
         return
     print()
-    print(f"{'Repo':<28} {'PR':>6} {'Machine':<9} {'Status':<20} {'Join':<8} {'CapturedAt':<20}")
+    round_count_headers = [f"{skill}-rounds" for skill in review_rounds.REVIEW_SKILLS]
+    print(
+        f"{'Repo':<28} {'PR':>6} {'Machine':<9} {'Status':<20} {'Join':<8} {'CapturedAt':<20}"
+        f" {' '.join(round_count_headers)}"
+    )
     for row in rows:
         repo_label = redaction._assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
+        round_counts = _review_round_counts(row["review_rounds"])
+        round_count_cells = " ".join(
+            f"{'-' if round_counts is None else round_counts[position]:>{len(header)}}"
+            for position, header in enumerate(round_count_headers)
+        )
         print(
             f"{repo_label:<28} {row['pr_number']:>6} {row['machine']:<9} {row['status']:<20}"
-            f" {row['join_confidence']:<8} {row['captured_at']:<20}"
+            f" {row['join_confidence']:<8} {row['captured_at']:<20} {round_count_cells}"
         )
 
 
@@ -706,7 +728,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             file=sys.stderr,
         )
         sys.exit(2)
-    if all_accounts and len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+    if all_accounts and len(roots) > 1 and pr_cost_ledger.pr_cost_ledger_path_overridden():
         # A single forced path would commingle every account's rows into one
         # file, defeating the per-account separation the sentinel gate below
         # depends on.
@@ -781,15 +803,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             file=sys.stderr,
         )
 
-        try:
-            ledger_path = pr_cost_ledger._pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError:
-            # Not str(exc): pr_cost_ledger._pr_cost_ledger_path's own message embeds
-            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
-            # engagement path. Same discipline as pr-cost-export's identical
-            # catch.
-            print(f"pr-cost: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
-            sys.exit(1)
+        ledger_path = pr_cost_ledger._pr_cost_ledger_path_or_exit("pr-cost", ordinal, account_config_dir)
 
         if not record:
             existing_rows: list[dict] = []

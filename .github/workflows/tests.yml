@@ -200,11 +200,13 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: nproc
 
-      # Records the pinned git's version and which awk implementation runs the cumulative-review normalizer's tests.
-      - name: Report runner git and awk versions
+      # Records the pinned git's version, the runner's gh version, and which awk implementation runs the cumulative-review normalizer's tests.
+      # gh comes from the runner image and is not pinned, so its version identifies which release's `gh help` output the drift-guard tests in test_lib_tool_argv.py parse.
+      - name: Report runner git, gh and awk versions
         if: steps.detect.outputs.changed == 'true'
         run: |
           git --version
+          gh --version || true
           readlink -f "$(command -v awk)" || true
           { awk --version || awk -W version || awk -version; } </dev/null 2>/dev/null | head -n 1 || true
 

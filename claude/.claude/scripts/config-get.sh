@@ -14,8 +14,7 @@ set -uo pipefail
 # every case).
 #
 # Prints the effective value on stdout for a human — the exit code is the
-# sole authority, matching the phrasing CLAUDE.md already uses for
-# autonomous-shipping-active.sh; never trust stdout alone. The
+# sole authority; never trust stdout alone. The
 # schema-readability check runs before unknown-key detection so a missing
 # config-keys.psv is never misreported as a typo'd key name — every row
 # lookup against an unreadable schema file would otherwise find no match

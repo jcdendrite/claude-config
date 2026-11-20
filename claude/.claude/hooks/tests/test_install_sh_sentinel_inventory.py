@@ -46,6 +46,28 @@ def _extract_inventory_block() -> str:
     return _extract_block(_INVENTORY_START, _INVENTORY_END, "REPO_MARKER_INVENTORY=(")
 
 
+def _repo_marker_inventory_rows(tmp_path: Path) -> list[str]:
+    """The rows of REPO_MARKER_INVENTORY as bash evaluates the array, one string per element."""
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    script = (
+        "set -e\n"
+        + _extract_inventory_block()
+        + '\nprintf \'%s\\n\' "${REPO_MARKER_INVENTORY[@]}"\n'
+    )
+    result = subprocess.run(
+        [_BASH, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_base_env(home, repo),
+    )
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    return result.stdout.splitlines()
+
+
 def _extract_opt_ins_and_inventory_blocks() -> str:
     """configure_machine_level_opt_ins (machine-level-opt-ins block) plus
     the reporter (sentinel-inventory block) -- needed together for any test
@@ -168,11 +190,8 @@ class TestSentinelInventoryArray:
 
         Also asserts empty stderr: every row is a double-quoted bash string
         literal, so an unescaped backtick or `$(...)` in a field is live
-        command substitution, not inert text, and a failed substitution
-        under `set -e` aborts the array assignment itself. The count and
-        field-shape checks in this class still pass in that case -- bash
-        still populates the array before continuing -- so stderr is the
-        only signal that would catch it."""
+        command substitution, not inert text. The stderr assertion guards a
+        substitution that exits zero but writes to stderr."""
         home = tmp_path / "home"
         home.mkdir()
         repo = tmp_path / "repo"
@@ -199,26 +218,15 @@ class TestSentinelInventoryArray:
         assert count > 0, "REPO_MARKER_INVENTORY must not be empty"
 
     def test_every_row_has_exactly_three_pipe_delimited_fields_with_no_surrounding_whitespace(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """The schema comment requires no whitespace around any `|` --
         IFS='|' read -r bakes leading/trailing spaces into a field
-        otherwise. REPO_MARKER_INVENTORY carries only the four repo-scope
+        otherwise. REPO_MARKER_INVENTORY carries only the three repo-scope
         committed markers, each a fixed path-template|human-name|docs-anchor
         row with no optional trailing field."""
-        install_text = _INSTALL_SH.read_text()
-        start = install_text.find(_INVENTORY_START)
-        end = install_text.find(_INVENTORY_END, start)
-        block = install_text[start:end]
-        array_start = block.find("REPO_MARKER_INVENTORY=(")
-        array_end = block.find("\n)", array_start)
-        array_body = block[array_start:array_end]
-        rows = [
-            line.strip()[1:-1]  # strip surrounding quotes
-            for line in array_body.splitlines()
-            if line.strip().startswith('"')
-        ]
-        assert rows, "no rows parsed out of the REPO_MARKER_INVENTORY array literal"
+        rows = _repo_marker_inventory_rows(tmp_path)
+        assert rows, "no rows read from the evaluated REPO_MARKER_INVENTORY array"
         for row in rows:
             fields = row.split("|")
             assert len(fields) == 3, f"row {row!r} does not have exactly 3 fields"
@@ -226,6 +234,19 @@ class TestSentinelInventoryArray:
                 assert field == field.strip(), (
                     f"field {field!r} in row {row!r} has leading/trailing whitespace"
                 )
+
+    def test_inventory_names_exactly_the_three_repo_markers_and_not_the_retired_optout(
+        self, tmp_path: Path
+    ) -> None:
+        """The evaluated REPO_MARKER_INVENTORY array lists exactly the
+        session-title, worktree-optout and worktree-required markers, and no
+        `autonomous-shipping-optout` row."""
+        path_templates = [row.split("|")[0] for row in _repo_marker_inventory_rows(tmp_path)]
+        assert sorted(path_templates) == [
+            ".claude/session-title-disabled",
+            ".claude/worktree-optout",
+            ".claude/worktree-required",
+        ]
 
 
 class TestLegacyConfigMigrationExecution:
@@ -455,7 +476,7 @@ class TestReportSentinelInventory:
         self, tmp_path: Path
     ) -> None:
         """A relative CLAUDE_CONFIG_DIR makes the config dir unresolvable.
-        autonomous_shipping carries legacy-probe-on-resolution-failure:
+        permission_prompt_tracking carries legacy-probe-on-resolution-failure:
         false (config-keys.psv), so it must surface the resolution failure
         rather than silently falling back."""
         home = tmp_path / "home"
@@ -469,7 +490,7 @@ class TestReportSentinelInventory:
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert (
-            "Autonomous shipping: could not resolve (CLAUDE_CONFIG_DIR is a "
+            "Permission-prompt tracking: could not resolve (CLAUDE_CONFIG_DIR is a "
             "relative path, or $HOME is unset/empty)" in result.stdout
         )
 
@@ -492,11 +513,11 @@ class TestReportSentinelInventory:
         result = _run_report_config_key_directly(
             env,
             isolated_hooks_dir / "_config.sh",
-            'autonomous_shipping "Autonomous shipping" "docs/x.md#y" "config-dir"',
+            'permission_prompt_tracking "Permission-prompt tracking" "docs/x.md#y" "config-dir"',
         )
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "Autonomous shipping: could not resolve (config-keys.psv is missing or unreadable" in result.stdout
+        assert "Permission-prompt tracking: could not resolve (config-keys.psv is missing or unreadable" in result.stdout
         assert "CLAUDE_CONFIG_DIR is a relative path" not in result.stdout
 
     def test_worktree_required_falls_back_to_home_legacy_probe_on_resolution_failure(

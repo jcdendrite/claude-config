@@ -1,6 +1,7 @@
 """Unit tests for _lib.sh's fragment matchers (_lib_fragment_command_word through
-_lib_commit_fragment_has_worktree_target), _lib_extract_git_subcmd and _lib_extract_git_subcmd_args,
-their quote-blindness composition with _lib_strip_shell_quotes, and _lib_strip_shell_quotes itself.
+_lib_commit_fragment_has_worktree_target), _lib_extract_git_subcmd, _lib_extract_git_subcmd_args and
+_lib_fragment_is_git_version_query, their quote-blindness composition with _lib_strip_shell_quotes,
+and _lib_strip_shell_quotes itself.
 """
 from __future__ import annotations
 
@@ -228,6 +229,79 @@ class TestExtractGitSubcmd:
 class TestExtractGitSubcmdArgs:
     def test_extract_git_subcmd_args(self, fragment: str, expected: list[str]) -> None:
         assert _extract_git_subcmd_args(fragment) == expected
+
+
+def _fragment_is_git_version_query(fragment: str, command: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_is_git_version_query "$1" "$2"', "bash", fragment, command],
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "fragment, command, expected",
+    [
+        ("git --version", "git --version", True),
+        (" git --version ", "git --version", True),
+        # The masked and stripped walks pass the same raw command, so an absent second argument is a non-backtick command.
+        ("git --version", "", True),
+        # A `$(` substitution leaves no standalone fragment, so only a backtick refuses.
+        ("git --version", "echo $(echo x) && git --version", True),
+        # Kills a dropped backtick guard: the backtick splits off a ` git --version` fragment.
+        (" git --version", "`echo env` git --version", False),
+        # Kills a guard that reads the fragment instead of the raw command.
+        ("git --version", "git --version `date`", False),
+        # Kills a ` +` mutant: the quote strip turns `git '' --version` into this shape.
+        ("git  --version", "git '' --version", False),
+        # Kills a dropped `^`: a wrapper command word precedes git.
+        ("env git --version", "env git --version", False),
+        # Kills a dropped `$`: a second command follows.
+        ("git --version & git checkout -- x", "git --version & git checkout -- x", False),
+        # Kills a suffix-widening mutant: a longer flag is not `--version`.
+        ("git --versionx", "git --versionx", False),
+        # Kills a mutant that widens the literal to also accept the `-v` short form.
+        ("git -v", "git -v", False),
+        # Kills a mutant that widens the trailing ` *` to `[[:space:]]*`: only literal spaces may follow the flag.
+        ("git --version\t", "git --version\t", False),
+        ("git --version\r", "git --version\r", False),
+        # A path-qualified or env-prefixed command word is not the bare `git` word.
+        ("/tmp/x/git --version", "/tmp/x/git --version", False),
+        ("PATH=/tmp/x git --version", "PATH=/tmp/x git --version", False),
+        # Kills a mutant that accepts a bare `git`, `--help` or `-h`: only the literal `--version` flag matches.
+        ("git", "git", False),
+        ("git --help", "git --help", False),
+        ("git -h", "git -h", False),
+        # The masked form keeps its quotes, so a trailing empty argument does not match.
+        ("git --version ''", "git --version ''", False),
+    ],
+    ids=[
+        "exact",
+        "space-padded",
+        "empty-command",
+        "dollar-paren-elsewhere-in-command",
+        "backtick-supplies-command-word",
+        "backtick-after-fragment",
+        "double-space-from-quote-strip",
+        "wrapper-command-word",
+        "second-command-follows",
+        "suffix-widened-flag",
+        "short-v-flag",
+        "trailing-tab",
+        "trailing-carriage-return",
+        "path-qualified-git",
+        "env-assignment-prefix",
+        "bare-git",
+        "help-flag",
+        "short-help-flag",
+        "masked-trailing-empty-argument",
+    ],
+)
+def test_fragment_is_git_version_query(fragment: str, command: str, expected: bool) -> None:
+    result = _fragment_is_git_version_query(fragment, command)
+    # Pin exit 1 for a non-match so a crash (any other non-zero exit) cannot pass as a deny.
+    assert result.returncode == (0 if expected else 1)
+    assert result.stderr == ""
 
 
 # --- _lib_fragment_invokes_git ------------------------------------------
