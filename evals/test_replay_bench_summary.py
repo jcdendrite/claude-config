@@ -375,11 +375,11 @@ class TestTheRunSpread:
     def test_it_pools_each_tasks_variance_by_its_degrees_of_freedom(self):
         spread = summary.run_spread([
             self.runs("t1", (10, 10), (30, 10)),
-            self.runs("t2", (20, 10), (20, 10), (20, 10)),
+            self.runs("t2", (10, 10), (20, 10), (60, 10)),
         ])
 
         assert spread.task_count == 2
-        assert spread.standard_deviation == pytest.approx(math.sqrt((2.0 * 1 + 0.0 * 2) / 3))
+        assert spread.standard_deviation == pytest.approx(math.sqrt((2.0 * 1 + 7.0 * 2) / 3))
 
     def test_a_task_with_fewer_than_two_runs_holding_code_adds_nothing(self):
         spread = summary.run_spread([
