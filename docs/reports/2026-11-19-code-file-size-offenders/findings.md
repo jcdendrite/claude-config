@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-19
 **Pin:** `ab85a627` (merge-base with `main`). Every count below is read from blobs and history at this commit, not from a working tree.
-**Scope:** every tracked `.py` and `.sh` file over 1,000 physical lines, as GH-1119 scopes it. Files without those suffixes are not measured.
+**Scope:** every tracked regular `.py` and `.sh` file over 1,000 physical lines, as GH-1119 scopes it. Files without those suffixes are not measured.
 **Reproduce:** the Appendix holds the measuring program and the cross-check commands. The program prints every measured figure.
 
 ## Summary for the Revisit ruling
@@ -11,7 +11,7 @@
 
 | Figure | Value | Meaning |
 | --- | --- | --- |
-| `tracked_code_files` | 685 | Tracked `.py` and `.sh` files at the pin |
+| `tracked_code_files` | 685 | Tracked regular `.py` and `.sh` files at the pin. Symlinks are excluded. |
 | `offenders_all` | 112 | Files over 1,000 physical lines |
 | `offenders_test` | 89 | Offenders that are test code: a `tests` directory component, or a `test_*.py` or `conftest.py` name |
 | `offenders_production` | 23 | Offenders that are not test code |
