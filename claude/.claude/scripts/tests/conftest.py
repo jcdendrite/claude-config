@@ -47,7 +47,7 @@ from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, redaction, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
-# claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_cursor_adapter_shim.py.
+# claude/.claude/ itself, so `hooks.tests...` below resolves, as in _cursor_shim_helpers.py.
 sys.path.insert(0, str(CLAUDE_DIR))
 from hooks.tests._cursor_identity_fixtures import clear_adapter_environment  # noqa: E402
 
