@@ -888,7 +888,7 @@ class TestRecallAnswerParser:
         assert result["r1"].quoted_opening == 'The stated "assumption" is "uses'
 
     def test_rejects_five_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
-        """Guards the odd-count accept rule requiring the line to end with a quote at counts above three."""
+        """Guards the odd-count accept rule requiring the line to end with a quote, here at five quote chars."""
         findings = {"r1": 'The stated "assumption" is "uses" the session auth.', "r2": "Nothing wrong here."}
         answer = 'r1: FOUND -- "The stated "assumption" is "uses" the session auth\nr2: NOT_FOUND'
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
@@ -905,6 +905,12 @@ class TestRecallAnswerParser:
         answer = f'r1: FOUND -- "Calls "foo"\n  then leaks the handle{continuation_end_quote}'
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
 
+    def test_rejects_five_quote_chars_ending_the_line_when_a_continuation_line_holds_another_quote(self) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line, at any odd count."""
+        findings = {"r1": 'The stated "assumption" is "uses the session auth".'}
+        answer = 'r1: FOUND -- "The stated "assumption" is "uses"\n  the session auth"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
     def test_rejects_three_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
         """Guards the odd-count accept rule: the line must end with a quote."""
         findings = {"r1": 'Calls "foo" and then leaks the handle.', "r2": "Nothing wrong here."}
@@ -916,13 +922,14 @@ class TestRecallAnswerParser:
         [
             pytest.param('"""', id="three-quote-chars"),
             pytest.param('"" "', id="empty-pair-then-spaced-quote"),
+            pytest.param('" "', id="quoted-single-space"),
             pytest.param("“”“", id="three-curly-quote-chars"),
         ],
     )
-    def test_rejects_an_odd_quote_count_whose_opening_holds_only_quote_chars_and_whitespace(
+    def test_rejects_an_opening_that_holds_only_quote_chars_and_whitespace(
         self, quote_only_opening_line: str,
     ) -> None:
-        """Guards the odd-count accept rule: the opening must hold a character that is neither a quote nor whitespace."""
+        """Guards both single-line accept paths: the opening must hold a character that is neither a quote nor whitespace."""
         findings = {"r1": 'Says "hello" and “goodbye” here.'}
         answer = f"r1: FOUND -- {quote_only_opening_line}"
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
@@ -1048,7 +1055,7 @@ class TestAnswerFormatMatchingIsLinearTime:
     def test_many_inner_quotation_precision_finding_lines_before_a_quote_free_tail_do_not_trigger_a_quadratic_scan(
         self,
     ) -> None:
-        """Also pins parse_recall_answer, which reaches this scan only through the shared _label_lines_with_quoted_openings."""
+        """parse_recall_answer reaches this scan only through _label_lines_with_quoted_openings, so it has no twin test."""
         section_text = '1. VALID -- "A "b"\n' * self._BLANK_LINE_COUNT + "no quote here\n" * self._QUOTE_FREE_TAIL_LINE_COUNT
         findings = self._timed(lambda: adjudicate.parse_precision_findings(section_text))
         assert findings == [adjudicate.PrecisionFinding(label="VALID", quoted_opening='A "b')] * self._BLANK_LINE_COUNT
@@ -1396,6 +1403,7 @@ class TestPrecisionAnswerParser:
         ],
     )
     def test_accepts_an_opening_that_stops_inside_an_inner_quotation(self, quoted_opening_line: str) -> None:
+        """The quoted second finding also guards the later-quote check stopping at the next finding line."""
         findings_by_id = {"r1": 'The stated assumption is "uses the session auth by default". Second problem here.'}
         answer = f'### Run r1\n1. INVALID -- {quoted_opening_line}\n2. VALID -- "Second problem"\n'
         result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
@@ -1431,7 +1439,7 @@ class TestPrecisionAnswerParser:
         ]
 
     def test_rejects_five_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
-        """Guards the odd-count accept rule requiring the line to end with a quote at counts above three."""
+        """Guards the odd-count accept rule requiring the line to end with a quote, here at five quote chars."""
         findings_by_id = {"r1": 'The stated "assumption" is "uses" the session auth. Second problem here.'}
         answer = '### Run r1\n1. VALID -- "The stated "assumption" is "uses" the session auth\n2. VALID -- "Second problem"\n'
         assert adjudicate.parse_precision_findings(answer) is None
@@ -1450,6 +1458,13 @@ class TestPrecisionAnswerParser:
         assert adjudicate.parse_precision_findings(answer) is None
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
 
+    def test_rejects_five_quote_chars_ending_the_line_when_a_continuation_line_holds_another_quote(self) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line, at any odd count."""
+        findings_by_id = {"r1": 'The stated "assumption" is "uses the session auth".'}
+        answer = '### Run r1\n1. VALID -- "The stated "assumption" is "uses"\n  the session auth"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
     def test_rejects_three_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
         """Guards the odd-count accept rule: the line must end with a quote."""
         findings_by_id = {"r1": 'Calls "foo" and then leaks the handle. Second problem here.'}
@@ -1462,17 +1477,22 @@ class TestPrecisionAnswerParser:
         [
             pytest.param('"""', id="three-quote-chars"),
             pytest.param('"" "', id="empty-pair-then-spaced-quote"),
+            pytest.param('" "', id="quoted-single-space"),
             pytest.param("“”“", id="three-curly-quote-chars"),
         ],
     )
-    def test_rejects_an_odd_quote_count_whose_opening_holds_only_quote_chars_and_whitespace(
+    def test_rejects_an_opening_that_holds_only_quote_chars_and_whitespace(
         self, quote_only_opening_line: str,
     ) -> None:
-        """Guards the odd-count accept rule: the opening must hold a character that is neither a quote nor whitespace."""
+        """Guards both single-line accept paths: the opening must hold a character that is neither a quote nor whitespace."""
         findings_by_id = {"r1": 'Says "hello" and “goodbye” here.'}
         answer = f"### Run r1\n1. VALID -- {quote_only_opening_line}\n"
         assert adjudicate.parse_precision_findings(answer) is None
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_rejects_a_two_line_quote_whose_opening_holds_only_a_newline(self) -> None:
+        """Guards the same rule on the multiline path. The answer-level split check masks it unless findings hold a newline."""
+        assert adjudicate.parse_precision_findings('### Run r1\n1. VALID -- "\n"\n') is None
 
     def test_rejects_an_odd_quote_count_whose_first_quote_does_not_start_the_line_text(self) -> None:
         """Guards the odd-count accept rule: only whitespace and label separators may precede the first quote."""

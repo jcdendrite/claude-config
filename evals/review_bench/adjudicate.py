@@ -349,15 +349,12 @@ def _strip_markdown_decoration(text: str) -> tuple[str, list[int]]:
     return "".join(text[i] for i in raw_index_by_stripped_index), raw_index_by_stripped_index
 
 
-def _stops_inside_an_inner_quotation(
-    text: str, line_match: re.Match[str], opening: str, *, next_line_start: int,
-) -> bool:
+def _stops_inside_an_inner_quotation(text: str, line_match: re.Match[str], *, next_line_start: int) -> bool:
     """Whether an odd-quote-count label line holds one opening that stops inside an inner
     quotation (`"A "b"`), as opposed to stray quotes the greedy first-to-last match would truncate."""
     rest = line_match.group("rest")
     return bool(
         _LEADING_QUOTE_RE.match(rest)
-        and _NON_QUOTE_NON_SPACE_RE.search(opening)
         and rest.rstrip().endswith(tuple(_QUOTE_CHARS))
         and not _QUOTE_CHAR_RE.search(text, line_match.end("rest"), next_line_start)
     )
@@ -367,25 +364,25 @@ def _quoted_opening(text: str, line_match: re.Match[str], *, next_line_start: in
     """The quoted opening on a label line. A quote left unclosed on its line
     runs to the first closing quote but stops before `next_line_start`, so it
     never swallows the next label line. Whitespace is not normalized, so a
-    continuation line must match the findings text exactly."""
+    continuation line must match the findings text exactly. An opening holding
+    only quote and whitespace characters is rejected."""
     rest = line_match.group("rest")
     quote_char_count = len(_QUOTE_CHAR_RE.findall(rest))
     single_line_quote = _QUOTE_RE.search(rest)
+    opening: str | None = None
     if single_line_quote:
         # An even count is accepted, so a two-line quote whose first line holds an inner quote
         # (`"A \"b` then `c"`) still returns `A ` and drops the continuation.
         # The truncated opening is still a real substring of the findings text.
-        if quote_char_count % 2 == 0:
-            return single_line_quote.group(1)
-        # An odd count is rejected unless the opening stops inside an inner quotation.
-        opening = single_line_quote.group(1)
-        if _stops_inside_an_inner_quotation(text, line_match, opening, next_line_start=next_line_start):
-            return opening
-        return None
-    if quote_char_count != 1:
-        return None  # no quote, or an adjacent empty pair that `_QUOTE_RE` rejected
-    multiline_quote = _MULTILINE_QUOTE_RE.search(text, line_match.start("rest"), next_line_start)
-    return multiline_quote.group(1) if multiline_quote else None
+        if quote_char_count % 2 == 0 or _stops_inside_an_inner_quotation(text, line_match, next_line_start=next_line_start):
+            opening = single_line_quote.group(1)
+    elif quote_char_count == 1:
+        multiline_quote = _MULTILINE_QUOTE_RE.search(text, line_match.start("rest"), next_line_start)
+        if multiline_quote:
+            opening = multiline_quote.group(1)
+    if opening is not None and _NON_QUOTE_NON_SPACE_RE.search(opening):
+        return opening
+    return None
 
 
 def _label_lines_with_quoted_openings(
