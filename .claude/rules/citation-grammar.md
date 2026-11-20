@@ -20,4 +20,4 @@ paths:
 
 Keep the whole citation on one line, past the wrap width if needed. The heading capture cannot span a newline. A hard-wrap therefore matches nothing at all, rather than resolving to a wrong target. That miss has no reader-visible symptom.
 
-`claude-skills/skills/tests/test_skills.py` mechanically enforces both halves of this grammar: that a citation resolves to a real heading, and that no citation — no-space or hard-wrapped — goes unextracted. See that file's own docstrings for which tests and which corpora.
+`claude-skills/skills/tests/test_skill_citation_grammar.py` mechanically enforces both halves of this grammar: that a citation resolves to a real heading, and that no citation — no-space or hard-wrapped — goes unextracted. See that file's own docstrings for which tests and which corpora.

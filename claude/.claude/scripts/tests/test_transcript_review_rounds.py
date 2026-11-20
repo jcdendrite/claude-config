@@ -4523,8 +4523,8 @@ class TestCmdReviewRoundCostPooled:
         """_POOLED_PUBLICATION_POINTER and _POOLED_REFUSAL_DOC_POINTER cite
         docs/private-project-redaction.md by heading text embedded in a
         plain Python string, not the backtick-quoted, single-line markdown
-        citation grammar claude-skills/skills/tests/test_skills.py's
-        citation-resolution tests check. This .py file is outside both
+        citation grammar claude-skills/skills/tests/test_skill_citation_grammar.py's and
+        test_doc_cross_references.py's citation-resolution tests check. This .py file is outside both
         that corpus and docs/*.md's parametrize list, so only this test
         catches a stale heading here.
         """
