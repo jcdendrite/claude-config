@@ -74,10 +74,13 @@ CLAUDE_TESTS_DIR = "claude/.claude/tests"
 REVIEW_BENCH_DIR = "evals/review_bench"
 REVIEW_BENCH_RUNNER = "evals/run_review_bench.py"
 REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
-# evals/replay_bench's own domain, shaped like review_bench's: its source tree
-# and its flat test files.
+# evals/replay_bench's own domain, shaped like review_bench's: its source tree,
+# its CLI entry point and its flat test files.
 REPLAY_BENCH_DIR = "evals/replay_bench"
+REPLAY_BENCH_RUNNER = "evals/run_replay_bench.py"
 REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"
+# Reads claude/.claude/agents/code-writer.md by path, so the AGENTS_DIR row selects it by name.
+REPLAY_BENCH_ARMS_TEST_PATH = "evals/test_replay_bench_arms.py"
 # A sibling tree, not a REVIEW_BENCH_DIR subdirectory: evals/fixtures/, not
 # evals/review_bench/, and hyphenated review-bench, not review_bench.
 # test_review_bench_runner.py loads its scenarios from here.
@@ -710,7 +713,11 @@ def _is_temp_project_fixture_change(path: str) -> bool:
 
 
 def _is_replay_bench_change(path: str) -> bool:
-    return _is_under(path, REPLAY_BENCH_DIR) or (path.startswith("evals/test_replay_bench") and path.endswith(".py"))
+    return (
+        _is_under(path, REPLAY_BENCH_DIR)
+        or path == REPLAY_BENCH_RUNNER
+        or (path.startswith("evals/test_replay_bench") and path.endswith(".py"))
+    )
 
 
 # (predicate, target paths added when it matches) — a plain domain rule.
@@ -921,11 +928,17 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # The row is standalone because the review_bench predicate already includes this
 # file, and folding this target in would run test_select_tests.py on every
 # review_bench edit.
-# The other files in _HAND_AUDITED_AGENTS_DIR_READERS are covered by the
-# SELECT_TESTS_TEST_PATH comment.
-# REPLAY_BENCH_DIR (standalone row): SELECT_TESTS_TEST_PATH's own tests read the
-# replay package's files by path from a function body, which
-# TestCrossDomainReadCompleteness cannot see.
+# REPLAY_BENCH_ARMS_TEST_PATH (standalone row): the same hand-audited-reader test
+# reads this file by path, and it lies outside the claude/ and plugins/ test
+# trees that _is_test_source_change covers, so it needs its own row.
+# The row is standalone because the replay domain row already includes this file,
+# and folding this target in would run test_select_tests.py on every replay test edit.
+# The two transcript test files in _HAND_AUDITED_AGENTS_DIR_READERS lie under
+# claude/.claude/scripts/tests/, which _is_test_source_change covers, as the
+# SELECT_TESTS_TEST_PATH comment describes.
+# REPLAY_BENCH_DIR and REPLAY_BENCH_RUNNER (standalone row): SELECT_TESTS_TEST_PATH's
+# own tests read the replay package's files and the runner by path from a function
+# body, which TestCrossDomainReadCompleteness cannot see.
 # The row is standalone because folding this target into the replay domain row
 # would run test_select_tests.py on every replay test edit.
 # MEASURE_MAIN_SESSION_RULE_ADHERENCE (standalone row): SELECT_TESTS_TEST_PATH's
@@ -941,7 +954,8 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_temp_project_fixture_change, tuple(sorted(SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER))),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
-    (lambda p: _is_under(p, REPLAY_BENCH_DIR), (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: p == REPLAY_BENCH_ARMS_TEST_PATH, (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: _is_under(p, REPLAY_BENCH_DIR) or p == REPLAY_BENCH_RUNNER, (SELECT_TESTS_TEST_PATH,)),
     (lambda p: p == MEASURE_MAIN_SESSION_RULE_ADHERENCE, (SELECT_TESTS_TEST_PATH,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
@@ -1000,7 +1014,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         (
             HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
             TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_REDACTION_TEST_PATH, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH, REPLAY_BENCH_ARMS_TEST_PATH,
         ),
     ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
