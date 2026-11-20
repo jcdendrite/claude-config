@@ -356,7 +356,14 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_cursor_adapter_install_write_failures.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_parts.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_scripts_env_scrub.py",
-    "claude/.claude/scripts/tests/test_cursor_adapter_shim.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_faults.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_hook_run.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_input.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_log.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_outcomes.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_pin.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_pin_environment.py",
+    "claude/.claude/scripts/tests/test_cursor_adapter_shim_prologue.py",
     "claude/.claude/scripts/tests/test_cursor_adapter_translate.py",
     "claude/.claude/scripts/tests/test_diff_size_ack.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
@@ -431,6 +438,7 @@ TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture
 TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
 PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
 SESSION_CONFIG_KEYS_LOG_DOC_MD = "docs/session-config-keys-log.md"
+PR_COST_DOC_MD = "docs/pr-cost.md"
 AGENT_BRANCH_RECORDS_DOC_MD = "docs/agent-branch-records.md"
 
 # Blanket for every file under docs/, rather than one exact-match constant
@@ -875,8 +883,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
-# TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD, SESSION_CONFIG_KEYS_LOG_DOC_MD and
-# AGENT_BRANCH_RECORDS_DOC_MD: see their own comment above for citation.
+# TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD, SESSION_CONFIG_KEYS_LOG_DOC_MD,
+# AGENT_BRANCH_RECORDS_DOC_MD and PR_COST_DOC_MD: see their own comment above for citation.
 # DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, ROOT_SCRIPTS_DIR, and CLAUDE_SETTINGS_JSON:
 # see each constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
@@ -1026,6 +1034,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
             PRIVATE_PROJECT_REDACTION_DOC_MD,
             SESSION_CONFIG_KEYS_LOG_DOC_MD,
             AGENT_BRANCH_RECORDS_DOC_MD,
+            PR_COST_DOC_MD,
         ),
         (SCRIPTS_TESTS_DIR,),
     ),

@@ -562,7 +562,7 @@ class TestConfigGetShExitCodes:
         assert _run_config_get(["a", "b"], env={"HOME": str(home)}).returncode != 0
 
     def test_is_executable(self):
-        """test_skills.py's test_scripts_are_executable already globs
+        """test_handoff_and_resume_skills.py's test_scripts_are_executable already globs
         SCRIPTS_DIR for the executable bit; this pins the same expectation
         locally so a regression here fails inside this file's own domain."""
         assert os.access(_CONFIG_GET_SH, os.X_OK)

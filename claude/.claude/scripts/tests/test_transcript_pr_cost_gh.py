@@ -49,7 +49,7 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
             _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
         ])
         merged_prs = [{
-            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "number": 1, "headRefName": "feature-a", "additions": 37, "deletions": 5,
             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
         }]
         monkeypatch.setattr(
@@ -67,6 +67,8 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
         rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         assert rows[0]["status"] == pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        # Size comes from the bulk discovery call, not the failed enrichment call.
+        assert (rows[0]["additions"], rows[0]["deletions"], rows[0]["changed_files"]) == (37, 5, 1)
 
 
 class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
