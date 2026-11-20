@@ -3,7 +3,7 @@
 **Date:** 2026-11-19
 **Pin:** `ab85a627` (merge-base with `main`). Every count below is read from blobs and history at this commit, not from a working tree.
 **Scope:** every tracked `.py` and `.sh` file over 1,000 physical lines, as GH-1119 scopes it. Files without those suffixes are not measured.
-**Reproduce:** the Appendix holds the measuring program and the cross-check commands. The program prints every number in this report.
+**Reproduce:** the Appendix holds the measuring program and the cross-check commands. The program prints every measured figure; the three verdict and proposed-issue rows are tallied from the tables below.
 
 ## Summary for the Revisit ruling
 
@@ -68,11 +68,11 @@ The assessment's own reading follows. It is the assessment's judgment, not a mea
 
 **For the engineer.**
 - `claude/.claude/tests/helpers.py` cites two issues its reason says disagree: #1015 and #1396. Its row records both and does not settle which governs.
-- The `shell_undetermined_over_1000` row names the shell files whose side of the 1,000-line threshold is undetermined, because their non-comment lower bound is at or under it while their physical count is over it: `claude/.claude/hooks/_config.sh`, `claude/.claude/hooks/enforce-marker-script-shape.sh`, `claude/.claude/scripts/cleanup-merged-branches.sh`, `claude/.claude/scripts/marker.sh` and `install.sh`. The `shell_undetermined_over_1500` and `shell_undetermined_over_2000` rows leave no shell file undetermined.
+- The `shell_undetermined_over_1000` row names five shell files whose side of the 1,000-line threshold is undetermined. The `shell_undetermined_over_1500` and `shell_undetermined_over_2000` rows leave no shell file undetermined.
 
 ## Defaults and consequences
 
-GH-1119 lists the plan defaults and consequences below for the engineer to see when this assessment is presented. The issue's own size estimates date from before this assessment and are not repeated. Each item points at the Figures-table row that applies, if one does.
+GH-1119 lists the plan defaults and consequences below for the engineer to see when this assessment is presented. Each item points at the Figures-table row that applies, if one does.
 
 **Plan defaults, as GH-1119 lists them (not engineer decisions):**
 - Counting physical lines rather than non-comment lines. The `physical_over_*` rows and the `noncomment_over_*` rows give each threshold in both units. The non-comment unit is exact for Python and a lower bound for shell, and the `shell_undetermined_over_*` rows name each shell file whose side of a threshold that bound leaves open.
@@ -95,17 +95,33 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
 
 **Units.**
 - Physical lines are the newline count, which is what `wc -l` prints. The program splits on `\n` only, because `ast` and `tokenize` number lines the same way and `str.splitlines()` would also split on characters such as U+2028.
-- Non-comment lines exclude blank lines, comment lines and, for Python, docstrings. For Python, `tokenize` finds comments and `ast` finds docstrings, which are the string-constant first statements of a module, class or function body. A line that holds a docstring and code counts. A whitespace-only line inside a multi-line string does not. A Python file that either parser rejects reads `unparsed`.
+- Non-comment lines exclude blank lines, comment lines and, for Python, docstrings.
+  - For Python, `tokenize` finds comments and `ast` finds docstrings, which are the string-constant first statements of a module, class or function body.
+  - A line that holds a docstring and code counts.
+  - A whitespace-only line inside a multi-line string does not.
+  - A Python file that either parser rejects reads `unparsed`.
 - For shell, a comment line is one whose first character other than a space, tab, vertical tab, form feed or carriage return is `#`. A `#`-led line inside a heredoc body or a multi-line quoted string is miscounted as a comment, so the shell cell can only understate and prints as a lower bound (`≥N`).
 - The non-comment column feeds only the unit-sensitivity rows. No verdict or ceiling reads it.
 
-**Window and commits.** The window is the 90 days before the pin's committer date. A counted commit is reachable from the pin, is not a merge, falls inside the window and touches the file's history followed across renames. The program prints counts only. The ceiling-edit load is the number of distinct commits in the window that changed some offender's length, meaning its added and deleted line counts differ, so a pure rename does not count. Merges to `main` are squashes, so a commit there is roughly a PR.
+**Window and commits.** The window is the 90 days before the pin's committer date.
+- A counted commit meets all of these conditions:
+  - It is reachable from the pin.
+  - It is not a merge.
+  - It falls inside the window.
+  - It touches the file's history, followed across renames.
+- The program prints counts only.
+- The ceiling-edit load is the number of distinct commits in the window that changed some offender's length, meaning its added and deleted line counts differ. A pure rename does not count.
+- Merges to `main` are squashes, so a commit there is roughly a PR.
 
 **Verdict rule.** Every row gets one verdict.
-- **Structural exception.** Splitting is blocked by something outside the file's current state, and the reason cites a `file:line`, an issue, or the engineer's ruling on this report's PR. Three kinds qualify: a loading or shipping constraint that requires one file; a recorded decision that governs the file's shape, such as #1117's in-file reorganization of `_lib.sh` or #1015's gates on `helpers.py` and the `conftest.py` files it covers; and a body that is one data table or generated output. Where #1015 and #1396 disagree on `helpers.py`, its row names both and the Summary lists it for the engineer.
+- **Structural exception.** Splitting is blocked by something outside the file's current state, and the reason cites a `file:line`, an issue, or the engineer's ruling on this report's PR. Three kinds qualify:
+  - A loading or shipping constraint that requires one file.
+  - A recorded decision that governs the file's shape, such as #1117's in-file reorganization of `_lib.sh` or #1015's gates on `helpers.py` and the `conftest.py` files it covers.
+  - A body that is one data table or generated output.
+- Where #1015 and #1396 disagree on `helpers.py`, its row names both and the Summary lists it for the engineer.
 - **Split pending.** The file has at least one named seam along which parts can move to sibling files without changing how the file is loaded, invoked or installed. A seam is a subcommand, domain, detector, lifecycle stage or test-class family. Positional splits such as a `_part2` file do not count.
 - Churn and margin do not change a verdict. A file barely over the limit with no churn is still split pending. The Figures table reports the counts over 1,000, 1,500 and 2,000 lines instead.
-- Each verdict is a read-only judgment from pinned blobs, public issue bodies and the plan behind this report, working from an outline and targeted reads for large files. It is judgment, not measurement, and holds no measured figure.
+- Each verdict is a read-only judgment from pinned blobs, public issue bodies and `.claude/plans/f1-offender-assessment.md`, working from an outline and targeted reads for large files. It is judgment, not measurement, and holds no measured figure.
 
 **Cells.** A judgment gives each row a Subject, Seams, Verdict and last cell. No cell is empty or holds a `|`.
 - A split-pending Seams cell names the seam's symbols in backticks. A build check, not committed with this report, confirmed each occurs as a whole word in the file's blob at the pin. That confirms the name is there, not that the seam is real.
@@ -134,7 +150,7 @@ Closure files that are also offenders, from the closure function's output:
 - `evals/review_bench/runner.py`
 - `evals/run_skill_evals.py`
 
-**Environment and checks.** The measurements ran on Python 3.14.10 (main, Oct 28 2026, 12:07:23) [Clang 21.0.0 (clang-2100.1.1.101)] and git version 2.50.1 (Apple Git-155); the 90-day window starts 2026-08-22T01:33:49+0000.
+**Environment and checks.** The measurements ran on Python 3.14.10 (main, Oct 28 2026, 12:07:23) [Clang 21.0.0 (clang-2100.1.1.101)] and git version 2.50.1 (Apple Git-155). The 90-day window starts 2026-08-22T01:33:49+0000.
 
 Each check below was run at the pin and passed.
 - The offender set and every physical count equal what `wc -l` prints over `git ls-files` for the two suffixes. This proves the newline-based physical column and the offender set, including the one test file that holds a literal U+2028.
@@ -142,7 +158,7 @@ Each check below was run at the pin and passed.
 - The 90-day commit count for `claude-skills/skills/tests/test_skills.py` equals an independent `git log --follow` count over the same window. This proves rename-following and the window start for that file, which `c6fcd96e` renamed inside the window.
 - The ceiling-edit load is no larger than the window's total non-merge commit count, as a count of a subset must be.
 - Two runs of the program at the pin produced byte-identical output.
-- The harness closure was computed once from the working tree, which held the pin's files, before any sync. All four files the engineer named are in it, so the result is not empty.
+- The harness closure was computed once, while the working tree still held the pin's files. All four files the engineer named are in it, so the result is not empty.
 
 ## Structural exceptions
 
@@ -168,9 +184,9 @@ Each file below has a named seam. Rows run by physical count, largest first, in 
 | `claude/.claude/hooks/tests/test_review_ledger_script.py` | 4937 | 3565 | 10 | Tests for the review-ledger.sh subcommands: append, show, render and carry | Test-class families following the ledger library's validation and render halves: append (`TestReviewLedgerAppendHappyPath`, `TestReviewLedgerRoundValidation`), render (`TestReviewLedgerRenderOutConfinement`), `TestReviewLedgerShow`, `TestReviewLedgerCarryAcrossSessions` and `TestReviewLedgerCreationMode` | split pending | proposed (not filed) |
 | `claude/.claude/hooks/tests/test_enforce_marker_script_shape.py` | 4370 | 3129 | 17 | Tests for the gate that enforces marker.sh invocation shape and denies marker and ledger writes | Test-class families following the hook's write-scan and shape-matcher halves: shape (`TestEnforceMarkerScriptShape`, `TestPrescriptionAllowlistAlignment`), gate-release authority (`TestGateReleaseAuthority`, `TestGateReleaseAuthorityFileWrites`) and ledger paths (`TestReviewLedgerAppendAuthority`, `TestReviewLedgerStatePaths`) | split pending | proposed (not filed) |
 | `claude/.claude/hooks/tests/test_hook_alignment.py` | 3756 | 2202 | 39 | Repo-wide alignment tests over hook files, registrations, regex portability and tier headers | Test families by concern: class headers (`TestHookClassHeader`), gate behavior (`TestGateHookBehavior`), regex portability (`test_no_gnu_backslash_s_regex_extension`) and registration shape (`test_every_registered_hook_entry_has_type_and_command`) | split pending | #1532 |
-| `claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py` | 3740 | 2430 | 19 | Tests for the nudge that asks for a handoff near the context cap | Test-class families `TestNudgeHandoffNearContextCap`, `TestHandoffActiveBypassMarkerSuppressesTheBlock`, `TestNudgeLogTelemetry` and `TestCheckMode`; method families inside the main class: threshold and re-arm timing (`test_below_threshold_is_silent`, `test_rearm_boundary_at_last_fired_plus_spacing`), escalation and hard block (`test_escalation_ladder_blocks_once_estimate_reaches_block_at`, `test_hard_block_only_fires_on_post_tool_batch`), transcript reading (`test_incremental_read_stops_offset_before_incomplete_trailing_line`), fail-open paths (`test_jq_absent_fails_open_not_hard_blocked`, `test_transcript_file_absent`), per-model windows (`test_dated_snapshot_suffix_resolves_same_window_as_dateless`) and message wording (`test_message_states_the_resume_route_rule`) | split pending | proposed (not filed) |
+| `claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py` | 3740 | 2430 | 19 | Tests for the nudge that asks for a handoff near the context cap | Test-class families `TestNudgeHandoffNearContextCap`, `TestHandoffActiveBypassMarkerSuppressesTheBlock`, `TestNudgeLogTelemetry` and `TestCheckMode`. Method families inside the main class: threshold and re-arm timing (`test_below_threshold_is_silent`, `test_rearm_boundary_at_last_fired_plus_spacing`), escalation and hard block (`test_escalation_ladder_blocks_once_estimate_reaches_block_at`, `test_hard_block_only_fires_on_post_tool_batch`), transcript reading (`test_incremental_read_stops_offset_before_incomplete_trailing_line`), fail-open paths (`test_jq_absent_fails_open_not_hard_blocked`, `test_transcript_file_absent`), per-model windows (`test_dated_snapshot_suffix_resolves_same_window_as_dateless`) and message wording (`test_message_states_the_resume_route_rule`). | split pending | proposed (not filed) |
 | `claude/.claude/hooks/tests/test_require_plan_review.py` | 3049 | 2151 | 15 | Tests for the gate that requires a plan review before plan edits and plan-mode exit | Test-class families `TestRequirePlanReview`, `TestPlanFileAuthoringExemption`, `TestRequirePlanReviewExitPlanMode`, `TestRequirePlanReviewCrossWorktree` and `TestRequirePlanReviewPlanMode` | split pending | proposed (not filed) |
-| `claude/.claude/hooks/tests/test_require_ready_for_review.py` | 2871 | 2178 | 18 | Tests for the gate that requires the ready-for-review marker before a push or PR create | One large test class, so the seam is test-method families inside `TestRequireReadyForReview`: push handling (`test_upstream_only_push_allowed`), marker checks (`test_no_marker_denies`), PR create (`test_gh_pr_create_with_completion_marker_allowed`) and deny wording (`test_deny_message_names_pr_create`) | split pending | proposed (not filed) |
+| `claude/.claude/hooks/tests/test_require_ready_for_review.py` | 2871 | 2178 | 18 | Tests for the gate that requires the ready-for-review marker before a push or PR create | Two test classes, one dominant, so the seam is the second class (`TestRequireReadyForReviewHonorsConfigDir`) plus method families inside `TestRequireReadyForReview`: push handling (`test_upstream_only_push_allowed`), marker checks (`test_no_marker_denies`), PR create (`test_gh_pr_create_with_completion_marker_allowed`) and deny wording (`test_deny_message_names_pr_create`) | split pending | proposed (not filed) |
 | `claude/.claude/hooks/tests/test_config_lib.py` | 2631 | 1532 | 8 | Tests for the shell config library: resolution, legacy polarity, writes, scaffolding and memoization | Test-class families following the reader and writer halves of `_config.sh`: resolution (`TestExitCodeContract`, `TestLegacyPolarity`, `TestUnionSemantics`), writer (`TestConfigSet`, `TestConfigScaffold`) and memoization (`TestMemoization`, `TestMemoizationUnionBranch`) | split pending | proposed (not filed) |
 | `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` | 2388 | 1966 | 5 | Gate matrix tests that run each registered gate through the Cursor adapter shim | Test-class families `TestCursorPayloadBuilders`, `TestShimEnvelope`, `TestGateMatrix`, `TestGeneratedMatcherCoverage` and `TestSessionIdentityAcrossTheShim` | split pending | proposed (not filed) |
 | `claude/.claude/hooks/tests/test_design_decision_files.py` | 2374 | 1675 | 13 | Tests that check the shape of each design-decision file and the checker's fault handling | Test-class families `TestPerFileShape` and `TestFaultInjection` | split pending | proposed (not filed) |
@@ -226,7 +242,7 @@ Each file below has a named seam. Rows run by physical count, largest first, in 
 | `claude/.claude/scripts/transcript_analysis/routing_guard.py` | 2115 | 1664 | 1 | Routing-guard subcommand that captures review-round loops and computes a net-cost estimate | Lifecycle stages: capture (`_run_capture`, `_parse_capture_bytes`, `_load_capture_file`), session config-keys log reading (`_read_session_config_keys_log`), deny reconciliation (`_reconcile_denies`), compute (`_run_compute`, `_bootstrap_net`) | split pending | proposed (not filed) |
 | `claude/.claude/scripts/post-crash-sessions.py` | 2047 | 1353 | 5 | Reports which Claude sessions ended in a crash from registry, lock, transcript and session-end evidence | Liveness probes (`_ps_lstart`, `_entry_liveness`, `_boot_time`), evidence readers (`_read_registry`, `_read_lock`, `_scan_transcripts`, `_read_session_end_records`), classification (`_classify_session`), rendering (`render_report`, `render_json`) | split pending | proposed (not filed) |
 | `claude/.claude/scripts/tests/test_worktree_lib.py` | 1977 | 1456 | 6 | Tests for the worktree library: in-use detection, process cwd collection, branch resolution, removal verdict, filters and the ensure checks | Test-class families by helper: in-use detection (`TestWorktreeInUseIdlePath`, `TestWorktreeInUseLiveProcess`, `TestCollectProcessCwdsExcludesSelf`), resolution and listing (`TestResolveWorktreeForBranch`, `TestCollectAllWorktrees`, `TestWorktreeMatchesFilter`), state checks (`TestWorktreeIsClean`, `TestWorktreeRemovalVerdict`), ensure checks (`TestEnsureNameCheck`, `TestEnsureClassify`, `TestEnsureTargetCheck`, `TestEnsureDescribeRecord`) | split pending | proposed (not filed) |
-| `claude/.claude/scripts/tests/conftest.py` | 1959 | 1139 | 44 | Shared scaffolding and autouse isolation fixtures for the scripts test tree | Transcript-record builders (`_asst`, `_priced`, `_user_msg`, `_write_jsonl`), git repo and worktree builders (`_make_worktree`, `_make_repo_with_remote`, `_init_repo`), direnv shim sources (`_shimmed_env`, `_noop_direnv_shim_source`), command shims (`_make_gh_pr_view_shim`, `_git_shim_that_fails_on_subcommand`); #1015's conftest section covers only select-tests fallback, so its gates do not govern a decomposition | split pending | proposed (not filed) |
+| `claude/.claude/scripts/tests/conftest.py` | 1959 | 1139 | 44 | Shared scaffolding and autouse isolation fixtures for the scripts test tree. #1015's conftest section covers only select-tests fallback, so its gates do not govern a decomposition. | Transcript-record builders (`_asst`, `_priced`, `_user_msg`, `_write_jsonl`), git repo and worktree builders (`_make_worktree`, `_make_repo_with_remote`, `_init_repo`), direnv shim sources (`_shimmed_env`, `_noop_direnv_shim_source`), command shims (`_make_gh_pr_view_shim`, `_git_shim_that_fails_on_subcommand`) | split pending | proposed (not filed) |
 | `claude/.claude/scripts/transcript_analysis/period_cost.py` | 1868 | 1417 | 6 | Period-cost subcommand reporting spend by repository and pull request for a time window | Review-window detection (`_review_pr_windows`, `_ReviewWindow`), pull-request lookup (`_fetch_pr_lists`, `_validated_pr_list`), group assembly (`_assemble_groups`), Slack rendering (`_render_slack_report`), report notices (`_notice_lines`) | split pending | proposed (not filed) |
 | `claude/.claude/scripts/tests/test_cursor_adapter_translate.py` | 1857 | 1561 | 2 | Tests for the Cursor adapter's payload and output translation tables and their coverage guards | Test-class families by translation: output table (`TestOutputTable`), coverage guards (`TestHookOutputKeyCoverage`, `TestFieldTableCoverage`, `TestRequiredKeyPaths`), repo resolution (`TestRepoResolution`), tool translation (`TestDeleteTranslation`, `TestWriteTranslation`, `TestToolResponseTranslation`) | split pending | proposed (not filed) |
 | `claude/.claude/scripts/tests/test_transcript_pr_cost_ledger.py` | 1854 | 1427 | 6 | Tests for the pr-cost ledger file: append, parse, frozen headers, model-breakdown and review-rounds cell codecs, and verified writes | Test-class families by ledger layer: rows (`TestAppendPrCostLedgerRow`, `TestPrCostLedgerConcurrentWrite`, `TestParsePrCostLedgerFileTextMalformed`), headers and migration (`TestPrCostLedgerFrozenHeaders`, `TestPrCostLedgerLegacyHostColumnMigration`), model-breakdown cell (`TestDecodeModelBreakdownCell`, `TestFormatModelBreakdownCell`), file write (`TestWritePrCostLedgerFileDurability`, `TestWritePrCostLedgerFileValuePostcondition`), review-rounds cell (`TestDecodeReviewRoundsCellAccepts`, `TestDecodeReviewRoundsCellRefuses`) | split pending | proposed (not filed) |
@@ -366,7 +382,6 @@ def git_text(*args):
 
 
 def list_code_blobs(commit):
-    """Map each tracked .py or .sh path at the commit to its blob id."""
     blobs = {}
     for entry in git("ls-tree", "-r", "-z", commit).split(b"\0"):
         if not entry:
@@ -381,7 +396,6 @@ def list_code_blobs(commit):
 
 
 def read_blobs(blob_ids):
-    """Return blob id -> content, from one `git cat-file --batch` run."""
     output = git("cat-file", "--batch", stdin=b"\n".join(blob_ids) + b"\n")
     contents, position = {}, 0
     for blob_id in blob_ids:
