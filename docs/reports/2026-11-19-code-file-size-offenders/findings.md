@@ -81,15 +81,16 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
 
 **Consequences to flag, as GH-1119 lists them:**
 - A new-offender failure will land on whichever future PR crosses the 1,000-line mark. The `near_limit_files` and `near_limit_at_exactly_limit` rows and the Near-limit files table name the files closest to it. A file at exactly 1,000 lines passes.
-- The 1,000-line limit for test files puts many test files over it. The `offenders_test` row gives the count, and the transcript-analysis decomposition under #1116 keeps creating test files over the limit, so each of its phases needs its own split-or-exception verdict for the tests it moves.
+- The 1,000-line limit for test files puts many test files over it. The `offenders_test` row gives the count. The transcript-analysis decomposition under #1116 keeps creating test files over the limit. Each of its phases therefore needs its own split-or-exception verdict for the tests it moves.
 - Both-direction ceilings put a ceiling edit into every PR that changes an exception file's length, whether it grows or shrinks, including every phase of #1116. The `ceiling_edit_load` row sets the commits that changed an offender's length against the `window_non_merge_commits` row.
 - A ceiling raise is a one-line table edit with a required reason field. The reviewed diff and the reason are the only friction for an agent doing it mechanically. No row applies.
 
 **This assessment's own defaults:**
-- Both line counts are reported. Each proposed ceiling is the physical count, because the size check counts physical lines.
-- The commit window is the 90 days before the pin's committer date, with renames followed.
-- A file is test code when its path has a `tests` directory component or its name is `test_*.py` or `conftest.py`. The `offenders_test` and `offenders_production` rows apply that rule. The `offenders_named_test` and `offenders_not_named_test` rows apply the name alone, so the two splits differ by one support module, `claude/.claude/tests/helpers.py`, which sits under a `tests` directory without a test name.
-- One issue is proposed per split-pending file that has none.
+- Line counts: both are reported for every offender, as Method, "Units", defines them.
+- Ceilings: Method, "Ceilings", defines them.
+- Commit window: Method, "Window and commits", defines it.
+- Test code: the `offenders_test` row of the Figures table defines it. The `offenders_named_test` and `offenders_not_named_test` rows apply the name alone. Those two splits therefore differ from the `offenders_test` and `offenders_production` split by one support module, `claude/.claude/tests/helpers.py`, which sits under a `tests` directory without a test name.
+- Proposed issues: Method, "Proposed issues", defines them.
 
 ## Method
 
@@ -130,7 +131,7 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
 - A structural exception's last cell is reason prose with at least one backticked `path:line` or `#<digits>` citation.
 - A row the engineer declines to split becomes a structural exception whose reason reads `engineer's ruling on #<n>: "<approved text>"`, where `<n>` is this report's PR.
 
-**Ceilings.** Each row's proposed ceiling is its Physical cell. The size check sets each ceiling again when it lands.
+**Ceilings.** Each row's proposed ceiling is its Physical cell, because the size check counts physical lines. The size check sets each ceiling again when it lands.
 
 **Proposed issues.** This report files no issue. Proposed issues are filed after merge, outside this report, and GH-1113's task list lists each one filed. One issue is proposed per split-pending file whose last cell reads `proposed (not filed)`:
 - Title: "Split `<path>` below 1,000 lines".
