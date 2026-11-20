@@ -266,6 +266,7 @@ CORPUS: list[tuple[str, bool]] = [
     ("Want me to open the PRs?", True),
     ("Want me to run `git push`?", True),  # a backtick is a word boundary
     ("Want me to run `commit`?", True),  # a backtick on either side of the object is a word boundary
+    ("**Want me to commit this?**", True),  # a markdown bold marker before the verb is a word boundary
     ("Should I open a PR", True),  # no terminal punctuation: the end of the string closes the word
     # Permission verbs beyond "want me to" and "should I": each row carries no other verb alternative.
     ("Would you like me to commit this?", True),  # would you like me to
@@ -872,6 +873,7 @@ def test_non_matching_turn_with_a_non_repo_cwd_writes_no_root_denied_line(isolat
         ("Marshall I profile it?", False),  # a verb inside a longer word's tail fails the verb's leading boundary
         ("_Want me to profile it?_", False),  # an underscore before the verb joins it to the word
         ("Should I_ do it?", False),  # an underscore after the verb fails the verb's trailing boundary
+        ("**Want me to profile it?**", True),  # a markdown bold marker before the verb is a word boundary
     ],
 )
 def test_phrasing_drift_logs_a_whole_word_verb_without_an_object(
