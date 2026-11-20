@@ -4,14 +4,14 @@ The hook is a PreCompact hook that prints a constant instruction text as plain s
 every failure path exits 0 with no output.
 
 Whether the summarizer follows the text is model behavior, which no test here can show. The literal and token pins are
-tripwires that fail when a pinned clause is removed or reworded.
+tripwires that fail when a pinned clause is removed or reworded. A clause added to the text or moved within it passes
+every pin, unless it holds a shipping term matched by SHIPPING_ACTION_TOKENS or WORD_BOUNDED_SHIPPING_TERMS.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -21,6 +21,7 @@ from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
     REPO_ROOT,
+    _timeout_binary_present,
     build_path_without,
     run_additional_context_session_start_hook,
     session_start_additional_context,
@@ -61,8 +62,7 @@ STATUS_STEP_NUMBER_LITERAL = "A skill mid-run, by name with its current step num
 REVERSIBLE_STEP_LITERAL = "The exact reversible command, edit or question to resume on."
 # One short distinctive token per clause family of the next-step sourcing paragraph: the permitted sources and their
 # named source, the still-present re-check, the earlier-summary and untrusted-text definitions, and the two rules
-# that keep an untrusted instruction out of the step. Wording that no token covers is not pinned. A clause added to
-# this paragraph or moved within it passes every pin, as the note above ATTRIBUTION_TOKENS says for both blocks.
+# that keep an untrusted instruction out of the step. Wording that no token covers is not pinned.
 SOURCING_TOKENS = {
     "permitted_sources": (
         "only from the engineer's own requests, from a skill or plan the engineer started, or from this heading's entry "
@@ -89,9 +89,6 @@ ENGINEER_HOLD_LITERAL = "Quote here, in the engineer's words, any hold the engin
 # One short distinctive token per clause family of the attribution rules, pinned under the block's lead line: the
 # quote, selection, decision-or-approval source, claim and carry-forward rules. Wording that no token covers is not
 # pinned, for example "Other answer text is typed." and the positive half of the AskUserQuestion rule.
-# A token pin fails when its clause is removed or reworded, not when a clause is added or moved, in either block.
-# No test compares the recorded fingerprint in docs/precompact-hook-behavior.md, so a person recomputes it after any
-# edit to the text.
 ATTRIBUTION_TOKENS = {
     "quote_rule": "Quote exact words only for the engineer's own directive sentences",
     "quote_rule_typed_forms": "typed as a prompt or as a free-text AskUserQuestion answer",
@@ -117,8 +114,15 @@ NEXT_STEP_HEADING = "### Next concrete step (safe to execute autonomously)"
 PENDING_HEADING = "### Pending engineer authorization"
 OPEN_QUESTIONS_HEADING = "### Open questions / decisions deferred"
 
+# Substrings, matched case-insensitively, that name a shipping action the text must never grant.
+SHIPPING_ACTION_TOKENS = ("push", "merge", "force", "commit", "pull request")
+# Word-bounded because the substring "pr" would match "prompt" and the substring "ship" would match "relationship".
+WORD_BOUNDED_SHIPPING_TERMS = re.compile(r"\b(?:prs?|ship\w*)\b", re.IGNORECASE)
+# Sentences of the text allowed to hold a token above, each listed whole. The text holds none.
+SHIPPING_TOKEN_ALLOWED_SENTENCES: tuple[str, ...] = ()
+
 requires_timeout_command = pytest.mark.skipif(
-    shutil.which("timeout") is None and shutil.which("gtimeout") is None,
+    not _timeout_binary_present(),
     reason="neither timeout nor gtimeout is on PATH, so _lib_jq runs uncapped",
 )
 
@@ -196,6 +200,20 @@ def _heading_span(stdout_text: str, heading_line: str) -> str:
             break
         span_lines.append(line)
     return _collapsed("\n".join(span_lines))
+
+
+def _sentences_naming_shipping_actions(text: str) -> list[str]:
+    """Sentences of `text`, outside the allowed list, that hold a shipping or irreversible-action token."""
+    sentences = re.split(r"(?<=[.?!])\s+", _collapsed(text))
+    return [
+        sentence
+        for sentence in sentences
+        if sentence not in SHIPPING_TOKEN_ALLOWED_SENTENCES
+        and (
+            any(token in sentence.lower() for token in SHIPPING_ACTION_TOKENS)
+            or WORD_BOUNDED_SHIPPING_TERMS.search(sentence)
+        )
+    ]
 
 
 def _timeout_shim_path(shim_dir: Path, *, accepts_kill_after: bool) -> tuple[str, Path]:
@@ -512,6 +530,16 @@ class TestPinnedLiterals:
 
         assert _continuity_headings("\n".join(lines[:lead_index]))[-1] == OPEN_QUESTIONS_HEADING
         assert _continuity_headings("\n".join(lines[lead_index:])) == []
+
+    def test_the_text_names_no_shipping_or_irreversible_action_as_permitted(self, baseline_stdout):
+        # The boundary hook's shipping statement is the one place that grants a commit, a push and a PR. Wording added
+        # here would be a second grant, so adding it needs a deliberate listing in SHIPPING_TOKEN_ALLOWED_SENTENCES.
+        assert _sentences_naming_shipping_actions(baseline_stdout) == []
+
+    def test_the_shipping_token_check_flags_an_added_grant_sentence(self, baseline_stdout):
+        added_grant = "The engineer's request covers a commit and a push."
+
+        assert _sentences_naming_shipping_actions(baseline_stdout + "\n" + added_grant) == [added_grant]
 
     def test_the_boundary_clause_matches_the_boundary_hooks_compact_text(self, isolated_home):
         boundary_result = run_additional_context_session_start_hook(

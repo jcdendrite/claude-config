@@ -147,7 +147,10 @@ Narrower alternatives inside the chosen design:
   - Constancy: each of the six other fields is replaced in turn by a distinct sentinel string, and `trigger` is also set to `manual`, `auto` and absent. Each run's stdout is byte-identical to the baseline and holds no sentinel (rows 1, 2 and 4).
     - The `transcript_path` sentinel names a real file holding a sentinel line.
     - The `cwd` sentinel names a real directory holding a sentinel file.
-  - Environment: the case first asserts, through the `shipping_statement` fixture, that the statement for the `shipping_repo` repository is non-empty. Then, with the `armed_home` fixture, that repository as cwd checked out on a sentinel-named branch, and a relative `CLAUDE_CONFIG_DIR`, the stdout equals the baseline and holds neither the branch sentinel nor the statement. This pins M1's "no config key, no git call".
+  - Environment, two cases. Neither sets a config key:
+    - `test_a_repo_the_root_guard_accepts_does_not_reach_stdout` checks `shipping_repo` out on a sentinel-named branch. It first asserts that the boundary hook, run on that repo as payload cwd and process cwd, emits the `shipping_statement`. The steer hook run the same way then prints stdout equal to the baseline and holding no statement.
+    - `test_a_relative_config_dir_leaves_stdout_unchanged` sets a relative `CLAUDE_CONFIG_DIR`, which makes the config resolver fail, and asserts the stdout equals the baseline.
+    - Together they pin that no root-guard-gated statement or branch text reaches stdout and that an unresolvable config dir does not suppress the text. They do not pin that no git call is made.
   - Self-filter: `SessionStart`, `PostCompact`, a missing name, `null`, a number, a bool, an object, an array holding `"PreCompact"`, `precompact`, and `PreCompact ` with a trailing space each print nothing and exit 0 (G6).
   - Degraded paths, each paired with a positive control that runs the same payload in the working layout and asserts the text prints:
     - `jq` off PATH, against `jq` on PATH;
@@ -481,7 +484,7 @@ Narrower alternatives inside the chosen design:
 43. Test pieces. [verified: reads]
     - `run_additional_context_session_start_hook` pipes raw stdin with an isolated home whatever the event, despite its SessionStart name (`claude/.claude/tests/helpers.py:942-964`).
     - `build_path_without` (`:2935`) and `symlink_hooks_lib_chain` (`:2624`) are shared.
-    - The `isolated_home`, `armed_home` and `shipping_repo` fixtures are at `claude/.claude/hooks/tests/conftest.py:490`, `:503` and `:511`. The `shipping_statement` fixture returns the statement the shared helper emits for a repo root (`:525-534`).
+    - The `isolated_home` and `shipping_repo` fixtures are at `claude/.claude/hooks/tests/conftest.py:493` and `:506`. The `shipping_statement` fixture returns the statement the shared helper emits (`:520-525`).
     - `test_check_python_floor.py:451` asserts its hook's exec bit.
     - `session_start_registrations()` reads only the `SessionStart` key (`helpers.py:974-977`), and the relocated-hook helper is private to `test_restore_session_state_on_compact.py:90`.
     - An edit to `claude/.claude/tests/helpers.py` makes `select-tests.py` select the full suite (`select-tests.py:529-540`).
