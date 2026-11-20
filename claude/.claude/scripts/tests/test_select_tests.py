@@ -1984,7 +1984,7 @@ class TestCursorAdapterSelection:
         result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/_cursor_payloads.py"])
         assert result.is_full_suite is False
         assert "claude/.claude/scripts/tests/test_cursor_adapter_translate.py" in result.target_paths
-        assert "claude/.claude/scripts/tests/test_cursor_adapter_shim.py" in result.target_paths
+        assert "claude/.claude/scripts/tests/test_cursor_adapter_shim_outcomes.py" in result.target_paths
         assert _mod.HOOKS_TESTS_DIR in result.target_paths
 
     def test_the_identity_fixtures_module_selects_every_scripts_test(self):
