@@ -8,17 +8,17 @@ The decision covers a gate. It does not cover annotations, which contributors an
 
 ## Published evidence
 
-No study was found that measures whether type-checker feedback improves agent-written or agent-maintained Python, and none that compares agents working in typed and untyped Python repositories. Each quoted sentence and figure below was checked against its linked source on 2026-11-20, except where an item says otherwise. The characterizations around them are this record's reading of those sources.
+No study was found that measures whether type-checker feedback improves agent-written or agent-maintained Python, and none that compares agents working in typed and untyped Python repositories. Each quoted sentence and figure below was checked on 2026-11-20 against its source listed under Sources, except where an item says otherwise. The characterizations around them are this record's reading of those sources.
 
 - **Agents, other languages.** Mündler et al., "Type-Constrained Code Generation with Language Models" (arXiv preprint), report that the approach "reduces compilation errors by more than half". The technique constrains decoding, which needs token-level access to the model, and the paper demonstrates it on TypeScript.
-- **Agents, static checks in the loop.** Yang et al., "SWE-agent" (arXiv preprint), gate file edits on a linter, not a type checker. This repo already runs `ruff`. A research pass read this paper; the claim was not re-checked at the source.
+- **Agents, static checks in the loop.** Yang et al., "SWE-agent" (arXiv preprint), gate file edits on a linter, not a type checker. This repo already runs `ruff`. This item was not checked at its source. It rests on an earlier reading of the paper.
 - **Human baseline.** Khan et al., "An Empirical Study of Type-Related Defects in Python Projects" (IEEE Transactions on Software Engineering), studied 210 projects: "We observe that 15% of the defects could have been prevented by mypy." The authors call the figure a lower bound. They added the annotations themselves and did not measure false positives or annotation cost.
 - **Cost.** Rak-amnouykit et al., "Python 3 Types in the Wild: A Tale of Two Type Systems" (DLS 2020), hand-classified 52 of the 105 mypy errors they examined (49%) as false positives, sampling 15 errors per error category. The paper names `None` checks as a main source. The mypy it measured dates from 2020.
 - **Vendor claim.** The Claude Code documentation says that with a language server running, "Claude gets the errors and warnings the server reports" after each edit. It gives no measurement.
 
 ## Diagnostics on the current tree
 
-Pyright 1.1.414 ran at its default settings, with no configuration file, over all 576 tracked Python files at commit `6cc9e053` on 2026-11-20. That is about 446,000 lines, of which about 67,000 are outside test files.
+Pyright 1.1.414 ran at its default settings, with no configuration file, over all 576 tracked Python files at commit `6cc9e053` on 2026-11-20. That is about 446,000 lines, of which about 67,000 are outside test files. `git ls-tree -r --name-only 6cc9e053`, filtered to names ending in `.py`, lists the files, and `git grep -c '' 6cc9e053 -- '*.py'` counts their lines.
 
 - **Backlog.** 4,323 errors: 3,208 in test files and 1,115 in non-test files.
 - **Structural noise.** 855 of the non-test errors are `reportUndefinedVariable` in the `cursor-adapter` scripts, whose part files share one namespace by design.
