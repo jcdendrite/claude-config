@@ -861,7 +861,8 @@ class TestRecallAnswerParser:
     def test_accepts_an_opening_that_stops_inside_an_inner_quotation_when_the_next_line_is_a_quoted_found_label(
         self,
     ) -> None:
-        """Guards the no-quote-before-the-next-label-line check stopping at the next label line, not at its own quotes."""
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line.
+        Quotes on the next label line do not count."""
         findings = {"r1": 'The stated assumption is "uses the session auth by default".', "r2": "Drops a message."}
         answer = 'r1: FOUND -- "The stated assumption is "uses the session auth"\nr2: FOUND -- "Drops a message"'
         result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
@@ -1403,7 +1404,8 @@ class TestPrecisionAnswerParser:
         ],
     )
     def test_accepts_an_opening_that_stops_inside_an_inner_quotation(self, quoted_opening_line: str) -> None:
-        """The quoted second finding also guards the later-quote check stopping at the next finding line."""
+        """The quoted second finding also guards the odd-count accept rule: no quote may appear between the line
+        and the next label line. Quotes on the next label line do not count."""
         findings_by_id = {"r1": 'The stated assumption is "uses the session auth by default". Second problem here.'}
         answer = f'### Run r1\n1. INVALID -- {quoted_opening_line}\n2. VALID -- "Second problem"\n'
         result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
