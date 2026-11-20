@@ -8,10 +8,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **The repository moved to `cordova-strategy/workflow-gates`.**
   - A clone whose origin still names the old owner and repo needs the origin repointed.
-  - The old URL works only as a GitHub redirect, so a stale clone's `git pull` depends on that redirect.
-  - With a stale origin, `pr-cost` and `review-cost-by-size` exit 2, and so does `workstream-cost --check-pr-status`. The `/review-pr` scripts abort when the pull request names the new repository. Each message names the mismatch or points at `gh` settings.
+  - The old URL redirects only until a repository is created at that name ([GitHub's transfer documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/transferring-a-repository)).
+  - With a stale origin, `pr-cost` and `review-cost-by-size` exit 2, and so does `workstream-cost --check-pr-status`. The three `/review-pr` scripts that check the origin exit 2 when the pull request names the new repository. `pr-cost` also records pull requests under the new repository name after the repoint.
+  - After the repoint, `memory-store-audit` downgrades each file-as-issue item, and each migrate bound for the `claude-config` checkout, to keep, because its check expects an origin containing `claude-config`.
   - The redaction and stow-reminder hooks match either name, so they keep working without the change.
-  - After the repoint, `memory-store-audit` keeps every item instead of filing it, because its check expects an origin containing `claude-config`.
   - Do not rename the checkout folder to match. Use `relocate-claude-config` to move it.
   - **Migration:** run `git remote set-url origin https://github.com/cordova-strategy/workflow-gates.git`, or `git remote set-url origin git@github.com:cordova-strategy/workflow-gates.git` for an SSH remote.
 - **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**

@@ -270,6 +270,26 @@ class TestLibOriginNamesClaudeConfig:
         assert "workflow-gates" in rewritten_url
         assert self._names_claude_config(repo, tmp_path) == 1
 
+    def test_leaves_the_callers_locale_unchanged(self, tmp_path: Path) -> None:
+        """The helper's `LC_ALL=C` is function-local, so it must not leak into the caller's own shell.
+
+        Asserts the variable, not the effective locale: the two agree on the bash 5.2 floor.
+        """
+        repo = self._repo_with_remote(tmp_path, "origin", "git@github.com:someone/other-app.git")
+        caller_locale = "en_US.UTF-8"
+        helper_undefined_status = 91
+        result = _run_lib_call(
+            f"declare -F _lib_origin_names_claude_config >/dev/null || exit {helper_undefined_status}; "
+            f'export LC_ALL={caller_locale}; _lib_origin_names_claude_config "{repo}"; '
+            'printf %s "$LC_ALL"',
+            env={**os.environ, **isolated_git_config_env(tmp_path / "home")},
+        )
+        assert result.returncode == 0, (
+            f"exit {result.returncode} ({helper_undefined_status} means the helper is undefined after sourcing "
+            f"_lib.sh); stderr: {result.stderr}"
+        )
+        assert result.stdout == caller_locale
+
 
 class TestLibCaseInsensitiveNe:
     """Direct unit coverage for _lib_case_insensitive_ne -- the shared
