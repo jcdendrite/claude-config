@@ -841,6 +841,106 @@ class TestRecallAnswerParser:
         answer = f'r1: FOUND -- {quoted_first_line}\n  then leaks the handle"'
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
 
+    @pytest.mark.parametrize(
+        "quoted_opening_line",
+        [
+            pytest.param('"The stated assumption is \\"uses the session auth"', id="escaped-inner-quote"),
+            pytest.param('"The stated assumption is "uses the session auth"', id="unescaped-inner-quote"),
+            pytest.param('"The stated assumption is "uses the session auth" ', id="trailing-space"),
+            pytest.param('"The stated assumption is "uses the session auth"\t', id="trailing-tab"),
+            pytest.param('"The stated assumption is "uses the session auth"\r', id="crlf-line-ending"),
+        ],
+    )
+    def test_accepts_an_opening_that_stops_inside_an_inner_quotation(self, quoted_opening_line: str) -> None:
+        findings = {"r1": 'The stated assumption is "uses the session auth by default".', "r2": "Nothing wrong here."}
+        answer = f"r1: FOUND -- {quoted_opening_line}\nr2: NOT_FOUND"
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == 'The stated assumption is "uses the session auth'
+        assert result["r2"].label == "NOT_FOUND"
+
+    def test_accepts_an_opening_that_stops_inside_an_inner_quotation_when_the_next_line_is_a_quoted_found_label(
+        self,
+    ) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line.
+        Quotes on the next label line do not count."""
+        findings = {"r1": 'The stated assumption is "uses the session auth by default".', "r2": "Drops a message."}
+        answer = 'r1: FOUND -- "The stated assumption is "uses the session auth"\nr2: FOUND -- "Drops a message"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == 'The stated assumption is "uses the session auth'
+        assert result["r2"].quoted_opening == "Drops a message"
+
+    def test_accepts_curly_quotes_around_an_opening_that_stops_inside_an_inner_curly_quotation(self) -> None:
+        findings = {"r1": "The stated assumption is “uses the session auth by default”."}
+        answer = "r1: FOUND -- “The stated assumption is “uses the session auth”"
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == "The stated assumption is “uses the session auth"
+
+    @pytest.mark.parametrize("separator", [":", "–", "—"], ids=["colon", "en-dash", "em-dash"])
+    def test_accepts_an_opening_that_stops_inside_an_inner_quotation_after_any_label_separator(self, separator: str) -> None:
+        findings = {"r1": 'The stated assumption is "uses the session auth by default".'}
+        answer = f'r1: FOUND {separator} "The stated assumption is "uses the session auth"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == 'The stated assumption is "uses the session auth'
+
+    def test_accepts_five_quote_chars_ending_the_line_with_no_later_quote_before_the_next_label_line(self) -> None:
+        findings = {"r1": 'The stated "assumption" is "uses the session auth".', "r2": "Nothing wrong here."}
+        answer = 'r1: FOUND -- "The stated "assumption" is "uses"\nr2: NOT_FOUND'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == 'The stated "assumption" is "uses'
+
+    def test_rejects_five_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
+        """Guards the odd-count accept rule requiring the line to end with a quote, here at five quote chars."""
+        findings = {"r1": 'The stated "assumption" is "uses" the session auth.', "r2": "Nothing wrong here."}
+        answer = 'r1: FOUND -- "The stated "assumption" is "uses" the session auth\nr2: NOT_FOUND'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    @pytest.mark.parametrize(
+        "continuation_end_quote",
+        [pytest.param('"', id="ascii-quote"), pytest.param("”", id="curly-quote")],
+    )
+    def test_rejects_three_quote_chars_ending_the_line_when_a_continuation_line_holds_another_quote(
+        self, continuation_end_quote: str,
+    ) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line."""
+        findings = {"r1": 'Calls "foo"\n  then leaks the handle.'}
+        answer = f'r1: FOUND -- "Calls "foo"\n  then leaks the handle{continuation_end_quote}'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    def test_rejects_five_quote_chars_ending_the_line_when_a_continuation_line_holds_another_quote(self) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line, at any odd count."""
+        findings = {"r1": 'The stated "assumption" is "uses the session auth".'}
+        answer = 'r1: FOUND -- "The stated "assumption" is "uses"\n  the session auth"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    def test_rejects_three_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
+        """Guards the odd-count accept rule: the line must end with a quote."""
+        findings = {"r1": 'Calls "foo" and then leaks the handle.', "r2": "Nothing wrong here."}
+        answer = 'r1: FOUND -- "Calls "foo" and\nr2: NOT_FOUND'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    @pytest.mark.parametrize(
+        "quote_only_opening_line",
+        [
+            pytest.param('"""', id="three-quote-chars"),
+            pytest.param('"" "', id="empty-pair-then-spaced-quote"),
+            pytest.param('" "', id="quoted-single-space"),
+            pytest.param("“”“", id="three-curly-quote-chars"),
+        ],
+    )
+    def test_rejects_an_opening_that_holds_only_quote_chars_and_whitespace(
+        self, quote_only_opening_line: str,
+    ) -> None:
+        """Guards both single-line accept paths: the opening must hold a character that is neither a quote nor whitespace."""
+        findings = {"r1": 'Says "hello" and “goodbye” here.'}
+        answer = f"r1: FOUND -- {quote_only_opening_line}"
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+    def test_rejects_an_odd_quote_count_whose_first_quote_does_not_start_the_line_text(self) -> None:
+        """Guards the odd-count accept rule: only whitespace and label separators may precede the first quote."""
+        findings = {"r1": 'Second problem" "retry" fails.'}
+        answer = 'r1: FOUND -- Second problem" "retry"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
     def test_rejects_a_found_line_whose_opening_quote_never_closes(self) -> None:
         findings = {"r1": "Leaks a connection on error.", "r2": "Drops a message."}
         answer = 'r1: FOUND -- "Leaks a connection\nr2: FOUND -- "Drops a message"'
@@ -895,6 +995,7 @@ class TestAnswerFormatMatchingIsLinearTime:
     _LONG_WHITESPACE_LINE_LENGTH = 40_000
     _BLANK_LINE_COUNT_FOR_HEADER = 2_000
     _BLANK_LINE_COUNT = 20_000
+    _QUOTE_FREE_TAIL_LINE_COUNT = 100_000
 
     def _timed(self, work):
         started = time.perf_counter()
@@ -951,6 +1052,14 @@ class TestAnswerFormatMatchingIsLinearTime:
             lambda: adjudicate.parse_recall_answer(raw_text, expected_ids=run_ids, normalized_findings_by_id={})
         )
         assert parsed is None
+
+    def test_many_inner_quotation_precision_finding_lines_before_a_quote_free_tail_do_not_trigger_a_quadratic_scan(
+        self,
+    ) -> None:
+        """parse_recall_answer reaches this scan only through _label_lines_with_quoted_openings, so it has no twin test."""
+        section_text = '1. VALID -- "A "b"\n' * self._BLANK_LINE_COUNT + "no quote here\n" * self._QUOTE_FREE_TAIL_LINE_COUNT
+        findings = self._timed(lambda: adjudicate.parse_precision_findings(section_text))
+        assert findings == [adjudicate.PrecisionFinding(label="VALID", quoted_opening='A "b')] * self._BLANK_LINE_COUNT
 
     def test_a_long_separator_line_parses_as_recall_answer_quickly(self) -> None:
         raw_text = "-" * self._LONG_LINE_LENGTH
@@ -1281,6 +1390,116 @@ class TestPrecisionAnswerParser:
     ) -> None:
         findings_by_id = {"r1": 'Calls "foo" and\n  then leaks the handle.'}
         answer = f'### Run r1\n1. VALID -- {quoted_first_line}\n  then leaks the handle"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    @pytest.mark.parametrize(
+        "quoted_opening_line",
+        [
+            pytest.param('"The stated assumption is \\"uses the session auth"', id="escaped-inner-quote"),
+            pytest.param('"The stated assumption is "uses the session auth"', id="unescaped-inner-quote"),
+            pytest.param('"The stated assumption is "uses the session auth" ', id="trailing-space"),
+            pytest.param('"The stated assumption is "uses the session auth"\t', id="trailing-tab"),
+            pytest.param('"The stated assumption is "uses the session auth"\r', id="crlf-line-ending"),
+        ],
+    )
+    def test_accepts_an_opening_that_stops_inside_an_inner_quotation(self, quoted_opening_line: str) -> None:
+        """The quoted second finding also guards the odd-count accept rule: no quote may appear between the line
+        and the next label line. Quotes on the next label line do not count."""
+        findings_by_id = {"r1": 'The stated assumption is "uses the session auth by default". Second problem here.'}
+        answer = f'### Run r1\n1. INVALID -- {quoted_opening_line}\n2. VALID -- "Second problem"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="INVALID", quoted_opening='The stated assumption is "uses the session auth'),
+            adjudicate.PrecisionFinding(label="VALID", quoted_opening="Second problem"),
+        ]
+
+    def test_accepts_curly_quotes_around_an_opening_that_stops_inside_an_inner_curly_quotation(self) -> None:
+        findings_by_id = {"r1": "The stated assumption is “uses the session auth by default”."}
+        answer = "### Run r1\n1. INVALID -- “The stated assumption is “uses the session auth”\n"
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="INVALID", quoted_opening="The stated assumption is “uses the session auth"),
+        ]
+
+    @pytest.mark.parametrize("separator", [":", "–", "—"], ids=["colon", "en-dash", "em-dash"])
+    def test_accepts_an_opening_that_stops_inside_an_inner_quotation_after_any_label_separator(self, separator: str) -> None:
+        findings_by_id = {"r1": 'The stated assumption is "uses the session auth by default".'}
+        answer = f'### Run r1\n1. INVALID {separator} "The stated assumption is "uses the session auth"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="INVALID", quoted_opening='The stated assumption is "uses the session auth'),
+        ]
+
+    def test_accepts_five_quote_chars_ending_the_line_with_no_later_quote_before_the_next_label_line(self) -> None:
+        findings_by_id = {"r1": 'The stated "assumption" is "uses the session auth". Second problem here.'}
+        answer = '### Run r1\n1. INVALID -- "The stated "assumption" is "uses"\n2. VALID -- "Second problem"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="INVALID", quoted_opening='The stated "assumption" is "uses'),
+            adjudicate.PrecisionFinding(label="VALID", quoted_opening="Second problem"),
+        ]
+
+    def test_rejects_five_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
+        """Guards the odd-count accept rule requiring the line to end with a quote, here at five quote chars."""
+        findings_by_id = {"r1": 'The stated "assumption" is "uses" the session auth. Second problem here.'}
+        answer = '### Run r1\n1. VALID -- "The stated "assumption" is "uses" the session auth\n2. VALID -- "Second problem"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    @pytest.mark.parametrize(
+        "continuation_end_quote",
+        [pytest.param('"', id="ascii-quote"), pytest.param("”", id="curly-quote")],
+    )
+    def test_rejects_three_quote_chars_ending_the_line_when_a_continuation_line_holds_another_quote(
+        self, continuation_end_quote: str,
+    ) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line."""
+        findings_by_id = {"r1": 'Calls "foo"\n  then leaks the handle.'}
+        answer = f'### Run r1\n1. VALID -- "Calls "foo"\n  then leaks the handle{continuation_end_quote}\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_rejects_five_quote_chars_ending_the_line_when_a_continuation_line_holds_another_quote(self) -> None:
+        """Guards the odd-count accept rule: no quote may appear between the line and the next label line, at any odd count."""
+        findings_by_id = {"r1": 'The stated "assumption" is "uses the session auth".'}
+        answer = '### Run r1\n1. VALID -- "The stated "assumption" is "uses"\n  the session auth"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_rejects_three_quote_chars_on_a_line_that_does_not_end_with_a_quote(self) -> None:
+        """Guards the odd-count accept rule: the line must end with a quote."""
+        findings_by_id = {"r1": 'Calls "foo" and then leaks the handle. Second problem here.'}
+        answer = '### Run r1\n1. VALID -- "Calls "foo" and\n2. VALID -- "Second problem"\n'
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    @pytest.mark.parametrize(
+        "quote_only_opening_line",
+        [
+            pytest.param('"""', id="three-quote-chars"),
+            pytest.param('"" "', id="empty-pair-then-spaced-quote"),
+            pytest.param('" "', id="quoted-single-space"),
+            pytest.param("“”“", id="three-curly-quote-chars"),
+        ],
+    )
+    def test_rejects_an_opening_that_holds_only_quote_chars_and_whitespace(
+        self, quote_only_opening_line: str,
+    ) -> None:
+        """Guards both single-line accept paths: the opening must hold a character that is neither a quote nor whitespace."""
+        findings_by_id = {"r1": 'Says "hello" and “goodbye” here.'}
+        answer = f"### Run r1\n1. VALID -- {quote_only_opening_line}\n"
+        assert adjudicate.parse_precision_findings(answer) is None
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_rejects_a_two_line_quote_whose_opening_holds_only_a_newline(self) -> None:
+        """Guards the same rule on the multiline path. The answer-level split check masks it unless findings hold a newline."""
+        assert adjudicate.parse_precision_findings('### Run r1\n1. VALID -- "\n"\n') is None
+
+    def test_rejects_an_odd_quote_count_whose_first_quote_does_not_start_the_line_text(self) -> None:
+        """Guards the odd-count accept rule: only whitespace and label separators may precede the first quote."""
+        findings_by_id = {"r1": 'Second problem" "retry" fails.'}
+        answer = '### Run r1\n1. VALID -- Second problem" "retry"\n'
         assert adjudicate.parse_precision_findings(answer) is None
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
 
