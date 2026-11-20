@@ -1502,6 +1502,9 @@ Reading `summarize`'s primary outcome:
   task, pooled over the paired tasks, per arm. It shows how far one run's ratio
   moves with no change of arm. It needs `--k 2` or more.
 
+A paired difference is meaningful when the `toolkit` arm's figure is at least
+20% above or below the `bare` arm's.
+
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
 repository root's `README.md` § "Requirements", git 2.32 or newer,
