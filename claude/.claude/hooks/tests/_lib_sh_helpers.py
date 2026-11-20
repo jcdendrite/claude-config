@@ -1,6 +1,7 @@
 """Helpers shared by two or more test modules that exercise _lib.sh, among them the test_lib*.py files."""
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -14,7 +15,9 @@ from helpers import (
     SCRIPTS_DIR,
     _make_git_recording_argv,
     _run_git,
+    absolute_git_dir,
     bare_remote_with_default_branch,
+    init_git_repo_with_commit,
     isolated_git_config_env,
     reviewer_round_state_key,
     set_origin_head,
@@ -46,6 +49,24 @@ def copy_hooks_tree(destination: Path) -> Path:
     hooks_copy = destination / "hooks"
     shutil.copytree(HOOKS_DIR, hooks_copy, ignore=shutil.ignore_patterns("tests", "__pycache__"))
     return hooks_copy
+
+
+@functools.cache
+def claude_config_layout_path() -> str:
+    """The layout path `_lib.sh` tests, read from its constant so the tests do not restate it."""
+    result = _run_lib_call('printf %s "$_LIB_CLAUDE_CONFIG_LAYOUT_PATH"', env=dict(os.environ))
+    assert result.returncode == 0 and result.stdout, f"_lib.sh does not define the layout path: {result.stderr}"
+    return result.stdout
+
+
+def repo_tracking_claude_config_layout(path: Path, *, branch: str | None = None) -> Path:
+    """A repository whose one commit tracks the layout path and which has no remote."""
+    return init_git_repo_with_commit(path, branch=branch, file_name=claude_config_layout_path())
+
+
+def corrupt_git_index(repo: Path) -> None:
+    """Replace the index file with bytes git cannot parse, so every command that reads the index fails."""
+    (absolute_git_dir(repo) / "index").write_bytes(b"not a git index\n")
 
 
 def remove_lib_function(hooks_copy: Path, function_name: str) -> None:

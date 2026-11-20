@@ -711,7 +711,8 @@ Two other designs fail here:
   - `deny-private-project-refs.sh` does not gate `gh pr review`, and it
     never sees the `gh` call inside `review-pr-post.sh`.
   - Its redaction policy also short-circuits unless the clone's `origin.url`
-    contains `claude-config` or `workflow-gates` in any letter case, or the clone
+    contains `claude-config` or `workflow-gates` in any letter case, the clone's
+    working tree holds `claude/.claude/hooks/deny-private-project-refs.sh`, or the clone
     commits `.claude/private-projects-optin`, while `/review-pr` runs in any
     repository.
   - The control is the Step 8 human approval of the exact body to post.

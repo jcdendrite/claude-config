@@ -24,16 +24,26 @@
 # does.
 #
 # Scope and limits:
-# - Runs its content scans only where `_lib_origin_names_claude_config` in
-#   _lib.sh accepts the origin, or in a repo with
-#   `.claude/private-projects-optin` at its toplevel. That function's header
-#   defines the origin match, which is deliberately loose. Those scans are
-#   silent in every other repo.
+# - Runs its content scans only where `_lib_repo_is_claude_config` in _lib.sh
+#   accepts the repo, or in a repo with `.claude/private-projects-optin` at its
+#   toplevel.
+# - `_lib_repo_is_claude_config` matches the origin URL or the layout path in the
+#   working tree.
+# - An origin match takes the claude-config arm, which the predicate reports as `origin`.
+#   The claude-config arm leaves `claude/.claude/hooks/tests/` out of the staged-diff scan.
+# - With no origin match, `.claude/private-projects-optin` takes the marker arm, which scans every staged path, even when the working tree also holds the layout path.
+# - With neither, the layout path alone takes the layout arm, which excludes the same tests path as the claude-config arm.
+# - A content deny reached through the layout arm carries a note that names the layout path as the reason the repo is gated.
+#   That note is followed by the prohibitions it shares with the marker arm's note (`ARM_DENY_RULES`).
+# - On the marker and layout arms, the tracker-ID deny's remedy sentence leads with "Rewrite".
+#   Only the tracker-ID deny has a remedy lead.
+# - Those scans are silent in every other repo.
 # - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
 #   unparseable tool input, a failed command-text quote-strip, fragment split, or
 #   commit-conclusion check) run before the scope test, so they apply in every repo.
 # - The scope test itself also denies, in every repo, when
-#   `_lib_origin_names_claude_config` returns a status other than 0 or 1.
+#   `_lib_repo_is_claude_config` returns a status other than 0 or 1.
+# - That deny exists for status 127, which means `_lib.sh` lacks the function.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
 # - Catches a second mechanical category when the user creates
 #   ~/.claude/private-projects.md: a literal, case-insensitive
@@ -152,8 +162,9 @@
 #   path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
 #   The alias spellings were tested only at the `git commit -F` site, one of
 #   this gate's five pseudo-file check sites.
-# - The origin test's own gaps are listed in _lib_origin_names_claude_config's
-#   header in _lib.sh.
+# - The scope test's own gaps are listed in the headers of
+#   `_lib_origin_names_claude_config` and `_lib_repo_has_claude_config_layout`
+#   in _lib.sh.
 # - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
 #   in _lib.sh.
 #   The fallback tokenizer's residual over-denies and misses are listed in
@@ -191,8 +202,8 @@
 #   begins with `++`, so a token on such a line is unscanned.
 # - A commit whose staged diff is empty (`--amend -m`, `--allow-empty -m`, or
 #   nothing staged) leaves its message unscanned.
-# - In claude-config the staged diff also reads as empty when only files under
-#   `claude/.claude/hooks/tests/` are staged, because that path is excluded.
+# - In the claude-config and layout arms the staged diff also reads as empty when
+#   only files under `claude/.claude/hooks/tests/` are staged, because that path is excluded.
 # - An added line that contains a byte invalid in the active locale may be
 #   dropped by grep, depending on the grep implementation and locale.
 # - GNU grep 3.11 drops an added line that contains a byte invalid in the
@@ -222,8 +233,10 @@
 #   are listed in
 #   `docs/private-project-redaction.md` § "Opting in another repository".
 # - The blocklist deny echoes an entry, with up to three matched lines, whenever
-#   the entry whole-word matches the gated content, so any repo that commits
-#   the marker can make a session surface entries.
+#   the entry whole-word matches the gated content.
+# - Any repo that arms this gate can therefore make a session surface entries.
+# - A repo arms the gate by an origin URL containing either name, by a layout
+#   path in its working tree, or by the committed marker, and it controls all three.
 # - The gated content includes the staged diff and any referenced body,
 #   message, --input or @file source that the session may never have read.
 # - A referenced file that holds the list itself can therefore echo every entry.
@@ -477,24 +490,33 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Scope: claude-config and its forks, by `_lib_origin_names_claude_config`, plus any repo with .claude/private-projects-optin at its toplevel.
+# Scope: claude-config and its forks, by `_lib_repo_is_claude_config`, plus any repo with .claude/private-projects-optin at its toplevel.
 # Repos with neither legitimately reference their own tracker IDs, so the gate stays silent there.
 # The marker is read from the working tree, not a committed ref, because it can only add restriction.
+# The predicate reports the test that accepted the repo in `_LIB_REPO_SCOPE_ARM`, from the same origin read that decided the scope.
+# Arm precedence is the claude-config arm, then the marker arm, then the layout arm.
 # See `docs/private-project-redaction.md` § "Opting in another repository"
-OPTIN_DENY_NOTE=""
+ARM_DENY_NOTE=""
+ARM_DENY_RULES="Reword the content; if it cannot be reworded, or the match is an open-source reference, stop and ask the human. Do not retarget the command with git -C, edit the user's private-projects.md blocklist, or add a prefix to OSS_ALLOWLIST in deny-private-project-refs.sh, which ships in the public claude-config repo."
 TRACKER_REMEDY_LEAD="If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite"
 STAGED_DIFF_PATHSPEC=':(top,exclude)claude/.claude/hooks/tests/**'
-_lib_origin_names_claude_config "$REPO_ROOT"
-ORIGIN_SCOPE_STATUS=$?
-if [ "$ORIGIN_SCOPE_STATUS" -ne 0 ] && [ "$ORIGIN_SCOPE_STATUS" -ne 1 ]; then
-  emit_deny "could not determine whether this repo is claude-config (status ${ORIGIN_SCOPE_STATUS}). Failing closed rather than allowing an unscanned command. The user, not the agent, re-runs ./install.sh from the claude-config checkout in a separate terminal so this hook and _lib.sh come from the same tree."
+_lib_repo_is_claude_config "$REPO_ROOT"
+REPO_SCOPE_STATUS=$?
+if [ "$REPO_SCOPE_STATUS" -ne 0 ] && [ "$REPO_SCOPE_STATUS" -ne 1 ]; then
+  emit_deny "could not determine whether this repo is claude-config (status ${REPO_SCOPE_STATUS}, repo ${REPO_ROOT}). Failing closed rather than allowing an unscanned command. This is not a content finding. Stop and tell the engineer; run no repair command yourself. Status 127 means this hook and _lib.sh are out of sync. The user, not the agent, re-runs ./install.sh from the claude-config checkout in a separate terminal so this hook and _lib.sh come from the same tree. See docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository."
   exit 0
 fi
-if [ "$ORIGIN_SCOPE_STATUS" -eq 1 ]; then
-  [[ -f "$REPO_ROOT/.claude/private-projects-optin" ]] || exit 0
-  OPTIN_DENY_NOTE=" This repo opted in to this gate via .claude/private-projects-optin, so content that matches here (its own tracker IDs, structural shapes, and names on the user's private-projects.md blocklist) denies by design. Reword the content; if it cannot be reworded, stop and ask the human. Do not delete or edit the marker, retarget the command with git -C, edit the user's private-projects.md blocklist, or add this repo's own tracker prefix to OSS_ALLOWLIST in deny-private-project-refs.sh, which ships in the public claude-config repo."
-  TRACKER_REMEDY_LEAD="Rewrite"
-  STAGED_DIFF_PATHSPEC=':(top)'
+if [ "$_LIB_REPO_SCOPE_ARM" != "origin" ]; then
+  if [[ -f "$REPO_ROOT/.claude/private-projects-optin" ]]; then
+    ARM_DENY_NOTE=" This repo opted in to this gate via .claude/private-projects-optin, so content that matches here (its own tracker IDs, structural shapes, and names on the user's private-projects.md blocklist) denies by design. Do not delete or edit the marker. ${ARM_DENY_RULES}"
+    TRACKER_REMEDY_LEAD="Rewrite"
+    STAGED_DIFF_PATHSPEC=':(top)'
+  elif [ "$_LIB_REPO_SCOPE_ARM" = "layout" ]; then
+    ARM_DENY_NOTE=" This repo is gated because its working tree holds ${_LIB_CLAUDE_CONFIG_LAYOUT_PATH}, the layout of claude-config and its forks. Do not delete, move or rename that file to clear this deny. ${ARM_DENY_RULES}"
+    TRACKER_REMEDY_LEAD="Rewrite"
+  else
+    exit 0
+  fi
 fi
 
 # Allowlist: prefixes assumed not to be private-project tracker IDs.
@@ -872,7 +894,7 @@ HITS=$(printf '%s' "$SCAN_TARGET_BOTH" \
 if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. ${TRACKER_REMEDY_LEAD} the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
+  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. ${TRACKER_REMEDY_LEAD} the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.${ARM_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
   exit 0
 fi
 
@@ -933,7 +955,7 @@ if [ "$structural_fastpath_rc" -eq 0 ]; then
     detector_rc=0
     grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET_BOTH" || detector_rc=$?
     if [ "$detector_rc" -eq 0 ]; then
-      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
+      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.${ARM_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
     elif [ "$detector_rc" -ge 2 ]; then
       emit_deny "the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
@@ -988,7 +1010,7 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
   if [ -n "$blocklist_report" ]; then
     emit_deny "staged/committed content matches entries from your ~/.claude/private-projects.md blocklist. Remove these references before retrying:${blocklist_report}
 
-See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
+See repo CLAUDE.md section 'Redact private-project-identifying content'.${ARM_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
     exit 0
   fi
 fi

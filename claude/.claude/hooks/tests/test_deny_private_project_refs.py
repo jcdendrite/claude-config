@@ -37,8 +37,15 @@ from helpers import (
     run_hook_reason,
 )
 
-from ._lib_sh_helpers import copy_hooks_tree, remove_lib_function
+from ._lib_sh_helpers import (
+    claude_config_layout_path,
+    copy_hooks_tree,
+    corrupt_git_index,
+    remove_lib_function,
+    repo_tracking_claude_config_layout,
+)
 from .conftest import _write_conditional_sleep_shim
+from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 
@@ -62,13 +69,7 @@ def _stage_clean_file(repo: Path) -> None:
 
 @pytest.fixture
 def claude_config_repo(git_repo):
-    """git_repo with a `workflow-gates` origin URL so the scoping check lets
-    the redaction gate run. The `claude-config` arm of the check is pinned by
-    `test_claude_config_fork_origin_still_gates`. The hook short-circuits on
-    any repo that is neither claude-config (origin URL contains `claude-config`
-    or `workflow-gates`) nor opted in via `.claude/private-projects-optin`, so
-    a test that expects deny behavior needs this fixture or
-    `private_projects_optin_repo`."""
+    """git_repo with a `workflow-gates` origin URL, and with no layout file and no marker."""
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
         cwd=git_repo,
@@ -91,6 +92,20 @@ def unrelated_remote_repo(git_repo):
         check=True,
     )
     return git_repo
+
+
+@pytest.fixture
+def layout_repo_with_unrelated_origin(tmp_path):
+    """A repo whose one commit tracks the layout path, whose origin URL matches neither name, and which has
+    a staged tracker-free change, so only the layout arm of the scope check can arm the gate."""
+    repo = repo_tracking_claude_config_layout(tmp_path / "layout-repo", branch="main")
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:someone/unrelated-app.git"],
+        cwd=repo,
+        check=True,
+    )
+    _stage_clean_file(repo)
+    return repo
 
 
 @pytest.fixture
@@ -165,6 +180,14 @@ def _stage_added_line(repo: Path, added_line: str) -> None:
     """Stage `added_line` as a new last line of file.txt."""
     (repo / "file.txt").write_text(f"first\nsecond\n{added_line}\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+
+
+def _stage_hook_test_path_tracker_line(repo: Path) -> None:
+    """Stage a new file under `claude/.claude/hooks/tests/` whose one line holds a synthetic tracker token."""
+    test_dir = repo / "claude" / ".claude" / "hooks" / "tests"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (test_dir / "test_new_case.py").write_text("# synthetic token for testing: FAKEPROJ-42\n")
+    subprocess.run(["git", "add", "claude/.claude/hooks/tests/test_new_case.py"], cwd=repo, check=True)
 
 
 # Commands whose gate is armed by the opt-in marker: the commit-concluding
@@ -684,21 +707,183 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
-    def test_origin_scope_helper_failing_closes_the_gate(self, claude_config_repo, tmp_path):
-        """Only status 1 from `_lib_origin_names_claude_config` means "not claude-config". Any other
-        non-zero status, here 127 from a function absent in the sourced lib, must deny rather than
-        leave the redaction gate silent. The commit text is clean, so only the scope check can deny."""
+    def test_layout_in_working_tree_under_an_unrelated_origin_gates(self, layout_repo_with_unrelated_origin):
+        """A repository named anything, whose working tree holds the layout path, gates like claude-config."""
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+            cwd=layout_repo_with_unrelated_origin,
+        )
+        assert reason is not None, "expected the tracker-ID deny"
+        assert "WIDGET-123" in reason
+        assert "whether this repo is claude-config" not in reason
+
+    def test_layout_only_deny_carries_the_layout_note(self, layout_repo_with_unrelated_origin):
+        """A tracker deny in a repo armed by the layout path alone names that path as the reason, forbids
+        removing it and adding an OSS_ALLOWLIST prefix, sends an open-source match to the human, leads with
+        "Rewrite" like the marker arm, and carries none of the opt-in note."""
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=layout_repo_with_unrelated_origin,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+        assert self._LAYOUT_NOTE_PHRASE in reason
+        assert claude_config_layout_path() in reason
+        assert self._LAYOUT_NOTE_KEEP_FILE_PHRASE in reason
+        for shared_phrase in self._ARM_NOTE_SHARED_PHRASES:
+            assert shared_phrase in reason
+        assert self._OPTIN_TRACKER_REWRITE_SENTENCE in reason
+        assert self._CLAUDE_CONFIG_TRACKER_REWRITE_SENTENCE not in reason
+        assert self._OSS_ALLOWLIST_ADVICE not in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
+
+    @pytest.mark.parametrize(
+        ("command", "blocklist", "staged_added_line", "expected_scan_text"), _OPTIN_WHOLE_HOOK_SCAN_CASES
+    )
+    def test_layout_only_arm_carries_the_layout_note_on_every_content_deny(
+        self,
+        layout_repo_with_unrelated_origin,
+        private_projects_file,
+        command,
+        blocklist,
+        staged_added_line,
+        expected_scan_text,
+    ):
+        """The tracker, blocklist and structural-detector denies each carry the layout note, including its
+        keep-the-file clause, in a repo armed by the layout path alone."""
+        if blocklist is not None:
+            private_projects_file(blocklist)
+        if staged_added_line is not None:
+            _stage_added_line(layout_repo_with_unrelated_origin, staged_added_line)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command),
+            cwd=layout_repo_with_unrelated_origin,
+        )
+        assert reason is not None
+        assert expected_scan_text in reason
+        assert self._LAYOUT_NOTE_PHRASE in reason
+        assert claude_config_layout_path() in reason
+        assert self._LAYOUT_NOTE_KEEP_FILE_PHRASE in reason
+        for shared_phrase in self._ARM_NOTE_SHARED_PHRASES:
+            assert shared_phrase in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+
+    def test_origin_armed_deny_in_a_repo_that_also_holds_the_layout_file_carries_no_layout_note(
+        self, claude_config_repo
+    ):
+        layout_file = claude_config_repo / claude_config_layout_path()
+        layout_file.parent.mkdir(parents=True)
+        layout_file.write_text("x\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+        assert self._LAYOUT_NOTE_PHRASE not in reason
+
+    def test_marker_and_layout_file_under_an_unrelated_origin_keep_the_marker_arm(
+        self, layout_repo_with_unrelated_origin
+    ):
+        """The marker arm outranks the layout arm: a staged line under the hook tests path is scanned, and the
+        deny carries the opt-in note, not the layout note."""
+        marker = layout_repo_with_unrelated_origin / self._OPTIN_MARKER_PATH
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("")
+        _stage_hook_test_path_tracker_line(layout_repo_with_unrelated_origin)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Add new test case'"),
+            cwd=layout_repo_with_unrelated_origin,
+        )
+        assert reason is not None, "expected the marker arm to scan the hook tests path"
+        assert "FAKEPROJ-42" in reason
+        assert self._OPTIN_NOTE_PHRASE in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE in reason
+        for shared_phrase in self._ARM_NOTE_SHARED_PHRASES:
+            assert shared_phrase in reason
+        assert self._LAYOUT_NOTE_PHRASE not in reason
+
+    def test_layout_only_repo_exempts_the_hook_test_path_from_the_scan(self, layout_repo_with_unrelated_origin):
+        """Control for the marker-and-layout case: without the marker, the same staged line allows, because
+        the layout arm excludes the hook tests path like the claude-config arm."""
+        _stage_hook_test_path_tracker_line(layout_repo_with_unrelated_origin)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add new test case'"),
+                cwd=layout_repo_with_unrelated_origin,
+            )
+            == "allow"
+        )
+
+    def test_corrupt_index_without_the_layout_file_allows_under_an_unrelated_origin(self, unrelated_remote_repo):
+        """The layout test reads the filesystem, not the index, so a corrupt index in a repository with no layout
+        file and no marker leaves the gate silent. The control adds the layout file to the working tree, where the
+        same clean commit then denies for the unreadable staged diff."""
+        corrupt_git_index(unrelated_remote_repo)
+        command = bash_input("git commit -m 'Fix a typo'")
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, command, cwd=unrelated_remote_repo) == "allow"
+        layout_file = unrelated_remote_repo / claude_config_layout_path()
+        layout_file.parent.mkdir(parents=True)
+        layout_file.write_text("x\n")
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, command, cwd=unrelated_remote_repo)
+        assert reason is not None, "control: the layout file must arm the gate"
+        assert "git diff --cached failed" in reason
+
+    def test_corrupt_index_in_a_layout_repo_under_an_unrelated_origin_denies_with_the_staged_diff_reason(
+        self, layout_repo_with_unrelated_origin
+    ):
+        """A repository armed by layout alone fails closed on an unreadable staged diff, and its reason is the
+        staged-diff one, not the scope one. The control allows the same clean command while the index is readable."""
+        command = bash_input("git commit -m 'Fix a typo'")
+        assert (
+            run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, command, cwd=layout_repo_with_unrelated_origin) == "allow"
+        ), "control: the clean commit must allow while the index is readable"
+        corrupt_git_index(layout_repo_with_unrelated_origin)
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, command, cwd=layout_repo_with_unrelated_origin)
+        assert reason is not None, "expected deny when the staged diff cannot be read"
+        assert "git diff --cached failed" in reason
+        assert "whether this repo is claude-config" not in reason
+        assert self._LAYOUT_NOTE_PHRASE not in reason
+
+    def test_repo_with_no_commit_and_no_layout_file_stays_silent_under_an_unrelated_origin(self, tmp_path):
+        """A repository with no commit and no layout file is not claude-config, so its first commit is not
+        denied. The control sets the origin to a matching URL, where the same commit text denies."""
+        repo = init_git_repo(tmp_path / "fresh-repo")
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:someone/unrelated-app.git"], cwd=repo, check=True
+        )
+        _stage_clean_file(repo)
+        command = bash_input("git commit -m 'Fix WIDGET-123 regression'")
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, command, cwd=repo) == "allow"
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/claude-config.git"], cwd=repo, check=True
+        )
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, command, cwd=repo) == "deny", "control: the text must deny"
+
+    def test_scope_predicate_missing_from_lib_closes_the_gate(self, claude_config_repo, tmp_path):
+        """Only status 1 from `_lib_repo_is_claude_config` means "not claude-config". Any other
+        non-zero status, here 127 from the predicate absent in a `_lib.sh` older than the hook, must deny
+        rather than leave the redaction gate silent. The commit text is clean, so only the scope check can deny."""
         hooks_copy = copy_hooks_tree(tmp_path)
-        remove_lib_function(hooks_copy, "_lib_origin_names_claude_config")
+        remove_lib_function(hooks_copy, "_lib_repo_is_claude_config")
         _stage_clean_file(claude_config_repo)
         reason = run_hook_reason(
             hooks_copy / "deny-private-project-refs.sh",
             bash_input("git commit -m 'Fix a typo'"),
             cwd=claude_config_repo,
         )
-        assert reason is not None, "expected deny when the origin-scope helper fails"
+        assert reason is not None, "expected deny when the scope predicate is missing"
         assert "whether this repo is claude-config" in reason
+        assert "status 127" in reason
         assert "The user, not the agent, re-runs ./install.sh" in reason
+        assert HOOKS_DOC_GATE_DEADLOCK_RECOVERY.text in reason
 
     def test_claude_config_fork_origin_still_gates(self, git_repo):
         """Substring match on `claude-config` is deliberately loose: a fork
@@ -726,11 +911,20 @@ class TestDenyPrivateProjectRefs:
     # (pre-marker checkouts, unreadable `.claude/`) is pinned as allow cases.
 
     _OPTIN_MARKER_PATH = ".claude/private-projects-optin"
-    _OPTIN_NOTE_PHRASE = "stop and ask the human"
+    _OPTIN_NOTE_PHRASE = "opted in to this gate"
+    # Phrases that occur only in the layout note, which a repo armed by the layout path alone gets.
+    _LAYOUT_NOTE_PHRASE = "the layout of claude-config and its forks"
+    _LAYOUT_NOTE_KEEP_FILE_PHRASE = "Do not delete, move or rename that file"
     # Phrases that occur only in the opt-in note, so each pins one clause of it.
     _OPTIN_NOTE_MISROUTE_PHRASE = "Do not delete or edit the marker"
-    _OPTIN_NOTE_BLOCKLIST_PHRASE = "edit the user's private-projects.md blocklist"
-    _OPTIN_NOTE_RETARGET_PHRASE = "retarget the command with git -C"
+    # Clauses of the prohibitions both the opt-in note and the layout note carry.
+    _ARM_NOTE_RETARGET_PHRASE = "retarget the command with git -C"
+    _ARM_NOTE_SHARED_PHRASES = (
+        "if it cannot be reworded, or the match is an open-source reference, stop and ask the human",
+        _ARM_NOTE_RETARGET_PHRASE,
+        "edit the user's private-projects.md blocklist",
+        "add a prefix to OSS_ALLOWLIST",
+    )
     # The opted-in tracker deny's affirmative remedy: the remedy lead "Rewrite" joined to the shared tail.
     _OPTIN_TRACKER_REWRITE_SENTENCE = (
         "Rewrite the commit message / staged content / PR body / issue body / gh api body "
@@ -775,8 +969,9 @@ class TestDenyPrivateProjectRefs:
         assert self._OPTIN_MARKER_PATH in reason
         assert self._OPTIN_NOTE_PHRASE in reason
         assert self._OPTIN_NOTE_MISROUTE_PHRASE in reason
-        assert self._OPTIN_NOTE_BLOCKLIST_PHRASE in reason
-        assert self._OPTIN_NOTE_RETARGET_PHRASE in reason
+        for shared_phrase in self._ARM_NOTE_SHARED_PHRASES:
+            assert shared_phrase in reason
+        assert self._LAYOUT_NOTE_PHRASE not in reason
 
     @pytest.mark.parametrize(
         ("command", "blocklist", "staged_added_line", "expected_scan_text"), _OPTIN_WHOLE_HOOK_SCAN_CASES
@@ -1398,7 +1593,7 @@ class TestDenyPrivateProjectRefs:
         """A corrupt index makes the staged-diff read exit nonzero. The gate
         fails closed with an infrastructure deny, which carries no opt-in note
         because rewording content cannot fix it."""
-        (private_projects_optin_repo / ".git" / "index").write_bytes(b"not an index")
+        corrupt_git_index(private_projects_optin_repo)
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input("git commit -m 'Refactor the parser'"),
@@ -1414,7 +1609,7 @@ class TestDenyPrivateProjectRefs:
         """Control for the marker-armed corrupt-index deny: the fail-closed
         staged-diff read sits below the scope exit, so an unmarked repo with a
         corrupt index still allows."""
-        (unrelated_remote_repo / ".git" / "index").write_bytes(b"not an index")
+        corrupt_git_index(unrelated_remote_repo)
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -1427,7 +1622,7 @@ class TestDenyPrivateProjectRefs:
     def test_claude_config_denies_when_staged_diff_cannot_be_read(self, claude_config_repo):
         """The fail-closed staged-diff-read deny is not marker-conditional: a
         claude-config checkout with a corrupt index gets the same deny."""
-        (claude_config_repo / ".git" / "index").write_bytes(b"not an index")
+        corrupt_git_index(claude_config_repo)
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input("git commit -m 'Refactor the parser'"),
@@ -1447,7 +1642,8 @@ class TestDenyPrivateProjectRefs:
         assert self._OPTIN_MARKER_PATH not in reason
         assert self._OPTIN_NOTE_PHRASE not in reason
         assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
-        assert self._OPTIN_NOTE_RETARGET_PHRASE not in reason
+        assert self._ARM_NOTE_RETARGET_PHRASE not in reason
+        assert self._LAYOUT_NOTE_PHRASE not in reason
         assert self._OSS_ALLOWLIST_ADVICE in reason
         assert "not on the allowlist" in reason
         assert self._CLAUDE_CONFIG_TRACKER_REWRITE_SENTENCE in reason
@@ -1519,7 +1715,7 @@ class TestDenyPrivateProjectRefs:
         assert str(missing_file) in reason
         assert self._OPTIN_NOTE_PHRASE not in reason
         assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
-        assert self._OPTIN_NOTE_RETARGET_PHRASE not in reason
+        assert self._ARM_NOTE_RETARGET_PHRASE not in reason
 
     def test_test_dir_changes_exempt_from_scan(self, claude_config_repo):
         """The hook's own test directory is excluded from the staged-diff

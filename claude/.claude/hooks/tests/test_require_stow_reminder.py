@@ -26,7 +26,11 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
-from ._lib_sh_helpers import copy_hooks_tree, remove_lib_function
+from ._lib_sh_helpers import (
+    claude_config_layout_path,
+    copy_hooks_tree,
+    remove_lib_function,
+)
 from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
@@ -85,6 +89,14 @@ def commit_new_toplevel_dir(repo: Path, name: str) -> None:
     (target_dir / "file.md").write_text(f"# {name}\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", f"add {name}"], cwd=repo, check=True)
+
+
+def commit_layout_path(repo: Path) -> None:
+    """Commit the layout path `_lib.sh` tests, under the existing `hooks/` top-level entry, so it adds no new one."""
+    layout_file = repo / claude_config_layout_path()
+    layout_file.write_text("# layout marker\n")
+    subprocess.run(["git", "add", "--", claude_config_layout_path()], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add layout path"], cwd=repo, check=True)
 
 
 def commit_new_toplevel_file(repo: Path, name: str) -> None:
@@ -229,15 +241,25 @@ class TestRequireStowReminder:
         )
         assert_live_deny_control(stow_repo)
 
-    def test_origin_scope_helper_failing_allows(self, stow_repo, tmp_path):
-        """This hook fails open when `_lib_origin_names_claude_config` returns a status other than 0 or 1,
-        here 127 from a function absent in the sourced lib. The control denies with the helper present."""
+    def test_layout_in_working_tree_under_an_unrelated_origin_still_gates(self, stow_repo):
+        """The layout path in the working tree scopes the repo in whatever the origin URL says."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/unrelated-app.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        commit_layout_path(stow_repo)
+        assert_live_deny_control(stow_repo)
+
+    def test_scope_predicate_missing_from_lib_allows(self, stow_repo, tmp_path):
+        """This hook fails open when `_lib_repo_is_claude_config` returns a status other than 0 or 1,
+        here 127 from the predicate absent in a `_lib.sh` older than the hook. The control denies with the predicate present."""
         hooks_copy = copy_hooks_tree(tmp_path)
         copied_hook = hooks_copy / "require-stow-reminder.sh"
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr create --title T --body 'no marker here'"
         assert run_hook(copied_hook, bash_input(cmd), cwd=stow_repo) == "deny", "control: copied hook did not deny"
-        remove_lib_function(hooks_copy, "_lib_origin_names_claude_config")
+        remove_lib_function(hooks_copy, "_lib_repo_is_claude_config")
         failing_run = subprocess.run(
             [str(copied_hook)], input=json.dumps(bash_input(cmd)), capture_output=True, text=True, cwd=stow_repo,
             check=False,

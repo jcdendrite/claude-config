@@ -835,8 +835,8 @@ _lib_case_insensitive_ne() {
 # A missing REPO_ROOT argument aborts the caller under `set -u`.
 # The function returns only 0 or 1, and a failed read of the origin counts as 1.
 # Known gaps:
-# - A failed `git config` read (git exit 128 or higher) returns 1, so the deny
-#   gate treats the repository as not claude-config.
+# - A failed `git config` read (git exit 128 or higher) returns 1, so this arm
+#   alone treats the repository as not claude-config.
 # - An origin written as a `url.<base>.insteadOf` alias that hides the
 #   repository name does not match, because `git config` returns the URL
 #   unrewritten.
@@ -852,6 +852,59 @@ _lib_origin_names_claude_config() {
   origin_urls=$(git -C "$repo_root" config --get-all remote.origin.url 2>/dev/null)
   origin_urls="${origin_urls,,}"
   [[ "$origin_urls" == *claude-config* || "$origin_urls" == *workflow-gates* ]]
+}
+
+# The path, relative to the repository root, whose presence in the working tree marks this repository's layout.
+# It has been tracked since 2026-04-25 (`git log --diff-filter=A` on it), so a commit older than that lacks it.
+_LIB_CLAUDE_CONFIG_LAYOUT_PATH='claude/.claude/hooks/deny-private-project-refs.sh'
+
+# _lib_repo_has_claude_config_layout REPO_ROOT
+# Returns 0 when `_LIB_CLAUDE_CONFIG_LAYOUT_PATH` is a regular file under REPO_ROOT, and 1 when it is not.
+# The test reads the filesystem only and runs no git command, so it needs no commit and no index.
+# A missing REPO_ROOT argument aborts the caller under `set -u`.
+# An empty REPO_ROOT tests the path under the filesystem root, not the caller's working directory.
+# Known gaps:
+# - A path absent from the working tree answers 1:
+#   a sparse checkout with the path outside the cone, a skip-worktree file, a `--no-checkout` clone or worktree, or an unstaged deletion.
+# - An untracked copy at the path answers 0.
+# - Any directory that holds the path matches, repository or not.
+# - A checkout of a commit that predates the path answers 1.
+# - A filesystem error on the test, such as an unreadable parent directory, answers 1.
+# - A symlink to a regular file matches, and a directory at the path does not.
+_lib_repo_has_claude_config_layout() {
+  local repo_root="$1"
+  [[ -f "$repo_root/$_LIB_CLAUDE_CONFIG_LAYOUT_PATH" ]]
+}
+
+# _lib_repo_is_claude_config REPO_ROOT
+# The scope test for the hooks that run only in this repository and its forks.
+# Returns 0 when `_lib_origin_names_claude_config` accepts the origin, without reading the layout.
+# Reads the layout only when the origin test returns 1, and then returns what `_lib_repo_has_claude_config_layout` returns: 0 yes, 1 no.
+# A failed origin read counts as origin status 1, so it falls through to the layout read.
+# Returns any other status the origin test returns, such as 127 when that function is undefined, so a caller can fail closed on it.
+# Returns 127 when `_lib_repo_has_claude_config_layout` is undefined, as the status of that last command.
+# A caller that treats only 0 as "in scope" fails open on such a status; a gate that must not fail open denies on any status other than 0 and 1.
+# Sets the global `_LIB_REPO_SCOPE_ARM` on every path to `origin` or `layout`, naming the test that accepted the repo, and to empty when the status is not 0.
+# REPO_ROOT must be non-empty, because the origin test reads the caller's working directory for an empty one and the layout test reads the filesystem root.
+# The origin test's gaps are listed in its header, and the layout test's in its own.
+_lib_repo_is_claude_config() {
+  local origin_status layout_status
+  _LIB_REPO_SCOPE_ARM=""
+  _lib_origin_names_claude_config "$1"
+  origin_status=$?
+  if [ "$origin_status" -eq 0 ]; then
+    _LIB_REPO_SCOPE_ARM="origin"
+    return 0
+  fi
+  if [ "$origin_status" -ne 1 ]; then
+    return "$origin_status"
+  fi
+  _lib_repo_has_claude_config_layout "$1"
+  layout_status=$?
+  if [ "$layout_status" -eq 0 ]; then
+    _LIB_REPO_SCOPE_ARM="layout"
+  fi
+  return "$layout_status"
 }
 
 # _lib_parse_pr_identity PR_IDENTITY
