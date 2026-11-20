@@ -715,9 +715,9 @@ preserves review quality — recall and adjudicated precision on a curated set
 of this repo's own known-defect PRs — before that change is allowed to
 merge. This file's own "Why local only — never CI" section above applies
 here too, with one addition: `smoke`, `run`, and `judge` each price out a
-real reviewer or judge dispatch per sample, not one classification call, so
-the cost scales faster (see "Runtime cost" below). The harness needs Git 2.32
-or newer; see `review_bench/local_git.py`.
+real reviewer dispatch or judge session per sample, not one classification
+call, so the cost scales faster (see "Runtime cost" below). The harness needs
+Git 2.32 or newer; see `review_bench/local_git.py`.
 
 ### Usage
 
@@ -1306,11 +1306,11 @@ Five residuals remain.
   shared session store in place, and the completed block is never swept.
 - A `claude -p` child of a hard-killed runner can outlive the lock (see above).
 
-A leftover session store holds raw dispatcher and reviewer transcripts,
-including the tool results of out-of-session reads. The re-freeze recovery path
-(see "Frozen conditions and invalidation") leaves a halted campaign's
-leftovers by design. Nothing bounds their retention except
-whatever bounds `projects/`, and `/tmp` fixture retention is unverified.
+A leftover session store holds raw dispatcher, reviewer, and judge
+transcripts, including the tool results of out-of-session reads. The re-freeze
+recovery path (see "Frozen conditions and invalidation") leaves a halted
+campaign's leftovers by design. Nothing bounds their retention except whatever
+bounds `projects/`, and `/tmp` fixture retention is unverified.
 
 A crash between a block's records being appended and the block being marked
 complete reruns that block on resume, and `read_run_records` deduplicates the
@@ -1320,7 +1320,8 @@ repeated records, keeping the later one. See `runner.read_run_records`.
 
 A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
 and its own session transcript and `<session-id>/` directory is recorded in
-that run's `out_of_session_paths` and does not fail the run on its own. Only a read of a live checkout's own
+that run's `out_of_session_paths` when the run completes, and does not fail the
+run on its own. Only a read of a live checkout's own
 copy of a file the introducing commit or the fix commit changed, or of the
 ambient config's `projects/` root (a run's own transcript and its own
 `<session-id>/` directory excepted), fails the run. The live checkouts are the
@@ -1344,19 +1345,20 @@ joined onto its `path` (an absolute pattern overrides `path`). A leading `~`
 or `$VAR` in a path is expanded before the check. Printed paths show control
 characters as backslash escapes, since the path is model output.
 
-A run's transcript and subagent sidecar are checked once no file's size has
-changed across two consecutive polls. If the sizes are still changing after
-`SESSION_FLUSH_TIMEOUT_S` (10 seconds), the transcript as it stands on disk is
-classified, so a still-growing transcript can be classified partly written and
-miss a later read. A fixture tree (a reviewer arm's or the precision judge's)
-is built only when its head tree's `.claude/settings.json` holds no top-level
-key outside those this repository's own history has held and the tree holds
-neither `.mcp.json` nor `.claude/settings.local.json`; otherwise the build
-refuses. `smoke` and `run` apply the same check to every pending defect's head
-commit in their preflight, so a refusal exits 2 before any dispatch. The
-preflight reads git's tree while the build reads the archive extraction, so a
-symlinked `.claude/settings.json` or an `export-ignore` or `export-subst`
-attribute can make the two verdicts differ. The build refuses a link at or
+A run's transcript and, for a reviewer run, its subagent sidecar are checked
+once no file's size has changed across two consecutive polls. If the sizes are
+still changing after `SESSION_FLUSH_TIMEOUT_S` (10 seconds), the transcript as
+it stands on disk is classified, so a still-growing transcript can be
+classified partly written and miss a later read. A fixture tree (a reviewer
+arm's or the precision judge's) is built only when its head tree's
+`.claude/settings.json` holds no top-level key outside those this repository's
+own history has held and the tree holds neither `.mcp.json` nor
+`.claude/settings.local.json`; otherwise the build refuses. `smoke` and `run`
+apply the same check to every pending defect's head commit in their
+preflight, so a refusal exits 2 before any dispatch. The preflight reads
+git's tree while the build reads the archive extraction, so a symlinked
+`.claude/settings.json` or an `export-ignore` or `export-subst` attribute can
+make the two verdicts differ. The build refuses a link at or
 under `.claude` and any member under `.bench` (the harness's own artifact
 directory) before it writes anything, and re-checks the extracted tree. Other
 links extract. The bench supports case-sensitive volumes. On a case-insensitive
@@ -1369,6 +1371,38 @@ tree's `CLAUDE.md`, which the dispatcher loads. The dispatcher holds the CLI's
 default tools, Bash included, so a tree can steer it into running commands as
 you, with your credentials. The run-validity check fails such a run only after
 the command has run.
+
+The precision judge runs as its own session in its fixture tree, so that
+session can load the instruction channels the tree supplies, among them its
+`CLAUDE.md` files (nested ones when the judge reads under them), its
+`.claude/rules/*.md`, and the value of its `enabledPlugins` setting. The tree's
+`permissions` setting (`allow`, `additionalDirectories`, `defaultMode`) is a
+capability channel, not an instruction channel. It can widen what the judge may
+read or call, and it does not change what the judge is told. Beyond the
+refusals stated above, the fixture build checks only the top-level keys of
+`.claude/settings.json` and extracts the rest of the head tree as it is. A
+hostile tree can steer the judge's verdicts through the instruction channels.
+The launch passes no flag that limits setting sources, so the engineer's own
+user settings, hooks, and enabled plugins load as well, and their hooks run as
+the engineer. A tree's `enabledPlugins` can also enable an installed plugin
+whose hooks run as the engineer; whether the CLI honors a project-scope
+`enabledPlugins` in `-p` mode is unconfirmed. What Claude Code
+loads from a given file is its own behavior, and the harness does not verify
+it. Both judges' directories are fresh directories under the system temp
+directory (`tempfile.mkdtemp`), so a `CLAUDE.md` in an ancestor of that path
+and the user config can still load for either judge. The recall judge's
+directory holds no tree.
+
+A judge session is launched with a read-only `--tools` allowlist, so it holds
+no Bash. `--tools` governs built-in tools only. The launch also passes
+`--strict-mcp-config`. Whether that drops account-level connectors and
+plugin MCP servers is unconfirmed (see the self-check note under
+`--phase calibrate` in the "Main session rule adherence gate" section), so a
+judge session may hold connector tools the allowlist does not govern. The
+allowlist is checked only after the run, by comparing the tools the run used
+against it. A Stop hook that forces the judge session to
+continue fails the run, because the continuation's text would replace the
+judge's own answer.
 
 The dispatcher is not the only place the bench processes the tree. Mining
 runs git over its content, and each fixture build in `smoke` or `run` runs
@@ -1406,22 +1440,25 @@ restricted to 0700 at startup, and the command exits 2 if it cannot be.
   (runs times the per-run cap, unverified as a bound on spend) before their
   first dispatch. The cost totals `smoke`, `run`, `judge`, and `analyze` print
   leave out every run with no recorded cost, a timed-out run among them, and
-  may omit subagent spend, so the invoice can exceed them. This README states
-  no dollar figure:
+  may omit a reviewer run's subagent spend, so the invoice can exceed them.
+  This README states no dollar figure:
   `REPRESENTATIVE_DISPATCH_COST_USD` was derived with a command that does not
   refuse a wider corpus, so it is not a publication instrument (`docs/private-project-redaction.md` § "This repository, one account").
   `analyze` prints dollar totals, per reviewer arm and per judge kind, to
   stderr for the engineer. Its `--out` report, which is committed, carries
   none. Only the gitignored run records hold per-run costs.
-- **Judge runs:** one recall and one precision judge run per defect. Their caps
-  and timeouts equal the reviewer's. Change the `RECALL_JUDGE_BUDGET_CAP_USD` and
-  `PRECISION_JUDGE_BUDGET_CAP_USD` constants in `review_bench/runner.py` once a
-  judge has its own measured values.
+- **Judge runs:** one recall and one precision judge run per defect. A judge is
+  its own session with no subagent, so its `--max-budget-usd` applies to the
+  judge directly. Its cap and timeout equal the reviewer's, which were derived
+  for a reviewer dispatch, not measured for a judge. Change the
+  `RECALL_JUDGE_BUDGET_CAP_USD` and `PRECISION_JUDGE_BUDGET_CAP_USD` constants
+  in `review_bench/runner.py` once a judge has its own measured values. The
+  harness passes `--effort` to each judge.
 - **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
   each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
   K = 10, so 1,260 slots at 252 fixtures. Each minute of median run duration
   adds 21 hours.
-- **Judge wall-clock:** `judge` dispatches one recall and one precision judge
+- **Judge wall-clock:** `judge` launches one recall and one precision judge
   run per defect, fully serially with no worker pool, so wall-clock is
   `2 x N` run-slots with no division by a worker count — 504 at 252 fixtures.
   Each minute of median judge-run duration adds 8.4 hours.
@@ -1437,3 +1474,419 @@ refusal, per
 `docs/private-project-redaction.md` § "This repository, one account" —
 never beside a wider corpus. A `pr-comment` figure is published beside
 `mine-pr-comments` and its public-repository refusal.
+
+## Replay bench
+
+The replay bench (`evals/run_replay_bench.py`, with `evals/replay_bench/`)
+measures how many comment and docstring words an agent adds. It replays a
+source repo's past commits as coding tasks under two arms and counts the words
+each arm adds per added non-test code line. The `toolkit` arm dispatches the
+account's `code-writer` agent. The `bare` arm dispatches a `bare-writer` that
+copies `code-writer`'s tools, model and effort but loads none of the account's
+rule files. `summarize` reports the paired difference `toolkit - bare` over
+tasks. A null difference shows only that the writing agent's instructions leave
+its first draft's comment density unchanged on these tasks: no arm runs the
+review loop through which the toolkit also shapes comments.
+
+This file's "Why local only — never CI" section applies: every run is a paid
+`claude -p` session. The bench needs the Python floor stated in the
+repository root's `README.md` § "Requirements", git 2.32 or newer,
+Claude Code 2.1.271 or newer and `direnv` on `PATH`. Run it through
+`scripts/venv-run.sh python3`. Results are not a publication instrument,
+because the runner refuses no wider corpus. The design lives in
+`.claude/plans/docstring-verbosity-experiment.md`.
+
+### Usage
+
+```bash
+# Mine a source repo's commits into a task set (spends nothing):
+scripts/venv-run.sh python3 evals/run_replay_bench.py tasks \
+  --source-repo <repo top level> --trusted-author <email> --name <task-set>
+
+# Probe each repo's account; spends nothing:
+scripts/venv-run.sh python3 evals/run_replay_bench.py preflight --tasks <task-set>
+
+# One block of one run per arm on one task; run it once per account:
+scripts/venv-run.sh python3 evals/run_replay_bench.py smoke \
+  --tasks <task-set> --task-id <id>
+
+# The campaign, block by block, under spend stops:
+scripts/venv-run.sh python3 evals/run_replay_bench.py run \
+  --tasks <task-set> --k 3 --cumulative-stop-usd <usd>
+
+# Print a campaign's summary to the terminal (writes no file):
+scripts/venv-run.sh python3 evals/run_replay_bench.py summarize --campaign-id <id>
+```
+
+`--local-dir` and `--fixture-git-timeout-s` go before the subcommand.
+`--fixture-git-timeout-s` bounds every git call that builds a fixture or reads
+it after a run. `smoke` and `run` also take `--model-id`, `--budget-cap-usd`,
+`--timeout-s` (a positive whole number of seconds) and `--direnv-timeout-s`, and
+`preflight` takes
+`--direnv-timeout-s`. `run` also takes `--account-stop-usd`, which caps each
+account and defaults to the cumulative stop, `--allow-early-stop`, `--arm`
+(repeatable, default every arm), `--seed` and `--campaign-id`. Every spend
+stop and every `summarize` spend line counts one campaign's spend file, so
+spend from `smoke` or another campaign on the same account is not in them.
+`summarize` takes `--budget-cap-usd`, which prices an unparsed spend line only
+when the campaign's manifest pins no usable cap.
+
+Exit codes: 0 for done, 1 for a run that stopped short, 2 for a refusal
+before the first launch. An interrupt exits 128 plus the signal number. A held
+run-store lock exits 1. Two commands have further rules:
+
+- `smoke` exits 0 only when its last line reads `instrument: ok`. A failed
+  condition or a refusal exits 2. So does a spend-file append that fails after
+  a launch, and so does a block-end environment that differs from the
+  block-start one or cannot be read.
+- `run` exits 2 when a block-start read of the environment or the live
+  checkouts fails after block 1, and spends nothing for that block, since none
+  of its runs has launched.
+- `run` halts with exit 1 when a block-start read differs from the pinned
+  environment.
+
+### Tasks
+
+`tasks` walks each source repo's first-parent commits, newest first, and keeps
+the commits that qualify as tasks. Each source repo must be a git repository's
+top level. The brief is the commit message, plus the subjects of the merged
+commits for a merge commit. `--name` must not name an existing
+task set, because a campaign pins its task set by hash and refuses to resume
+once the set changes.
+
+- `--trusted-author` is required and repeatable. It reads raw author
+  identities, so a `.mailmap` cannot widen it.
+- `--rev`, `--max-count`, `--max-tasks`, `--max-files`, `--min-code-lines`,
+  `--max-code-lines` and `--max-prompt-chars` bound the selection. An integer
+  limit below 1 is refused.
+- `--max-base-mb` bounds the base tree's blobs, in units of 10^6 bytes, and
+  `--max-base-entries` bounds its entry count. They default to 100 and 12,500.
+- `tasks` prints the kept and skipped counts by reason, the largest kept tasks
+  by base-tree size and by entry count, and every raw author and committer
+  identity among the commits examined, so you can see whom the trust list
+  leaves out.
+- Raise `--fixture-git-timeout-s` on a machine where healthy fixture builds
+  time out. Raise it too when `--max-base-entries` goes past its default,
+  since larger trees build more slowly.
+- `tasks` refuses a partial clone, because git would fetch a missing object
+  over the network with no timeout. It also refuses a repo whose
+  `info/attributes` holds the text `export-ignore` or `export-subst`. It skips,
+  under the reason `export-attributes`, a commit whose parent tree holds a
+  `.gitattributes` file at any depth containing either text, since `git archive`
+  honors both attributes. Both checks match the text anywhere in the file, a
+  comment or an unset form included. It skips, under the
+  reason `claude-dir-file`, a commit whose parent tree holds a regular file
+  named `.claude` at the root, matched case-insensitively, since the fixture
+  build writes `.claude/agents` beneath that name.
+
+The trusted-author list is risk reduction, not containment: it limits how much
+third-party text reaches an agent that holds Bash. Its limits:
+
+- An author email is a string the committer sets.
+- Under a squash-merge host the author is the pull request's author, so the
+  list leaves out outside contributors.
+- Under a rebase or merge-commit workflow, an outside branch can carry a
+  trusted email.
+- The check on a brief's own delimiter lines stops no injected instruction
+  that does not need to close its block.
+
+### Account preflight and launch environment
+
+Every command that launches probes each source repo's account first, and
+`preflight` runs only that step. The probe runs `direnv exec <repo>` from a
+scratch directory and reads two things: `CLAUDE_CONFIG_DIR` (else
+`~/.claude`) and the names of the variables in the probe's environment. Two
+repos that resolve to one config dir are one account, with one smoke pass. The
+account's config dir needs `CLAUDE.md`, `agents/code-writer.md`, and a
+`settings.json` that registers a `SessionStart` command ending in
+`capture-session-id.sh`.
+
+A readiness check then runs `claude --version` behind the exact launch prefix.
+It shows that `claude` resolves and starts, and that its version meets the
+floor. It does not show that the account is logged in, so `smoke` is the first
+check that does. `--direnv-timeout-s` bounds each probe, since an `.envrc` that
+fetches a secret can need longer than the default. A probe failure prints the
+repo and `exit <n>` with a hint to run `direnv exec <repo> true` in a
+terminal, a timeout, or the OS error. It never prints the child's output.
+
+- The launch runs behind `/usr/bin/env -i` with an allowlisted environment:
+  `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`,
+  `LC_CTYPE`, the proxy variables in upper and lower case,
+  `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`, plus `CLAUDE_CONFIG_DIR` when the
+  probe found it. Allowlisted values come from the runner's own shell. A
+  differing value that the source repo's `.envrc` sets for an allowlisted name
+  is ignored, and the name is not listed as dropped. Nothing else from the
+  `.envrc` reaches the child.
+- The runner refuses a `PATH` with an empty or relative entry, which would let
+  `env` or the agent resolve a command from the fixture.
+- `preflight` prints, as names only, every variable the launch drops, ambient
+  ones from the runner's own shell included. It leaves out direnv's own
+  `DIRENV_` variables. A dropped provider-selecting variable can leave a launch
+  authenticating through the config dir's own login instead of the route you
+  meant, and the bench cannot pass such a variable through.
+  - Read that list per account with `preflight` before the first `smoke`.
+    `smoke` is the first paid launch, and `smoke` and `run` launch right after
+    printing the list, with no pause.
+  - Do not launch an account whose list holds a provider-selecting variable.
+  - Read the list again after any `.envrc` change. The list is not pinned in
+    the campaign manifest, so a resume does not catch an `.envrc` edit.
+- `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws`
+  and `~/.ssh` stay reachable from the agent's Bash and are not routed by
+  account.
+- `HOME` and `SHELL` pass, so the agent's Bash may re-export variables the
+  allowlist dropped from shell startup files. This is unverified. The
+  allowlist bounds the `claude` process's environment, not the agent's Bash.
+- The runner assumes a single-user machine: each allowlisted value, a proxy
+  URL's credentials included, sits in `env`'s argv until `env` execs `claude`.
+- Both arms may read every agent file (`agents/*.md`) and skill file
+  (`skills/<name>/SKILL.md`) under the config dir and under `$HOME/.claude`,
+  the second a root under every account, through exact `Read` allow entries.
+  On an install where stow linked `agents/` or `skills/` file by file into a
+  directory that already existed, that includes files the config checkout does
+  not hold.
+- Preflight and each attempt refuse a generated path that holds whitespace, a
+  control character or a pattern character, since the entry could not be
+  written exactly. A config checkout under such a path therefore refuses every
+  account.
+- `bare` fixtures exclude the account's rule files through
+  `claudeMdExcludes`. A machine with a managed-policy `CLAUDE.md`, or an
+  account whose `CLAUDE.md` includes another file, fails every `bare` run.
+- Both arms run with `--permission-mode acceptEdits`. A Bash command outside
+  its auto-approved set and the account's allow rules is denied in both arms,
+  so a replay agent cannot run, for example, a test suite the account does not
+  allow. The permission-denial count in `smoke` and `summarize` shows how
+  often.
+
+### Smoke
+
+`run` needs a passing `smoke` on each account, under the account's current
+environment (CLI version and config commit), the run's model and every arm it
+runs. A CLI update, a `git pull` of the config checkout, or a new arm therefore
+calls for a new `smoke`.
+
+Operating rule: the config checkout stays at the pinned commit, with no
+uncommitted edits, from the first `smoke` through the last `run` block. The
+`toolkit` arm reads the checkout's toolkit files live, so an edit to one
+changes what the arm runs. The review bench's operating rule for its own
+ambient config checkout, in the Frozen conditions and invalidation section,
+states the same constraint.
+
+`smoke` runs one block of one run per arm (`toolkit` and `bare`) on the task
+you name, and takes no `--k`. It prints its nominal cost ceiling before the
+first launch. For each run it prints the status, instruction loads by class,
+the first-turn prompt size, the Bash commands, out-of-fixture paths, the
+permission-denial count, the allow-list Reads, the change's metrics, the cost,
+the fixture-build seconds and the wall clock. A smoke run removes the
+account's earlier smoke-pass record before it launches, and a pass writes a
+new one.
+
+The `smoke` task must modify a file the base tree holds that one of the
+account's rules matches, because the `toolkit` run's rule load is the positive
+control. An account whose history keeps no such task needs a larger
+`--max-count` or another source repo.
+
+Each failed condition prints as `failed: <name>: <text>`, and the last line
+names the first one. A run that ended missing prints
+`failed: <missing reason>: <arm> run missing`, for any reason in the Retry
+section below. These names can appear:
+
+- `instrument-missing`: the instruction-load log is absent or empty, or it
+  lacks a load the check expects. Those are the dispatcher's `session_start`
+  load of the account's `CLAUDE.md` and, for the block calibration, a rule
+  load in the `toolkit` subagent. A `toolkit` run that reads no rule-matching
+  file fails it too, so check the printed loads and the transcript before
+  blaming the hook.
+- `arm-leak`: a `bare` run loaded or reached a file it should not have. That
+  is a subagent instruction load outside the fixture, a dispatcher load other
+  than the account's `CLAUDE.md`, or a Read or Bash command that reaches the
+  account's toolkit files.
+- `arm-config-missing`: the `toolkit` subagent's first-turn prompt, minus the
+  `bare` one's and minus the agent-body difference, is smaller than the margin
+  that the account's `CLAUDE.md` and rule files should add. A null prompt size
+  fails it too.
+- `read-grant-denied`: a `toolkit` Read of a path on the allow list was denied.
+- `read-grant-unexercised`: no `toolkit` Read of an allow-list path ran, so the
+  grant shows nothing. A denied Read of a toolkit file off the list prints by
+  name and fails nothing.
+
+A `bare` Read of a listed path fails `arm-leak`, never `read-grant-denied`.
+`smoke` also prints an exclude note: whether the `bare` run read a file that
+triggered a rule load in the `toolkit` run. The note never gates a pass.
+
+The residual: a `bare` run that reads no rule-matching file passes without
+testing the exclude. The block calibration's body term is a character-count
+estimate, so a gap close to the margin is weak evidence either way.
+
+### Run
+
+`run` pins a manifest (task set, arms, `--k`, `--seed`, model,
+`--budget-cap-usd`, `--timeout-s`, each repo's account and each account's CLI
+version and config commit) at its first start. A resume passes `--campaign-id`
+again. Before the first launch `run` prints the run count and the campaign's
+nominal ceiling. It exits 2 when:
+
+- the task set, arms, `--k`, `--seed`, model, `--budget-cap-usd` or
+  `--timeout-s` differs, or the manifest lacks a pinned key or has the wrong
+  shape. The refusal names a new `--campaign-id`;
+- a repo-to-account pin, the CLI version or the config commit changed, or the
+  manifest cannot be read or parsed. The refusal does not name a new
+  `--campaign-id`;
+- one block's ceiling exceeds either stop;
+- the campaign's ceiling exceeds `--cumulative-stop-usd`, unless
+  `--allow-early-stop` accepts that the campaign will stop early.
+
+`run` reads and writes the manifest only while it holds the campaign's lock,
+and writes it only after those ceiling checks pass. A campaign refused for its
+ceiling therefore pins nothing, and a rerun with a lower `--k` starts fresh.
+The `campaign <id>` line, the uncharged-attempts line, a resume's spend line,
+the ceiling line and each progress line are flushed as they print, so a
+detached run's redirected output shows them as they happen.
+
+After each block `run` prints one progress line: the task, each arm's `ok` and
+`missing` counts, the arms with no valid run and their reasons, the tasks
+dropped per arm since this invocation started, the block's spend, and the
+cumulative and per-account spend against their stops. A halt prints
+`halted: <reason>` and exits 1. Before each block `run` halts if the block's
+ceiling would carry the cumulative total or the block's account past its stop.
+
+A block's end environment reading that fails is read once more. A reading that
+still cannot be read halts `run` as a failed read, not as drift. A block whose
+end environment reading differs from the campaign's reference reading halts
+`run` as drift. A block whose records or complete mark cannot be written, such
+as on a full disk, halts `run` too. Each of these halts leaves the block
+unmarked, so `summarize` leaves it out of the arm counts and the paired
+difference, and a resume reruns the block and pays for it again.
+
+After each block the per-arm stop looks for an arm with no valid run:
+
+- The first attempt that ends under an instrument reason halts `run` at its
+  block's end. It never retries, and the block is already complete. At most
+  that task is lost. A resume goes on past the block only while the CLI
+  version and the config checkout's commit still match the manifest. A fix
+  that changes either one makes the resume exit 2. That fix needs a new
+  `--campaign-id`, which runs every block again and pays for it again. The
+  config checkout takes no uncommitted edits, which the check cannot see.
+- Any other failed block is task-specific. It is marked complete, and
+  `summarize` leaves its task out of the pairs.
+- Two task-specific failed blocks in a row halt `run`. A resume goes on past
+  both, and those two tasks are lost from the sample. Exit 1 then wins over the
+  exit 0 that a lone failed last block gets.
+- A persistent failure meets the pre-block spend stops and the two-in-a-row
+  halt.
+
+Two residuals: a usage-limit, auth or overload event that fails every run of
+two blocks drops two tasks no agent really tried. Failures on alternating
+tasks never make two in a row, so only the spend stops, `--cumulative-stop-usd`
+and `--account-stop-usd`, bound them.
+
+The local dir holds task sets, run records and diffs. It defaults to
+`evals/replay_bench/.local/` in the checkout the runner runs from, and removing
+a linked worktree deletes it, so `--local-dir` can name another checkout's. The
+path must be absolute, equal to its own resolved path, end in `.local`, and be
+ignored by the git work tree that holds it. A resume needs the same `TMPDIR` as
+the run it resumes, since its sweep of abandoned fixtures matches them only
+directly under the system temp dir. After a hard kill, wait at least
+`--timeout-s` before resuming, since a surviving `claude` child can still be
+writing. A hard-killed `smoke` has no resume, and a rerun sweeps nothing: its
+fixtures and session stores stay until someone removes them by hand.
+
+### Retry and missing reasons
+
+A failed attempt retries once on a fresh fixture, then the run is recorded
+missing with its reason.
+
+- `fixture-error` (building the fixture or generating its exclude or Read
+  allow list raised) and `analysis-error` (the diff, the classifier or a
+  check raised after the launch, or a post-run git call failed) never retry.
+- `launch-error`: a launch call that raises `OSError`. The attempt is charged
+  at the per-run cap and retried once. It is not an instrument reason.
+- The instrument reasons are `arm-leak`, `instrument-missing`,
+  `instrument-log-invalid`, `fixture-instruction-load` and
+  `account-hooks-missing`. An attempt that ends under one never retries, since
+  a clean second attempt would hide evidence about the instrument.
+- One attempt can meet several reasons, and precedence has two tiers:
+  - Of the reasons that reach the checks, `arm-leak` and
+    `fixture-instruction-load` outrank every non-instrument reason, so a timed-out attempt whose log shows a `bare` leak records
+    `arm-leak`.
+  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing`
+    outrank them only when the run reached its end, because a run that never
+    finished leaves a log that is often absent or torn.
+  - A log with more than one subagent `agent_id` is `instrument-log-invalid`,
+    unless the run also failed `extra-dispatcher-tool-call`. A second dispatch
+    is what adds the second `agent_id`, so that reason stands and the run
+    retries once.
+  - `launch-no-output` and `launch-error` return before the instrument checks
+    run, so they keep their own reasons. So does `analysis-error` when a check
+    raises before the instrument reasons are computed.
+  - A timeout, `no-result-event` and `session-store-not-found` yield only to
+    `arm-leak` and `fixture-instruction-load`.
+  - `result-error`, `budget` and `api-error-final-record` count as reaching the
+    end.
+
+### Accepted residuals
+
+- **Run checks.** The check on a run's Bash commands scans command text for
+  guarded paths. It does not parse or execute the shell. These are accepted:
+  - A guarded path that appears only as text, in a heredoc body or a quoted
+    search pattern, is a false hit:
+    - A toolkit file's path in a `bare` run fails `arm-leak` and halts `run` at
+      the block's end.
+    - Any other guarded path fails `out-of-fixture-path` on either arm. That is
+      a task-specific failed block.
+  - The scan misses `grep -r x ~`, which names a directory above a guarded
+    tree, and, on a line `shlex` can split, a path inside a `bash -c` string
+    that whitespace sets off from any quote character or shell operator.
+  - Read, Grep and Glob targets are checked more narrowly than Bash command
+    text, which does guard the local dir and other fixtures:
+    - A target fails the run when it is a live checkout's changed file, the
+      account's `projects/` tree, a toolkit file in a `bare` run (`arm-leak`),
+      or a path that cannot be resolved. A denied call to one fails it too.
+    - Any other out-of-fixture target is recorded as an out-of-session path and
+      fails nothing. Examples are the local dir, a sibling run's fixture and a
+      credential file under `$HOME`.
+  - A Read of `<live>/.git` and of a linked worktree's common git dir is not
+    caught.
+  - The denial marker was verified on one Claude Code build.
+
+  The checks detect an honest agent's leak after the fact and do not contain a
+  hostile one. The module docstring of `evals/replay_bench/checks.py` lists the
+  shapes the Bash scan cannot see. They include a path relative to a directory
+  the command changed into, a path built from a variable other than `$HOME` or
+  `$PWD`, a glob, a case variant of a path on a case-insensitive volume, and a
+  Bash write outside the fixture, which is never an `out-of-fixture-write`.
+- **Uncommitted toolkit edits.** The environment drift check compares the CLI
+  version and the config checkout's `HEAD` commit. It cannot see an uncommitted
+  edit to a toolkit file the `toolkit` arm reads live.
+- **Environment names.** A names-only listing of a replay agent's Bash
+  environment held eight names that `LAUNCH_ENV_ALLOWLIST` in
+  `evals/replay_bench/launch.py` does not pass: `AI_AGENT`, `CLAUDE_EFFORT`,
+  `CLAUDE_PID`, `COREPACK_ENABLE_AUTO_PIN`, `GIT_EDITOR`,
+  `NoDefaultCurrentDirectoryInExePath`, `PYTEST_ADDOPTS` and
+  `__CF_USER_TEXT_ENCODING`. Whether Claude Code or the shell sets each one is
+  unverified. A shell startup file may re-export a name the allowlist drops,
+  which is also unverified. No runner check reads the agent's Bash environment,
+  and nothing in the bench settles either question.
+- **Charged cost.** The charged cost is the dispatcher's `total_cost_usd`.
+  Whether it covers the subagent's spend is unverified, so the spend stops may
+  undercount. An attempt with no usable cost figure, such as a timeout, is
+  charged at `--budget-cap-usd`, a nominal figure and not a proven bound.
+- **Hard kills.** After each hard kill, such as SIGKILL, an out-of-memory kill
+  or a power loss, up to one launched attempt per worker thread
+  (`run_skill_evals.DEFAULT_WORKERS`) may go uncharged. The undercount adds up
+  over kills, each adding at most that many times the per-run cap, itself a
+  nominal figure. A resume prints how many swept attempts it did not charge.
+- **Orphans and interrupts.** A descendant an agent leaves running after a
+  normal end of stream, or a grandchild of a hung `direnv` probe, can outlive
+  its attempt. An interrupt can take as long as one fixture build.
+- **Instrument log.** The instrument log's absolute path appears in the
+  child's `--settings` argv.
+- **Containment.** Nothing contains a replay agent beyond `acceptEdits`'
+  working-directory scope, the account's permission rules and the runner's
+  Read grants. A steered agent can read or write anything those allow. Run the
+  bench only on a repository whose branches were all written by you or by
+  someone you trust.
+- **Account files.** A replay adds to account files that already exist and
+  leaves them: `.code-writer-self-review.log`, `.code-writer-self-review.d`
+  and `.session-config-keys-log.jsonl`. It also leaves one `sessions/<pid>`
+  file per launch, as every Claude Code session does. For four hours after a
+  campaign, `post-crash-sessions.py` may list those replay attempts.

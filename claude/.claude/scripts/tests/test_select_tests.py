@@ -532,6 +532,7 @@ _HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
     ("TRANSCRIPT_COST_COUNTS_TEST_PATH", "test_every_tracked_agent_stem_matches_the_charset"),
     ("TRANSCRIPT_REDACTION_TEST_PATH", "test_real_agents_directory_allowlists_code_writer"),
     ("MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST", "test_staff_backend_engineer_declared_model_is_sonnet"),
+    ("REPLAY_BENCH_ARMS_TEST_PATH", "test_the_real_file_yields_the_fields_the_bare_writer_copies"),
 )
 
 
@@ -852,6 +853,23 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, _mod.SELECT_TESTS_TEST_PATH}
 
+    def test_replay_bench_arms_test_change_also_selects_its_own_domain_and_test_select_tests(self):
+        """evals/test_replay_bench_arms.py lies outside the claude/ and plugins/ test trees, so
+        _is_test_source_change does not select test_select_tests.py for it; a standalone row does."""
+        result = _mod.select_pytest_targets([_mod.REPLAY_BENCH_ARMS_TEST_PATH])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
+
+    @pytest.mark.parametrize(("target_attribute", "_reader_test_name"), _HAND_AUDITED_AGENTS_DIR_READERS)
+    def test_a_hand_audited_agents_dir_reader_change_selects_test_select_tests(
+        self, target_attribute, _reader_test_name,
+    ):
+        """test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self reads each listed file by
+        path, so an edit to one must select test_select_tests.py or a scoped run misses a renamed reader."""
+        result = _mod.select_pytest_targets([getattr(_mod, target_attribute)])
+        assert result.is_full_suite is False, f"{target_attribute} selects the full suite, which hides a missing row"
+        assert _mod.SELECT_TESTS_TEST_PATH in result.target_paths
+
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
         """The recall scorer's own test file selects itself and every other test in
         EVALS_TEST_TARGETS rather than falling through to the full suite."""
@@ -963,10 +981,50 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
 
+    def test_replay_bench_runner_change_selects_the_replay_bench_target_set(self):
+        """The runner joins the scanned set of the guards in test_select_tests.py, so a scoped run
+        after a runner edit must include that file."""
+        result = _mod.select_pytest_targets([_mod.REPLAY_BENCH_RUNNER])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
+
     def test_replay_bench_test_glob_member_change_selects_itself(self):
         result = _mod.select_pytest_targets(["evals/test_replay_bench_tasks.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB}
+
+    def test_every_replay_bench_test_file_on_disk_selects_the_replay_tests(self):
+        """The helper-only *_support.py modules hold no test of their own. A narrowed
+        `_is_replay_bench_change` sends an edit to one to the full-suite fallback, which the
+        `is_full_suite is False` assertion catches. A narrowed REPLAY_BENCH_TEST_GLOB is the case that would
+        leave replay tests unselected, and the selected targets are expanded on disk, so it fails here too."""
+        evals_dir = _REPO_ROOT / "evals"
+        replay_test_files = sorted(evals_dir.glob("test_replay_bench*.py"))
+        assert {path.name for path in replay_test_files} >= {
+            "test_replay_bench_runner.py", "test_replay_bench_runner_support.py",
+            "test_replay_bench_checks_support.py", "test_replay_bench_tasks_limits.py",
+        }
+        for changed_file in (*replay_test_files, evals_dir / "conftest.py"):
+            relative_path = changed_file.relative_to(_REPO_ROOT).as_posix()
+            result = _mod.select_pytest_targets([relative_path])
+            assert result.is_full_suite is False, relative_path
+            for replay_test_file in replay_test_files:
+                replay_test_path = replay_test_file.relative_to(_REPO_ROOT).as_posix()
+                assert _selection_covers(result.target_paths, replay_test_path), (relative_path, replay_test_path)
+
+    def test_every_replay_bench_package_module_on_disk_selects_the_replay_tests(self):
+        module_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
+        assert {path.name for path in module_files} >= {"tasks.py", "runner.py", "checks.py"}
+        replay_test_paths = [
+            path.relative_to(_REPO_ROOT).as_posix() for path in sorted((_REPO_ROOT / "evals").glob("test_replay_bench*.py"))
+        ]
+        assert replay_test_paths
+        for module_file in module_files:
+            relative_path = module_file.relative_to(_REPO_ROOT).as_posix()
+            result = _mod.select_pytest_targets([relative_path])
+            assert result.is_full_suite is False, relative_path
+            for replay_test_path in replay_test_paths:
+                assert _selection_covers(result.target_paths, replay_test_path), (relative_path, replay_test_path)
 
     def test_replay_bench_scripts_dependency_change_also_selects_replay_bench_tests(self):
         """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REPLAY_BENCH_TEST_GLOB:
@@ -990,9 +1048,10 @@ class TestSelectPytestTargets:
         transitive first-party import closure walked from a fixed set of
         seed files, rather than a second hand-written list -- a fixed
         expected list would tolerate the same added-import-not-added-to-the-
-        frozenset drift this row exists to catch. The seed list itself is
-        not derived from the repo: a new review_bench entry point or sibling
-        eval script needs its own addition to `pending` below."""
+        frozenset drift this row exists to catch. The seeds are every
+        `evals/run_*.py` and `evals/measure_*.py` entry point on disk and the
+        two bench packages' modules, so a new entry point is walked without
+        an edit here."""
         evals_dir = _REPO_ROOT / "evals"
         scripts_dir = _REPO_ROOT / _mod.SCRIPTS_DIR
 
@@ -1019,13 +1078,15 @@ class TestSelectPytestTargets:
                         names.update(f"{module}.{alias.name}" for alias in node.names)
             return names
 
+        entry_points = sorted([*evals_dir.glob("run_*.py"), *evals_dir.glob("measure_*.py")])
+        assert {path.name for path in entry_points} >= {
+            "run_review_bench.py", "run_replay_bench.py", "measure_subagent_model_resolution.py",
+            "measure_explore_recall.py", "measure_main_session_rule_adherence.py",
+        }, "the entry-point globs no longer find the entry points the walk must start from"
         pending = [
             *(evals_dir / "review_bench").glob("*.py"),
-            evals_dir / "run_review_bench.py",
-            evals_dir / "measure_subagent_model_resolution.py",
-            evals_dir / "measure_explore_recall.py",
             *(evals_dir / "replay_bench").glob("*.py"),
-            evals_dir / "measure_main_session_rule_adherence.py",
+            *entry_points,
         ]
         reached: set[Path] = set()
         while pending:
@@ -1057,8 +1118,8 @@ class TestSelectPytestTargets:
     def test_replay_bench_files_import_by_absolute_path(self):
         """The import-closure test above maps every relative import to review_bench, so a relative
         import in the replay package would be attributed to the wrong package."""
-        replay_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
-        assert {path.name for path in replay_files} >= {"tasks.py", "comment_metrics.py"}
+        replay_files = [*sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py")), _REPO_ROOT / _mod.REPLAY_BENCH_RUNNER]
+        assert {path.name for path in replay_files} >= {"tasks.py", "comment_metrics.py", "run_replay_bench.py"}
         for replay_file in replay_files:
             assert self._relative_import_line_numbers(replay_file.read_text()) == [], replay_file.name
 
@@ -2472,6 +2533,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.CHANGELOG_MD,
     _mod.SKILL_EVALS_RUNNER,
     _mod.REVIEW_BENCH_RUNNER,
+    _mod.REPLAY_BENCH_RUNNER,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL,
@@ -2502,6 +2564,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TRANSCRIPT_REDACTION_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    _mod.REPLAY_BENCH_ARMS_TEST_PATH,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
     *_mod.CURSOR_ADAPTER_READING_TESTS,
     _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
