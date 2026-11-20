@@ -478,7 +478,7 @@ Column legend:
 - Fail direction on resolution failure: **keep every item**. The
   `_config_enabled` statuses 2, 3 and 4 make the archive `unavailable`, so a
   cleanup script removes no worktree and exits 1. On statuses 3 and 4 the ledger
-  sweep keeps every due ledger file, warns, and leaves its exit status unchanged.
+  sweep keeps every due ledger file, warns, and does not change its exit status.
   Status 2 never reaches the sweep, because `review-ledger.sh` exits 2 at its
   config-directory resolution first.
 - Fail direction on a malformed or unreadable enabling line: **keep every
@@ -487,7 +487,7 @@ Column legend:
   exist or was read and holds no offending line.
   `docs/agent-branch-records.md` § "Fail direction" holds the residuals, and
   the reason table's last row holds the condition list. The ledger sweep keeps
-  every due ledger file, warns, and leaves its exit status unchanged.
+  every due ledger file, warns, and does not change its exit status.
 - Check scope: the check does not run when `_config_enabled` reads the key as
   on, so a `= true` line followed by a malformed duplicate still archives.
 - Fail direction on an internal resolver failure of `_config.sh`:

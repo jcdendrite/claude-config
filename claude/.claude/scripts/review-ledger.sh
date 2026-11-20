@@ -349,8 +349,9 @@ _sweep_archive_ledger_file() {
 # append path passes the fixed _LEDGER_SWEEP_FLOOR_DAYS floor directly.
 # clear-stale resolves _ledger_sweep_window_days' dynamic settings.json read
 # itself and passes the result. REPORT=1 prints per-file and summary lines
-# (clear-stale). REPORT=0 prints, of its own, only the one stderr line below
-# (the best-effort sweep append performs on every invocation).
+# (clear-stale). REPORT=0 prints, of its own, only the one `review-ledger.sh:
+# retention sweep kept` stderr line (the best-effort sweep append performs on
+# every invocation).
 # With the agent_branch_records key on, a regular .jsonl file is archived before
 # removal and stays when it cannot be.
 # See docs/agent-branch-records.md § "Ledger copies".
