@@ -80,7 +80,8 @@ def _utc_stamp(mtime: float) -> str:
 
 def _cp_shim_failing_first_call(log: Path, later_calls: str) -> str:
     quoted_log = shlex.quote(str(log))
-    return f'printf \'%s\\n\' "$*" >> {quoted_log}\n[ "$(wc -l < {quoted_log})" -eq 1 ] && exit 1\n{later_calls}'
+    log_call = f'printf \'%s\\n\' "$*" >> {quoted_log}\n'
+    return CP_OPERANDS_NOTE + log_call + f'[ "$(wc -l < {quoted_log})" -eq 1 ] && exit 1\n{later_calls}'
 
 
 def _sweep_line(kept: int, reason: str) -> str:
@@ -356,7 +357,7 @@ class TestCopyFailures:
         stale_files = [_plant_stale(isolated_home, f"{digit * 64}.stale.jsonl") for digit in "012"]
         log = tmp_path / "cp_calls.log"
         env = real_binary_shim_env(
-            tmp_path / "stub-bin", {"cp": f'printf \'%s\\n\' "$*" >> {shlex.quote(str(log))}\nexit 124'}
+            tmp_path / "stub-bin", {"cp": CP_OPERANDS_NOTE + f'printf \'%s\\n\' "$*" >> {shlex.quote(str(log))}\nexit 124'}
         )
 
         result = _run(_append_args(), cwd=feature_repo, home=isolated_home, extra_env=env, timeout=60)

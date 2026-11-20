@@ -3246,8 +3246,12 @@ def install_unwarmed_stub_guard(monkeypatch: pytest.MonkeyPatch, basetemp: Path)
     monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
 
 
-# Prefix for a `cp` shim body that reads its operands by position.
-CP_OPERANDS_NOTE = "# The lib calls cp -- SRC DST, so $2 is the source and $3 the copy.\n"
+# Prefix for a `cp` shim body that reads its operands by position and applies only to ledger archive copies.
+# Any other `cp` (such as the capped copy of the git index) runs the real binary untouched.
+CP_OPERANDS_NOTE = (
+    "# The lib calls cp -- SRC DST, so $2 is the source and $3 the copy.\n"
+    'case "$3" in */review-narrative-ledger/*) ;; *) exec "$REAL" "$@" ;; esac\n'
+)
 
 
 def real_binary_shim_env(shim_dir: Path, tool_bodies: dict[str, str]) -> dict[str, str]:
