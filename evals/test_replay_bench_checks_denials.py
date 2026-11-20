@@ -1,0 +1,124 @@
+"""Tests for how evals/replay_bench/checks recognizes a denied tool call in a transcript entry. Shared helpers live
+in test_replay_bench_checks_support.
+"""
+from __future__ import annotations
+
+import pytest
+from replay_bench import checks
+from test_replay_bench_checks_support import (
+    _assistant,
+    _bare,
+    _path_check,
+    _tool_use,
+    _transcript,
+    denied_result_entry,
+)
+
+
+class TestEntryLevelDenialShape:
+    """The shape a `claude -p --permission-mode acceptEdits` main session records: markers on the user entry."""
+
+    def _denied_transcript(self, tmp_path, name, tool_input, path):
+        return _transcript(tmp_path, [_assistant([_tool_use("toolu_1", name, tool_input)]), denied_result_entry("toolu_1", path)])
+
+    def test_a_denied_write_outside_the_fixture_is_counted_and_adds_no_failure(self, checks_world, tmp_path):
+        outside = str(checks_world.root / "elsewhere.txt")
+        transcript = self._denied_transcript(tmp_path, "Write", {"file_path": outside}, outside)
+        assert transcript.permission_denials == 1
+        assert [call.denied for call in transcript.tool_calls] == [True]
+        assert _path_check(checks_world, transcript).failure_reasons == ()
+
+    def test_an_undenied_entry_fails_out_of_fixture_write(self, checks_world, tmp_path):
+        outside = str(checks_world.root / "elsewhere.txt")
+        entry = denied_result_entry("toolu_1", outside)
+        for key in ("toolDenialKind", "permissionDecision"):
+            del entry[key]
+        transcript = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", "Write", {"file_path": outside})]), entry])
+        assert transcript.permission_denials == 0
+        assert _path_check(checks_world, transcript).failure_reasons == (checks.REASON_OUT_OF_FIXTURE_WRITE,)
+
+    @pytest.mark.parametrize("keys", [("toolDenialKind",), ("permissionDecision",)], ids=["denial-kind", "decision"])
+    def test_either_entry_marker_alone_denies_the_call(self, checks_world, tmp_path, keys):
+        outside = str(checks_world.root / "elsewhere.txt")
+        entry = denied_result_entry("toolu_1", outside)
+        for key in {"toolDenialKind", "permissionDecision"} - set(keys):
+            del entry[key]
+        transcript = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", "Write", {"file_path": outside})]), entry])
+        assert [call.denied for call in transcript.tool_calls] == [True]
+
+    @pytest.mark.parametrize("override", [
+        {"toolDenialKind": ""}, {"toolDenialKind": 7}, {"permissionDecision": {"decision": "allow"}},
+        {"permissionDecision": "reject"}, {"toolDenialKind": "interrupted"}, {"toolDenialKind": "future-unknown-kind"},
+        {"toolDenialKind": ["permission-rule"]}, {"toolDenialKind": {"kind": "permission-rule"}},
+    ], ids=[
+        "empty-kind", "numeric-kind", "allow-decision", "string-decision", "interrupted", "unknown-kind",
+        "unhashable-list-kind", "unhashable-dict-kind",
+    ])
+    def test_a_marker_of_the_wrong_value_or_type_denies_nothing(self, tmp_path, override):
+        entry = denied_result_entry("toolu_1", "/tmp/x.txt")
+        entry.pop("toolDenialKind")
+        entry.pop("permissionDecision")
+        entry.update(override)
+        transcript = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", "Write", {"file_path": "/tmp/x.txt"})]), entry])
+        assert transcript.permission_denials == 0
+
+    @pytest.mark.parametrize("kind", sorted(checks.NEVER_EXECUTED_DENIAL_KINDS))
+    def test_each_known_never_executed_kind_denies_the_call(self, tmp_path, kind):
+        entry = denied_result_entry("toolu_1", "/tmp/x.txt")
+        entry["toolDenialKind"] = kind
+        del entry["permissionDecision"]
+        transcript = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", "Write", {"file_path": "/tmp/x.txt"})]), entry])
+        assert [call.denied for call in transcript.tool_calls] == [True]
+
+    def test_the_known_kinds_are_the_four_observed_never_executed_ones(self):
+        assert {
+            "user-rejected", "permission-rule", "automode-blocked", "automode-unavailable",
+        } == checks.NEVER_EXECUTED_DENIAL_KINDS
+
+    @pytest.mark.parametrize("kind", ["interrupted", "future-unknown-kind"])
+    def test_an_interrupted_or_unknown_kind_fails_as_an_executed_write(self, checks_world, tmp_path, kind):
+        outside = str(checks_world.root / "elsewhere.txt")
+        entry = denied_result_entry("toolu_1", outside)
+        entry["toolDenialKind"] = kind
+        del entry["permissionDecision"]
+        transcript = _transcript(tmp_path, [_assistant([_tool_use("toolu_1", "Write", {"file_path": outside})]), entry])
+        assert transcript.permission_denials == 0
+        assert _path_check(checks_world, transcript).failure_reasons == (checks.REASON_OUT_OF_FIXTURE_WRITE,)
+
+    def test_a_denied_bash_command_fails_no_path_check(self, checks_world, tmp_path):
+        leak = str(checks_world.live_checkout / "src" / "app.py")
+        transcript = self._denied_transcript(tmp_path, "Bash", {"command": f"cat {leak}"}, leak)
+        result = _path_check(checks_world, transcript)
+        assert result.failure_reasons == ()
+        assert result.bash_commands == (f"cat {leak}",)
+
+    def test_a_denied_toolkit_read_is_a_bare_reach(self, checks_world, tmp_path):
+        reviewer = str(checks_world.config_dir / "agents" / "reviewer.md")
+        transcript = self._denied_transcript(tmp_path, "Read", {"file_path": reviewer}, reviewer)
+        assert transcript.tool_calls[0].denied
+        reasons = checks.toolkit_reach_reasons(
+            transcript, _bare(checks_world), toolkit=checks_world.toolkit, fixture_dir=checks_world.fixture_dir,
+        )
+        assert reasons == (checks.REASON_ARM_LEAK,)
+
+    def test_an_entry_marker_over_several_results_denies_none(self, tmp_path):
+        entry = denied_result_entry("toolu_1", "/tmp/x.txt")
+        entry["message"]["content"].append({"type": "tool_result", "tool_use_id": "toolu_2", "content": "synthetic"})
+        transcript = _transcript(tmp_path, [
+            _assistant([_tool_use("toolu_1", "Bash", {"command": "ls"}), _tool_use("toolu_2", "Bash", {"command": "pwd"})]),
+            entry,
+        ])
+        assert transcript.permission_denials == 0
+        assert [call.answered for call in transcript.tool_calls] == [True, True]
+
+    def test_a_marker_on_the_tool_result_block_denies_only_its_own_result(self, tmp_path):
+        entry = denied_result_entry("toolu_1", "/tmp/x.txt")
+        block = entry["message"]["content"][0]
+        block["toolDenialKind"] = entry.pop("toolDenialKind")
+        entry.pop("permissionDecision")
+        entry["message"]["content"].append({"type": "tool_result", "tool_use_id": "toolu_2", "content": "synthetic"})
+        transcript = _transcript(tmp_path, [
+            _assistant([_tool_use("toolu_1", "Bash", {"command": "ls"}), _tool_use("toolu_2", "Bash", {"command": "pwd"})]),
+            entry,
+        ])
+        assert [call.denied for call in transcript.tool_calls] == [True, False]

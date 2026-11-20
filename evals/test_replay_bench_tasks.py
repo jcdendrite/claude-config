@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -273,29 +274,23 @@ class TestQualifyingCommit:
         assert task.changed_paths == ("[C]LAUDE.md", "src/app.py")
         assert task.reference_metrics.changed_paths == ["[C]LAUDE.md", "src/app.py"]
 
-    def test_a_regular_file_named_dot_claude_stays_in_the_task_since_the_prune_keeps_it(self, tmp_path):
-        repo = _make_repo(tmp_path, {".claude": "old\n"})
-        _change(repo, {**QUALIFYING_CHANGE, ".claude": "new\n"})
-
-        assert _mine_one_task(repo).changed_paths == (".claude", "src/app.py")
-
-    def test_an_added_or_deleted_dot_claude_file_stays_and_an_added_dot_claude_symlink_is_dropped(self, tmp_path):
+    def test_an_added_dot_claude_file_stays_and_an_added_dot_claude_symlink_is_dropped(self, tmp_path):
         def twelve_code_lines() -> str:
             return "".join(f"value_{n} = {n}\n" for n in range(12))
 
         repo = _make_repo(tmp_path)
         added_file_commit = _change(repo, {".claude": "rules\n", "src/first.py": twelve_code_lines()})
-        deleted_file_commit = _change(repo, {".claude": None, "src/second.py": twelve_code_lines()})
+        # Removes the file so the next commit's base tree holds none. The removing commit is skipped: its base tree holds one.
+        removing_commit = _change(repo, {".claude": None, "src/second.py": twelve_code_lines()})
         _write_symlinks(repo, {"pkg/.claude": "../src"})
         _git(repo, "--literal-pathspecs", "add", "--", "pkg/.claude")
         added_symlink_commit = _change(repo, {"src/third.py": twelve_code_lines()})
 
         task_by_commit = {task.commit: task for task in _mine(repo).tasks}
 
+        assert removing_commit not in task_by_commit
         assert task_by_commit[added_file_commit].changed_paths == (".claude", "src/first.py")
         assert task_by_commit[added_file_commit].reference_metrics.changed_paths == [".claude", "src/first.py"]
-        assert task_by_commit[deleted_file_commit].changed_paths == (".claude", "src/second.py")
-        assert task_by_commit[deleted_file_commit].reference_metrics.changed_paths == [".claude", "src/second.py"]
         assert task_by_commit[added_symlink_commit].changed_paths == ("src/third.py",)
         assert task_by_commit[added_symlink_commit].reference_metrics.changed_paths == ["src/third.py"]
 
@@ -362,9 +357,8 @@ class TestNonAdditiveChanges:
         assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 12 + 3
         assert task.reference_metrics.non_file_entries == 1
 
-    def test_a_commit_that_turns_a_dot_claude_file_into_a_symlink_is_kept_without_that_path(self, tmp_path):
-        repo = _make_repo(tmp_path, {".claude": "old\n"})
-        (repo / ".claude").unlink()
+    def test_a_commit_that_adds_a_root_dot_claude_symlink_is_kept_without_that_path(self, tmp_path):
+        repo = _make_repo(tmp_path)
         _write_symlinks(repo, {".claude": "src"})
         _git(repo, "--literal-pathspecs", "add", "--", ".claude")
         _change(repo)
@@ -572,8 +566,10 @@ class TestExportAttributes:
             (".gitattributes", "tests export-ignore\n"),
             ("sub/.gitattributes", "*.txt export-subst\n"),
             (".gitattributes", "# export-ignore\n"),  # the deliberate over-skip: the text is matched anywhere on a line
+            (".gitattributes", "tests -export-ignore\n"),  # same over-skip for an unset form
+            (".gitattributes", "*.txt !export-subst\n"),  # same over-skip for a reset-to-unspecified form
         ],
-        ids=["root-export-ignore", "nested-export-subst", "commented-line"],
+        ids=["root-export-ignore", "nested-export-subst", "commented-line", "unset-export-ignore", "unspecified-export-subst"],
     )
     def test_a_base_tree_whose_gitattributes_holds_an_export_attribute_is_skipped(
         self, tmp_path, attributes_path, attributes_text,
@@ -661,12 +657,12 @@ class TestThresholdsAreInclusive:
         _assert_only_skipped_as(_mine(repo, max_prompt_chars=prompt_length - 1), SkipReason.PROMPT_TOO_LONG)
 
 
-# --- selection: base trees extraction refuses --------------------------------
+# --- selection: base tree shapes the miner skips -----------------------------
 
 _NON_ASCII_DIR = "日本語"
 
 
-class TestBaseTreesExtractionRefuses:
+class TestBaseTreeShapesTheMinerSkips:
     @pytest.mark.parametrize(
         ("symlinks", "files", "reason"),
         [
@@ -692,15 +688,28 @@ class TestBaseTreesExtractionRefuses:
         ("symlink_path", "files", "reason"),
         [
             (".Claude", {}, SkipReason.CLAUDE_DIR_SYMLINK),
+            (None, {".Claude": "old\n"}, SkipReason.CLAUDE_DIR_FILE),
             (None, {".Bench/note.txt": "x"}, SkipReason.BENCH_DIR_ENTRY),
         ],
-        ids=["claude-case-variant", "bench-case-variant"],
+        ids=["claude-case-variant", "claude-file-case-variant", "bench-case-variant"],
     )
     def test_the_case_variants_are_matched_case_insensitively(self, tmp_path, symlink_path, files, reason):
         repo = _make_repo(tmp_path, files, symlinks={symlink_path: "src"} if symlink_path else None)
         _change(repo)
 
         _assert_only_skipped_as(_mine(repo), reason)
+
+    def test_a_base_tree_holding_a_regular_file_named_dot_claude_at_the_root_is_skipped(self, tmp_path):
+        repo = _make_repo(tmp_path, {".claude": "old\n"})
+        _change(repo)
+
+        _assert_only_skipped_as(_mine(repo), SkipReason.CLAUDE_DIR_FILE)
+
+    def test_a_base_tree_holding_a_regular_file_named_dot_claude_below_the_root_is_kept(self, tmp_path):
+        repo = _make_repo(tmp_path, {"pkg/.claude": "old\n"})
+        _change(repo)
+
+        assert _mine_one_task(repo).changed_paths == ("src/app.py",)
 
     def test_a_non_link_entry_with_a_git_path_component_is_skipped(self, tmp_path):
         git_config_tree = {"config": "[core]\n"}
@@ -968,13 +977,13 @@ class TestSourceRepos:
             _mine(partial_clone)
         assert len(_mine(full_clone).tasks) == 1
 
-    def test_a_repository_whose_info_attributes_sets_an_export_attribute_is_refused_naming_the_path(self, tmp_path):
+    def test_a_repository_whose_info_attributes_names_an_export_attribute_is_refused_naming_the_path(self, tmp_path):
         repo = _make_repo(tmp_path)
         info_attributes = repo / ".git" / "info" / "attributes"
         info_attributes.parent.mkdir(exist_ok=True)
         info_attributes.write_text("* export-ignore\n")
 
-        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(str(repo))}: .* sets an export attribute"):
+        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(str(repo))}: .* names export-ignore or export-subst"):
             _mine(repo)
 
     def test_a_git_config_failure_other_than_no_match_is_refused_rather_than_read_as_no_match(self, tmp_path):
@@ -1664,12 +1673,13 @@ class TestBuildTaskFixture:
 
 
     def test_a_root_dot_claude_regular_file_fails_the_build_as_an_os_error(self, tmp_path):
-        repo = _make_source_repo(tmp_path, {".claude": "old\n"})
-        _change(repo, {**QUALIFYING_CHANGE, ".claude": "new\n"})
+        repo = _make_source_repo(tmp_path)
+        _change(repo)
         task = _mine_one_task(repo)
+        base_holding_dot_claude_file = _change(repo, {".claude": "old\n"})
 
         with pytest.raises(OSError):
-            _build_fixture(tmp_path, task)
+            _build_fixture(tmp_path, dataclasses.replace(task, base_commit=base_holding_dot_claude_file))
 
     def test_a_source_repo_that_became_a_partial_clone_after_mining_is_refused_before_anything_is_built(self, tmp_path):
         repo = _make_source_repo(tmp_path)
@@ -1682,14 +1692,14 @@ class TestBuildTaskFixture:
 
         assert list((tmp_path / "fixture").iterdir()) == []
 
-    def test_a_source_repo_that_gained_an_export_attribute_after_mining_is_refused_before_anything_is_built(self, tmp_path):
+    def test_a_source_repo_whose_info_attributes_names_an_export_attribute_is_refused_before_anything_is_built(self, tmp_path):
         repo = _make_source_repo(tmp_path)
         _change(repo)
         task = _mine_one_task(repo)
         (repo / ".git" / "info").mkdir(exist_ok=True)
         (repo / ".git" / "info" / "attributes").write_text("src export-ignore\n")
 
-        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(task.source_repo)}: .* sets an export attribute"):
+        with pytest.raises(tasks.TaskSourceError, match=f"{re.escape(task.source_repo)}: .* names export-ignore or export-subst"):
             _build_fixture(tmp_path, task)
 
         assert list((tmp_path / "fixture").iterdir()) == []

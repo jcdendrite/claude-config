@@ -1,7 +1,7 @@
 """Classifies the lines a diff adds as code, comment, docstring, blank, prose or
 unclassified, and groups comment and docstring lines into blocks.
 
-Classification is whole-line and lexical, by file extension. It reads each
+Classification is whole-line, by file extension. It reads each
 file's post-change bytes, which the caller supplies, so a line added inside an
 existing Python docstring still classifies as docstring.
 """
@@ -175,8 +175,9 @@ class FileClassification:
 
 
 def classify_file(path: str, data: bytes, added_line_numbers: Iterable[int]) -> FileClassification:
-    """Classifies the given 1-based lines of a file's post-change `data`. Raises ValueError for
-    a line number past the end of the file, which means `data` is not the diff's post-change text."""
+    """Classifies the given 1-based lines of a file's post-change `data`. For a decodable file of a recognized
+    type, raises ValueError for a line number past the end of the file, which means `data` is not the diff's
+    post-change text."""
     numbers = tuple(added_line_numbers)
     extension = PurePosixPath(path).suffix.removeprefix(".").lower()
     syntax = COMMENT_SYNTAX_BY_FILENAME.get(PurePosixPath(path).name) or COMMENT_SYNTAX_BY_EXTENSION.get(extension)
@@ -189,7 +190,7 @@ def classify_file(path: str, data: bytes, added_line_numbers: Iterable[int]) -> 
         return FileClassification({number: LineClass.UNCLASSIFIED for number in numbers}, {}, undecodable=True)
     lines = text.split("\n")
     if numbers and max(numbers) > len(lines):
-        raise ValueError(f"{path} has {len(lines)} lines but the diff adds line {max(numbers)}")
+        raise ValueError(f"{path!r} has {len(lines)} lines but the diff adds line {max(numbers)}")
     if is_python:
         return _classify_python(text, lines, numbers)
     if is_prose:
@@ -351,7 +352,7 @@ class CommentMetrics:
     """One run's tallies over the lines a change adds.
 
     `line_counts` and `comment_words` split by `test` and `non_test` scope. `comment_words`
-    counts comment and docstring words together. Symlink and gitlink entries are counted in
+    counts comment and docstring words together. Entries that end as a symlink or gitlink are counted in
     `non_file_entries` and never classified."""
 
     line_counts: dict[str, dict[str, int]] = field(default_factory=_zeroed_line_counts)

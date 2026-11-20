@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -49,8 +50,6 @@ def isolate_review_bench_from_the_host(tmp_path_factory: pytest.TempPathFactory,
 
 @pytest.fixture(autouse=True)
 def refuse_network_git_transports(monkeypatch: pytest.MonkeyPatch):
-    """Allowing only the file protocol makes a `git fetch` from a remote URL fail at once instead of reaching
-    the network, whichever test or helper triggers it. `TestNetworkGitTransportsAreRefused` pins that it does."""
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
 
 
@@ -62,3 +61,28 @@ def isolate_git_from_the_hosts_global_config(monkeypatch: pytest.MonkeyPatch):
     overrides this."""
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def fresh_launch_abort_flag(monkeypatch: pytest.MonkeyPatch):
+    """`msmr.abort_launches()` sets a process-wide flag that is never cleared. A block whose worker fails calls
+    it, and it would then make every later real `_run_claude_to_completion` call in the same worker raise."""
+    import measure_subagent_model_resolution as msmr
+
+    monkeypatch.setattr(msmr, "_launches_aborted", threading.Event())
+
+
+@pytest.fixture
+def checks_world(tmp_path: Path):
+    """The checks support module's `World`: a config dir, two fixture dirs, a live checkout and allow-listed files
+    laid out under `tmp_path`, for tests of the run checks. It is not the replay world below."""
+    from test_replay_bench_checks_support import build_world
+
+    return build_world(tmp_path)
+
+
+@pytest.fixture
+def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from test_replay_bench_runner_support import build_replay_world
+
+    return build_replay_world(tmp_path, monkeypatch)
