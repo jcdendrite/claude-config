@@ -39,7 +39,10 @@ def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
 
 
 def copy_hooks_tree(destination: Path) -> Path:
-    """Runnable copy of the hooks dir, free of the test tree, so a test can edit `_lib.sh` without touching the repo."""
+    """Copy of the hooks dir without its test tree, so a test can edit `_lib.sh` without touching the repo.
+
+    The copy has no sibling `scripts/` dir, so a hook that launches `../scripts/...` needs one added.
+    """
     hooks_copy = destination / "hooks"
     shutil.copytree(HOOKS_DIR, hooks_copy, ignore=shutil.ignore_patterns("tests", "__pycache__"))
     return hooks_copy
