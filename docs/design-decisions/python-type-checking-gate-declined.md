@@ -21,7 +21,7 @@ No study was found that measures whether type-checker feedback improves agent-wr
 Pyright 1.1.414 ran at its default settings, with no configuration file, over all 576 tracked Python files at commit `6cc9e053` on 2026-11-20. That is about 446,000 lines, of which about 67,000 are outside test files. `git ls-tree -r --name-only 6cc9e053`, filtered to names ending in `.py`, lists the files, and `git grep -c '' 6cc9e053 -- '*.py'` counts their lines.
 
 - **Backlog.** 4,323 errors: 3,208 in test files and 1,115 in non-test files.
-- **Structural noise.** 855 of the non-test errors are `reportUndefinedVariable` in the `cursor-adapter` scripts, whose part files share one namespace by design.
+- **Structural noise.** 855 of the non-test errors are `reportUndefinedVariable` in the `cursor-adapter` scripts. At that commit the adapter was a set of part files that shared one namespace by design.
 - **Run time.** About 4 minutes of CPU for the whole tree with no cache. Wall time was not isolated from other load on the machine.
 - **Hidden directory.** That pyright version skips `claude/.claude/`, which holds 463 of the 576 files, even when the directory is named on the command line. The pyright configuration documentation on its `main` branch, as read on 2026-11-20, describes a `useDefaultExcludes` setting. Version 1.1.414 rejects that setting as unrecognized. The files under `claude/.claude/` were measured from a copy at a non-hidden path.
 - **Platform.** On macOS pyright reports the `sched_getaffinity` import in `select-tests.py`, which the code guards with `try/except ImportError`.
