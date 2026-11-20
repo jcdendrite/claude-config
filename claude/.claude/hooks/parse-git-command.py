@@ -18,6 +18,8 @@ the identical reason.
     GIT\\x1f<subcmd>\\x1f<c-path>\\x1f<c-status>\\x1f<preceding-op>\\x1f<in-group>
     SENTINEL\\x1f<reason>
 
+<subcmd>    `version` for the exact two-token segment `git --version`, otherwise
+            the first non-flag word after `git`, from the flag scan.
 <target>    literal cd argument, or "" if it cannot be resolved as a plain
             path (missing, "-", or requires shell expansion: ~, $, *, ?, or
             an embedded delimiter byte/newline).
@@ -164,10 +166,25 @@ def _is_git_token(token):
     return token == "git" or token.endswith("/git")
 
 
+def _is_literal_git_version_query(tokens):
+    """True for a segment whose tokens are exactly `git --version`.
+    Matches shlex tokens, not command text, so it accepts different spellings than
+    `_lib_fragment_is_git_version_query` in `_lib.sh`, which matches a text regex.
+    TestGitVersionLiteral in tests/test_parse_git_command.py pins the spellings that match.
+    The substitution-supplied command word this admits is recorded under Known gaps in
+    require-worktree-for-git-writes.sh."""
+    return tokens == ["git", "--version"]
+
+
 def classify_git_segment(tokens):
     """Returns None if not a git-invoking segment, "SENTINEL" if a git
     invocation has no discoverable subcommand, else a dict with subcmd,
-    c_path, c_status."""
+    c_path, c_status. A segment of exactly `git --version` returns the
+    synthesized subcmd `version`, because git runs `--version` as its `version`
+    builtin and the shell consumer's read-only allowlist keys on subcommand
+    names."""
+    if _is_literal_git_version_query(tokens):
+        return {"subcmd": "version", "c_path": "", "c_status": "NONE"}
     git_idx = None
     for idx, token in enumerate(tokens):
         if _is_git_token(token):

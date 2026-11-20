@@ -254,6 +254,8 @@ def test_parse_ledger_variants(report, expected_names, expected_lines, expected_
         ("git diff \\\n  --stat", True),
         ("git status\ncd /w\nls -la", False),
         ("git status \\\n  --short\ngit log", False),
+        # A version record followed by a diff still counts as a diff re-read.
+        ("git --version && git diff -- x", True),
     ],
 )
 def test_runs_git_diff_command_shapes(command, expected):
