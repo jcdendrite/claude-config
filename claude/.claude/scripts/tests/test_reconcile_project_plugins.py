@@ -35,7 +35,7 @@ from helpers import (
     git_isolation_env,
     init_reconciler_repo,
     install_log_entries,
-    installed_locale_where,
+    locale_that_folds_ascii_capital_i_to_a_non_ascii_letter,
     locale_that_widens_ascii_ranges,
     make_reconciler_claude_shim,
     plugin_registry_file,
@@ -102,15 +102,6 @@ def _run_with_exact_path(repo: Path, *, config_dir: Path, bin_dir: Path, home: P
         [_BASH, str(RECONCILE_SH), str(repo)],
         capture_output=True, text=True, timeout=30,
         env={"PATH": str(bin_dir), "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)},
-    )
-
-
-def _locale_that_folds_ascii_capital_i_to_a_non_ascii_letter() -> str:
-    """An installed UTF-8 locale (Turkish or Azeri) under which bash's `${var,,}` turns `I` into dotless `\u0131`,
-    the exposure the denylist's `LC_ALL=C` pin removes."""
-    return installed_locale_where(
-        'folded="${1,,}"; [ "$folded" != "i" ]', "I",
-        absent_message="no installed locale lower-cases ASCII I to a non-ASCII letter",
     )
 
 
@@ -760,7 +751,7 @@ class TestMarketplacePrecondition:
             repo,
             config_dir=config_dir,
             bin_dir=bin_dir,
-            extra_env={"LC_ALL": _locale_that_folds_ascii_capital_i_to_a_non_ascii_letter()},
+            extra_env={"LC_ALL": locale_that_folds_ascii_capital_i_to_a_non_ascii_letter()},
         )
 
         assert result.returncode == 0, repr(result)

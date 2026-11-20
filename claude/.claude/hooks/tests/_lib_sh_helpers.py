@@ -38,6 +38,25 @@ def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
     )
 
 
+def copy_hooks_tree(destination: Path) -> Path:
+    """Copy of the hooks dir without its test tree, so a test can edit `_lib.sh` without touching the repo.
+
+    The copy has no sibling `scripts/` dir, so a hook that launches `../scripts/...` needs one added.
+    """
+    hooks_copy = destination / "hooks"
+    shutil.copytree(HOOKS_DIR, hooks_copy, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    return hooks_copy
+
+
+def remove_lib_function(hooks_copy: Path, function_name: str) -> None:
+    """Rename the definition in the copy's `_lib.sh`, so a sourcing hook sees status 127 for `function_name`."""
+    lib_copy = hooks_copy / "_lib.sh"
+    lib_source = lib_copy.read_text()
+    function_definition = f"{function_name}() {{"
+    assert function_definition in lib_source, f"{function_definition!r} not found in _lib.sh"
+    lib_copy.write_text(lib_source.replace(function_definition, f"{function_name}_absent() {{"))
+
+
 def _gh_shim_dir(
     tmp_path: Path, call_log: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int = 0
 ) -> Path:

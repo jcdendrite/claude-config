@@ -10,7 +10,7 @@ enforcement. For the high-level three-tier overview, see the
 ## The three scans
 
 The hook runs in claude-config and its forks (origin URL contains
-`claude-config`), and in any other repo that
+`claude-config` or `workflow-gates`), and in any other repo that
 commits `.claude/private-projects-optin`; see
 [Opting in another repository](#opting-in-another-repository). Its content
 scans are silent everywhere else.
@@ -413,7 +413,7 @@ silently skippable.
 # matching):
 cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md" <<'EOF'
 # Project names blocked from commits / PR titles / PR bodies in
-# claude-config and its forks (origin URL contains `claude-config`), and
+# claude-config and its forks (origin URL contains `claude-config` or `workflow-gates`), and
 # repos opted in via .claude/private-projects-optin. Match semantics +
 # what to put in this file: see docs/private-project-redaction.md in the
 # claude-config repo.
@@ -557,7 +557,7 @@ GH-1371).
 
 ## Opting in another repository
 
-In a repo whose origin URL does not contain `claude-config`, the content scans
+In a repo whose origin URL contains neither `claude-config` nor `workflow-gates`, the content scans
 are silent by default.
 Committing `.claude/private-projects-optin` at the repo's toplevel runs the
 whole hook there: all three scans, with no per-scan switch.
@@ -688,12 +688,12 @@ marker.
 ## For fork contributors
 
 Forks of `claude-config` inherit the same hook (the scoping check passes for
-any `claude-config` substring in the origin URL), so a fork whose origin URL
-contains `claude-config` needs no marker. A fork renamed so its URL lacks that
-substring gets silent content scans. The marker is no substitute, because the
+any `claude-config` or `workflow-gates` substring in the origin URL), so a fork whose origin URL
+contains either needs no marker. A fork renamed so its URL lacks both
+substrings gets silent content scans. The marker is no substitute, because the
 marker arm also scans `claude/.claude/hooks/tests/`, so a commit adding those
 tests' synthetic tokens (tracker IDs, a private-range IPv4 literal, other
-structural fixtures) denies. Keep `claude-config` in a fork's origin URL.
+structural fixtures) denies. Keep `claude-config` or `workflow-gates` in a fork's origin URL.
 A fork user can drop their own `<config-dir>/private-projects.md` and
 contribute back without their project names ever ending up in a PR they open
 against the upstream. `install-dev.sh` requires that file to exist before it

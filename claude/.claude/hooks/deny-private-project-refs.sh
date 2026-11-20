@@ -24,13 +24,16 @@
 # does.
 #
 # Scope and limits:
-# - Runs its content scans only in claude-config (origin URL contains
-#   `claude-config`) or in a repo with `.claude/private-projects-optin` at its
-#   toplevel. Those scans are silent in every other repo.
+# - Runs its content scans only where `_lib_origin_names_claude_config` in
+#   _lib.sh accepts the origin, or in a repo with
+#   `.claude/private-projects-optin` at its toplevel. That function's header
+#   defines the origin match, which is deliberately loose. Those scans are
+#   silent in every other repo.
 # - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
 #   unparseable tool input, a failed command-text quote-strip, fragment split, or
-#   commit-conclusion check) run before the
-#   scope test, so they apply in every repo.
+#   commit-conclusion check) run before the scope test, so they apply in every repo.
+# - The scope test itself also denies, in every repo, when
+#   `_lib_origin_names_claude_config` returns a status other than 0 or 1.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
 # - Catches a second mechanical category when the user creates
 #   ~/.claude/private-projects.md: a literal, case-insensitive
@@ -149,6 +152,8 @@
 #   path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
 #   The alias spellings were tested only at the `git commit -F` site, one of
 #   this gate's five pseudo-file check sites.
+# - The origin test's own gaps are listed in _lib_origin_names_claude_config's
+#   header in _lib.sh.
 # - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
 #   in _lib.sh.
 #   The fallback tokenizer's residual over-denies and misses are listed in
@@ -472,16 +477,20 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Scope: claude-config (an origin URL containing `claude-config`, forks included) plus any repo with .claude/private-projects-optin at its toplevel.
+# Scope: claude-config and its forks, by `_lib_origin_names_claude_config`, plus any repo with .claude/private-projects-optin at its toplevel.
 # Repos with neither legitimately reference their own tracker IDs, so the gate stays silent there.
-# `git config --get` prints nothing for a missing remote, so a no-remote repo falls through to the marker test.
 # The marker is read from the working tree, not a committed ref, because it can only add restriction.
 # See `docs/private-project-redaction.md` § "Opting in another repository"
 OPTIN_DENY_NOTE=""
 TRACKER_REMEDY_LEAD="If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite"
 STAGED_DIFF_PATHSPEC=':(top,exclude)claude/.claude/hooks/tests/**'
-REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null)
-if [[ "$REMOTE_URL" != *claude-config* ]]; then
+_lib_origin_names_claude_config "$REPO_ROOT"
+ORIGIN_SCOPE_STATUS=$?
+if [ "$ORIGIN_SCOPE_STATUS" -ne 0 ] && [ "$ORIGIN_SCOPE_STATUS" -ne 1 ]; then
+  emit_deny "could not determine whether this repo is claude-config (status ${ORIGIN_SCOPE_STATUS}). Failing closed rather than allowing an unscanned command. The user, not the agent, re-runs ./install.sh from the claude-config checkout in a separate terminal so this hook and _lib.sh come from the same tree."
+  exit 0
+fi
+if [ "$ORIGIN_SCOPE_STATUS" -eq 1 ]; then
   [[ -f "$REPO_ROOT/.claude/private-projects-optin" ]] || exit 0
   OPTIN_DENY_NOTE=" This repo opted in to this gate via .claude/private-projects-optin, so content that matches here (its own tracker IDs, structural shapes, and names on the user's private-projects.md blocklist) denies by design. Reword the content; if it cannot be reworded, stop and ask the human. Do not delete or edit the marker, retarget the command with git -C, edit the user's private-projects.md blocklist, or add this repo's own tracker prefix to OSS_ALLOWLIST in deny-private-project-refs.sh, which ships in the public claude-config repo."
   TRACKER_REMEDY_LEAD="Rewrite"

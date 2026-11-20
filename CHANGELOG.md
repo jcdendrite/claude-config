@@ -6,6 +6,14 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The repository moved to `cordova-strategy/workflow-gates`.**
+  - A clone whose origin still names the old owner and repo needs the origin repointed.
+  - The old URL redirects only until a repository is created at that name ([GitHub's transfer documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/transferring-a-repository)).
+  - With a stale origin, `pr-cost`, `workstream-cost --check-pr-status` and the `/review-pr` scripts that check the origin stop until the origin is repointed. After the repoint, `pr-cost` records pull requests under the new repository name.
+  - After the repoint, `memory-store-audit` downgrades each file-as-issue item, and each migrate bound for the `claude-config` checkout, to keep, because its check expects an origin containing `claude-config`.
+  - The redaction and stow-reminder hooks match either name, so they keep working without the change.
+  - Do not rename the checkout folder to match. Use `relocate-claude-config` to move it.
+  - **Migration:** run `git remote set-url origin https://github.com/cordova-strategy/workflow-gates.git`, or `git remote set-url origin git@github.com:cordova-strategy/workflow-gates.git` for an SSH remote.
 - **`transcript-analysis.py review-cost-by-size` now reads the pr-cost ledger's `review_rounds` cells instead of transcripts, so a PR's round series outlives transcript retention.**
   - It keeps each PR's one current ledger row for this checkout's origin repository, re-prices each round's stored token splits at this checkout's rate table, and excludes and counts the PRs it cannot trust. See `docs/transcript-analysis.md` § "review-cost-by-size".
   - **Migration:** `gh` is no longer required, and transcripts are no longer read.

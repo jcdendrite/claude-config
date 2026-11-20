@@ -37,6 +37,7 @@ from helpers import (
     run_hook_reason,
 )
 
+from ._lib_sh_helpers import copy_hooks_tree, remove_lib_function
 from .conftest import _write_conditional_sleep_shim
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
@@ -61,13 +62,15 @@ def _stage_clean_file(repo: Path) -> None:
 
 @pytest.fixture
 def claude_config_repo(git_repo):
-    """git_repo with a `claude-config`-shaped origin URL so the scoping
-    check lets the redaction gate run. The hook short-circuits on any repo
-    that is neither claude-config (origin URL contains `claude-config`) nor
-    opted in via `.claude/private-projects-optin`, so a test that expects
-    deny behavior needs this fixture or `private_projects_optin_repo`."""
+    """git_repo with a `workflow-gates` origin URL so the scoping check lets
+    the redaction gate run. The `claude-config` arm of the check is pinned by
+    `test_claude_config_fork_origin_still_gates`. The hook short-circuits on
+    any repo that is neither claude-config (origin URL contains `claude-config`
+    or `workflow-gates`) nor opted in via `.claude/private-projects-optin`, so
+    a test that expects deny behavior needs this fixture or
+    `private_projects_optin_repo`."""
     subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+        ["git", "remote", "add", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
         cwd=git_repo,
         check=True,
     )
@@ -76,7 +79,8 @@ def claude_config_repo(git_repo):
 
 @pytest.fixture
 def unrelated_remote_repo(git_repo):
-    """git_repo with an origin URL that does NOT match claude-config.
+    """git_repo with an origin URL that matches neither `claude-config` nor
+    `workflow-gates`.
     Used to verify the scoping short-circuit: the hook must let commits
     through in every repo that is neither claude-config nor opted in via
     `.claude/private-projects-optin`, regardless of diff content or commit
@@ -92,8 +96,8 @@ def unrelated_remote_repo(git_repo):
 @pytest.fixture
 def private_projects_optin_repo(unrelated_remote_repo):
     """unrelated_remote_repo with an empty `.claude/private-projects-optin`
-    marker, which arms the redaction gate in a repo whose origin URL does not
-    contain `claude-config`.
+    marker, which arms the redaction gate in a repo whose origin URL contains
+    neither `claude-config` nor `workflow-gates`.
 
     Built on `git_repo` because the commit scan needs its non-empty staged
     diff. The marker is left untracked and unstaged so these tests pin the
@@ -612,8 +616,8 @@ class TestDenyPrivateProjectRefs:
     # silent there.
 
     def test_unrelated_remote_suspect_token_allowed(self, unrelated_remote_repo):
-        """A suspect tracker ID in a repo whose origin URL does NOT contain
-        `claude-config` must pass — it's the repo's own legitimate ID."""
+        """A suspect tracker ID in a repo whose origin URL contains neither
+        `claude-config` nor `workflow-gates` must pass — it's the repo's own legitimate ID."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -638,10 +642,7 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_no_remote_suspect_token_allowed(self, git_repo):
-        """A repo with no `origin` remote configured (brand-new `git init`)
-        must short-circuit cleanly via the substring check against an empty
-        string. `git config --get` returns empty (not an error code) on a
-        missing key, so the `*claude-config*` match falls through to exit 0."""
+        """A repo with no `origin` remote stays ungated: the hook falls through to exit 0."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -650,6 +651,54 @@ class TestDenyPrivateProjectRefs:
             )
             == "allow"
         )
+
+    def test_workflow_gates_fork_origin_gates(self, git_repo):
+        """A fork whose origin URL contains `workflow-gates` gates under the same loose substring match."""
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:forker/workflow-gates.git"],
+            cwd=git_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_mixed_case_origin_gates(self, git_repo):
+        """GitHub resolves a repository path in any letter case, so the origin match is case-insensitive."""
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:Someone/Workflow-Gates.git"],
+            cwd=git_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_origin_scope_helper_failing_closes_the_gate(self, claude_config_repo, tmp_path):
+        """Only status 1 from `_lib_origin_names_claude_config` means "not claude-config". Any other
+        non-zero status, here 127 from a function absent in the sourced lib, must deny rather than
+        leave the redaction gate silent. The commit text is clean, so only the scope check can deny."""
+        hooks_copy = copy_hooks_tree(tmp_path)
+        remove_lib_function(hooks_copy, "_lib_origin_names_claude_config")
+        _stage_clean_file(claude_config_repo)
+        reason = run_hook_reason(
+            hooks_copy / "deny-private-project-refs.sh",
+            bash_input("git commit -m 'Fix a typo'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None, "expected deny when the origin-scope helper fails"
+        assert "whether this repo is claude-config" in reason
+        assert "The user, not the agent, re-runs ./install.sh" in reason
 
     def test_claude_config_fork_origin_still_gates(self, git_repo):
         """Substring match on `claude-config` is deliberately loose: a fork
@@ -671,8 +720,8 @@ class TestDenyPrivateProjectRefs:
         )
 
     # -- Opt-in marker ------------------------------------------------------
-    # A repo whose origin URL lacks `claude-config` is gated when its checked-
-    # out tree holds `.claude/private-projects-optin` at the toplevel. The
+    # A repo whose origin URL lacks both `claude-config` and `workflow-gates` is
+    # gated when its checked-out tree holds `.claude/private-projects-optin` at the toplevel. The
     # marker is read from the working tree, so the accepted activation window
     # (pre-marker checkouts, unreadable `.claude/`) is pinned as allow cases.
 
@@ -1684,9 +1733,10 @@ class TestDenyPrivateProjectRefs:
         assert str(missing) in reason
 
     def test_gh_pr_unrelated_remote_allowed(self, unrelated_remote_repo):
-        """Scoping short-circuit (origin URL doesn't contain `claude-config`
-        and no opt-in marker) must apply to gh pr too — the hook must not
-        block PRs in any other repo even if they reference a tracker ID."""
+        """Scoping short-circuit (origin URL contains neither `claude-config`
+        nor `workflow-gates`, and no opt-in marker) must apply to gh pr too —
+        the hook must not block PRs in any other repo even if they
+        reference a tracker ID."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -1864,7 +1914,7 @@ class TestDenyPrivateProjectRefs:
         # Set after the fetch and merge, so the claude-config scope check sees a
         # matching origin URL without changing the remote-tracking refs.
         subprocess.run(
-            ["git", "remote", "set-url", "origin", "git@github.com:jcdendrite/claude-config.git"],
+            ["git", "remote", "set-url", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
             cwd=repo,
             check=True,
         )
@@ -2857,9 +2907,9 @@ class TestDenyPrivateProjectRefs:
         assert str(missing) in reason
 
     def test_gh_issue_unrelated_remote_allowed(self, unrelated_remote_repo):
-        """Scoping short-circuit (origin URL doesn't contain `claude-config`)
-        must apply to gh issue too — the hook must not block issues in any
-        other repo even if they reference a tracker ID."""
+        """Scoping short-circuit (origin URL contains neither `claude-config` nor
+        `workflow-gates`) must apply to gh issue too — the hook must not block
+        issues in any other repo even if they reference a tracker ID."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,

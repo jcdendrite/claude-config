@@ -26,6 +26,7 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from ._lib_sh_helpers import copy_hooks_tree, remove_lib_function
 from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
@@ -40,8 +41,10 @@ EXAMPLE_BODY_LINE = (
 
 @pytest.fixture
 def stow_repo(tmp_path):
-    """A claude-config-shaped repo with `main` containing one existing
-    top-level entry under `claude/.claude/`, and a `feature`
+    """A repo whose origin URL carries the `workflow-gates` arm of the
+    scope check (the `claude-config` arm is pinned by
+    `test_origin_naming_claude_config_still_gates`), with `main` containing
+    one existing top-level entry under `claude/.claude/`, and a `feature`
     branch checked out for tests to add new content on top of.
 
     Tests that want a new top-level entry to be detected should add it
@@ -57,7 +60,7 @@ def stow_repo(tmp_path):
     subprocess.run(["git", "config", "core.quotePath", "true"], cwd=repo, check=True)
     subprocess.run(["git", "config", "diff.renames", "true"], cwd=repo, check=True)
     subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+        ["git", "remote", "add", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
         cwd=repo,
         check=True,
     )
@@ -207,6 +210,49 @@ class TestRequireStowReminder:
     def test_non_pr_command_allowed(self, stow_repo):
         commit_new_toplevel_dir(stow_repo, "agents")
         assert run_hook(STOW_REMINDER_HOOK, bash_input("git status"), cwd=stow_repo) == "allow"
+
+    def test_origin_naming_claude_config_still_gates(self, stow_repo):
+        """An origin URL containing `claude-config` scopes in."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/claude-config.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        assert_live_deny_control(stow_repo)
+
+    def test_origin_naming_workflow_gates_still_gates(self, stow_repo):
+        """An origin URL containing `workflow-gates` scopes in."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/workflow-gates.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        assert_live_deny_control(stow_repo)
+
+    def test_origin_scope_helper_failing_allows(self, stow_repo, tmp_path):
+        """This hook fails open when `_lib_origin_names_claude_config` returns a status other than 0 or 1,
+        here 127 from a function absent in the sourced lib. The control denies with the helper present."""
+        hooks_copy = copy_hooks_tree(tmp_path)
+        copied_hook = hooks_copy / "require-stow-reminder.sh"
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr create --title T --body 'no marker here'"
+        assert run_hook(copied_hook, bash_input(cmd), cwd=stow_repo) == "deny", "control: copied hook did not deny"
+        remove_lib_function(hooks_copy, "_lib_origin_names_claude_config")
+        failing_run = subprocess.run(
+            [str(copied_hook)], input=json.dumps(bash_input(cmd)), capture_output=True, text=True, cwd=stow_repo,
+            check=False,
+        )
+        assert (failing_run.returncode, failing_run.stdout) == (0, "")
+        assert failing_run.stderr, "the missing helper must be observable on stderr, not silently swallowed"
+
+    def test_origin_in_mixed_case_still_gates(self, stow_repo):
+        """GitHub resolves a repository path in any letter case, so the origin match is case-insensitive."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:Someone/Workflow-Gates.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        assert_live_deny_control(stow_repo)
 
     def test_unrelated_remote_repo_allowed(self, tmp_path):
         """The gate is scoped to claude-config. Other repos may legitimately
@@ -831,7 +877,7 @@ class TestRequireStowReminder:
         subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         subprocess.run(
-            ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+            ["git", "remote", "add", "origin", "git@github.com:cordova-strategy/workflow-gates.git"],
             cwd=repo,
             check=True,
         )

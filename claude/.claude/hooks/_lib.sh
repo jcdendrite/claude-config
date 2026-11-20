@@ -826,6 +826,34 @@ _lib_case_insensitive_ne() {
   return "$result"
 }
 
+# _lib_origin_names_claude_config REPO_ROOT
+# Returns 0 when any `remote.origin.url` value of the repository at REPO_ROOT
+# contains `claude-config` or `workflow-gates`, in any letter case.
+# The match is a substring over the whole URL, so it accepts a fork and also an
+# unrelated repository whose name merely contains either string.
+# REPO_ROOT must be non-empty, because `git -C ""` reads the caller's working directory.
+# A missing REPO_ROOT argument aborts the caller under `set -u`.
+# The function returns only 0 or 1, and a failed read of the origin counts as 1.
+# Known gaps:
+# - A failed `git config` read (git exit 128 or higher) returns 1, so the deny
+#   gate treats the repository as not claude-config.
+# - An origin written as a `url.<base>.insteadOf` alias that hides the
+#   repository name does not match, because `git config` returns the URL
+#   unrewritten.
+# - A repository with no remote named `origin` does not match.
+# - An origin that names neither string, such as a renamed fork or a mirror
+#   under another name, does not match; see docs/private-project-redaction.md
+#   "For fork contributors".
+_lib_origin_names_claude_config() {
+  # glibc's tr_TR and az_AZ lowercase `I` to dotless `ı`, so `CLAUDE-CONFIG` would not match.
+  # Pinned by `test_returns_zero_for_an_upper_case_origin_under_a_locale_that_folds_i_to_a_dotless_letter` in `test_lib_gh.py`.
+  local LC_ALL=C
+  local repo_root="$1" origin_urls
+  origin_urls=$(git -C "$repo_root" config --get-all remote.origin.url 2>/dev/null)
+  origin_urls="${origin_urls,,}"
+  [[ "$origin_urls" == *claude-config* || "$origin_urls" == *workflow-gates* ]]
+}
+
 # _lib_parse_pr_identity PR_IDENTITY
 # Splits a <owner>/<repo>#<number> PR identity into owner/repo and number,
 # printing owner/repo then number on two lines, and returns 0. Returns 1

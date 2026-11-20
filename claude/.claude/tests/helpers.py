@@ -3502,6 +3502,15 @@ def locale_that_widens_ascii_ranges() -> str:
     )
 
 
+def locale_that_folds_ascii_capital_i_to_a_non_ascii_letter() -> str:
+    """An installed UTF-8 locale (Turkish or Azeri) under which bash's `${var,,}` turns `I` into dotless `\u0131`,
+    the exposure an `LC_ALL=C` pin on a case fold removes."""
+    return installed_locale_where(
+        'folded="${1,,}"; [ "$folded" != "i" ]', "I",
+        absent_message="no installed locale lower-cases ASCII I to a non-ASCII letter",
+    )
+
+
 @contextmanager
 def live_process():
     """Yield the pid of a real process this context owns for its duration,

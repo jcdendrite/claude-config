@@ -14,6 +14,6 @@ The hook system does not protect against a skill or hook script itself being mal
 
 ## Reporting a vulnerability
 
-To report a security vulnerability privately: [open a GitHub security advisory](https://github.com/jcdendrite/claude-config/security/advisories/new).
+To report a security vulnerability privately: [open a GitHub security advisory](https://github.com/cordova-strategy/workflow-gates/security/advisories/new).
 
-For non-security bugs, feature requests, or questions: [GitHub Issues](https://github.com/jcdendrite/claude-config/issues).
+For non-security bugs, feature requests, or questions: [GitHub Issues](https://github.com/cordova-strategy/workflow-gates/issues).
