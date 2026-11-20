@@ -23,7 +23,6 @@ from helpers import (
     REPO_ROOT,
     build_path_without,
     run_additional_context_session_start_hook,
-    run_autonomous_shipping_statement,
     session_start_additional_context,
     symlink_hooks_lib_chain,
 )
@@ -269,28 +268,34 @@ class TestConstancy:
 
         assert _assert_prints_text(_run_hook(payload, isolated_home)) == baseline_stdout
 
-    def test_neither_config_nor_git_state_in_the_process_cwd_reaches_stdout(self, isolated_home, shipping_repo, baseline_stdout):
-        # baseline_stdout is computed from isolated_home before the arming marker below exists.
+    def test_a_repo_the_root_guard_accepts_does_not_reach_stdout(
+        self, isolated_home, shipping_repo, shipping_statement, baseline_stdout
+    ):
         branch_sentinel = "sentinel-branch-3e7c"
         subprocess.run(["git", "checkout", "-q", "-b", branch_sentinel], cwd=shipping_repo, check=True)
         current_branch = subprocess.run(
             ["git", "branch", "--show-current"], cwd=shipping_repo, capture_output=True, text=True, check=True
         ).stdout.strip()
         assert current_branch == branch_sentinel
-        (isolated_home / ".claude" / "autonomous-shipping-required").write_text("# machine sentinel\n")
-        # Control: CLAUDE_CONFIG_DIR is unset for the hook below as it is for this statement, so the marker resolves in both.
-        statement = run_autonomous_shipping_statement(isolated_home, str(shipping_repo))
-        assert statement.returncode == 0
-        assert statement.stdout.strip()
+        # The boundary hook appends the shipping statement only when the payload cwd passes its root guard.
+        boundary_result = run_additional_context_session_start_hook(
+            RESTORE_BOUNDARY_HOOK,
+            {"source": "compact", "cwd": str(shipping_repo)},
+            isolated_home,
+            process_cwd=shipping_repo,
+        )
+        assert shipping_statement in session_start_additional_context(boundary_result)
 
         stdout = _assert_prints_text(
             _run_hook(_payload(cwd=str(shipping_repo)), isolated_home, process_cwd=shipping_repo)
         )
 
+        assert shipping_statement not in stdout
         assert stdout == baseline_stdout
 
     def test_a_relative_config_dir_leaves_stdout_unchanged(self, isolated_home, baseline_stdout):
-        # A relative CLAUDE_CONFIG_DIR fails config resolution, so this case checks the text constancy only, not arming.
+        # A relative CLAUDE_CONFIG_DIR makes the config resolver fail, which suppresses the boundary hook's text.
+        # The steer hook has no config gate, so it must still print.
         stdout = _assert_prints_text(
             _run_hook(_payload(), isolated_home, extra_env={"CLAUDE_CONFIG_DIR": "relative-config"})
         )
