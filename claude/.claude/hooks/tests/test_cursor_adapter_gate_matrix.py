@@ -1129,7 +1129,10 @@ DECLINED_SESSION_WRITES: dict[str, tuple[str, ...]] = {
 LISTED_NETWORK: frozenset[str] = frozenset()
 
 
-# Events with no tool name. Cursor has no Notification or PostToolBatch event, and only a documented, unobserved `preCompact` one, so those borrow the closest payload.
+# Events with no tool name. Cursor has no Notification or PostToolBatch event, so those borrow the closest payload.
+# The `trigger` field of `preCompact` is `doc-only` in field-table.json (documented, not seen in a recorded payload), so
+# PreCompact borrows a payload too.
+# The borrowed payload twins to Stop and the steering hook's self-filter silences it, so the import arm proves silence only.
 EVENT_SPEC_IDS = {
     "SessionStart": "session_start",
     "SubagentStart": "subagent_start",
@@ -1322,6 +1325,11 @@ class TestGateMatrix:
         keys = {r.key for r in INFORMATIONAL_REGISTRATIONS}
         assert DELIVERED_INFORMATIONAL_ARMS | (set(EXCEPTIONS) & keys) == keys
         assert keys >= DELIVERED_INFORMATIONAL_ARMS
+
+    def test_every_registration_parity_exception_names_a_current_registration(self) -> None:
+        current_keys = {r.key for r in ALL_REGISTRATIONS}
+        assert EXCEPTIONS and current_keys
+        assert sorted(set(EXCEPTIONS) - current_keys) == []
 
     def test_every_pending_phase_entry_names_a_phase_after_the_delivered_ones(self) -> None:
         for key, entry in EXCEPTIONS.items():
