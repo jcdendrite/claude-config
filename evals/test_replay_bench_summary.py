@@ -117,6 +117,19 @@ class TestThePrimaryOutcome:
         assert toolkit_spread_line.endswith(" over 1 paired tasks with two or more runs that added code")
         assert "    bare: n/a over 0 paired tasks with two or more runs that added code" in lines
 
+    def test_an_arms_runs_of_equal_ratio_print_a_spread_of_zero(self, campaign):
+        """Kills: printing a measured spread of zero as n/a, from run_spread returning none or from formatting a falsy 0.0."""
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit", run_metrics=metrics(words=20, code=10)),
+            record("t1", "toolkit", run_index=1, run_metrics=metrics(words=20, code=10)),
+            record("t1", "bare"),
+        )
+
+        lines = campaign.summarize()
+
+        assert "    toolkit: 0.0000 over 1 paired tasks with two or more runs that added code" in lines
+
     def test_each_difference_line_prints_its_own_interval(self, campaign):
         """Only tasks of unequal code lines give the two lines different intervals."""
         blocks = {"small": [
@@ -373,6 +386,12 @@ class TestTheRunSpread:
         spread = summary.run_spread([self.runs("t1", (10, 10), (30, 20))])
 
         assert spread.standard_deviation == pytest.approx(statistics.stdev([10 / 10, 30 / 20]))
+
+    def test_runs_of_equal_ratio_give_a_spread_of_zero_not_an_unavailable_one(self):
+        """Kills: guarding the unavailable spread on the summed squared deviations, not the degrees of freedom."""
+        spread = summary.run_spread([self.runs("t1", (20, 10), (20, 10))])
+
+        assert spread == summary.RunSpread(pytest.approx(0.0), 1)
 
     def test_a_run_with_no_code_line_adds_no_degree_of_freedom(self):
         spread = summary.run_spread([

@@ -84,7 +84,7 @@ class RunSpread:
 
 
 def run_spread(arm_records_by_task: Iterable[Sequence[ReplayRunRecord]]) -> RunSpread:
-    """The pooled within-task standard deviation of one run's words per code line, over tasks with two or more such runs."""
+    """Pooled within-task standard deviation of one run's words per code line, over tasks with 2+ valid runs that added code."""
     squared_deviations, degrees_of_freedom, task_count = 0.0, 0, 0
     for arm_records in arm_records_by_task:
         run_ratios = [_run_words(record) / _run_code_lines(record) for record in _valid(arm_records) if _run_code_lines(record)]
