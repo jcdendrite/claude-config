@@ -415,9 +415,11 @@ CONFIG_KEYS_PSV = "claude/.claude/hooks/config-keys.psv"
 
 # test_hook_alignment.py (HOOKS_TESTS_DIR) reads this file's permissions.allow
 # entries by path. test_doc_counts.py (HOOKS_TESTS_DIR) reads its
-# skillOverrides counts. test_skills.py (SKILLS_TESTS_DIR) reads its
-# skillOverrides map at line 153, its docs/skills.md cross-check at line 1686,
-# and its destructive-cleanup permissions check at line 1724.
+# skillOverrides counts. In SKILLS_TESTS_DIR, test_skills.py reads it in
+# _settings_skill_overrides, test_skill_overrides_documented_in_docs_skills_md,
+# and test_destructive_cleanup_forms_require_ask_not_allow.
+# test_review_orchestrator_and_review_pr.py (SKILLS_TESTS_DIR) reads it in
+# test_review_orchestrator_protocol_marker_check_is_the_whole_allowlisted_command.
 # test_claude_enable_tool.py (SCRIPTS_TESTS_DIR) reads it by path to assert
 # which settings payload backs a re-enabled session.
 CLAUDE_SETTINGS_JSON = "claude/.claude/settings.json"
