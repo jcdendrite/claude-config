@@ -229,6 +229,28 @@ class TestPathReasonsReachTheRecord:
 
         assert outcome.record.missing_reason is None and outcome.record.permission_denials == 1
         assert outcome.record.out_of_fixture_writes == []
+        assert outcome.record.denied_tool_calls == [{"tool": "Write", "command": None}]
+
+    @pytest.mark.parametrize("denial_shape", [ENTRY_DENIAL, BLOCK_DENIAL])
+    def test_only_the_denied_bash_command_is_recorded_as_denied(self, world, denial_shape):
+        outcome, _launch_stub, _settings = run(
+            world, arms.BARE.name,
+            tool_scenario(
+                ("Bash", {"command": "pytest -q"}, True), ("Bash", {"command": "git status --short"}, False),
+                denial_shape=denial_shape,
+            ),
+        )
+
+        assert outcome.record.missing_reason is None
+        assert outcome.record.denied_tool_calls == [{"tool": "Bash", "command": "pytest -q"}]
+        assert outcome.record.permission_denials == len(outcome.record.denied_tool_calls)
+
+    def test_a_run_that_ends_missing_still_records_its_denied_calls(self, world):
+        command = f"ls {world.config_dir}"
+        outcome, _launch_stub, _settings = run(world, arms.BARE.name, tool_scenario(("Bash", {"command": command}, True)))
+
+        assert outcome.record.missing_reason == checks.REASON_ARM_LEAK
+        assert outcome.record.denied_tool_calls == [{"tool": "Bash", "command": command}]
 
     def test_commands_shaped_like_the_probe_transcripts_leave_a_bare_run_clean(self, world):
         commands = [
@@ -416,6 +438,24 @@ class TestRetryThenMissing:
         assert "second_attempt.py" in outcome.diff_text and "failed_attempt.py" not in outcome.diff_text
         assert launch_stub.calls[0].cwd != launch_stub.calls[1].cwd
         assert leftovers(world, launch_stub) == []
+
+    def test_a_retried_run_records_only_the_final_attempts_denied_calls(self, world):
+        def scenario_for(number, _agent):
+            command = "pytest first" if number == 0 else "pytest second"
+            return Scenario(
+                observed_model="other-model" if number == 0 else MODEL_ID, tool_calls=[("Bash", {"command": command}, True)],
+            )
+
+        outcome, _launch_stub, _settings = run(world, arms.BARE.name, scenario_for)
+
+        assert outcome.record.status == "ok" and outcome.record.attempts == 2
+        assert outcome.record.denied_tool_calls == [{"tool": "Bash", "command": "pytest second"}]
+
+    def test_a_run_whose_launch_failed_records_no_denied_calls(self, world):
+        outcome, _launch_stub, _settings = run(world, arms.BARE.name, lambda _n, _a: Scenario(raises=OSError("synthetic")))
+
+        assert outcome.record.status == "missing"
+        assert outcome.record.denied_tool_calls == []
 
     def test_failed_launches_are_charged_at_the_cap(self, world):
         outcome, _launch_stub, settings = run(

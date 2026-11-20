@@ -232,6 +232,26 @@ class TestPermissionDenials:
         assert transcript.permission_denials == 2
         assert [call.denied for call in transcript.tool_calls] == [True, True, False, False]
 
+    def test_only_denied_calls_are_listed_in_transcript_order_and_a_repeat_is_kept(self, tmp_path):
+        transcript = _transcript(tmp_path, [
+            *_call_and_result("toolu_1", "Bash", {"command": "pytest -q"}, denied=True),
+            *_call_and_result("toolu_2", "Bash", {"command": "ls"}),
+            *_call_and_result("toolu_3", "Bash", {"command": "git log"}, denied=True),
+            *_call_and_result("toolu_4", "Bash", {"command": "pytest -q"}, denied=True),
+        ])
+        denied = checks.denied_tool_calls(transcript)
+        assert [call["command"] for call in denied] == ["pytest -q", "git log", "pytest -q"]
+        assert len(denied) == transcript.permission_denials
+
+    def test_a_denied_call_of_another_tool_lists_no_command(self, tmp_path):
+        denied_edit = _call_and_result("toolu_1", "Edit", {"file_path": "src/app.py", "command": "not-bash"}, denied=True)
+        assert checks.denied_tool_calls(_transcript(tmp_path, denied_edit)) == [{"tool": "Edit", "command": None}]
+
+    @pytest.mark.parametrize("tool_input", [{"command": ["pytest"]}, {}])
+    def test_a_denied_bash_call_with_no_string_command_lists_no_command(self, tmp_path, tool_input):
+        denied_bash = _call_and_result("toolu_1", "Bash", tool_input, denied=True)
+        assert checks.denied_tool_calls(_transcript(tmp_path, denied_bash)) == [{"tool": "Bash", "command": None}]
+
     def test_a_marker_on_the_enclosing_entry_denies_a_single_result(self, tmp_path):
         entry = _result("toolu_1")
         entry["tool_result_meta"] = [{"non_execution_kind": checks.NON_EXECUTION_PERMISSION_RULE}]

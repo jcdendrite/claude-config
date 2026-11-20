@@ -55,6 +55,9 @@ class ReplayRunRecord:
     out_of_session_paths: list[str] = field(default_factory=list)
     ignored_paths_count: int = 0
     ignored_paths: list[str] = field(default_factory=list)
+    # `checks.denied_tool_calls` of the final attempt's transcript. A stored record that lacks the key reads as
+    # empty, so an empty list beside a nonzero `permission_denials` means the calls were not recorded.
+    denied_tool_calls: list[dict] = field(default_factory=list)
 
     @property
     def is_ok(self) -> bool:
