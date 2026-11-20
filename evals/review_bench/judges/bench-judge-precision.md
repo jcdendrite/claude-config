@@ -55,3 +55,5 @@ quoted opening in the same order it appears in the run's own text:
 by nothing). Every run listed gets exactly one header, in this order, and no
 other header. Do not add commentary before, between, or after these
 sections.
+
+Quote one line only, copied character for character with no added backslashes; findings may share an identical opening, since the harness matches openings in order.
