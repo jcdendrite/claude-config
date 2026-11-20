@@ -34,12 +34,17 @@ HOOKS_DIR = "claude/.claude/hooks"
 HOOKS_TESTS_DIR = "claude/.claude/hooks/tests"
 SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
-# The Cursor adapter's shim and data files. The two hooks tests below run the shim through a subprocess or a path import
-# and read its JSON files, which TestCrossDomainReadCompleteness cannot see, so a change under the directory selects them
+# The Cursor adapter's shim and data files. The hooks tests below run the shim through a subprocess or a path import
+# or read its JSON files, which TestCrossDomainReadCompleteness cannot see, so a change under the directory selects them
 # by path. The blanket SCRIPTS_DIR rule still selects the scripts tests.
 CURSOR_ADAPTER_DIR = "claude/.claude/scripts/cursor-adapter"
 CURSOR_ADAPTER_READING_TESTS = (
-    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_arms.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_generated_entries.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_leading_cd.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_payloads.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_session_id.py",
+    "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_trigger_flags.py",
     "claude/.claude/hooks/tests/test_cursor_adapter_lib_parity.py",
 )
 # test_cursor_adapter_translate.py (SCRIPTS_TESTS_DIR) runs parse-manifest-dependencies.py through
