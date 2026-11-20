@@ -88,7 +88,7 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
 **This assessment's own defaults:**
 - Both line counts are reported. Each proposed ceiling is the physical count, because the size check counts physical lines.
 - The commit window is the 90 days before the pin's committer date, with renames followed.
-- A file is test code when its path has a `tests` directory component or its name is `test_*.py` or `conftest.py`. The `offenders_test` and `offenders_production` rows apply that rule. The `offenders_named_test` and `offenders_not_named_test` rows apply the name alone, so the two splits differ by the support modules that sit under a `tests` directory without a test name.
+- A file is test code when its path has a `tests` directory component or its name is `test_*.py` or `conftest.py`. The `offenders_test` and `offenders_production` rows apply that rule. The `offenders_named_test` and `offenders_not_named_test` rows apply the name alone, so the two splits differ by one support module, `claude/.claude/tests/helpers.py`, which sits under a `tests` directory without a test name.
 - One issue is proposed per split-pending file that has none.
 
 ## Method
@@ -126,7 +126,7 @@ GH-1119 lists the plan defaults and consequences below for the engineer to see w
 **Cells.** A judgment gives each row a Subject, Seams, Verdict and last cell. No cell is empty or holds a `|`.
 - A split-pending Seams cell names the seam's symbols in backticks. A build check, not committed with this report, confirmed each occurs as a whole word in the file's blob at the pin. That confirms the name is there, not that the seam is real.
 - The Verdict cell reads exactly `split pending` or `structural exception`.
-- A split-pending row's last cell reads `#<digits>` for an existing issue, or `proposed (not filed)`. The existing issues are #1117 with its sub-issues #1433 to #1436, #1530, #1531, #1532 and #1015, plus #1118, where `test_skills.py`'s phase-4 split is in flight.
+- A split-pending row's last cell reads `#<digits>` for an existing issue, or `proposed (not filed)`. The existing issues are #1117 with its sub-issues #1433 to #1436, #1530, #1531, #1532 and #1015, plus #1118, under which `test_skills.py`'s split was in progress at the pin.
 - A structural exception's last cell is reason prose with at least one backticked `path:line` or `#<digits>` citation.
 - A row the engineer declines to split becomes a structural exception whose reason reads `engineer's ruling on #<n>: "<approved text>"`, where `<n>` is this report's PR.
 
@@ -153,12 +153,12 @@ Closure files that are also offenders, from the closure function's output:
 **Environment and checks.** The measurements ran on Python 3.14.10 (main, Oct 28 2026, 12:07:23) [Clang 21.0.0 (clang-2100.1.1.101)] and git version 2.50.1 (Apple Git-155). The 90-day window starts 2026-08-22T01:33:49+0000.
 
 Each check below was run at the pin and passed.
-- The offender set and every physical count equal what `wc -l` prints over `git ls-files` for the two suffixes. This proves the newline-based physical column and the offender set, including the one test file that holds a literal U+2028.
+- The offender set and every physical count equal what `wc -l` prints over `git ls-files` for the two suffixes. This proves the newline-based physical column and the offender set, including the one offender that holds a literal U+2028.
 - The near-limit set equals the same `wc -l` listing filtered to the 900 to 1,000 range.
 - The 90-day commit count for `claude-skills/skills/tests/test_skills.py` equals an independent `git log --follow` count over the same window. This proves rename-following and the window start for that file, which `c6fcd96e` renamed inside the window.
 - The ceiling-edit load is no larger than the window's total non-merge commit count, as a count of a subset must be.
 - Two runs of the program at the pin produced byte-identical output.
-- The harness closure was computed once, while the working tree still held the pin's files. All four files the engineer named are in it, so the result is not empty.
+- The harness closure was computed once, while the working tree still held the pin's files. All four closure files listed above are in it, so the result is not empty.
 
 ## Structural exceptions
 
