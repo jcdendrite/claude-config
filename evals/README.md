@@ -1499,8 +1499,8 @@ Reading `summarize`'s primary outcome:
   task whose runs add few code lines on average can dominate it, so a gap
   between it and the paired difference points at such a task.
 - The run-to-run spread is the standard deviation of one run's ratio within a
-  task, per arm. It shows how far one run's ratio moves with no change of arm.
-  It needs `--k 2` or more.
+  task, pooled over the paired tasks, per arm. It shows how far one run's ratio
+  moves with no change of arm. It needs `--k 2` or more.
 
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
