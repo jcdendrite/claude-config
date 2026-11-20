@@ -48,11 +48,11 @@ Alternatives set aside:
 - **The `world` fixture in `claude/.claude/hooks/tests/conftest.py`.** That would make `world` a fixture of every hooks test, a wider scope than three files need.
 - **Importing `world` by name.** Ruff's F811 would fire on every test parameter named `world` (row 7).
 - **The harness in `_cursor_payloads.py`.** The pending package-conversion PR edits that file (G2).
-- **A residual `test_cursor_adapter_gate_matrix.py`.** Outside `.claude/plans/`, two sites name the file and this PR edits both (row 12). A residual would hold an arbitrary topic under the old name.
+- **A residual `test_cursor_adapter_gate_matrix.py`.** Outside `.claude/plans/`, three sites name the file (`select-tests.py`, `docs/scripts.md` and `docs/hooks.md`) and this PR edits all three (rows 12 and 29). A residual would hold an arbitrary topic under the old name.
 - **`assert_no_effects` in the helper beside `World`.** Once the effect controls join the arms, only the arms read it (row 4), and in a test module its asserts keep pytest's rewriting (G3, row 9).
 - **More than one dispatch.** Every file comes from one base copy and one fidelity run, and the helper's name list decides every file's imports.
 
-**Root:** `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` is 2,388 lines, over twice the 1,000-line limit for test files. The split moves its tests into files of at most 1,000 lines and keeps every collected test ID and its outcome. Three invariants hold: every non-blank line from :71 on moves unchanged into exactly one new file; the arms file takes the base docstring (:1–:7) whole; and no line is added to moved code. [verified: Read of the whole file at `1b4b117c`, ending at :2388; docs/design-decisions/code-file-line-limit.md:19]
+**Root:** `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` is 2,388 lines, over twice the 1,000-line limit for test files. The split moves its tests into files of at most 1,000 lines and keeps every collected test ID and its outcome. Three invariants hold: every non-blank line from :71 on moves unchanged into exactly one new file; the arms file takes the base docstring (:1–:7) whole; and no line is added to moved code. The one exception is the upstream edit that Critical files' port bullet names, which lands in the arms file (row 30). [verified: Read of the whole file at `1b4b117c`, ending at :2388; docs/design-decisions/code-file-line-limit.md:19]
 
 **Givens:**
 - G1. Merge is human-only, so the engineer decides when this PR merges relative to others. Reason: the engineer owns merge. [verified: CLAUDE.md, "AI agents: don't merge your own PRs"]
@@ -131,6 +131,10 @@ Alternatives set aside:
     3. Run `git diff --quiet <base> -- claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`, which must exit 0.
     4. Rebuild from Verification 2, since every range is anchored. Verification 8's `git rm` then removes the original again.
   - Never resolve that conflict by keeping the deletion before step 4 has consumed `origin/main`'s version.
+  - Instead of step 4's rebuild, a hand port of the upstream hunks into the files that hold those lines is allowed (row 30, Critical files). It takes these steps:
+    - Take `<base>` as the synced `git rev-parse HEAD` and write `git show <base>:claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` over `before.py` in `<scratch>`.
+    - Re-record `before.xml` as Verification 2 does, since step 5's test-ID comparison reads it.
+    - Rerun Verification 4 through 8 against that `before.py`, since the line and `nodes` checks must read the same copy the port was made from.
   - A conflict in `CURSOR_ADAPTER_READING_TESTS` keeps every entry from `origin/main`'s side, drops the old path, adds the six new paths in Critical files' order and keeps `test_cursor_adapter_lib_parity.py`. If that side renamed the constant or re-listed the gate-matrix tests, the plan stops for the engineer.
   - A conflict in `test_select_tests.py` or `docs/scripts.md` takes `origin/main`'s side, then reapplies the one-line change only if the old text remains. Otherwise the plan stops for the engineer.
   - After any resolution, Verification 4 and 8 rerun, step 8's greps included.
@@ -206,6 +210,8 @@ Alternatives set aside:
 26. The plan keeps two edits the peer's target list did not name: the test name at `test_select_tests.py:2037` and the wording of the comment at `select-tests.py:37–:38`. [engineer-verified: "Keep both edits (Recommended)"]
 27. The Ask line's first quote and row 23's quote are the engineer's own words. [engineer-verified: "Yes, both are mine"]
 28. The plan proceeds as one PR at its projected diff. [engineer-verified: "Proceed anyway"]
+29. The plan edits `docs/hooks.md:308`, which a merged PR added after the plan's base and which names the deleted file. [engineer-verified: "Yes, edit it (Recommended)"]
+30. The plan keeps the hand port of the upstream edit to the original in the arms file, and the PR body states it. [engineer-verified: "Keep the port (Recommended)"]
 
 ## Critical files
 
@@ -251,6 +257,14 @@ Files:
   - In the comment at :37–:38, "The two hooks tests below run the shim" becomes "The hooks tests below run the shim", and "and read its JSON files" becomes "or read its JSON files". No line rewraps.
 - Modify `claude/.claude/scripts/tests/test_select_tests.py:2037`: `test_any_path_under_the_adapter_directory_selects_the_two_reading_hooks_tests_and_the_scripts_tests` becomes `test_any_path_under_the_adapter_directory_selects_the_reading_hooks_tests_and_the_scripts_tests`. This is the one file the peer's target list does not name (row 12).
 - Modify `docs/scripts.md:629`: "`_cursor_payloads.py`, `test_cursor_adapter_gate_matrix.py` and `test_cursor_adapter_lib_parity.py`" becomes "`_cursor_payloads.py`, the `test_cursor_adapter_gate_matrix_*.py` files with their shared `_cursor_gate_matrix_helpers.py`, and `test_cursor_adapter_lib_parity.py`".
+- Modify `docs/hooks.md:308`: the path `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py` becomes `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_arms.py`, the file that holds `EVENT_SPEC_IDS`. A merged PR added this sentence after the plan's base, and Verification 8's grep finds it.
+- Port the one upstream edit to the original that landed after the plan's base, in the arms file only. The edit makes four changes:
+  - It adds the `PreCompact` entry to `EVENT_SPEC_IDS`.
+  - It adds two comment lines above `EVENT_SPEC_IDS`.
+  - It rewords that comment's first line.
+  - It adds `test_every_registration_parity_exception_names_a_current_registration` to `TestGateMatrix`.
+
+  The port is a hand edit, so the move is no longer byte-identical for those lines. The `nodes` and line checks run against the upstream copy of the original and confirm the port.
 - Commit `.claude/plans/split-cursor-adapter-gate-matrix-tests.md`, this plan, with the change.
 
 **Reuse:**
@@ -258,7 +272,7 @@ Files:
 - The fixture-binding form of `claude/.claude/scripts/tests/test_cursor_adapter_install_roundtrip.py:15` and :35–:37, with its comment made singular (M6, row 7).
 - `_cursor_payloads.py`'s and `_cursor_identity_fixtures.py`'s names and `helpers.py`'s `HOOKS_DIR`, `REPO_ROOT`, `SCRIPTS_DIR`, `_hook_class` and `symlink_hooks_lib_chain`, imported unchanged.
 
-Projected diff: about 4,955 changed lines, about 2,561 added and 2,393 deleted. The seven new files hold about 2,551 lines, the deleted file 2,388, and the three edited files change about 15 between them.
+Projected diff: about 4,975 changed lines, about 2,571 added and 2,402 deleted. The seven new files hold about 2,561 lines, the deleted file 2,397, and the four edited files change about 16 between them.
 
 ## Verification
 
@@ -303,7 +317,7 @@ Rules for every step:
 8. **Size, delete, stage and suite.**
    - `wc -l` prints at most 1,000 for every new file (row 2). An arms file over 1,000 stops the plan for a revision that returns `TestEffectDetectorsHavePositiveControls` through `TestBootstrapProjectPluginsRow` to the leading-cd file, under the banner they sit under in the base.
    - Run `git rm claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py`.
-   - Stage with `git add -- <the helper, the six test files, select-tests.py, test_select_tests.py, docs/scripts.md and this plan file>` as its own call, because `deny-invisible-commit-content.sh` denies a mutating git command chained ahead of a commit (:35).
+   - Stage with `git add -- <the helper, the six test files, select-tests.py, test_select_tests.py, docs/scripts.md, docs/hooks.md and this plan file>` as its own call, because `deny-invisible-commit-content.sh` denies a mutating git command chained ahead of a commit (:35).
    - `git grep -nE --untracked 'test_cursor_adapter_gate_matrix([^_]|$)' -- . ':!.claude/plans' ':!docs/reports'` prints nothing (row 12). The `docs/reports` pathspec skips a dated report that names the old file as a record and stays unedited.
    - `git grep -nE 'two hooks tests|two_reading_hooks' -- claude/.claude/scripts` prints nothing (row 12).
    - A scratch check shows the routing list is complete. It imports `select-tests.py` and compares the set of `claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix_*.py` files on disk with the entries of `CURSOR_ADAPTER_READING_TESTS` that match that glob. The two sets are equal and have six members. A copy of the constant with one entry removed must fail the check. The full-suite run in the next bullet cannot show this, because `select-tests.py` selects the full suite on its own.
@@ -314,7 +328,7 @@ Rules for every step:
    - Any edit after step 3 reruns steps 4 through 8. Step 8's `git rm` runs only on the first pass. After such a rerun, restage and re-review. This applies to `/ready-for-review` rounds too.
    - Ask the engineer for `Proceed anyway` (row 18). On that answer, run `~/.claude/scripts/diff-size-ack.sh` as its own bare call from the worktree root, because it measures the index. Then commit.
    - Run `git push -u origin split-cursor-adapter-gate-matrix-tests`, then `/ready-for-review`, which opens the PR.
-     - The PR body carries the class-to-file map, from a scratch listing of each new file's top-level classes saved in `<scratch>` and passed to the skill by path. It gives each new file's line count and its room under 1,000, step 5's before and after counts, and step 6's two `compared-nodes` lines.
+     - The PR body carries the class-to-file map, from a scratch listing of each new file's top-level classes saved in `<scratch>` and passed to the skill by path. It gives each new file's line count and its room under 1,000, step 5's before and after counts, and step 6's two `compared-nodes` lines. It also states that the arms file carries a hand port of one upstream edit (row 30), which hunks it ported, and that the `nodes` and line checks ran against the synced base's copy of the original.
      - It lists the skipped IDs from `after.xml` and says CI's first green run is their witness. It says the line-check and wrapper scripts live in `<scratch>` and cannot be re-run by a reviewer.
      - It names the helper's loss of pytest assertion rewriting for `_decision`'s one assert, which now fails with its message alone (row 9).
      - It says `TestEffectDetectorsHavePositiveControls` and `TestBootstrapProjectPluginsRow` left the base's leading-cd banner for the arms file (M2).
@@ -331,8 +345,8 @@ Rules for every step:
 - **`claude/.claude/hooks/tests/_cursor_payloads.py`.** It stays unedited, because the pending package-conversion PR edits it (G2). No moved name goes there.
 - **`.claude/plans/cursor-adapter.md`.** It names the old file 13 times, Phase 5a's and Phase 5b's file lists among them (row 12). It stays unedited, and the PR body says the Phase 5a session retargets its file names. Other `.claude/plans/` files that cite this file also stay as written.
 - **The peer's do-not-touch list:** `select-tests.py`'s helper-only import enforcement, pytest assertion rewriting in the conftest files, and `hook-shim.py`. Registering the new helper for rewriting falls under it, so `_decision`'s loss of rewriting stays a PR-body note (row 9).
-- **Renaming, rewording, merging or fixing any moved test, helper or comment.** This includes giving the helpers public names. The Root forbids editing a moved line.
-- **Room for later tests.** The arms file lands near 856 lines and leaves about 144. The helper, where new trigger rows land, leaves about 455. An addition past a file's budget needs its own change, such as returning the effect controls and the bootstrap row to the leading-cd file. The PR body's per-file line counts let the `cursor-adapter-phase4` session see each budget.
+- **Renaming, rewording, merging or fixing any moved test, helper or comment.** This includes giving the helpers public names. The Root forbids editing a moved line, except the upstream port in row 30.
+- **Room for later tests.** The arms file lands near 865 lines and leaves about 135. The helper, where new trigger rows land, leaves about 455. An addition past a file's budget needs its own change, such as returning the effect controls and the bootstrap row to the leading-cd file. The PR body's per-file line counts let the `cursor-adapter-phase4` session see each budget.
 - **The 1,000-line enforcing check.** `docs/design-decisions/code-file-line-limit.md:50–:57` defers it until an offender assessment exists.
 - **Other files over the limit.** Each is its own split.
 - **A permanent test that every gate-matrix file is in `CURSOR_ADAPTER_READING_TESTS`.** Verification 8's scratch check covers this change. A lasting guard is a repo change with its own seeded-defect test, and the peer's do-not-touch list leaves `select-tests.py` enforcement alone.
