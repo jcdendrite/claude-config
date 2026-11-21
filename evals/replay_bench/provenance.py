@@ -114,6 +114,7 @@ def read_runner_provenance(repo_root: Path | None = None) -> RunnerProvenance:
     root = review_runner.REPO_ROOT if repo_root is None else repo_root
     # A `GIT_DIR` or `GIT_WORK_TREE` in the caller's environment would point git at another repository.
     git_environment = isolated_git_environment()
+    # An unreadable reading carries no cause, and includes a checkout that git refuses to read, such as one owned by another user.
     try:
         commit = review_runner._read_environment_field(
             ["git", "rev-parse", "HEAD"], field="runner commit", cwd=root, env=git_environment,

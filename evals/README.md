@@ -1510,13 +1510,16 @@ added non-test code lines. It covers only the tasks the primary difference
 pairs, so a task with no valid run in one arm enters neither arm's rate. It
 prints each arm's rate pooled over the paired tasks, the merged commits'
 (reference) rate over the same tasks, and for each paired task the `toolkit` and
-`bare` rates. A task's rate is its valid runs' mean docstring lines over their
-mean code lines, and the pooled rate weights each task by its code lines. The
+`bare` rates. A one-arm campaign (`--arm` with a single arm) has no paired
+task, so every rate in the secondary outcome prints `n/a`. A task's rate is its
+valid runs' mean docstring lines over their mean code lines, and the pooled rate
+weights each task by its code lines. The
 rates carry no interval. The per-task lines and their task IDs stay in local
-output. An ID is the first 8 hex digits of a hash of the source repository's
-path, a hyphen, and the first 12 hex digits of the task's commit, copied as they
-are. The commit half is not hashed, so it names a commit in any public
-repository, and a per-task figure identifies a repository and a commit. The
+output. An ID is two parts joined by a hyphen: the first 8 hex digits of the
+SHA-256 of the source repository's path, then the first 12 hex digits of the
+task's commit, unhashed. The commit half is not hashed, so it names a commit in
+any public repository, and a per-task figure identifies a repository and a
+commit. The
 `run` progress lines and the halt messages print the same IDs beside per-task
 spend and ok and missing counts, so the same locality applies to them.
 
@@ -1712,7 +1715,8 @@ states the same constraint.
 
 `smoke` runs one block of one run per arm (`toolkit` and `bare`) on the task
 you name, and takes no `--k`. It prints its nominal cost ceiling before the
-first launch. For each run it prints the status, instruction loads by class,
+first launch. For each run it prints the status, an `empty final text` line
+when the run ended with no text, instruction loads by class,
 the first-turn prompt size, the Bash commands, out-of-fixture paths, the
 permission-denial count, the allow-list Reads, the change's metrics, the cost,
 the fixture-build seconds and the wall clock. A smoke run removes the
@@ -1810,9 +1814,9 @@ first block. `summarize` prints the same clause on its
 - A stored commit that is not a full hex object name, or a stored flag that is
   not a boolean, reads as unreadable in the manifest. A run record holding
   either is refused as unreadable.
-- A record with the new keys (`runner_commit`, `runner_dirty` and
-  `empty_final_text`) is unreadable by a checkout that predates them, because a
-  record with an unknown key is refused.
+- A checkout that lacks `runner_commit`, `runner_dirty` and `empty_final_text`
+  refuses a record that carries them, because it refuses a record with an
+  unknown key.
 - The flag sees only `evals/`, so an edit elsewhere in the checkout does not set
   it. It also misses ignored files and entries marked `skip-worktree` or
   `assume-unchanged`, and it holds no digest of an uncommitted diff.
@@ -1907,7 +1911,7 @@ missing with its reason.
     later check keeps the flag in its record and stays out of that count.
   - A run that changed nothing and ended with no text is `ok` with no code line.
     It does not count toward a failed block and never trips the failed-blocks
-    halt. It surfaces only in `summarize`: the diagnostics counts of runs with no
+    halt. In a campaign it surfaces only in `summarize`: the diagnostics counts of runs with no
     non-test code line and of runs with an empty final text, and the paired
     outcome's exclusion for no non-test code line in an arm.
   - Every other check still applies, including `api-error-final-record`, whose
@@ -1952,7 +1956,11 @@ missing with its reason.
   names that alias path reaches the same leak checks as the live path. A Bash
   command that reaches the file only through a relative path after changing
   directory, such as `cd ~ && cd .claude && cat scripts/<changed file>`, is an
-  invisible shape. The bench adds no permission rule that denies the alias.
+  invisible shape. So is a read such as `cat "$CLAUDE_CONFIG_DIR/scripts/<changed
+  file>"`, because the Bash scan expands only `~`, `$HOME` and `$PWD`. It is
+  unverified whether the Bash tool inherits `CLAUDE_CONFIG_DIR`, which the
+  launch sets in the session's environment for an account that has it. The bench
+  adds no permission rule that denies the alias.
 - **Uncommitted toolkit edits.** The environment drift check compares the CLI
   version and the config checkout's `HEAD` commit. It cannot see an uncommitted
   edit to a toolkit file the `toolkit` arm reads live.

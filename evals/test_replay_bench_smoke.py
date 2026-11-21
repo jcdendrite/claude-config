@@ -77,6 +77,19 @@ class TestAPassingSmoke:
         assert exit_code == 0 and smoke_pass_exists(world)
         assert checks.EXCLUDE_NOTE_NOT_EXERCISED in output
 
+    def test_a_run_that_ends_with_no_text_passes_and_the_printout_names_it_for_each_arm(self, world, capsys):
+        """An empty final text sets a flag on the record and fails no smoke condition."""
+        exit_code, _stub = run_smoke(world, by_call=lambda call: Scenario(final_text=""))
+
+        output = capsys.readouterr().out
+        assert exit_code == 0 and smoke_pass_exists(world)
+        assert output.count("empty final text: the run ended with no text") == 2
+
+    def test_a_run_that_ends_with_text_prints_no_empty_final_text_line(self, world, capsys):
+        run_smoke(world)
+
+        assert "empty final text" not in capsys.readouterr().out
+
     def test_the_first_printed_line_names_the_cost_ceiling_for_one_block(self, world, capsys):
         run_smoke(world)
 

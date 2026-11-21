@@ -49,6 +49,8 @@ def format_run_report(arm_name: str, outcome: RunOutcome) -> list[str]:
     lines = [f"[{arm_name}] status: {status}"]
     if record.missing_detail:
         lines.append(f"  detail: {record.missing_detail}")
+    if record.empty_final_text:
+        lines.append("  empty final text: the run ended with no text")
     loads = {load_class: sorted(paths) for load_class, paths in record.subagent_loads.items()}
     lines.append(f"  subagent instruction loads: {loads!r}")
     lines.append(f"  first-turn prompt size: {record.first_turn_prompt_size}")

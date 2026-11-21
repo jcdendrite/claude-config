@@ -569,6 +569,7 @@ class PinnedCampaign:
         self.accounts = {self.tasks[0].source_repo: self.account}
         self.manifest_path = self.local_dir / "campaigns" / "test" / "manifest.json"
         monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
         self.manifest_path.parent.mkdir(parents=True)
         self.manifest_path.write_text(json.dumps(campaign._manifest_for(
             self.config(), self.accounts, {self.account.key: READING}, RUNNER,

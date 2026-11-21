@@ -372,6 +372,17 @@ class TestTheLiveCopyOfANestedScriptsFileThroughTheConfigDirAlias:
 
         assert record.missing_reason is None
 
+    def test_a_read_through_the_config_dir_variable_is_not_seen(self, aliased_world, monkeypatch):
+        """Pins an invisible shape the README lists among the accepted residuals: the scan expands only `~`,
+        `$HOME` and `$PWD`, so a `$CLAUDE_CONFIG_DIR` token matches no leak target."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(aliased_world[0].config_dir))
+        record = self.run_toolkit(
+            aliased_world,
+            Scenario(tool_calls=[("Bash", {"command": 'cat "$CLAUDE_CONFIG_DIR/scripts/tool.py"'}, False)]),
+        )
+
+        assert record.missing_reason is None
+
 
 class TestPathReasonsReachTheRecord:
     @pytest.mark.parametrize(("arm_name", "relative_path"), [("toolkit", ""), ("toolkit", "projects"), ("bare", "projects")])
