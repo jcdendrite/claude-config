@@ -128,9 +128,9 @@ def _without_child_output[ResultT](call: Callable[[], ResultT], description: str
 
 
 def live_checkout_roots_for(task: tasks.ReplayTask, account: Account) -> tuple[Path, ...]:
-    """The defaults, the task's source repository and the account's own config checkout, which the config dir's
-    links resolve into whether or not the defaults cover it. Called through `review_runner`'s module attributes, so
-    a test's stub reaches them."""
+    """The roots the leak checks guard: the defaults plus the worktree top levels of the task's source repository
+    and of the account's config checkout. The config dir's links resolve into that checkout whether or not the
+    defaults cover it. Called through `review_runner`'s module attributes, so a test's stub reaches them."""
     def roots() -> tuple[Path, ...]:
         return tuple(dict.fromkeys((
             *review_runner.default_live_checkout_roots(),
