@@ -281,7 +281,6 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
 
     paired = paired_outcome(block_records)
 
-    manifest, manifest_problem = _read_manifest(campaign_dir / MANIFEST_NAME)
     reference, reference_problem = _read_reference_metrics(local_dir, manifest.get("tasks_name"), manifest.get("task_set_hash"))
     reference_problem = manifest_problem or reference_problem
 
@@ -333,7 +332,7 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
         toolkit_rate, bare_rate = (
             _docstring_rate_of_counts([_arm_docstring_counts(block_records[task_id], arm.name)]) for arm in (TOOLKIT, BARE)
         )
-        lines.append(f"  paired task {task_id}: toolkit {_number(toolkit_rate)}, bare {_number(bare_rate)}")
+        lines.append(f"  paired task {task_id!r}: toolkit {_number(toolkit_rate)}, bare {_number(bare_rate)}")
 
     lines.append("diagnostics per arm:")
     for arm_name in arm_names:
@@ -347,7 +346,7 @@ def summarize(campaign_dir: Path, *, local_dir: Path, budget_cap_usd: float) -> 
             f"python files ast.parse rejected {sum(r.metrics['python_files_ast_rejected'] for r in valid)}, "
             f"runs with a permission-rule denial {sum(1 for r in arm_records if r.permission_denials)}, "
             f"runs with no non-test code line {no_code_runs}, "
-            f"runs with an empty final text {sum(1 for r in arm_records if r.empty_final_text)}, "
+            f"runs with an empty final text {sum(1 for r in valid if r.empty_final_text)}, "
             f"non_file_entries {sum(r.metrics['non_file_entries'] for r in valid)}, "
             f"ignored_paths {sum(r.ignored_paths_count for r in arm_records)}, "
             f"undecodable_files {sum(r.metrics['undecodable_files'] for r in valid)}"

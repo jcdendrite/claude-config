@@ -103,11 +103,11 @@ class TestAValidRun:
 
     @pytest.mark.parametrize("has_uncommitted_changes", [False, True, None])
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
-    def test_the_record_carries_the_runner_provenance_of_its_block(self, world, arm_name, has_uncommitted_changes):
-        """Kills: a `runner_dirty` that does not follow the block's reading, such as a hard-coded False."""
+    def test_the_record_carries_the_runner_provenance_of_its_settings(self, world, arm_name, has_uncommitted_changes):
+        """Kills: a `runner_dirty` that does not follow the process's reading, such as a hard-coded False."""
         runner = dataclasses.replace(RUNNER, has_uncommitted_changes=has_uncommitted_changes)
         launch_stub = world.launch()
-        outcome = execute_run(make_settings(world, launch_stub), make_block(world, runner=runner), arm_name, 0)
+        outcome = execute_run(make_settings(world, launch_stub, runner=runner), make_block(world), arm_name, 0)
 
         assert (outcome.record.runner_commit, outcome.record.runner_dirty) == (RUNNER.commit, has_uncommitted_changes)
 
@@ -136,6 +136,29 @@ class TestAValidRun:
         assert (record.status, record.missing_reason) == ("ok", None)
         assert record.empty_final_text is True
         assert record.metrics["line_counts"]["non_test"]["code"] == 0
+
+    @pytest.mark.parametrize("arm_name", ARM_NAMES)
+    def test_a_blank_text_block_after_earlier_narration_sets_the_flag(self, world, arm_name):
+        """The flag follows the last text block of the whole transcript, and here that block is the blank one."""
+        outcome, _launch_stub, _settings = run(
+            world, arm_name, lambda _n, _a: Scenario(final_text="  \n", narration="Adding the module now."),
+        )
+
+        assert outcome.record.status == "ok"
+        assert outcome.record.empty_final_text is True
+
+    @pytest.mark.parametrize("arm_name", ARM_NAMES)
+    def test_a_blank_final_text_and_a_path_check_failure_record_a_missing_run_with_the_flag_set(self, world, arm_name):
+        """The flag describes the transcript, not the run's status: a run that fails a check after the validity pass
+        keeps it set, which is why `summarize` counts the flag over valid runs only."""
+        target = str(world.root / "elsewhere.py")
+        outcome, _launch_stub, _settings = run(
+            world, arm_name, lambda _n, _a: Scenario(final_text="", tool_calls=[("Write", {"file_path": target}, False)]),
+        )
+
+        assert outcome.record.missing_reason == checks.REASON_OUT_OF_FIXTURE_WRITE
+        assert outcome.record.status == "missing"
+        assert outcome.record.empty_final_text is True
 
     @pytest.mark.parametrize("arm_name", ARM_NAMES)
     def test_earlier_narration_before_a_text_less_final_turn_leaves_the_flag_clear(self, world, arm_name):
@@ -259,6 +282,95 @@ class TestTranscriptUnreadable:
         monkeypatch.setattr(review_runner, "extract_read_like_calls", unreadable)
         outcome, _launch_stub, _settings = run(world, arms.BARE.name)
         assert outcome.record.missing_reason == review_runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+
+
+class TestTheLiveCopyOfANestedScriptsFileThroughTheConfigDirAlias:
+    """A task that changes `claude/.claude/scripts/tool.py` has a live copy that the toolkit arm's config dir links to
+    as `<config dir>/scripts/tool.py`, so the alias is a second path to the reference solution."""
+
+    CHANGED_PATH = "claude/.claude/scripts/tool.py"
+
+    @pytest.fixture
+    def aliased_world(self, world):
+        live = world.root / "live-checkout"
+        live_scripts = live / "claude" / ".claude" / "scripts"
+        live_scripts.mkdir(parents=True)
+        (live_scripts / "tool.py").write_text("x = 1\n")
+        (world.config_dir / "scripts").symlink_to(live_scripts)
+        task = dataclasses.replace(world.task, changed_paths=(self.CHANGED_PATH,))
+        return world, task, live
+
+    def run_toolkit(self, aliased_world, scenario: Scenario):
+        world, task, live = aliased_world
+        launch_stub = world.launch(lambda _n, _a: scenario)
+        block = make_block(world, task=task, live_checkout_roots=(live,))
+        return execute_run(make_settings(world, launch_stub), block, arms.TOOLKIT.name, 0).record
+
+    def test_a_read_through_the_alias_fails_live_checkout_leak(self, aliased_world):
+        alias = aliased_world[0].config_dir / "scripts" / "tool.py"
+
+        record = self.run_toolkit(aliased_world, Scenario(tool_calls=[("Read", {"file_path": str(alias)}, False)]))
+
+        assert record.missing_reason == review_runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    def test_a_glob_through_the_alias_fails_live_checkout_leak(self, aliased_world):
+        alias_dir = aliased_world[0].config_dir / "scripts"
+
+        record = self.run_toolkit(
+            aliased_world, Scenario(tool_calls=[("Glob", {"path": str(alias_dir), "pattern": "*.py"}, False)]),
+        )
+
+        assert record.missing_reason == review_runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    def test_a_bash_command_naming_the_alias_fails_out_of_fixture_path(self, aliased_world):
+        alias = str(aliased_world[0].config_dir / "scripts" / "tool.py")
+
+        record = self.run_toolkit(aliased_world, Scenario(tool_calls=[("Bash", {"command": f"cat {alias}"}, False)]))
+
+        assert record.missing_reason == checks.REASON_OUT_OF_FIXTURE_PATH
+        assert alias in record.out_of_fixture_tokens
+
+    def test_a_grep_through_the_alias_fails_live_checkout_leak(self, aliased_world):
+        alias = aliased_world[0].config_dir / "scripts" / "tool.py"
+
+        record = self.run_toolkit(
+            aliased_world, Scenario(tool_calls=[("Grep", {"path": str(alias), "pattern": "x"}, False)]),
+        )
+
+        assert record.missing_reason == review_runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_input_for"),
+        [
+            ("Read", lambda alias_dir, sibling: {"file_path": str(sibling)}),
+            ("Glob", lambda alias_dir, sibling: {"path": str(alias_dir), "pattern": sibling.name}),
+            ("Bash", lambda alias_dir, sibling: {"command": f"cat {sibling}"}),
+        ],
+    )
+    def test_a_read_of_an_unchanged_file_under_the_alias_directory_stays_clean(
+        self, aliased_world, tool_name, tool_input_for,
+    ):
+        """The allow side: the alias directory holds other scripts a toolkit run may read, so a verdict that tracks
+        the directory instead of the changed file would fail every toolkit run."""
+        world = aliased_world[0]
+        (world.root / "live-checkout" / "claude" / ".claude" / "scripts" / "other.py").write_text("y = 2\n")
+        alias_dir = world.config_dir / "scripts"
+
+        record = self.run_toolkit(
+            aliased_world, Scenario(tool_calls=[(tool_name, tool_input_for(alias_dir, alias_dir / "other.py"), False)]),
+        )
+
+        assert record.missing_reason is None
+
+    def test_a_relative_read_after_changing_into_the_config_dir_is_not_seen(self, aliased_world):
+        """Pins an invisible shape the README lists among the accepted residuals: no token names a path at or below
+        the config dir, so the scan has nothing to match."""
+        record = self.run_toolkit(
+            aliased_world,
+            Scenario(tool_calls=[("Bash", {"command": "cd ~ && cd .claude && cat scripts/tool.py"}, False)]),
+        )
+
+        assert record.missing_reason is None
 
 
 class TestPathReasonsReachTheRecord:
@@ -1774,24 +1886,23 @@ class TestTheCommandLine:
         self, run_ready, monkeypatch, tmp_path,
     ):
         """Kills: dropping `flush=True` from the `campaign <id>` print. A detached run's stdout is a block-buffered
-        file, so an unflushed line is lost with the process."""
+        file, so an unflushed line is lost with the process. It also pins that the line prints before the first
+        environment read."""
         monkeypatch.setattr(msmr, "_run_claude_to_completion", run_ready.launch())
         redirected = tmp_path / "stdout.txt"
-        seen_while_running = []
+        seen_after_the_line = []
 
-        def observe(*_args, **_kwargs):
-            seen_while_running.append(redirected.read_text())
-            return 0
+        def observing_read(*, checkout_root=None):
+            seen_after_the_line.append(redirected.read_text())
+            return READING
 
-        monkeypatch.setattr(campaign, "run_campaign", observe)
+        monkeypatch.setattr(review_runner, "read_environment_record", observing_read)
         with redirected.open("w", buffering=8192) as stream:
             monkeypatch.setattr(sys, "stdout", stream)
             code = main_run(*self.RUN_ARGV, "--campaign-id", "detached")
 
         assert code == 0
-        assert len(seen_while_running) == 1 and seen_while_running[0].endswith(
-            f"campaign detached (runner commit {RUNNER.commit})\n",
-        )
+        assert seen_after_the_line[0].endswith(f"campaign detached (runner commit {RUNNER.commit})\n")
 
     def test_a_hostile_refusal_reaches_stderr_escaped(
         self, run_ready, monkeypatch, capsys,

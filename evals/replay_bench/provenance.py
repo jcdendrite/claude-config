@@ -4,6 +4,7 @@ Nothing here halts a run: a probe that fails records None.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -17,6 +18,22 @@ MANIFEST_COMMIT_KEY = "runner_commit"
 MANIFEST_DIRTY_KEY = "runner_dirty"
 # Both bench packages live under this top-level directory of the runner's checkout.
 RUNNER_SOURCE_DIR = "evals"
+# A full SHA-1 or SHA-256 object name.
+_OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def is_object_name(value: object) -> bool:
+    return isinstance(value, str) and _OBJECT_NAME.fullmatch(value) is not None
+
+
+def is_valid_commit_field(value: object) -> bool:
+    """A stored `runner_commit`: a full hex object name, or None for an unreadable probe."""
+    return value is None or is_object_name(value)
+
+
+def is_valid_dirty_field(value: object) -> bool:
+    """A stored `runner_dirty`: a bool, or None for an unreadable probe."""
+    return value is None or isinstance(value, bool)
 
 
 @dataclass(frozen=True)
@@ -32,13 +49,12 @@ class RunnerProvenance:
 
     @classmethod
     def from_manifest(cls, manifest: Mapping) -> RunnerProvenance | None:
-        """None for a manifest written before these fields existed, or one whose fields have the wrong type."""
+        """None for a manifest written before these fields existed. A field with an invalid value reads as None,
+        which `describe` words as unreadable."""
         if MANIFEST_COMMIT_KEY not in manifest or MANIFEST_DIRTY_KEY not in manifest:
             return None
         commit, is_dirty = manifest[MANIFEST_COMMIT_KEY], manifest[MANIFEST_DIRTY_KEY]
-        if not (commit is None or isinstance(commit, str)) or not (is_dirty is None or isinstance(is_dirty, bool)):
-            return None
-        return cls(commit, is_dirty)
+        return cls(commit if is_valid_commit_field(commit) else None, is_dirty if is_valid_dirty_field(is_dirty) else None)
 
 
 def describe(provenance: RunnerProvenance | None) -> str:
@@ -105,7 +121,7 @@ def read_runner_provenance(repo_root: Path | None = None) -> RunnerProvenance:
     except HarnessInvalidatedError:
         commit = None
     try:
-        # `--no-optional-locks` stops status from writing its refreshed index, which would contend with the user's own git calls.
+        # The git(1) manual documents `--no-optional-locks` as skipping optional operations that need locks.
         status = review_runner._read_environment_field(
             ["git", "--no-optional-locks", "status", "--porcelain", "--", RUNNER_SOURCE_DIR],
             field="runner status", cwd=root, env=git_environment,
@@ -113,4 +129,4 @@ def read_runner_provenance(repo_root: Path | None = None) -> RunnerProvenance:
         has_uncommitted_changes: bool | None = bool(status)
     except HarnessInvalidatedError:
         has_uncommitted_changes = None
-    return RunnerProvenance(commit or None, has_uncommitted_changes)
+    return RunnerProvenance(commit if is_object_name(commit) else None, has_uncommitted_changes)

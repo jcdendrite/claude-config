@@ -60,6 +60,8 @@ class RunSettings:
     spend: SpendFile
     runner_environ: Mapping[str, str]
     launch: Launch
+    # Read once when the process starts its blocks, so every record names the checkout state the process began with.
+    runner: RunnerProvenance
     # Set when a worker fails or the run is interrupted.
     stop: threading.Event = field(default_factory=threading.Event)
     # (task ID, session ID) of each launch that began and could not be charged.
@@ -78,7 +80,6 @@ class BlockContext:
     account: account_mod.Account
     environment: review_runner.EnvironmentRecord
     live_checkout_roots: tuple[Path, ...]
-    runner: RunnerProvenance
 
 
 @dataclass(frozen=True)
@@ -100,8 +101,7 @@ class AttemptResult:
     fixture_build_s: float | None = None
     observed_model: str | None = None
     capture: diffing.ChangeCapture | None = None
-    # The transcript's last text block is blank or absent, so a text-less final turn after earlier narration leaves it
-    # False. A replay run's deliverable is the change it leaves in the tree.
+    # Computed from `validity.findings_text` and defined on `ReplayRunRecord.empty_final_text`.
     empty_final_text: bool = False
     first_turn_prompt_size: int | None = None
     subagent_loads: Mapping = field(default_factory=dict)

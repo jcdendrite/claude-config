@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 from replay_bench import arms, attempt, campaign, tasks
-from replay_bench import runner as replay_runner
 from replay_bench.account import Account
 from replay_bench.comment_metrics import CommentMetrics
 from replay_bench.provenance import RunnerProvenance
@@ -44,7 +43,8 @@ AGENT_ID = "synthetic-agent-id"
 TOOLKIT_FIRST_TURN_SIZE = 6000
 BARE_FIRST_TURN_SIZE = 1000
 READING = EnvironmentRecord("2.1.322", "synthetic-commit")
-RUNNER = RunnerProvenance("synthetic-runner-commit", False)
+RUNNER = RunnerProvenance("1" * 40, False)
+EDITED_RUNNER = RunnerProvenance("2" * 40, True)
 # A sleeping fake outlasts its timeout by far more than a loaded host can stall a spawn.
 SLEEP_PAST_TIMEOUT_S = 60
 SLEEP_REFUSAL_BOUND_S = 30
@@ -395,7 +395,6 @@ def build_replay_world(
     monkeypatch.setattr(review_runner, "_worktree_top_levels", lambda checkout: ())
     # Only the provenance tests probe git for real, over their own throwaway repositories.
     monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
-    monkeypatch.setattr(replay_runner, "read_runner_provenance", lambda: RUNNER)
     return ReplayWorld(tmp_path, home, config_dir, local_dir, repo, task_list, make_account(config_dir, home))
 
 
@@ -414,7 +413,7 @@ def add_second_account(world: ReplayWorld, task_count: int = 1) -> tuple[Account
 
 def make_settings(
     world: ReplayWorld, launch: Callable, *, campaign_id: str = "test", fixture_git_timeout_s: float = 60.0,
-    budget_cap_usd: float = 10.0,
+    budget_cap_usd: float = 10.0, runner: RunnerProvenance = RUNNER,
 ) -> attempt.RunSettings:
     campaign_dir = world.local_dir / "campaigns" / campaign_id
     return attempt.RunSettings(
@@ -423,14 +422,14 @@ def make_settings(
         run_store=RunStore(campaign_dir / "store"),
         spend=SpendFile(campaign_dir / "spend.jsonl", budget_cap_usd=budget_cap_usd),
         runner_environ={"PATH": "/usr/bin", "HOME": str(world.home)}, launch=launch,
+        runner=runner,
     )
 
 
 def make_block(
     world: ReplayWorld, task: tasks.ReplayTask | None = None, live_checkout_roots: tuple[Path, ...] = (),
-    runner: RunnerProvenance = RUNNER,
 ) -> attempt.BlockContext:
-    return attempt.BlockContext(task or world.task, world.account, READING, live_checkout_roots, runner)
+    return attempt.BlockContext(task or world.task, world.account, READING, live_checkout_roots)
 
 
 def spend_lines(settings: attempt.RunSettings) -> list[dict]:

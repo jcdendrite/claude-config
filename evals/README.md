@@ -1512,7 +1512,13 @@ prints each arm's rate pooled over the paired tasks, the merged commits'
 (reference) rate over the same tasks, and for each paired task the `toolkit` and
 `bare` rates. A task's rate is its valid runs' mean docstring lines over their
 mean code lines, and the pooled rate weights each task by its code lines. The
-rates carry no interval.
+rates carry no interval. The per-task lines and their task IDs stay in local
+output. An ID is the first 8 hex digits of a hash of the source repository's
+path, a hyphen, and the first 12 hex digits of the task's commit, copied as they
+are. The commit half is not hashed, so it names a commit in any public
+repository, and a per-task figure identifies a repository and a commit. The
+`run` progress lines and the halt messages print the same IDs beside per-task
+spend and ok and missing counts, so the same locality applies to them.
 
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
@@ -1778,11 +1784,18 @@ detached run's redirected output shows them as they happen.
 The `campaign <id>` line ends with the runner commit, which is the `HEAD` of the
 checkout the bench's code runs from, not the config checkout. It adds
 `with uncommitted changes under evals/` when `git status` lists a change or an
-untracked, unignored file there. `summarize` prints the same clause on its
+untracked, unignored file there. The process reads both once, at the start of
+`run`'s campaign, before it reads each account's environment and before its
+first block. `summarize` prints the same clause on its
 `campaign '<id>'` line. The runner commit is recorded and never compared:
 
 - The manifest holds it as `runner_commit` and `runner_dirty` from the first
-  start, and each run record holds the reading its block began under.
+  start, and each run record holds the reading of the process that ran its
+  block, the same reading for every block of that process.
+- The reading describes the checkout when the process took it, after the
+  process had loaded the bench's code, read the task set and checked each repo.
+  A branch switch, pull or `evals/` edit made while the process runs changes
+  the checkout and leaves the reading as it was.
 - A new campaign prints this checkout's reading. A resume prints the manifest's,
   and adds this checkout's reading when it differs.
 - `summarize` names every distinct reading across the manifest and the run
@@ -1794,8 +1807,15 @@ untracked, unignored file there. `summarize` prints the same clause on its
   `runner commit not recorded`.
 - A reading that git could not produce is null in the manifest and record, and
   prints as unreadable.
+- A stored commit that is not a full hex object name, or a stored flag that is
+  not a boolean, reads as unreadable in the manifest. A run record holding
+  either is refused as unreadable.
+- A record with the new keys (`runner_commit`, `runner_dirty` and
+  `empty_final_text`) is unreadable by a checkout that predates them, because a
+  record with an unknown key is refused.
 - The flag sees only `evals/`, so an edit elsewhere in the checkout does not set
-  it.
+  it. It also misses ignored files and entries marked `skip-worktree` or
+  `assume-unchanged`, and it holds no digest of an uncommitted diff.
 
 After each block `run` prints one progress line: the task, each arm's `ok` and
 `missing` counts, the arms with no valid run and their reasons, the tasks
@@ -1882,7 +1902,14 @@ missing with its reason.
   deliverable is the change it leaves in the tree:
   - Its change is captured and measured as for any other valid run, it never
     retries, and the record's `empty_final_text` flag is set.
-  - `summarize` counts these runs per arm in its diagnostics line.
+  - `summarize` counts these runs per arm in its diagnostics line, over the
+    arm's valid runs as the `no non-test code line` count is. A run that fails a
+    later check keeps the flag in its record and stays out of that count.
+  - A run that changed nothing and ended with no text is `ok` with no code line.
+    It does not count toward a failed block and never trips the failed-blocks
+    halt. It surfaces only in `summarize`: the diagnostics counts of runs with no
+    non-test code line and of runs with an empty final text, and the paired
+    outcome's exclusion for no non-test code line in an arm.
   - Every other check still applies, including `api-error-final-record`, whose
     final record is an error message and not an empty turn.
   - A run that narrated in an earlier turn and then ended on a tool-only or
@@ -1919,6 +1946,13 @@ missing with its reason.
   the command changed into, a path built from a variable other than `$HOME` or
   `$PWD`, a glob, a case variant of a path on a case-insensitive volume, and a
   Bash write outside the fixture, which is never an `out-of-fixture-write`.
+- **Nested `.claude/scripts` tasks.** A task that changes
+  `claude/.claude/scripts/**` has a live copy that the `toolkit` arm's config dir
+  links to as `<config dir>/scripts/**`. A Read, a Glob or a Bash command that
+  names that alias path reaches the same leak checks as the live path. A Bash
+  command that reaches the file only through a relative path after changing
+  directory, such as `cd ~ && cd .claude && cat scripts/<changed file>`, is an
+  invisible shape. The bench adds no permission rule that denies the alias.
 - **Uncommitted toolkit edits.** The environment drift check compares the CLI
   version and the config checkout's `HEAD` commit. It cannot see an uncommitted
   edit to a toolkit file the `toolkit` arm reads live.

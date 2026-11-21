@@ -13,6 +13,8 @@ from pathlib import Path
 from review_bench.defects import atomic_write_text
 from review_bench.runner import STATUS_OK, HarnessInvalidatedError
 
+from replay_bench.provenance import is_valid_commit_field, is_valid_dirty_field
+
 RUNS_DIR_NAME = "runs"
 
 
@@ -55,11 +57,11 @@ class ReplayRunRecord:
     out_of_session_paths: list[str] = field(default_factory=list)
     ignored_paths_count: int = 0
     ignored_paths: list[str] = field(default_factory=list)
-    # The transcript's last text block is blank or absent, so a text-less final turn after earlier narration leaves it
-    # False; the run's change is measured all the same.
+    # True when the transcript's last text block is blank or absent.
+    # A text-less final turn after earlier narration leaves it False, because the last text block is then the narration.
     empty_final_text: bool = False
-    # The runner checkout's HEAD and whether `evals/` had uncommitted changes when the run's block began. None when
-    # unreadable, and in a record written before these fields existed.
+    # The runner checkout's HEAD (a full hex object name) and whether `evals/` had uncommitted changes when the
+    # process started its blocks. None when unreadable, and in a record written before these fields existed.
     runner_commit: str | None = None
     runner_dirty: bool | None = None
 
@@ -77,9 +79,14 @@ class ReplayRunRecord:
         if unknown:
             raise ValueError(f"unknown record keys {unknown}")
         try:
-            return cls(**data)
+            record = cls(**data)
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
+        if not is_valid_commit_field(record.runner_commit):
+            raise ValueError("runner_commit is neither null nor a full hex object name")
+        if not is_valid_dirty_field(record.runner_dirty):
+            raise ValueError("runner_dirty is neither null nor a boolean")
+        return record
 
 
 def block_runs_dir(campaign_dir: Path, task_id: str) -> Path:

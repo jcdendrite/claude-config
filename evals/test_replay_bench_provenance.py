@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import replay_bench
+import review_bench
 from replay_bench import provenance
 from replay_bench.provenance import RunnerProvenance
 from review_bench import runner as review_runner
@@ -104,6 +106,40 @@ class TestReadRunnerProvenance:
         assert result == RunnerProvenance(git(runner_repo, "rev-parse", "HEAD"), False)
         assert result.commit != git(decoy, "rev-parse", "HEAD")
 
+    def test_a_checkout_with_no_commit_reads_the_status_probe_alone(self, tmp_path):
+        """Kills: one `try` around both probes, where the failed `rev-parse` skips the status probe."""
+        unborn = tmp_path / "unborn-checkout"
+        unborn.mkdir()
+        git(unborn, "init", "-q")
+        write(unborn, "evals/bench.py", "value = 1\n")
+
+        result = provenance.read_runner_provenance(unborn)
+
+        assert result == RunnerProvenance(None, True)
+
+    def test_a_status_that_fails_leaves_the_commit_readable(self, runner_repo):
+        """Kills: one `try` around both probes, where a failed `status` nulls a commit that was read."""
+        (runner_repo / ".git" / "index").write_bytes(b"not an index")
+
+        result = provenance.read_runner_provenance(runner_repo)
+
+        assert result == RunnerProvenance(git(runner_repo, "rev-parse", "HEAD"), None)
+
+    @pytest.mark.parametrize(
+        "probe_output",
+        ["A" * 40, "a" * 39 + "g", "a" * 40 + "\nforged line", "not-a-hash"],
+        ids=["uppercase", "non-hex-digit", "embedded-newline", "free-text"],
+    )
+    def test_a_commit_that_is_not_an_object_name_reads_as_unreadable(self, runner_repo, monkeypatch, probe_output):
+        """Kills: storing the probe's stdout unchecked, which writes a manifest and records that `summarize` then
+        refuses to load."""
+        monkeypatch.setattr(
+            review_runner, "_read_environment_field",
+            lambda command, **_kwargs: probe_output if "rev-parse" in command else "",
+        )
+
+        assert provenance.read_runner_provenance(runner_repo) == RunnerProvenance(None, False)
+
     def test_the_default_root_is_the_review_runners_own_checkout(self, runner_repo, monkeypatch):
         """Kills: probing the config checkout or the process's working directory instead of the checkout the
         bench's code runs from."""
@@ -111,6 +147,16 @@ class TestReadRunnerProvenance:
         monkeypatch.chdir(runner_repo.parent)
 
         assert provenance.read_runner_provenance().commit == git(runner_repo, "rev-parse", "HEAD")
+
+
+class TestTheRunnerSourceLayout:
+    def test_both_bench_packages_load_from_under_the_directory_the_dirty_flag_watches(self):
+        """A tripwire, not behavioural coverage: `git status -- evals` reads clean for any edit once the packages
+        live elsewhere, which would record a dirty checkout as clean."""
+        watched = (review_runner.REPO_ROOT / provenance.RUNNER_SOURCE_DIR).resolve()
+
+        for package in (replay_bench, review_bench):
+            assert Path(package.__file__).resolve().is_relative_to(watched), package.__name__
 
 
 class TestManifestRoundTrip:
@@ -129,12 +175,35 @@ class TestManifestRoundTrip:
         [
             pytest.param({}, id="neither-key"),
             pytest.param({"runner_commit": "a" * 40}, id="no-dirty-key"),
-            pytest.param({"runner_commit": 5, "runner_dirty": False}, id="commit-not-text"),
-            pytest.param({"runner_commit": "a" * 40, "runner_dirty": "yes"}, id="dirty-not-bool"),
         ],
     )
-    def test_a_manifest_without_usable_fields_reads_as_not_recorded(self, manifest):
+    def test_a_manifest_missing_a_key_reads_as_not_recorded(self, manifest):
         assert RunnerProvenance.from_manifest(manifest) is None
+
+    @pytest.mark.parametrize(
+        "bad_commit",
+        [
+            pytest.param(5, id="not-text"),
+            pytest.param(["a" * 40], id="a-list"),
+            pytest.param("abc", id="abbreviated"),
+            pytest.param("A" * 40, id="uppercase"),
+            pytest.param("a" * 40 + "\nforged line", id="newline-after-a-hash"),
+            pytest.param("g" * 40, id="not-hex"),
+        ],
+    )
+    def test_a_commit_that_is_not_a_full_object_name_reads_as_unreadable(self, bad_commit):
+        reading = RunnerProvenance.from_manifest({"runner_commit": bad_commit, "runner_dirty": True})
+
+        assert reading == RunnerProvenance(None, True)
+
+    def test_a_dirty_flag_that_is_not_a_bool_reads_as_unreadable(self):
+        reading = RunnerProvenance.from_manifest({"runner_commit": "a" * 40, "runner_dirty": "yes"})
+
+        assert reading == RunnerProvenance("a" * 40, None)
+
+    @pytest.mark.parametrize("object_name", ["a" * 40, "0123456789abcdef" * 4])
+    def test_sha1_and_sha256_object_names_are_accepted(self, object_name):
+        assert provenance.is_object_name(object_name)
 
 
 class TestDescribe:

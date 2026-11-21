@@ -302,8 +302,8 @@ def is_pruned_path(path: str, *, is_directory_or_link: bool = False) -> bool:
     """Whether the fixture prune removes `path`, a repository-relative POSIX path, either itself or
     through a parent directory it removes. `is_directory_or_link` says whether the last component
     is a directory or a symlink, since the prune keeps a regular file named `.claude`. A last
-    component named `.claude` below the root counts as a link or a directory with nothing under it,
-    and the prune removes both."""
+    component that is a `.claude` link or directory below the root is removed, because the path
+    names no `scripts` entry under it to keep. A regular file of that name stays."""
     components = path.split("/")
     last_index = len(components) - 1
     scope = _Scope.ORDINARY

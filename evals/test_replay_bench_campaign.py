@@ -22,6 +22,7 @@ from replay_bench.spend import SpendAppendError, SpendFile, SpendLine
 from review_bench import runner as review_runner
 from review_bench.runner import HarnessInvalidatedError, RunStore
 from test_replay_bench_runner_support import (
+    EDITED_RUNNER,
     MODEL_ID,
     READING,
     RUNNER,
@@ -200,6 +201,27 @@ class TestACompletedCampaign:
         assert "2 runs in 1 blocks; nominal ceiling $4.00" in capsys.readouterr().out
 
 
+class TestABlockOfSilentNoOps:
+    def test_a_campaign_of_runs_that_changed_nothing_and_said_nothing_counts_them_ok_and_halts_nowhere(self, env, capsys):
+        """Pins the current outcome: a silent no-op run is `ok`, so it never retries and never counts toward the
+        failed-blocks halt. It surfaces only in `summarize`'s `runs with no non-test code line` count."""
+        silent_no_op = Scenario(final_text="", edit=lambda _fixture_dir: None)
+
+        assert env.run(env.world.launch(lambda _number, _agent: silent_no_op)) == 0
+
+        printed = capsys.readouterr().out
+        assert printed.count("arms with no valid run: none") == len(env.world.tasks)
+        assert env.completed() == {task.id for task in env.world.tasks}
+        for task in env.world.tasks:
+            for record in records.read_block_records(env.campaign_dir, task.id):
+                assert (record.status, record.attempts, record.empty_final_text) == ("ok", 1, True)
+        lines = summary.summarize(env.campaign_dir, local_dir=env.world.local_dir, budget_cap_usd=CAP)
+        for arm_name in ("toolkit", "bare"):
+            diagnostics = next(line for line in lines if line.startswith(f"  {arm_name}: unclassified-line share"))
+            assert f"runs with no non-test code line {len(env.world.tasks)}," in diagnostics
+            assert f"runs with an empty final text {len(env.world.tasks)}," in diagnostics
+
+
 class TestTheRunnerProvenanceInTheManifest:
     @pytest.mark.parametrize("has_uncommitted_changes", [False, True])
     def test_a_new_campaign_pins_the_runners_commit_and_dirty_flag(self, env, monkeypatch, has_uncommitted_changes):
@@ -215,9 +237,7 @@ class TestTheRunnerProvenanceInTheManifest:
     def test_a_resume_does_not_rewrite_the_pinned_provenance(self, env, monkeypatch):
         assert env.run(env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, allow_early_stop=True) == 1
         pinned = (env.campaign_dir / "manifest.json").read_text()
-        edited = dataclasses.replace(RUNNER, commit="edited-runner-commit", has_uncommitted_changes=True)
-        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: edited)
-        monkeypatch.setattr(replay_runner, "read_runner_provenance", lambda: edited)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: EDITED_RUNNER)
 
         assert env.run(env.world.launch(), cumulative_stop_usd=100.0) == 0
 
@@ -227,12 +247,13 @@ class TestTheRunnerProvenanceInTheManifest:
             for task in env.world.tasks for record in records.read_block_records(env.campaign_dir, task.id)
         }
         assert readings_of_records == {
-            (RUNNER.commit, RUNNER.has_uncommitted_changes), ("edited-runner-commit", True),
-        }, "each block records the state it ran under"
+            (RUNNER.commit, RUNNER.has_uncommitted_changes), (EDITED_RUNNER.commit, EDITED_RUNNER.has_uncommitted_changes),
+        }, "each process stamps its blocks with its own reading"
 
 
 class TestTheRunnerProbeOfACampaignStart:
-    def test_only_a_first_start_probes_the_runner_checkout(self, env, monkeypatch):
+    def test_each_process_probes_the_runner_checkout_once_however_many_blocks_it_runs(self, env, monkeypatch):
+        """Kills: a probe per block, which stamps a block with a checkout state the running code never loaded."""
         probes = []
 
         def counting_probe():
@@ -245,27 +266,38 @@ class TestTheRunnerProbeOfACampaignStart:
 
         assert env.run(env.world.launch(), cumulative_stop_usd=100.0) == 0
 
-        assert len(probes) == 1, "run_campaign probes nothing on a resume; each block still reads its own provenance"
+        assert len(probes) == 2, "the resume takes its own reading, once, for the blocks it runs"
+
+    def test_every_block_of_a_process_carries_the_reading_taken_at_its_start(self, env, monkeypatch, capsys):
+        """Kills: a probe consulted again once the campaign is running, such as the one at each block's start or the
+        one behind the `campaign <id>` line."""
+        readings = iter([RUNNER, EDITED_RUNNER, EDITED_RUNNER, EDITED_RUNNER])
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: next(readings))
+
+        assert env.run(env.world.launch()) == 0
+
+        stamped = {
+            (record.runner_commit, record.runner_dirty)
+            for task in env.world.tasks for record in records.read_block_records(env.campaign_dir, task.id)
+        }
+        assert len(env.world.tasks) > 1
+        assert all(records.read_block_records(env.campaign_dir, task.id) for task in env.world.tasks)
+        assert stamped == {(RUNNER.commit, RUNNER.has_uncommitted_changes)}
+        campaign_line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("campaign "))
+        assert RUNNER.commit in campaign_line and EDITED_RUNNER.commit not in campaign_line
 
 
 class TestTheRunnerClauseOfTheCampaignLine:
-    def test_a_campaign_with_no_manifest_describes_this_checkout(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
+    def test_a_campaign_with_no_manifest_describes_the_current_reading(self, tmp_path):
+        assert campaign.runner_clause_for(tmp_path / "absent", RUNNER) == f"runner commit {RUNNER.commit}"
 
-        assert campaign.runner_clause_for(tmp_path / "absent") == f"runner commit {RUNNER.commit}"
+    def test_a_resume_at_the_recorded_reading_describes_it_once(self, pinned):
+        assert campaign.runner_clause_for(pinned.manifest_path.parent, RUNNER) == f"runner commit {RUNNER.commit}"
 
-    def test_a_resume_at_the_recorded_reading_describes_it_once(self, pinned, monkeypatch):
-        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: RUNNER)
-
-        assert campaign.runner_clause_for(pinned.manifest_path.parent) == f"runner commit {RUNNER.commit}"
-
-    def test_a_resume_at_another_reading_names_both_the_recorded_and_the_current_one(self, pinned, monkeypatch):
-        edited = dataclasses.replace(RUNNER, commit="edited-runner-commit", has_uncommitted_changes=True)
-        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: edited)
-
-        assert campaign.runner_clause_for(pinned.manifest_path.parent) == (
+    def test_a_resume_at_another_reading_names_both_the_recorded_and_the_current_one(self, pinned):
+        assert campaign.runner_clause_for(pinned.manifest_path.parent, EDITED_RUNNER) == (
             f"runner commit {RUNNER.commit} at the first start; this resume runs "
-            "runner commit edited-runner-commit, with uncommitted changes under evals/"
+            f"runner commit {EDITED_RUNNER.commit}, with uncommitted changes under evals/"
         )
 
     @pytest.mark.parametrize(
@@ -282,7 +314,19 @@ class TestTheRunnerClauseOfTheCampaignLine:
     def test_a_manifest_that_records_no_provenance_says_so(self, pinned, manifest_text):
         pinned.manifest_path.write_text(manifest_text(json.loads(pinned.manifest_path.read_text())))
 
-        assert campaign.runner_clause_for(pinned.manifest_path.parent) == "runner commit not recorded"
+        assert campaign.runner_clause_for(pinned.manifest_path.parent, RUNNER) == "runner commit not recorded"
+
+    def test_a_manifest_holding_a_forged_commit_reads_as_unreadable_and_prints_none_of_it(self, pinned):
+        """Kills: echoing a stored `runner_commit` unchecked, which lets a hand-edited manifest forge a line of the
+        `campaign <id>` output."""
+        manifest = json.loads(pinned.manifest_path.read_text())
+        manifest["runner_commit"] = "a" * 40 + "\nforged report line"
+        pinned.manifest_path.write_text(json.dumps(manifest))
+
+        clause = campaign.runner_clause_for(pinned.manifest_path.parent, RUNNER)
+
+        assert clause.startswith("runner commit unreadable")
+        assert "forged" not in clause and "\n" not in clause
 
 
 class BlockBufferedStream(io.StringIO):
@@ -610,18 +654,21 @@ class TestAResumeAgainstThePinnedManifest:
 
 
 class TestAResumeOfAManifestWithoutRunnerProvenance:
-    def test_it_is_not_refused_on_the_missing_fields(self, pinned):
+    def test_it_completes_without_pinning_the_missing_fields(self, env):
         """A manifest written before the runner fields existed resumes: they are recorded, not compared."""
-        manifest = json.loads(pinned.manifest_path.read_text())
-        without_runner_fields = {key: value for key, value in manifest.items() if not key.startswith("runner_")}
-        pinned.manifest_path.write_text(json.dumps(without_runner_fields))
+        assert env.run(env.world.launch(), cumulative_stop_usd=EARLY_STOP_USD, allow_early_stop=True) == 1
+        manifest_path = env.campaign_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        without_runner_fields = json.dumps({key: value for key, value in manifest.items() if not key.startswith("runner_")})
+        manifest_path.write_text(without_runner_fields)
 
-        with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
-            pinned.resume()
+        assert env.run(env.world.launch(), cumulative_stop_usd=100.0) == 0
+
+        assert env.completed() == {task.id for task in env.world.tasks}
+        assert manifest_path.read_text() == without_runner_fields
 
     def test_a_changed_runner_commit_is_not_refused_either(self, pinned, monkeypatch):
-        edited = dataclasses.replace(RUNNER, commit="edited-runner-commit", has_uncommitted_changes=True)
-        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: edited)
+        monkeypatch.setattr(campaign, "read_runner_provenance", lambda: EDITED_RUNNER)
 
         with pytest.raises(HarnessInvalidatedError, match="no passing smoke"):
             pinned.resume()

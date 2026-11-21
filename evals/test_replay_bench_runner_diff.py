@@ -199,6 +199,38 @@ class TestAgentEditsReachTheDiffOnlyAsIntended:
         assert ".claude" not in outcome.diff_text
         assert outcome.record.ignored_paths == []
 
+    def test_a_new_file_under_a_nested_claude_scripts_dir_is_captured(self, tmp_path, monkeypatch):
+        """Kills: widening the fixture's `/.claude/` exclude to a nested `.claude`, which hides an agent-created file
+        there so a task that changes only `claude/.claude/scripts/**` measures zero code lines. Only an untracked
+        file is subject to the exclude."""
+        nested_script = "claude/.claude/scripts/new_tool.py"
+        world = build_replay_world(tmp_path, monkeypatch, base_files={"claude/.claude/scripts/existing.py": "x = 1\n"})
+
+        def edit(fixture_dir: Path) -> None:
+            (fixture_dir / nested_script).write_text("y = 2\n")
+
+        outcome, _stub = run_with_edit(world, edit)
+
+        assert outcome.record.missing_reason is None
+        assert nested_script in outcome.diff_text
+        assert outcome.record.metrics["line_counts"]["non_test"]["code"] == 1
+        assert outcome.record.ignored_paths == []
+
+    def test_an_edit_to_a_tracked_file_under_a_nested_claude_scripts_dir_is_captured(self, tmp_path, monkeypatch):
+        """Kills: a fixture copy that drops the nested `.claude/scripts` directory from the base commit."""
+        nested_script = "claude/.claude/scripts/tool.py"
+        world = build_replay_world(tmp_path, monkeypatch, base_files={nested_script: "x = 1\n"})
+
+        def edit(fixture_dir: Path) -> None:
+            (fixture_dir / nested_script).write_text("x = 1\ny = 2\n")
+
+        outcome, _stub = run_with_edit(world, edit)
+
+        assert outcome.record.missing_reason is None
+        assert nested_script in outcome.diff_text
+        assert outcome.record.metrics["line_counts"]["non_test"]["code"] == 1
+        assert outcome.record.ignored_paths == []
+
 
 class SleepLog(list):
     def __init__(self) -> None:
