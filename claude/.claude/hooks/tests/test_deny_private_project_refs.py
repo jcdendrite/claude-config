@@ -730,9 +730,8 @@ class TestDenyPrivateProjectRefs:
         assert "WIDGET-123" in reason
 
     def test_layout_only_deny_carries_the_layout_note(self, layout_repo_with_unrelated_origin):
-        """A tracker deny in a repo armed by the layout path alone names that path as the reason, forbids
-        removing it and adding an OSS_ALLOWLIST prefix, sends an open-source match to the human, leads with
-        "Rewrite" like the marker arm, and carries none of the opt-in note."""
+        """Only the tracker deny has a remedy lead, so this case pins the layout arm's "Rewrite" lead
+        in addition to the note the sibling asserts on every content deny."""
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input(self._TRACKER_COMMIT_COMMAND),

@@ -703,9 +703,11 @@ commit older than that path, such as a checkout of a historical commit, is not
 armed by layout. The marker is no substitute, because the marker arm also
 scans `claude/.claude/hooks/tests/`, so a commit adding those tests' synthetic
 tokens (tracker IDs, a private-range IPv4 literal, other structural fixtures)
-denies. A fork that deletes or renames that file stops being armed by layout as soon as the file leaves the working tree.
+denies. In any checkout other than the one `./install.sh` stowed from, such as a second clone or a linked worktree, deleting or renaming that file ends arming by layout in that working tree alone, as soon as the file leaves it.
 An origin URL that contains `claude-config` or `workflow-gates` arms the gate in every case the working-tree test misses, such as a sparse checkout without the file or a `--no-checkout` clone.
-A private downstream whose working tree holds that file is armed. It has no marker-style switch, and removing or renaming the file ends layout arming.
+A private downstream whose working tree holds that file is armed. It has no marker-style switch.
+In the checkout `./install.sh` stowed from, the file is the registered hook itself.
+Deleting or renaming it there leaves the hook unable to start, so on Claude Code 2.1.295 or later every Bash call in every repository on that machine blocks until the user restores the file from a separate terminal; see `docs/hooks.md` § "Gate deadlock recovery".
 A content deny in a repo armed by layout alone carries a note that names the file as the reason, forbids deleting, moving or renaming it, and carries the same remedies and blocklist prohibitions as the marker note, described in the **Remedies** and **Blocklist** paragraphs of § "Opting in another repository".
 A layout-armed repo runs the same scans at the same cost on a large staged file; the hook header's Known gaps lists the limits.
 A fork user can drop their own `<config-dir>/private-projects.md` and

@@ -11,7 +11,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The check tests that the file exists in the working tree, so a checkout of a commit older than that path is not armed by layout.
   - A repository whose working tree lacks the file is not armed by layout, including one with no commit yet.
   - See `docs/private-project-redaction.md` § "For fork contributors".
-  - **Migration:** a private downstream whose working tree holds that file is now armed, so its own tracker IDs and structural shapes deny at commit, PR and issue time. It also gets the stow reminder on `gh pr create` and `gh pr edit`. It has no marker-style switch, and removing or renaming the file ends layout arming. A fork needs no change.
+  - **Migration:** a private downstream whose working tree holds that file is now armed, so its own tracker IDs and structural shapes deny at commit, PR and issue time. It also gets the stow reminder on `gh pr create` and `gh pr edit`. It has no marker-style switch. What deleting or renaming the file does depends on the checkout; see `docs/private-project-redaction.md` § "For fork contributors". A fork needs no change.
 - **The repository moved to `cordova-strategy/workflow-gates`.**
   - A clone whose origin still names the old owner and repo needs the origin repointed.
   - The old URL redirects only until a repository is created at that name ([GitHub's transfer documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/transferring-a-repository)).
