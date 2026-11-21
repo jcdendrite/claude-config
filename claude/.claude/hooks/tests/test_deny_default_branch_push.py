@@ -551,6 +551,22 @@ class TestComputedDestination:
         """Copies the pushes git-feature-branch-sync/SKILL.md prescribes, with its placeholders filled in."""
         _assert_allowed(command, shared_scenario.feature_worktree)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'git push --force-with-lease="main:' + "a" * 40 + '" origin main',
+            "git push --force-with-lease=feature:" + "a" * 40 + " origin main",
+            "git push --force-with-lease origin main",
+        ],
+        ids=[
+            "quoted-lease-on-the-protected-branch",
+            "unquoted-lease-ref-is-not-the-destination",
+            "space-separated-lease",
+        ],
+    )
+    def test_denies_an_explicit_lease_push_to_a_protected_branch(self, shared_scenario, command):
+        _assert_denied(command, shared_scenario.feature_worktree, _protected("main"))
+
 
 class TestBackslashNewlineJoin:
     """A backslash-newline pair joins lines in the shell, so a push split across lines reads as one command."""
