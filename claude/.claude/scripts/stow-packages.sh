@@ -6,6 +6,8 @@ set -euo pipefail
 # install.sh's stow loop and any downstream consumer installing this repo's
 # content into a non-$HOME config directory both read this list rather than
 # hardcoding it — see docs/scripts.md's entry for the two consumers.
+# relocate-claude-config.sh keeps a copy of the rows other than `claude`, which
+# a test keeps equal to this list.
 
 # pwd -P (not pwd) canonicalizes away any symlink, matching install.sh's own
 # REPO_DIR resolution.

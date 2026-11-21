@@ -45,6 +45,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - In the main checkout, bare `git`, `git -v`, `git --help`, `git -c k=v --version`, a path-qualified `git` and the literal `env git --version` still deny.
   - A command word supplied by a substitution in front of a literal `git --version` segment is judged on that segment alone.
   - The change is live on `git pull`.
+- **`relocate-claude-config` now re-links `claude-skills` in both modes, after moving a dangling `~/.claude/skills` into its backup dir, and has a new exit code 3.** That stow passes no `--adopt`, and it leaves a real `~/.claude/skills` directory unmerged, as `install.sh` does.
+  - Exit 3 means the checkout moved, or `--repair` linked `claude`, and re-linking another package failed. The retry is `--repair`, except for a checkout with no `claude-skills/`, where you update it and run `./install.sh` from it. A run that exited 0 before can exit 3 now, `--repair` over a live symlinked `~/.claude` (the legacy tree-folded form) among them. The script's output carries the fix for that case.
+  - Both modes now exit 1 before changing anything when `~/.claude-config-relocate-backup` exists and is a symlink or is not a directory. Before, only `--repair` refused, and only a symlink. A backup dir symlinked to another volume now blocks the primary form too.
+  - `--repair` now exits 1 before it stows `claude` when moving a dangling link into the backup dir fails, including a link the `claude` package does not link, such as a `projects` link to an unmounted disk. `~/.claude/hooks` then stays unlinked until the backup dir is fixed.
+  - Other accounts' config dirs and linked worktrees stay manual (README "Repo relocation").
+  - **Migration:** if `~/.claude/skills` is a dangling symlink after a past relocation, run `relocate-claude-config --repair <new-path>` and then `./install.sh` from the checkout. Otherwise run `./install.sh` before your next relocation, because `git pull` does not refresh the installed copy.
 - **Eval instruments that launch `claude -p` no longer score a prompt a hook blocked as a model miss, except a plain-text block from a hook that prints no `main-session-rules: prompt blocked` line.**
   - `run_skill_evals.py`, the subagent model resolution experiment and the explore recall gate raise `BlockedPromptError`, and review bench records the run missing with reason `blocked-prompt`.
   - `run_skill_evals.py`'s plain-text calls recognize only stdout carrying `main-session-rules: prompt blocked`.

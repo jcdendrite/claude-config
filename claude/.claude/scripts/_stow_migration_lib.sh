@@ -95,11 +95,11 @@ stow_migrate_adopted_dir() {
 
   # Refuse a pre-planted symlink at the fixed, predictable
   # $_STOW_MIGRATION_BACKUP_ROOT path before any mkdir/chmod/cp beneath it --
-  # mirrors relocate-claude-config.sh's own guard for this identical shared
-  # path (_ensure_backup_dir_is_not_a_symlink).
+  # mirrors the symlink check of relocate-claude-config.sh's guard for this
+  # shared path (_ensure_backup_dir_is_usable).
   # Narrow check-then-act window before the mkdir below, same as
-  # relocate-claude-config.sh's identical guard for this path -- accepted,
-  # not closed here.
+  # relocate-claude-config.sh's guard for this path -- accepted, not closed
+  # here.
   if [ -L "$_STOW_MIGRATION_BACKUP_ROOT" ]; then
     echo "[install] $_STOW_MIGRATION_BACKUP_ROOT already exists as a symlink -- refusing to migrate ~/.claude/$name through it. Remove it or replace it with a real directory first." >&2
     return 1
