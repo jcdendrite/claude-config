@@ -1956,8 +1956,9 @@ missing with its reason.
   names that alias path reaches the same leak checks as the live path. A Bash
   command that reaches the file only through a relative path after changing
   directory, such as `cd ~ && cd .claude && cat scripts/<changed file>`, is an
-  invisible shape. So is a read such as `cat "$CLAUDE_CONFIG_DIR/scripts/<changed
-  file>"`, because the Bash scan expands only `~`, `$HOME` and `$PWD`. It is
+  invisible shape. So is a read whose path starts from the `CLAUDE_CONFIG_DIR`
+  variable and continues into `scripts`, because the Bash scan expands only `~`,
+  `$HOME` and `$PWD`. It is
   unverified whether the Bash tool inherits `CLAUDE_CONFIG_DIR`, which the
   launch sets in the session's environment for an account that has it. The bench
   adds no permission rule that denies the alias.
