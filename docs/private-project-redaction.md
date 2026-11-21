@@ -584,9 +584,12 @@ A repo that commits the marker keeps the marker's whole-tree scan even when its 
   [The five structural detectors](#the-five-structural-detectors).
 - Every entry in `<config-dir>/private-projects.md`.
 
-The hook has no per-repo or per-path exclusion and no bypass. For content that
+The hook has no configurable per-repo or per-path exclusion and no bypass. For content that
 cannot be reworded, such as a lockfile, removing the marker is the only
-in-hook remedy, and it disarms every scan.
+in-hook remedy.
+In a repo armed by the marker alone, removing it ends every scan.
+A repo armed by the layout file or a matching origin URL stays armed.
+Where the layout arm or a matching origin URL applies, the staged-diff scan leaves out `claude/.claude/hooks/tests/`, which the marker arm scans.
 
 **Suitability.** Opt in only a repo whose commits and PRs don't cite its own
 tracker IDs or carry hex digests, unless you accept rewording them. The tracker
@@ -679,10 +682,12 @@ exposes blocklist entries through the deny echo, and the hook header's
 Known-gaps bullet on the blocklist echo states its scope.
 
 **Opt out.** `git rm` the marker and commit. The change reaches each checkout
-when it pulls or rebases. A local-only delete disarms that checkout too.
+when it pulls or rebases.
+A local-only delete disarms that checkout's marker arm too.
 It is an unsupported shape, not a per-user disable.
 The hook header's Known-gaps bullet on the marker needing to be present at that
 exact path covers it.
+A repo armed by the layout file or a matching origin URL stays armed either way.
 
 **Deny pointer.** The deny messages cite the repo's CLAUDE.md section
 "Redact private-project-identifying content". Add a section with exactly that
@@ -698,7 +703,7 @@ commit older than that path, such as a checkout of a historical commit, is not
 armed by layout. The marker is no substitute, because the marker arm also
 scans `claude/.claude/hooks/tests/`, so a commit adding those tests' synthetic
 tokens (tracker IDs, a private-range IPv4 literal, other structural fixtures)
-denies. A fork that deletes or renames that file stops being armed as soon as the file leaves the working tree.
+denies. A fork that deletes or renames that file stops being armed by layout as soon as the file leaves the working tree.
 An origin URL that contains `claude-config` or `workflow-gates` arms the gate in every case the working-tree test misses, such as a sparse checkout without the file or a `--no-checkout` clone.
 A private downstream whose working tree holds that file is armed. It has no marker-style switch, and removing or renaming the file ends layout arming.
 A content deny in a repo armed by layout alone carries a note that names the file as the reason, forbids deleting, moving or renaming it, and carries the same remedies and blocklist prohibitions as the marker note, described in the **Remedies** and **Blocklist** paragraphs of § "Opting in another repository".

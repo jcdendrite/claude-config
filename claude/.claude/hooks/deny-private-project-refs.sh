@@ -43,7 +43,7 @@
 #   commit-conclusion check) run before the scope test, so they apply in every repo.
 # - The scope test itself also denies, in every repo, when
 #   `_lib_repo_is_claude_config` returns a status other than 0 or 1.
-# - That deny exists for status 127, which means `_lib.sh` lacks the function.
+# - That deny exists for status 127, which means `_lib.sh` lacks `_lib_repo_is_claude_config` or one of the two helpers it calls.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
 # - Catches a second mechanical category when the user creates
 #   ~/.claude/private-projects.md: a literal, case-insensitive

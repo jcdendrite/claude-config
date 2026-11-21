@@ -251,6 +251,31 @@ class TestRequireStowReminder:
         commit_layout_path(stow_repo)
         assert_live_deny_control(stow_repo)
 
+    def test_committed_redaction_optin_marker_does_not_scope_in_under_an_unrelated_origin(self, stow_repo):
+        """The stow gate has no marker arm: a committed `.claude/private-projects-optin` arms only the redaction hook.
+        The control flips the origin to a matching URL and denies the same new top-level entry."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/unrelated-app.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        marker = stow_repo / ".claude" / "private-projects-optin"
+        marker.parent.mkdir()
+        marker.write_text("")
+        subprocess.run(["git", "add", "--", ".claude/private-projects-optin"], cwd=stow_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add redaction opt-in marker"], cwd=stow_repo, check=True)
+        commit_new_toplevel_dir(stow_repo, "agents")
+        pr_command = "gh pr create --title T --body 'no marker here'"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(pr_command), cwd=stow_repo) == "allow"
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/workflow-gates.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(pr_command), cwd=stow_repo)
+        assert reason is not None, "control: hook did not deny once the origin matched"
+        assert "`claude/.claude/agents`" in reason
+
     def test_scope_predicate_missing_from_lib_allows(self, stow_repo, tmp_path):
         """This hook fails open when `_lib_repo_is_claude_config` returns a status other than 0 or 1,
         here 127 from the predicate absent in a `_lib.sh` older than the hook. The control denies with the predicate present."""
@@ -450,6 +475,23 @@ class TestRequireStowReminder:
     def test_new_toplevel_entry_denied_when_hook_runs_from_a_repo_subdirectory(self, stow_repo):
         """The `claude/.claude/` pathspec is cwd-relative, so the diff must run from the
         repo root: a session whose cwd is below the root still sees the new entry."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr create --title T --body 'no marker here'"
+        subdirectory = stow_repo / "claude" / ".claude" / "hooks"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=subdirectory)
+        assert reason is not None
+        assert "adds new files" in reason
+        assert "`claude/.claude/agents`" in reason
+
+    def test_layout_only_repo_gates_when_hook_runs_from_a_repo_subdirectory(self, stow_repo):
+        """With an unrelated origin the layout path is the only arm left, and it matches only
+        when the scope check reads the repo root rather than a subdirectory cwd."""
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:someone/unrelated-app.git"],
+            cwd=stow_repo,
+            check=True,
+        )
+        commit_layout_path(stow_repo)
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr create --title T --body 'no marker here'"
         subdirectory = stow_repo / "claude" / ".claude" / "hooks"

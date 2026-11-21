@@ -87,7 +87,7 @@
 #   A PR making such an edit gets no reminder.
 #   The only modified path the gate checks is `install.sh`.
 # - A status other than 0 or 1 from `_lib_repo_is_claude_config` fails open: the hook exits 0.
-#   Status 127 comes from a `_lib.sh` that lacks `_lib_repo_is_claude_config`.
+#   Status 127 comes from a `_lib.sh` that lacks `_lib_repo_is_claude_config` or one of the two helpers it calls.
 # - The scope test's own gaps are listed in the headers of
 #   `_lib_origin_names_claude_config` and `_lib_repo_has_claude_config_layout`
 #   in _lib.sh.

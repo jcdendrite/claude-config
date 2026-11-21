@@ -718,6 +718,17 @@ class TestDenyPrivateProjectRefs:
         assert "WIDGET-123" in reason
         assert "whether this repo is claude-config" not in reason
 
+    def test_layout_only_repo_gates_when_hook_runs_from_a_repo_subdirectory(self, layout_repo_with_unrelated_origin):
+        """The layout test reads the repo root, so a session whose cwd is below the root is still scoped in."""
+        subdirectory = layout_repo_with_unrelated_origin / "claude" / ".claude" / "hooks"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+            cwd=subdirectory,
+        )
+        assert reason is not None, "expected the tracker-ID deny"
+        assert "WIDGET-123" in reason
+
     def test_layout_only_deny_carries_the_layout_note(self, layout_repo_with_unrelated_origin):
         """A tracker deny in a repo armed by the layout path alone names that path as the reason, forbids
         removing it and adding an OSS_ALLOWLIST prefix, sends an open-source match to the human, leads with
@@ -1256,14 +1267,7 @@ class TestDenyPrivateProjectRefs:
     def test_optin_marker_scans_hook_test_paths_that_claude_config_exempts(self, private_projects_optin_repo):
         """The staged-diff exemption for `claude/.claude/hooks/tests/**` is a
         claude-config rule, so a marker-armed repo scans that path too."""
-        test_dir = private_projects_optin_repo / "claude" / ".claude" / "hooks" / "tests"
-        test_dir.mkdir(parents=True)
-        (test_dir / "test_new_case.py").write_text("# synthetic token for testing: FAKEPROJ-42\n")
-        subprocess.run(
-            ["git", "add", "claude/.claude/hooks/tests/test_new_case.py"],
-            cwd=private_projects_optin_repo,
-            check=True,
-        )
+        _stage_hook_test_path_tracker_line(private_projects_optin_repo)
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input("git commit -m 'Add new test case'"),
@@ -1674,12 +1678,7 @@ class TestDenyPrivateProjectRefs:
         marker = claude_config_repo / ".claude" / "private-projects-optin"
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("")
-        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
-        test_dir.mkdir(parents=True)
-        (test_dir / "test_new_case.py").write_text("# synthetic token for testing: FAKEPROJ-42\n")
-        subprocess.run(
-            ["git", "add", "claude/.claude/hooks/tests/test_new_case.py"], cwd=claude_config_repo, check=True
-        )
+        _stage_hook_test_path_tracker_line(claude_config_repo)
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2207,16 +2206,7 @@ class TestDenyPrivateProjectRefs:
         tracker inside the hook's own test tree must pass; without the
         pathspec exclusion, every new test case commit would be blocked
         by the hook under test — hostile to its own maintenance flow."""
-        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
-        test_dir.mkdir(parents=True)
-        (test_dir / "test_another_case.py").write_text(
-            "# synthetic token for testing: FAKEPROJ-777\n"
-        )
-        subprocess.run(
-            ["git", "add", "claude/.claude/hooks/tests/test_another_case.py"],
-            cwd=claude_config_repo,
-            check=True,
-        )
+        _stage_hook_test_path_tracker_line(claude_config_repo)
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
