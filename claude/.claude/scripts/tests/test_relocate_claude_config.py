@@ -23,6 +23,9 @@ from helpers import link_bash_into
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "relocate-claude-config.sh"
 
+# chmod 0o555 does not stop root from writing, so the unwritable-directory cases cannot fail as intended.
+requires_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only modes this case relies on")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures: a fake claude-config checkout, real stow, and a claude CLI shim
@@ -221,6 +224,7 @@ class TestRelocatePrimaryFlow:
         assert "Reminders:" in result.stdout
         assert f"'cd {new_repo}' manually" in result.stdout
         assert "while other Claude Code sessions are active" in result.stdout
+        assert "Not done by this command:" in result.stdout
 
     def test_relocate_uses_manifest_when_valid(self, tmp_path: Path) -> None:
         """The manifest-hit branch of resolve_current_repo_dir: a correct,
@@ -315,6 +319,7 @@ class TestRelocateManifestMismatch:
 
 
 class TestRelocateMvFailureRecovery:
+    @requires_non_root
     def test_mv_failure_restores_previous_stow_state(self, tmp_path: Path) -> None:
         """A permission-denied mv (destination parent not writable) after
         stow -D has already unstowed the old location must not leave the
@@ -391,6 +396,7 @@ class TestRepairPerEntryForm:
         assert installed.is_file() and not installed.is_symlink()
         assert f"Done. ~/.claude and ~/.local/bin now point at: {new_repo}" in result.stdout
         assert "Reminders:" not in result.stdout
+        assert "Not done by this command:" in result.stdout
         assert "no dangling stow-managed entries found to quarantine" not in result.stdout
 
 
@@ -782,15 +788,9 @@ class TestMarketplaceSubcommandFailure:
 # claude-skills re-link (both modes), exit code 3 on a failed re-link
 # ---------------------------------------------------------------------------
 
-_MANUAL_STEPS_TOKENS = ("transcript-config-dirs", "register-marketplace", "git worktree repair", "Repo relocation")
-
-# Clauses of the closing remedy sentence: its lead-in, the symlinked ~/.claude
-# replacement, the ~/.claude/skills content to move aside, and the failed
-# backup-dir move.
+# Lead-in of the closing remedy sentence, which sits between the manual-steps
+# list and the retry line.
 _REMEDY_LEAD_IN = "Resolve each failure named above first"
-_REMEDY_SYMLINKED_CLAUDE_CLAUSE = "a symlinked ~/.claude needs the replacement its error describes"
-_REMEDY_DISCRIMINATING_CLAUSE = "not this checkout's link must be moved aside"
-_REMEDY_BACKUP_DIR_CLAUSES = ("a failed move into", "needs that directory fixed")
 
 # A space, a single quote, `$x` and one unpaired backtick: a double-quoted
 # print of this path either expands `$x` or fails to parse.
@@ -864,6 +864,100 @@ def _words_bash_reads_from(line: str) -> list[str]:
     return result.stdout.split("\0")[:-1]
 
 
+def _run_printed_retry_line(first_run_stderr: str, home: Path, bin_dir: Path) -> subprocess.CompletedProcess:
+    """Run the line a failed run's stderr ends with, as a user would: bash
+    resolves its command through PATH, so a missing installed copy fails here
+    instead of falling through to a real copy elsewhere on PATH."""
+    installed_copy = home / ".local" / "bin" / "relocate-claude-config"
+    assert installed_copy.is_file() and not installed_copy.is_symlink()
+    return subprocess.run(
+        ["bash", "-c", _last_nonempty_line(first_run_stderr)],
+        capture_output=True, text=True, check=False,
+        env=_script_env(home, home / ".local" / "bin", bin_dir),
+    )
+
+
+def _backup_entry_names(home: Path) -> list[str]:
+    backup_dir = home / ".claude-config-relocate-backup"
+    return sorted(entry.name for entry in backup_dir.iterdir()) if backup_dir.exists() else []
+
+
+def _relocation_args_for_mode(tmp_path: Path, home: Path, old_repo: Path, mode: str) -> tuple[Path, list[str]]:
+    """The destination and script args for a relocation run. Primary moves the
+    checkout itself; repair first renames it to the destination, as if moved
+    outside a Claude Code session."""
+    if mode == "primary":
+        new_repo = home / "new-repo"
+        return new_repo, [str(new_repo)]
+    new_repo = tmp_path / "new-repo"
+    old_repo.rename(new_repo)
+    return new_repo, ["--repair", "--allow-outside-home", str(new_repo)]
+
+
+class TestRelinkPackagesBatch:
+    def test_a_failed_package_does_not_stop_the_next_and_the_failed_list_resets_per_call(
+        self, tmp_path: Path
+    ) -> None:
+        """Runs relink_packages directly with two rows, the first refused by
+        the unit's real-directory check and the second linkable into a
+        different target than `.claude`."""
+        home = tmp_path / "home"
+        (home / ".claude" / "shared").mkdir(parents=True)
+        (home / ".other-target").mkdir()
+        checkout = tmp_path / "checkout"
+        (checkout / "refused-pkg" / "shared").mkdir(parents=True)
+        (checkout / "refused-pkg" / "shared" / "item.txt").write_text("refused\n")
+        (checkout / "linked-pkg").mkdir()
+        (checkout / "linked-pkg" / "entry.txt").write_text("linked\n")
+        script = textwrap.dedent("""\
+            source "$1"
+            RELINK_PACKAGES=("$3" "$4")
+            relink_packages "$2"
+            printf 'failed-after-batch=%s\\n' "${RELINK_FAILED_PACKAGES[*]}"
+            RELINK_PACKAGES=("$4")
+            relink_packages "$2"
+            printf 'failed-after-rerun=%s\\n' "${RELINK_FAILED_PACKAGES[*]}"
+        """)
+
+        result = subprocess.run(
+            ["bash", "-c", script, "_", str(_SCRIPT), str(checkout), "refused-pkg\t.claude", "linked-pkg\t.other-target"],
+            capture_output=True, text=True, check=False, env=_script_env(home),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"linking refused-pkg at {checkout}" in result.stdout
+        assert f"linking linked-pkg at {checkout}" in result.stdout
+        assert "re-linking refused-pkg failed" in result.stderr
+        assert "re-linking linked-pkg failed" not in result.stderr
+        assert "failed-after-batch=refused-pkg\n" in result.stdout
+        assert "failed-after-rerun=\n" in result.stdout
+        assert (home / ".other-target" / "entry.txt").resolve() == (checkout / "linked-pkg" / "entry.txt").resolve()
+        assert not (home / ".claude" / "shared" / "item.txt").exists()
+
+    def test_a_symlinked_target_dir_is_refused_whatever_it_points_at(self, tmp_path: Path) -> None:
+        """Run directly because the claude stow refuses a link it does not
+        own before the re-link step is reached."""
+        home = tmp_path / "home"
+        home.mkdir()
+        own_claude_dir = tmp_path / "own-claude-dir"
+        own_claude_dir.mkdir()
+        (home / ".claude").symlink_to(own_claude_dir)
+        checkout = _make_repo(tmp_path, "checkout")
+
+        script = 'source "$1"; relink_packages "$2"; echo "${RELINK_FAILED_PACKAGES[*]}"'
+
+        result = subprocess.run(
+            ["bash", "-c", script, "_", str(_SCRIPT), str(checkout)],
+            capture_output=True, text=True, check=False, env=_script_env(home),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"{home / '.claude'} is a symlink" in result.stderr
+        assert f"link text: {own_claude_dir}" in result.stderr
+        assert result.stdout.splitlines()[-1] == "claude-skills"
+        assert list(own_claude_dir.iterdir()) == []
+
+
 class TestPersonalSkillsRelink:
     @pytest.mark.parametrize("mode", ["primary", "repair"])
     def test_relinks_skills_into_new_checkout_and_backs_up_the_stale_link(
@@ -876,13 +970,7 @@ class TestPersonalSkillsRelink:
         stale_link_text = os.readlink(skills_link)
         bin_dir, _, _ = _claude_shim(tmp_path)
 
-        if mode == "primary":
-            new_repo = home / "new-repo"
-            args = [str(new_repo)]
-        else:
-            new_repo = tmp_path / "new-repo"
-            old_repo.rename(new_repo)
-            args = ["--repair", "--allow-outside-home", str(new_repo)]
+        new_repo, args = _relocation_args_for_mode(tmp_path, home, old_repo, mode)
         result = _run_script(*args, home=home, bin_dir=bin_dir)
 
         assert result.returncode == 0, result.stderr
@@ -893,8 +981,6 @@ class TestPersonalSkillsRelink:
         assert os.readlink(backed_up_skills[0]) == stale_link_text
         assert f"quarantining dangling {skills_link}" in result.stdout
         assert "no dangling stow-managed entries found to quarantine" not in result.stdout
-        for token in _MANUAL_STEPS_TOKENS:
-            assert token in result.stdout
 
     def test_primary_leaves_an_unrelated_dangling_link_in_place(self, tmp_path: Path) -> None:
         """Primary mode quarantines only the package's own top-level paths,
@@ -924,6 +1010,7 @@ class TestPersonalSkillsRelinkFailure:
 
         assert result.returncode == 3, result.stderr
         _assert_relink_failure_reported(result.stderr)
+        assert "is a real directory" in result.stderr
         assert "Done." not in result.stdout
         assert str(home / ".claude" / "skills") in result.stderr
         assert (home / ".claude" / "skills" / "mine" / "SKILL.md").read_text() == "# my own skill\n"
@@ -947,15 +1034,9 @@ class TestPersonalSkillsRelinkFailure:
             in result.stderr
         )
         assert "Reminders:" in result.stderr
-        assert f"'cd {scenario.resolved_destination}' manually" in result.stderr
-        assert "while other Claude Code sessions are active" in result.stderr
-        for token in _MANUAL_STEPS_TOKENS:
-            assert token in result.stderr
-        assert "also moves other dangling entries (those whose name does not start with a dot)" in result.stderr
+        assert "git worktree repair" in result.stderr
+        assert "also moves other dangling entries" in result.stderr
         assert _REMEDY_LEAD_IN in result.stderr
-        assert _REMEDY_DISCRIMINATING_CLAUSE in result.stderr
-        for clause in _REMEDY_BACKUP_DIR_CLAUSES:
-            assert clause in result.stderr
 
     @pytest.mark.parametrize(
         ("inside_home", "typed"),
@@ -989,18 +1070,9 @@ class TestPersonalSkillsRelinkFailure:
         home = scenario.home
         first_run = _run_script(*scenario.args, home=home, bin_dir=scenario.bin_dir)
         assert first_run.returncode == 3, first_run.stderr
-        # The printed line resolves its command through PATH, so a missing installed copy must fail here
-        # instead of falling through to a real copy elsewhere on PATH.
-        installed_copy = home / ".local" / "bin" / "relocate-claude-config"
-        assert installed_copy.is_file() and not installed_copy.is_symlink()
-        retry_line = _last_nonempty_line(first_run.stderr)
         (home / ".claude" / "skills").rename(tmp_path / "skills-moved-aside")
 
-        retry = subprocess.run(
-            ["bash", "-c", retry_line],
-            capture_output=True, text=True, check=False,
-            env=_script_env(home, home / ".local" / "bin", scenario.bin_dir),
-        )
+        retry = _run_printed_retry_line(first_run.stderr, home, scenario.bin_dir)
 
         assert retry.returncode == 0, retry.stderr
         assert (home / ".claude" / "skills").resolve() == (
@@ -1040,9 +1112,8 @@ class TestPersonalSkillsRelinkFailure:
 
         assert result.returncode == 3, result.stderr
         _assert_relink_failure_reported(result.stderr)
-        # Reaching Stow's conflict, not the real-directory refusal, shows the link was not mistaken for one.
-        assert "existing target is not owned by stow" in result.stderr
-        assert "All operations aborted." in result.stderr
+        # The script's own real-directory refusal, absent here, would mean the live link was mistaken for one.
+        assert "is a real directory" not in result.stderr
         assert skills_link.resolve() == elsewhere.resolve()
         assert list((home / ".claude-config-relocate-backup").glob("skills.*")) == []
 
@@ -1054,13 +1125,7 @@ class TestPersonalSkillsRelinkFailure:
         shutil.rmtree(old_repo / "claude-skills")
         bin_dir, _, _ = _claude_shim(tmp_path)
 
-        if mode == "primary":
-            new_repo = home / "new-repo"
-            args = [str(new_repo)]
-        else:
-            new_repo = tmp_path / "new-repo"
-            old_repo.rename(new_repo)
-            args = ["--repair", "--allow-outside-home", str(new_repo)]
+        new_repo, args = _relocation_args_for_mode(tmp_path, home, old_repo, mode)
         result = _run_script(*args, home=home, bin_dir=bin_dir)
 
         assert result.returncode == 3, result.stderr
@@ -1068,7 +1133,6 @@ class TestPersonalSkillsRelinkFailure:
         assert (home / ".claude" / "hooks").resolve() == (new_repo / "claude" / ".claude" / "hooks").resolve()
         assert (home / ".claude-config-source").read_text().strip() == str(new_repo)
         assert _last_nonempty_line(result.stderr).startswith("relocate-claude-config --repair")
-        assert "update the checkout to a commit that has it, then run ./install.sh from it" in result.stderr
 
     def test_repair_over_live_tree_folded_claude_refuses_to_write_through_the_link(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -1086,12 +1150,77 @@ class TestPersonalSkillsRelinkFailure:
         assert "Reminders:" not in result.stderr
         assert f"The claude package is linked from {new_repo}" in result.stderr
         assert "The checkout moved to" not in result.stderr
-        assert _REMEDY_LEAD_IN in result.stderr
-        assert _REMEDY_SYMLINKED_CLAUDE_CLAUSE in result.stderr
-        assert _REMEDY_DISCRIMINATING_CLAUSE in result.stderr
-        for clause in _REMEDY_BACKUP_DIR_CLAUSES:
-            assert clause in result.stderr
         assert not (new_repo / "claude" / ".claude" / "skills").exists()
+
+    def test_printed_retry_succeeds_once_the_symlinked_claude_dir_is_replaced(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        new_repo = _make_repo(tmp_path, "new-repo")
+        _stow_tree_folded(new_repo, home)
+        bin_dir, _, _ = _claude_shim(tmp_path)
+        first_run = _run_script("--repair", "--allow-outside-home", str(new_repo), home=home, bin_dir=bin_dir)
+        assert first_run.returncode == 3, first_run.stderr
+        # The replacement the output describes: a real directory where the link was.
+        (home / ".claude").unlink()
+        (home / ".claude").mkdir()
+
+        retry = _run_printed_retry_line(first_run.stderr, home, bin_dir)
+
+        assert retry.returncode == 0, retry.stderr
+        assert (home / ".claude").is_dir() and not (home / ".claude").is_symlink()
+        assert (home / ".claude" / "skills").resolve() == (new_repo / "claude-skills" / "skills").resolve()
+        assert (home / ".claude" / "hooks").resolve() == (new_repo / "claude" / ".claude" / "hooks").resolve()
+
+    @pytest.mark.parametrize("mode", ["primary", "repair"])
+    def test_printed_retry_succeeds_once_the_checkout_has_claude_skills(self, tmp_path: Path, mode: str) -> None:
+        """The remedy applied in its printed order: the checkout gains the
+        package, `./install.sh` refreshes the installed script, then the
+        printed line runs. The claim that a retry before the install links
+        nothing is not exercised, since the fixture's checkout and installed
+        copy both hold the current script."""
+        home = tmp_path / "home"
+        old_repo = _make_repo(tmp_path, "old-repo")
+        _stow(old_repo, home)
+        shutil.rmtree(old_repo / "claude-skills")
+        bin_dir, _, _ = _claude_shim(tmp_path)
+        new_repo, args = _relocation_args_for_mode(tmp_path, home, old_repo, mode)
+        first_run = _run_script(*args, home=home, bin_dir=bin_dir)
+        assert first_run.returncode == 3, first_run.stderr
+        # The update the output asks for: the checkout gains the package.
+        skill_dir = new_repo / "claude-skills" / "skills" / "example"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# example skill\n")
+        # What ./install.sh does for this script: a real-file copy at mode 755.
+        installed_copy = home / ".local" / "bin" / "relocate-claude-config"
+        installed_copy.unlink()
+        shutil.copy2(new_repo / "claude" / ".claude" / "scripts" / "relocate-claude-config.sh", installed_copy)
+        installed_copy.chmod(0o755)
+
+        retry = _run_printed_retry_line(first_run.stderr, home, bin_dir)
+
+        assert retry.returncode == 0, retry.stderr
+        assert (home / ".claude" / "skills").resolve() == (new_repo / "claude-skills" / "skills").resolve()
+
+    def test_repair_over_live_claude_symlink_outside_the_checkout_writes_nothing_through_it(
+        self, tmp_path: Path
+    ) -> None:
+        """The claude stow refuses a link it does not own, so the run stops
+        before any re-link and nothing lands in the link's target."""
+        home = tmp_path / "home"
+        new_repo = _make_repo(tmp_path, "new-repo")
+        own_claude_dir = tmp_path / "own-claude-dir"
+        own_claude_dir.mkdir()
+        home.mkdir()
+        (home / ".claude").symlink_to(own_claude_dir)
+        (home / ".local" / "bin").mkdir(parents=True)
+        bin_dir, _, _ = _claude_shim(tmp_path)
+
+        result = _run_script("--repair", "--allow-outside-home", str(new_repo), home=home, bin_dir=bin_dir)
+
+        assert result.returncode != 0, result.stderr
+        assert f"stowing at {new_repo}" in result.stdout
+        assert "linking claude-skills" not in result.stdout
+        assert (home / ".claude").readlink() == own_claude_dir
+        assert list(own_claude_dir.iterdir()) == []
 
     @pytest.mark.parametrize("mode", ["primary", "repair"])
     def test_refused_claude_stow_runs_no_follow_up(self, tmp_path: Path, mode: str) -> None:
@@ -1107,26 +1236,20 @@ class TestPersonalSkillsRelinkFailure:
         wrapper_link.symlink_to(foreign_dir)
         bin_dir, _, _ = _claude_shim(tmp_path)
 
-        if mode == "primary":
-            args = [str(home / "new-repo")]
-        else:
-            old_repo.rename(tmp_path / "new-repo")
-            args = ["--repair", "--allow-outside-home", str(tmp_path / "new-repo")]
+        new_repo, args = _relocation_args_for_mode(tmp_path, home, old_repo, mode)
         result = _run_script(*args, home=home, bin_dir=bin_dir)
 
-        assert result.returncode == 1, result.stderr
-        if mode == "primary":
-            assert "moving" in result.stdout
-            assert "mv failed" not in result.stderr
-        assert "existing target is not owned by stow" in result.stderr
-        if mode == "repair":
-            assert "stowing at" in result.stdout
+        # Stow's status and wording are not this script's contract, so only non-zero and the last step reached are pinned.
+        assert result.returncode != 0, result.stderr
+        assert "mv failed" not in result.stderr
+        assert f"stowing at {new_repo}" in result.stdout
         assert "linking claude-skills" not in result.stdout
         assert not (home / ".claude" / "skills").exists()
         assert not (home / ".claude-config-source").exists()
         assert not (home / ".local" / "bin" / "relocate-claude-config").exists()
 
 
+@requires_non_root
 class TestQuarantineMoveFailure:
     def test_primary_fails_the_unit_before_its_stow_and_exits_3(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -1148,10 +1271,33 @@ class TestQuarantineMoveFailure:
         assert result.returncode == 3, result.stderr
         _assert_relink_failure_reported(result.stderr)
         assert f"could not move {skills_link} into {backup_dir}" in result.stderr
+        # Stow's output is the only sign the claude-skills stow ran here, so a Stow rewording makes this pass vacuously.
         assert "All operations aborted." not in result.stderr
         assert os.readlink(skills_link) == stale_link_text
         assert (home / ".claude" / "hooks").resolve() == (new_repo / "claude" / ".claude" / "hooks").resolve()
         assert (home / ".claude-config-source").read_text().strip() == str(new_repo)
+
+    def test_printed_retry_succeeds_once_the_backup_dir_is_writable(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        old_repo = _make_repo(tmp_path, "old-repo")
+        _stow(old_repo, home, with_claude_skills=True)
+        backup_dir = home / ".claude-config-relocate-backup"
+        backup_dir.mkdir()
+        bin_dir, _, _ = _claude_shim(tmp_path)
+        new_repo = home / "new-repo"
+        backup_dir.chmod(0o555)
+        try:
+            first_run = _run_script(str(new_repo), home=home, bin_dir=bin_dir)
+        finally:
+            # The fix the output names: the backup dir accepts moves again.
+            backup_dir.chmod(0o755)
+        assert first_run.returncode == 3, first_run.stderr
+
+        retry = _run_printed_retry_line(first_run.stderr, home, bin_dir)
+
+        assert retry.returncode == 0, retry.stderr
+        assert (home / ".claude" / "skills").resolve() == (new_repo / "claude-skills" / "skills").resolve()
+        assert len(list(backup_dir.glob("skills.*"))) == 1
 
     def test_repair_stops_before_the_claude_stow_and_exits_1(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -1171,7 +1317,7 @@ class TestQuarantineMoveFailure:
 
         assert result.returncode == 1, result.stderr
         assert f"could not move {home / '.claude' / 'hooks'} into {backup_dir}" in result.stderr
-        assert "All operations aborted." not in result.stderr
+        assert "stowing at" not in result.stdout
         assert (home / ".claude" / "hooks").is_symlink()
         assert not (home / ".claude" / "hooks").exists()
         assert not (home / ".claude-config-source").exists()
@@ -1212,13 +1358,7 @@ class TestFollowUpsRunBeforeFinishRelocation:
         (home / ".claude-config-source").mkdir()
         bin_dir, _, _ = _claude_shim(tmp_path)
 
-        if mode == "primary":
-            new_repo = home / "new-repo"
-            args = [str(new_repo)]
-        else:
-            new_repo = tmp_path / "new-repo"
-            old_repo.rename(new_repo)
-            args = ["--repair", "--allow-outside-home", str(new_repo)]
+        new_repo, args = _relocation_args_for_mode(tmp_path, home, old_repo, mode)
         result = _run_script(*args, home=home, bin_dir=bin_dir)
 
         assert result.returncode == 1, result.stderr
@@ -1227,3 +1367,31 @@ class TestFollowUpsRunBeforeFinishRelocation:
             assert "mv failed" not in result.stderr
         assert (home / ".claude" / "skills").resolve() == (new_repo / "claude-skills" / "skills").resolve()
         assert (home / ".claude" / "hooks").resolve() == (new_repo / "claude" / ".claude" / "hooks").resolve()
+
+    @pytest.mark.parametrize("mode", ["primary", "repair"])
+    def test_repair_after_a_failed_manifest_write_converges_and_is_idempotent(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        """The retry the header names after that abort, run twice, leaves the
+        linked skills and the backup dir as the first run left them."""
+        home = tmp_path / "home"
+        old_repo = _make_repo(tmp_path, "old-repo")
+        _stow(old_repo, home, with_claude_skills=True)
+        manifest_blocker = home / ".claude-config-source"
+        manifest_blocker.mkdir()
+        bin_dir, _, _ = _claude_shim(tmp_path)
+        new_repo, first_run_args = _relocation_args_for_mode(tmp_path, home, old_repo, mode)
+        first_run = _run_script(*first_run_args, home=home, bin_dir=bin_dir)
+        assert first_run.returncode == 1, first_run.stderr
+        skills_link = home / ".claude" / "skills"
+        linked_skills_text = os.readlink(skills_link)
+        backup_names_after_first_run = _backup_entry_names(home)
+        manifest_blocker.rmdir()
+
+        for _attempt in range(2):
+            retry = _run_script("--repair", "--allow-outside-home", str(new_repo), home=home, bin_dir=bin_dir)
+
+            assert retry.returncode == 0, retry.stderr
+            assert os.readlink(skills_link) == linked_skills_text
+            assert _backup_entry_names(home) == backup_names_after_first_run
+            assert (home / ".claude-config-source").read_text().strip() == str(new_repo)

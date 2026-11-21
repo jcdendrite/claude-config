@@ -35,39 +35,28 @@
 #      claude-config not found, an unusable backup dir), or --repair could not
 #      move a dangling link into the backup dir (`could not move ... into ...`).
 #      That move fails mid-run, so entries moved before it stay in the backup
-#      dir and the output names each. Otherwise the last of the `unstowing`,
-#      `moving` and `mv failed` lines the primary form printed says what state
-#      it left, since an error line or Stow's own output always follows it:
-#      - No such line: nothing changed.
-#      - `unstowing` and no `moving`: the unstow itself failed, so some
-#        `claude` links may be absent. The exit status is Stow's own, so it can
-#        be 2. Fix it and re-run the primary form.
-#      - `mv failed`: nothing moved. Fix it and re-run the primary form.
-#        The restore stow after that line can itself fail. It then exits with
-#        Stow's own status, so not necessarily 1, and the `claude` links may be
-#        absent. Re-running the primary form still recovers.
-#      - `moving` with no `mv failed` line: the checkout moved. The
-#        `mkdir` of ~/.claude and ~/.local/bin, the `claude` stow or the
-#        manifest or installed-copy write failed. Run
-#        `relocate-claude-config --repair [--allow-outside-home] <new-path>`.
-#        The flag is needed when the primary run passed it.
-#      A failing `claude` stow or write exits with its own status, so it can be
-#      1 or 2. It is 1 for a Stow conflict. It is 2 for a missing package
-#      directory, as Stow 2.4.1 was observed to return, and neither this script
-#      nor Stow defines or documents that code. Whatever the status, after
-#      `re-stowing at` the checkout moved and the retry is the --repair command
-#      above. After --repair's `stowing at`, the retry is re-running the same
-#      command, since only the primary form prints `re-stowing at`.
-#   2  bad arguments. A failing `claude` stow or write after the move can also
-#      return 2 as its own status, as the `1` entry says.
+#      dir and the output names each.
+#      A failing `claude` stow or write after the move exits with that
+#      command's own status, which can be any code, 1, 2 and 3 included.
+#      Stow 2.4.1 was observed to return 1 for a conflict and 2 for a missing
+#      package directory.
+#      Neither code is defined by this script or documented by Stow.
+#      The status alone therefore does not identify the cause.
+#      A 3 from that stow or write comes with no closing --repair line.
+#      The last `unstowing`, `moving`, `mv failed`, `re-stowing at` or
+#      `stowing at` line the output printed identifies it, and README "Repo
+#      relocation" maps each to the state it leaves.
+#      After a move the retry is
+#      `relocate-claude-config --repair [--allow-outside-home] <new-path>`, with
+#      the flag when the primary run passed it.
+#      After --repair's `stowing at`, the retry is re-running the same command.
+#   2  bad arguments
 #   3  the checkout moved, or --repair linked the `claude` package, but
 #      linking a package named on stderr failed. Fix it, then run the
 #      --repair command the output ends with. A checkout with no
 #      claude-skills/ directory is the exception: update it to a commit that
 #      has one, then run ./install.sh from it, because the run already
-#      installed the checkout's own copy of this script. A failing `claude`
-#      stow or write after the move can also return 3 as its own status, and
-#      then the output has no closing --repair line.
+#      installed the checkout's own copy of this script.
 
 set -euo pipefail
 
@@ -356,8 +345,8 @@ _quarantine_if_dangling() {
 }
 
 # Quarantine every dangling symlink directly inside $1; a live symlink or real
-# file/directory is left untouched. The exit status, not stdout, reports
-# whether anything was quarantined: 0 when something was, 1 when nothing was.
+# file/directory is left untouched. Returns 0 when something was quarantined,
+# 1 when nothing was.
 _quarantine_dangling_children() {
   local dir="$1" found=false
   _ensure_backup_dir_is_usable
