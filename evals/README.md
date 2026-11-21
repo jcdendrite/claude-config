@@ -1512,16 +1512,16 @@ prints each arm's rate pooled over the paired tasks, the merged commits'
 (reference) rate over the same tasks, and for each paired task the `toolkit` and
 `bare` rates. A one-arm campaign (`--arm` with a single arm) has no paired
 task, so every rate in the secondary outcome prints `n/a`. A task's rate is its
-valid runs' mean docstring lines over their mean code lines, and the pooled rate
-weights each task by its code lines. The
-rates carry no interval. The per-task lines and their task IDs stay in local
-output. An ID is two parts joined by a hyphen: the first 8 hex digits of the
-SHA-256 of the source repository's path, then the first 12 hex digits of the
-task's commit, unhashed. The commit half is not hashed, so it names a commit in
-any public repository, and a per-task figure identifies a repository and a
-commit. The
-`run` progress lines and the halt messages print the same IDs beside per-task
-spend and ok and missing counts, so the same locality applies to them.
+valid runs' mean docstring lines over their mean code lines. The pooled rate
+weights each task by its code lines. The rates carry no interval.
+
+The per-task lines and their task IDs stay in local output. So do the `run`
+progress lines and the halt messages, which print the same IDs beside per-task
+spend and ok and missing counts. An ID is two parts joined by a hyphen: the
+first 8 hex digits of the SHA-256 of the source repository's path, then the
+first 12 hex digits of the task's commit, unhashed. The commit half is not
+hashed, so it names a commit in any public repository. A per-task figure
+therefore identifies a repository and a commit.
 
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
@@ -1911,9 +1911,10 @@ missing with its reason.
     later check keeps the flag in its record and stays out of that count.
   - A run that changed nothing and ended with no text is `ok` with no code line.
     It does not count toward a failed block and never trips the failed-blocks
-    halt. In a campaign it surfaces only in `summarize`: the diagnostics counts of runs with no
-    non-test code line and of runs with an empty final text, and the paired
-    outcome's exclusion for no non-test code line in an arm.
+    halt. In a campaign it surfaces only in `summarize`, in three places:
+    - The diagnostics count of runs with no non-test code line.
+    - The diagnostics count of runs with an empty final text.
+    - The paired outcome's exclusion for no non-test code line in an arm.
   - Every other check still applies, including `api-error-final-record`, whose
     final record is an error message and not an empty turn.
   - A run that narrated in an earlier turn and then ended on a tool-only or
@@ -1951,12 +1952,13 @@ missing with its reason.
   `$PWD`, a glob, a case variant of a path on a case-insensitive volume, and a
   Bash write outside the fixture, which is never an `out-of-fixture-write`.
 - **Nested `.claude/scripts` tasks.** A task that changes
-  `claude/.claude/scripts/**` has a live copy that the `toolkit` arm's config dir
-  links to as `<config dir>/scripts/**`. A Read, a Glob or a Bash command that
-  names that alias path reaches the same leak checks as the live path. A Bash
-  command that reaches the file only through a relative path after changing
-  directory, such as `cd ~ && cd .claude && cat scripts/<changed file>`, is an
-  invisible shape. So is a read whose path starts from the `CLAUDE_CONFIG_DIR`
+  `claude/.claude/scripts/**` has a live copy that the account's config dir
+  links to as `<config dir>/scripts/**`. Both arms launch on that config dir,
+  so every residual in this item applies to both. A Read, a Glob or a Bash
+  command that names that alias path reaches the same leak checks as the live
+  path. A Bash command that reaches the file only through a relative path after
+  changing directory, such as `cd ~ && cd .claude && cat scripts/<changed file>`,
+  is an invisible shape. So is a read whose path starts from the `CLAUDE_CONFIG_DIR`
   variable and continues into `scripts`, because the Bash scan expands only `~`,
   `$HOME` and `$PWD`. It is
   unverified whether the Bash tool inherits `CLAUDE_CONFIG_DIR`, which the

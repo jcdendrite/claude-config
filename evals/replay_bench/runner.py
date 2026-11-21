@@ -127,11 +127,15 @@ def _without_child_output[ResultT](call: Callable[[], ResultT], description: str
         raise HarnessInvalidatedError(f"{description} ({cause})") from None
 
 
-def live_checkout_roots_for(task: tasks.ReplayTask) -> tuple[Path, ...]:
-    """Called through `review_runner`'s module attributes, so a test's stub reaches them."""
+def live_checkout_roots_for(task: tasks.ReplayTask, account: Account) -> tuple[Path, ...]:
+    """The defaults, the task's source repository and the account's own config checkout, which the config dir's
+    links resolve into whether or not the defaults cover it. Called through `review_runner`'s module attributes, so
+    a test's stub reaches them."""
     def roots() -> tuple[Path, ...]:
         return tuple(dict.fromkeys((
-            *review_runner.default_live_checkout_roots(), *review_runner._worktree_top_levels(Path(task.source_repo)),
+            *review_runner.default_live_checkout_roots(),
+            *review_runner._worktree_top_levels(Path(task.source_repo)),
+            *review_runner._worktree_top_levels(checkout_root_for(account)),
         )))
 
     return _without_child_output(roots, "live checkout roots: could not list the worktrees")
@@ -186,7 +190,7 @@ def run_block(
     checkout_root = checkout_root_for(account)
     environment = read_environment(checkout_root)
     environment_reference.require_match(environment, where=f"{task.id}'s block start")
-    block = BlockContext(task, account, environment, live_checkout_roots_for(task))
+    block = BlockContext(task, account, environment, live_checkout_roots_for(task, account))
     plan = review_runner.build_block_plan(task.id, arm_names, k, seed)
 
     def run_one(arm_and_index: tuple[str, int]) -> RunOutcome:

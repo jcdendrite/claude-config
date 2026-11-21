@@ -59,6 +59,14 @@ class TestReadRunnerProvenance:
 
         assert provenance.read_runner_provenance(runner_repo).has_uncommitted_changes is True
 
+    def test_a_checkout_hiding_untracked_files_still_reads_a_new_file_under_evals_as_dirty(self, runner_repo):
+        """Kills: a status probe without `--untracked-files=all`, which defers to the checkout's own config."""
+        git(runner_repo, "config", "status.showUntrackedFiles", "no")
+        write(runner_repo, "evals/replay_bench/new.py", "x = 1\n")
+        assert git(runner_repo, "status", "--porcelain") == "", "the setting hides the file from a plain status"
+
+        assert provenance.read_runner_provenance(runner_repo).has_uncommitted_changes is True
+
     @pytest.mark.parametrize(
         "change",
         [

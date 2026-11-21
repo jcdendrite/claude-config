@@ -962,15 +962,16 @@ class TestEnvironmentDrift:
 
     def test_an_unlistable_worktree_set_at_a_later_blocks_start_raises(self, env):
         env.world.tasks[:] = env.world.tasks[:2]
-        listings = []
+        source_repo_listings = []
 
-        def fail_the_second_listing(checkout):
-            listings.append(checkout)
-            if len(listings) == 2:
-                raise HarnessInvalidatedError("git worktree list failed")
+        def fail_the_second_source_repo_listing(checkout):
+            if checkout == Path(env.world.task.source_repo):
+                source_repo_listings.append(checkout)
+                if len(source_repo_listings) == 2:
+                    raise HarnessInvalidatedError("git worktree list failed")
             return ()
 
-        env.monkeypatch.setattr(review_runner, "_worktree_top_levels", fail_the_second_listing)
+        env.monkeypatch.setattr(review_runner, "_worktree_top_levels", fail_the_second_source_repo_listing)
         launch_stub = env.world.launch()
 
         with pytest.raises(HarnessInvalidatedError, match="could not list the worktrees"):

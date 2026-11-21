@@ -384,6 +384,61 @@ class TestTheLiveCopyOfANestedScriptsFileThroughTheConfigDirAlias:
         assert record.missing_reason is None
 
 
+class TestTheLiveRootsIncludeTheAccountsOwnConfigCheckout:
+    """The account's config dir stows from a clone that is neither the harness's, the ambient config's nor the task's
+    source repository, so only the account's own checkout names it as a live root."""
+
+    @pytest.fixture(autouse=True)
+    def stub_environment(self, monkeypatch):
+        monkeypatch.setattr(review_runner, "read_environment_record", lambda *, checkout_root=None: READING)
+
+    @pytest.fixture
+    def stowed_world(self, world, monkeypatch):
+        stowed = (world.root / "stowed-checkout").resolve()
+        stowed_config = stowed / "claude" / ".claude"
+        (stowed_config / "scripts").mkdir(parents=True)
+        (stowed_config / "scripts" / "tool.py").write_text("x = 1\n")
+        (stowed_config / "scripts" / "other.py").write_text("y = 2\n")
+        (stowed_config / "CLAUDE.md").write_text("claude md")
+        (world.config_dir / "CLAUDE.md").unlink()
+        (world.config_dir / "CLAUDE.md").symlink_to(stowed_config / "CLAUDE.md")
+        (world.config_dir / "scripts").symlink_to(stowed_config / "scripts")
+        monkeypatch.setattr(review_runner, "default_live_checkout_roots", lambda: ())
+        monkeypatch.setattr(
+            review_runner, "_worktree_top_levels", lambda checkout: (stowed,) if checkout == stowed_config else (),
+        )
+        task = dataclasses.replace(world.task, changed_paths=("claude/.claude/scripts/tool.py",))
+        return world, task, stowed
+
+    def run_toolkit_block(self, stowed_world, tool_call):
+        world, task, _stowed = stowed_world
+        launch_stub = world.launch(lambda _n, _a: Scenario(tool_calls=[tool_call]))
+        block = replay_runner.run_block(
+            make_settings(world, launch_stub), task, world.account, (arms.TOOLKIT.name,), 1, 0,
+            review_runner.EnvironmentReference(), workers=1,
+        )
+        return block.outcomes_for(arms.TOOLKIT.name)[0].record
+
+    def test_the_roots_name_the_worktrees_of_the_account_checkout(self, stowed_world):
+        world, task, stowed = stowed_world
+
+        assert replay_runner.live_checkout_roots_for(task, world.account) == (stowed,)
+
+    def test_a_read_through_the_alias_fails_live_checkout_leak(self, stowed_world):
+        alias = stowed_world[0].config_dir / "scripts" / "tool.py"
+
+        record = self.run_toolkit_block(stowed_world, ("Read", {"file_path": str(alias)}, False))
+
+        assert record.missing_reason == review_runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    def test_a_read_of_an_unchanged_file_under_the_alias_directory_stays_clean(self, stowed_world):
+        other = stowed_world[0].config_dir / "scripts" / "other.py"
+
+        record = self.run_toolkit_block(stowed_world, ("Read", {"file_path": str(other)}, False))
+
+        assert record.missing_reason is None
+
+
 class TestPathReasonsReachTheRecord:
     @pytest.mark.parametrize(("arm_name", "relative_path"), [("toolkit", ""), ("toolkit", "projects"), ("bare", "projects")])
     def test_a_bash_command_on_the_config_dir_fails_out_of_fixture_path(
@@ -806,7 +861,7 @@ class TestGuardedLocationsThroughAnAttempt:
         monkeypatch.setattr(review_runner, "default_live_checkout_roots", lambda: (first, second))
         monkeypatch.setattr(review_runner, "_worktree_top_levels", lambda checkout: (second, world.root / "live-c"))
 
-        assert replay_runner.live_checkout_roots_for(world.task) == (first, second, world.root / "live-c")
+        assert replay_runner.live_checkout_roots_for(world.task, world.account) == (first, second, world.root / "live-c")
 
     def test_the_environment_checkout_root_is_the_parent_of_the_resolved_claude_md(self, world):
         stowed = world.root / "stowed-checkout" / "claude"
@@ -1285,9 +1340,26 @@ class TestAWorktreeListFailure:
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
 
         with pytest.raises(review_runner.HarnessInvalidatedError) as raised:
-            replay_runner.live_checkout_roots_for(world.task)
+            replay_runner.live_checkout_roots_for(world.task, world.account)
 
         assert "exit 4" in str(raised.value) and "sentinel-credential" not in str(raised.value)
+
+    def test_a_failure_listing_the_account_checkout_reports_only_the_exit_status(self, world, monkeypatch):
+        """Kills: swallowing, or passing through unredacted, a failure of the account checkout's own worktree listing."""
+        account_checkout = replay_runner.checkout_root_for(world.account)
+
+        def listing(checkout):
+            if checkout == account_checkout:
+                raise review_runner.HarnessInvalidatedError("git worktree list exited 7: sentinel-credential")
+            return ()
+
+        monkeypatch.setattr(review_runner, "default_live_checkout_roots", lambda: ())
+        monkeypatch.setattr(review_runner, "_worktree_top_levels", listing)
+
+        with pytest.raises(review_runner.HarnessInvalidatedError) as raised:
+            replay_runner.live_checkout_roots_for(world.task, world.account)
+
+        assert "exit 7" in str(raised.value) and "sentinel-credential" not in str(raised.value)
 
 
 # --- CLI ---------------------------------------------------------------------------

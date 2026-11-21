@@ -123,8 +123,12 @@ def read_runner_provenance(repo_root: Path | None = None) -> RunnerProvenance:
         commit = None
     try:
         # The git(1) manual documents `--no-optional-locks` as skipping optional operations that need locks.
+        # `--untracked-files=all` overrides the checkout's own `status.showUntrackedFiles` (git-config(1)).
         status = review_runner._read_environment_field(
-            ["git", "--no-optional-locks", "status", "--porcelain", "--", RUNNER_SOURCE_DIR],
+            [
+                "git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--",
+                RUNNER_SOURCE_DIR,
+            ],
             field="runner status", cwd=root, env=git_environment,
         )
         has_uncommitted_changes: bool | None = bool(status)
