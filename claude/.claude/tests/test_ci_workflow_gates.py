@@ -8,9 +8,9 @@ The invariants:
 - both jobs' keys equal one expected literal, apart from `test-slice`'s steps and the aggregate step's `run:` body;
 - each pytest step's `if:` is the install step's condition plus its own leg test, because conftest.py's
   require_direnv() hard-fails a pytest step that runs without the install step;
-- the four work steps equal one expected literal, so a changed command, `shell:` or `env:` cannot turn a
-  failed pass green. Keys: the install step by name, a pytest step by its `-m` marker expression, Lint by
-  `ruff check`;
+- the five work steps equal one expected literal, so a changed command, `shell:` or `env:` cannot turn a
+  failed pass green. Keys: the install step by name, the jq presence step by its `jq` command, a pytest step
+  by its `-m` marker expression, Lint by `ruff check`;
 - the install step's `run:` is the one exemption from that literal, so an install-command edit needs no test
   edit, while its `name`, `if:` and every other key stay pinned;
 - exactly one step has the id `detect` and it carries no `if:`, so no leg can skip its change detection;
@@ -52,6 +52,7 @@ def _guard_shell_exec(monkeypatch):
 
 _AGGREGATE_JOB_ID = "tests"
 _INSTALL_STEP_NAME = "Install stow and direnv"
+_JQ_STEP_IDENTITY = "jq"
 _PIN_GIT_STEP_ID = "pin-git"
 _DETECT_STEP_ID = "detect"
 _BASH = shutil.which("bash") or "bash"
@@ -101,6 +102,14 @@ _EXPECTED_WORK_STEPS = [
         {
             "name": _INSTALL_STEP_NAME,
             "if": _SHARED_GATE_CONDITION,
+        },
+    ),
+    (
+        _JQ_STEP_IDENTITY,
+        {
+            "name": "Require jq",
+            "if": _SHARED_GATE_CONDITION,
+            "run": "jq --version",
         },
     ),
     (
@@ -162,13 +171,15 @@ def _pytest_marker_expression(run: str) -> str:
 
 
 def _work_step_identity(step: dict) -> str | None:
-    """The install step's name, or the command-derived identity of a pytest or lint step; None for any other step.
+    """The install step's name, or the command-derived identity of a jq, pytest or lint step; None for any other step.
 
-    A pytest or lint step is found by its command, not its name, so a rename cannot hide one.
+    A jq, pytest or lint step is found by its command, not its name, so a rename cannot hide one.
     """
     if step.get("name") == _INSTALL_STEP_NAME:
         return _INSTALL_STEP_NAME
     words = str(step.get("run", "")).split()
+    if words[:1] == ["jq"]:
+        return _JQ_STEP_IDENTITY
     if words[:1] == ["pytest"]:
         return _pytest_marker_expression(step["run"])
     if words[:2] == ["ruff", "check"]:
@@ -284,6 +295,22 @@ def _move_detect_step_after_the_first_gated_step(job: dict) -> None:
     steps.insert(first_gated_position + 1, detect_step)
 
 
+def _jq_step(job: dict) -> dict:
+    return _step_with_name(job, "Require jq")
+
+
+def _delete_jq_step(job: dict) -> None:
+    job["steps"].remove(_jq_step(job))
+
+
+def _append_or_true_to_jq_step(job: dict) -> None:
+    _jq_step(job)["run"] += " || true"
+
+
+def _gate_jq_step_to_the_timing_leg(job: dict) -> None:
+    _jq_step(job)["if"] = _TIMING_LEG_CONDITION
+
+
 def _set_shell_on_install_step(job: dict) -> None:
     _step_with_name(job, _INSTALL_STEP_NAME)["shell"] = "bash"
 
@@ -350,6 +377,9 @@ def test_the_real_test_slice_job_gates_each_work_step_to_its_leg() -> None:
         pytest.param(_swap_pytest_run_bodies, _WORK_STEPS_MESSAGE, id="pytest-run-bodies-swapped"),
         pytest.param(_append_or_true_to_timing_step, _WORK_STEPS_MESSAGE, id="timing-step-swallows-failure-with-or-true"),
         pytest.param(_set_shell_on_install_step, _WORK_STEPS_MESSAGE, id="install-step-gains-a-shell-key"),
+        pytest.param(_delete_jq_step, _WORK_STEPS_MESSAGE, id="jq-step-deleted"),
+        pytest.param(_append_or_true_to_jq_step, _WORK_STEPS_MESSAGE, id="jq-step-swallows-failure-with-or-true"),
+        pytest.param(_gate_jq_step_to_the_timing_leg, _WORK_STEPS_MESSAGE, id="jq-step-runs-in-one-leg-only"),
         pytest.param(_gate_detect_step_to_the_parallel_leg, _DETECT_STEP_MESSAGE, id="detect-step-gains-an-if"),
         pytest.param(_rename_detect_step_id, _DETECT_STEP_MESSAGE, id="detect-step-id-renamed"),
         pytest.param(_add_second_step_with_the_detect_id, _DETECT_STEP_MESSAGE, id="detect-step-id-duplicated"),
