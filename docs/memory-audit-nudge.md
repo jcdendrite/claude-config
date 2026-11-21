@@ -110,13 +110,13 @@ own marker corruption handling already established.
 Set the `memory_audit_nudge` config key to `false` to suppress nudges globally:
 
 ```bash
-printf 'memory_audit_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\nmemory_audit_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 Set it back to `true` to re-enable — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
-printf 'memory_audit_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\nmemory_audit_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 The hook checks this key before any filesystem scan. The grammar:

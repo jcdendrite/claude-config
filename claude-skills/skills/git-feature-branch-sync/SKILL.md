@@ -84,15 +84,14 @@ git push --force-with-lease --force-if-includes
 
 `--force-with-lease` alone can be fooled by a stray `git fetch` (it only checks the tracking ref, not integrated commits) — `--force-if-includes` closes that gap (`push.useForceIfIncludes=true` to apply automatically).
 
-**Critical gotcha for automation and fresh clones:** `--force-with-lease` without an explicit expected value requires a remote-tracking ref. In a shallow clone, `--single-branch` clone, or first push on a branch, that ref is missing and `--force-with-lease` silently degrades to `--force`. Use the explicit form:
+**Critical gotcha for automation and fresh clones:** `--force-with-lease` without an explicit expected value requires a remote-tracking ref. In a shallow clone, `--single-branch` clone, or first push on a branch, that ref is missing and `--force-with-lease` silently degrades to `--force`. Use the explicit form. Record the remote tip with `git ls-remote` before the rewrite, then push with that SHA.
 
 ```
-git fetch origin <branch>
-git push --force-with-lease="<branch>:$(git rev-parse origin/<branch>)" \
-         --force-if-includes origin <branch>
+git ls-remote origin refs/heads/<branch>   # note the SHA before rewriting
+git push --force-with-lease="<branch>:<recorded-sha>" origin <branch>
 ```
 
-`--force-if-includes` also depends on the local reflog — it silently no-ops on fresh/shallow clones or when `core.logAllRefUpdates=false`.
+`--force-if-includes` is a no-op alongside an explicit `<branch>:<sha>` lease. Elsewhere it depends on the local reflog and silently no-ops on fresh/shallow clones or when `core.logAllRefUpdates=false`.
 
 ## Never-force-push targets
 
@@ -133,7 +132,7 @@ Before running `git push --force-with-lease` on a feature branch:
 4. Is the branch in the never-force-push list? → stop.
 5. Does the repo require signed commits? Ensure `commit.gpgsign=true` and the key is accessible non-interactively, or merge.
 6. Running in CI without a live human? Any ambiguous answer → **fail closed, merge instead**.
-7. Using `--force-with-lease --force-if-includes` (explicit `<branch>:<sha>` on shallow/fresh clones)? → proceed.
+7. Using `--force-with-lease` with an explicit `<branch>:<sha>` on shallow/fresh clones, or `--force-with-lease --force-if-includes` otherwise? → proceed.
 
 ## Recovery from a bad force-push
 

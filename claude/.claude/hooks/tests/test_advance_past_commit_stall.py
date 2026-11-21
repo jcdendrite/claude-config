@@ -838,6 +838,34 @@ def test_reason_disable_instruction_disables_the_hook_when_run_beside_a_scaffold
     assert second is None
 
 
+def test_reason_disable_instruction_keeps_the_new_row_on_its_own_line_when_the_file_lacks_a_trailing_newline(
+    isolated_home, dirty_repo
+):
+    """An append onto a final line with no newline must not fuse into a malformed row that the reader skips."""
+    config_toml = isolated_home / ".claude" / "claude-config.toml"
+    config_toml.write_text("handoff_nudge = false")
+    first = _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    assert first is not None, "sanity check: an unrelated row must not disable the hook"
+    disable_command = first["reason"].split("To disable this on this machine: ", 1)[1]
+
+    subprocess.run(["bash", "-c", disable_command], check=True)
+
+    assert config_toml.read_text().splitlines()[-2:] == [
+        "handoff_nudge = false",
+        "commit_stall_block = false",
+    ]
+    second = _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p2", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    assert second is None
+
+
 def test_denied_root_logs_a_root_denied_line(isolated_home, non_repo_dir):
     """A fire-pattern match whose .cwd resolves to no eligible root leaves a log line instead of vanishing silently."""
     result = _fire(

@@ -244,10 +244,11 @@ A human editing the file directly, with their own editor or a shell
 command run outside Claude Code's own tool calls (e.g. the `!` shell
 escape, which never reaches the Bash tool), is unaffected — that is the
 whole point of a hand-editable file. Appending a new `key = value` line
-for a key with no existing row is safe; appending a second line for a key
-that already has one still resolves correctly (the last occurrence wins),
-but leaves a redundant line behind — edit the existing line in place
-instead once you know it's there.
+for a key with no existing row is safe. Start the append with a newline,
+so a file lacking a trailing newline does not fuse the new key onto its
+last line. Appending a second line for a key that already has one still
+resolves correctly (the last occurrence wins), but leaves a redundant line
+behind. Edit the existing line in place instead once you know it's there.
 
 ## Querying a value
 

@@ -33,7 +33,7 @@ Revisit this default via an extended `rearm-backtest` once escalation-fire data 
 
 **Recovering from a hard block.** This is sticky within a session. Once the estimate has reached `HANDOFF_NUDGE_BLOCK_AT`, every later re-arm in that same session hard-blocks too, compaction included, with no in-session reset. Four routes out:
 
-- **Kill-switch** (`printf 'handoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"`) — suppresses every future fire, including the hard block, the same as it already suppresses the advisory nudge.
+- **Kill-switch** (`printf '\nhandoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"`) — suppresses every future fire, including the hard block, the same as it already suppresses the advisory nudge.
 - **`/handoff`** — the default way out. It writes a resume file for a fresh session, whose own estimate starts back below `HANDOFF_NUDGE_BLOCK_AT`.
 - **`/compact`** — only the user can run it, since the harness gives the agent no tool binding for it. It drops the estimate whether or not the criteria under "Compaction as an alternative to /handoff" hold, which ends this block. The next block follows at the blocked estimate plus `HANDOFF_NUDGE_REARM_SPACING`; see the "A /compact does not reset the nudge" bullet under "Known limitations". The block stops the loop before any model call, so no model composes a focus line and the message names the bare form.
 - **The `/handoff` active-bypass marker** (`<config-dir>/.handoff-active.d/<session_id>`) — set by `activate-handoff-bypass.sh` the moment the handoff skill loads (the skill's own `marker.sh activate handoff` step is its first instructed step, and is a fallback for the rare case that hook doesn't fire), live until the skill deactivates it or the session ends. It keeps a qualifying re-arm advisory instead of blocking, so the block can't truncate `/handoff`'s own multi-turn write.
@@ -105,13 +105,13 @@ No measurement compares the cost of a `/compact` with a handoff plus a resume, s
 Set the `handoff_nudge` config key to `false` to suppress nudges globally:
 
 ```bash
-printf 'handoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\nhandoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 Set it back to `true` to re-enable — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
-printf 'handoff_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf '\nhandoff_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 The hook checks this key before reading the transcript. It is useful to turn off when running `claude -p` pipelines or automated test harnesses where the nudge would produce noise.

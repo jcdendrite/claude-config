@@ -33,13 +33,13 @@ The reason leaves two gaps:
 **Mid-session:** press `Esc` to interrupt the current turn before the hook fires, or set `commit_stall_block = false` via the `!` shell escape — this kill switch needs no repo change and is honored except under the degraded-schema limitation below:
 
 ```bash
-! printf 'commit_stall_block = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+! printf '\ncommit_stall_block = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 Set it back to `true` to re-enable — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
-! printf 'commit_stall_block = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+! printf '\ncommit_stall_block = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 The `commit_stall_block` switch and `.commit-stall-block-disabled` silence only this Stop hook, for the config dir the session resolves (one per account). The legacy file counts only while `claude-config.toml` has no `commit_stall_block` row, so on a machine whose config file has the row, touching the file changes nothing. No setting turns off CLAUDE.md's Shipping rule, which keeps telling the agent not to pause.
