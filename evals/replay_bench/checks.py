@@ -605,6 +605,18 @@ def read_subagent_transcript(subagent_jsonl: Path) -> SubagentTranscript:
     return SubagentTranscript(tool_calls, permission_denials, first_turn_prompt_size, skipped_lines, last_line_torn)
 
 
+def denied_tool_calls(transcript: SubagentTranscript) -> list[dict]:
+    """One `{"tool", "command"}` per denied call, in transcript order. `command` is None for any tool other than Bash, and for a
+    Bash call whose command is missing or not a string."""
+    denied: list[dict] = []
+    for call in transcript.tool_calls:
+        if not call.denied:
+            continue
+        command = call.tool_input.get("command") if call.name == _TOOL_NAME_BASH else None
+        denied.append({"tool": call.name, "command": command if isinstance(command, str) else None})
+    return denied
+
+
 # --- Path checks over tool calls -----------------------------------------------
 
 
