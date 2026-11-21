@@ -1505,6 +1505,24 @@ Reading `summarize`'s primary outcome:
 A paired difference is meaningful when the `toolkit` arm's figure is at least
 20% above or below the `bare` arm's.
 
+`summarize` also reports a secondary outcome, Python docstring lines per 100
+added non-test code lines. It covers only the tasks the primary difference
+pairs, so a task with no valid run in one arm enters neither arm's rate. It
+prints each arm's rate pooled over the paired tasks, the merged commits'
+(reference) rate over the same tasks, and for each paired task the `toolkit` and
+`bare` rates. A one-arm campaign (`--arm` with a single arm) has no paired
+task, so every rate in the secondary outcome prints `n/a`. A task's rate is its
+valid runs' mean docstring lines over their mean code lines. The pooled rate
+weights each task by its code lines. The rates carry no interval.
+
+The per-task lines and their task IDs stay in local output. So do the `run`
+progress lines and the halt messages, which print the same IDs beside per-task
+spend and ok and missing counts. An ID is two parts joined by a hyphen: the
+first 8 hex digits of the SHA-256 of the source repository's path, then the
+first 12 hex digits of the task's commit, unhashed. The commit half is not
+hashed, so it names a commit in any public repository. A per-task figure
+therefore identifies a repository and a commit.
+
 This file's "Why local only — never CI" section applies: every run is a paid
 `claude -p` session. The bench needs the Python floor stated in the
 repository root's `README.md` § "Requirements", git 2.32 or newer,
@@ -1578,6 +1596,13 @@ once the set changes.
   limit below 1 is refused.
 - `--max-base-mb` bounds the base tree's blobs, in units of 10^6 bytes, and
   `--max-base-entries` bounds its entry count. They default to 100 and 12,500.
+- A task's fixture drops every `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`,
+  the root `.claude` directory and the root `.mcp.json`, each matched
+  case-insensitively. A `.claude` directory below the root keeps its `scripts`
+  subdirectory and loses every other entry, so a commit that changes only files
+  under `claude/.claude/scripts/` stays a task. A `.claude` nested under a kept
+  `scripts` subdirectory goes in full. A changed path the fixture drops does not
+  count as a task's changed path.
 - `tasks` prints the kept and skipped counts by reason, the largest kept tasks
   by base-tree size and by entry count, and every raw author and committer
   identity among the commits examined, so you can see whom the trust list
@@ -1690,7 +1715,8 @@ states the same constraint.
 
 `smoke` runs one block of one run per arm (`toolkit` and `bare`) on the task
 you name, and takes no `--k`. It prints its nominal cost ceiling before the
-first launch. For each run it prints the status, instruction loads by class,
+first launch. For each run it prints the status, an `empty final text` line
+when the run ended with no text, instruction loads by class,
 the first-turn prompt size, the Bash commands, out-of-fixture paths, the
 permission-denial count, the allow-list Reads, the change's metrics, the cost,
 the fixture-build seconds and the wall clock. A smoke run removes the
@@ -1758,6 +1784,42 @@ ceiling therefore pins nothing, and a rerun with a lower `--k` starts fresh.
 The `campaign <id>` line, the uncharged-attempts line, a resume's spend line,
 the ceiling line and each progress line are flushed as they print, so a
 detached run's redirected output shows them as they happen.
+
+The `campaign <id>` line ends with the runner commit, which is the `HEAD` of the
+checkout the bench's code runs from, not the config checkout. It adds
+`with uncommitted changes under evals/` when `git status` lists a change or an
+untracked, unignored file there. The process reads both once, at the start of
+`run`'s campaign, before it reads each account's environment and before its
+first block. `summarize` prints the same clause on its
+`campaign '<id>'` line. The runner commit is recorded and never compared:
+
+- The manifest holds it as `runner_commit` and `runner_dirty` from the first
+  start, and each run record holds the reading of the process that ran its
+  block, the same reading for every block of that process.
+- The reading describes the checkout when the process took it, after the
+  process had loaded the bench's code, read the task set and checked each repo.
+  A branch switch, pull or `evals/` edit made while the process runs changes
+  the checkout and leaves the reading as it was.
+- A new campaign prints this checkout's reading. A resume prints the manifest's,
+  and adds this checkout's reading when it differs.
+- `summarize` names every distinct reading across the manifest and the run
+  records, with the number of records at each, when they disagree. Records
+  with no reading are listed as `no runner reading` once any other reading
+  exists, so a campaign that mixes the two never prints one lone commit.
+- An edit to `evals/` between a start and a resume halts nothing.
+- A manifest written before these fields existed resumes and prints
+  `runner commit not recorded`.
+- A reading that git could not produce is null in the manifest and record, and
+  prints as unreadable.
+- A stored commit that is not a full hex object name, or a stored flag that is
+  not a boolean, reads as unreadable in the manifest. A run record holding
+  either is refused as unreadable.
+- A checkout that lacks `runner_commit`, `runner_dirty` and `empty_final_text`
+  refuses a record that carries them, because it refuses a record with an
+  unknown key.
+- The flag sees only `evals/`, so an edit elsewhere in the checkout does not set
+  it. It also misses ignored files and entries marked `skip-worktree` or
+  `assume-unchanged`, and it holds no digest of an uncommitted diff.
 
 After each block `run` prints one progress line: the task, each arm's `ok` and
 `missing` counts, the arms with no valid run and their reasons, the tasks
@@ -1839,6 +1901,24 @@ missing with its reason.
     `arm-leak` and `fixture-instruction-load`.
   - `result-error`, `budget` and `api-error-final-record` count as reaching the
     end.
+- A run whose transcript's last text block is blank or absent is not a failure
+  here, unlike a review bench run's `empty-findings`, because a replay run's
+  deliverable is the change it leaves in the tree:
+  - Its change is captured and measured as for any other valid run, it never
+    retries, and the record's `empty_final_text` flag is set.
+  - `summarize` counts these runs per arm in its diagnostics line, over the
+    arm's valid runs as the `no non-test code line` count is. A run that fails a
+    later check keeps the flag in its record and stays out of that count.
+  - A run that changed nothing and ended with no text is `ok` with no code line.
+    It does not count toward a failed block and never trips the failed-blocks
+    halt. In a campaign it surfaces only in `summarize`, in three places:
+    - The diagnostics count of runs with no non-test code line.
+    - The diagnostics count of runs with an empty final text.
+    - The paired outcome's exclusion for no non-test code line in an arm.
+  - Every other check still applies, including `api-error-final-record`, whose
+    final record is an error message and not an empty turn.
+  - A run that narrated in an earlier turn and then ended on a tool-only or
+    thinking-only turn has a last text block, so its flag stays clear.
 
 ### Accepted residuals
 
@@ -1871,6 +1951,19 @@ missing with its reason.
   the command changed into, a path built from a variable other than `$HOME` or
   `$PWD`, a glob, a case variant of a path on a case-insensitive volume, and a
   Bash write outside the fixture, which is never an `out-of-fixture-write`.
+- **Nested `.claude/scripts` tasks.** A task that changes
+  `claude/.claude/scripts/**` has a live copy that the account's config dir
+  links to as `<config dir>/scripts/**`. Both arms launch on that config dir,
+  so every residual in this item applies to both. A Read, a Glob or a Bash
+  command that names that alias path reaches the same leak checks as the live
+  path. A Bash command that reaches the file only through a relative path after
+  changing directory, such as `cd ~ && cd .claude && cat scripts/<changed file>`,
+  is an invisible shape. So is a read whose path starts from the `CLAUDE_CONFIG_DIR`
+  variable and continues into `scripts`, because the Bash scan expands only `~`,
+  `$HOME` and `$PWD`. It is
+  unverified whether the Bash tool inherits `CLAUDE_CONFIG_DIR`, which the
+  launch sets in the session's environment for an account that has it. The bench
+  adds no permission rule that denies the alias.
 - **Uncommitted toolkit edits.** The environment drift check compares the CLI
   version and the config checkout's `HEAD` commit. It cannot see an uncommitted
   edit to a toolkit file the `toolkit` arm reads live.

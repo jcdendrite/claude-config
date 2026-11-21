@@ -19,6 +19,7 @@ from replay_bench import tasks as tasks_mod
 from replay_bench.account import Account
 from replay_bench.attempt import Launch, RunSettings
 from replay_bench.checks import INSTRUMENT_REASONS
+from replay_bench.provenance import RunnerProvenance, describe, describe_resume, read_runner_provenance
 from replay_bench.runner import BlockOutcome, checkout_root_for, read_environment, run_block
 from replay_bench.spend import SpendAppendError, SpendFile
 
@@ -33,6 +34,8 @@ _DISCARDED_BLOCK_TEXT = (
     "the block is not marked complete, so summarize leaves it out of the arm counts and the paired difference, "
     "and a resume reruns the block and pays for it again"
 )
+# `runner_commit` and `runner_dirty` are recorded in the manifest and deliberately not compared, so a manifest
+# that lacks them still resumes.
 _MANIFEST_COMPARED_FIELDS = ("task_set_hash", "arms", "k", "seed", "model_id", "budget_cap_usd", "timeout_s")
 
 
@@ -71,6 +74,7 @@ def block_ceiling_usd(config: CampaignConfig) -> float:
 
 def _manifest_for(
     config: CampaignConfig, accounts_by_repo: Mapping[str, Account], readings: Mapping[str, review_runner.EnvironmentRecord],
+    runner_provenance: RunnerProvenance,
 ) -> dict:
     return {
         "task_set_hash": task_set_hash(config.tasks), "tasks_name": config.tasks_name, "arms": list(config.arm_names),
@@ -81,7 +85,24 @@ def _manifest_for(
             key: {"cli_version": reading.cli_version, "ambient_config_commit": reading.ambient_config_commit}
             for key, reading in readings.items()
         },
+        **runner_provenance.manifest_fields(),
     }
+
+
+def runner_clause_for(campaign_dir: Path, current_reading: RunnerProvenance) -> str:
+    """What the `campaign <id>` line says of the runner: `current_reading` for a campaign with no manifest yet,
+    and for a resume the manifest's, plus `current_reading` when it differs."""
+    manifest_path = campaign_dir / MANIFEST_NAME
+    if not manifest_path.exists():
+        return describe(current_reading)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return describe(None)
+    manifest_reading = RunnerProvenance.from_manifest(manifest) if isinstance(manifest, dict) else None
+    if manifest_reading is None:
+        return describe(None)
+    return describe_resume(manifest_reading, current_reading)
 
 
 def _check_manifest(manifest: dict, expected: dict, *, path: Path) -> None:
@@ -196,13 +217,16 @@ def _two_in_a_row_message(lost_tasks: list[str], failing_blocks: list[Mapping[st
 def run_campaign(
     config: CampaignConfig, accounts_by_repo: Mapping[str, Account], *, runner_environ: Mapping[str, str], launch: Launch,
 ) -> int:
+    # One reading per process. The campaign line, a first start's manifest and every block's record carry it.
+    runner_provenance = read_runner_provenance()
     campaign_dir = config.campaign_dir
+    print(f"campaign {config.campaign_id} ({runner_clause_for(campaign_dir, runner_provenance)})", flush=True)
     accounts = {account.key: account for account in accounts_by_repo.values()}
     readings = {
         key: read_environment(checkout_root_for(account))
         for key, account in accounts.items()
     }
-    expected_manifest = _manifest_for(config, accounts_by_repo, readings)
+    expected_manifest = _manifest_for(config, accounts_by_repo, readings, runner_provenance)
     run_store = RunStore(campaign_dir / STORE_DIR_NAME)
     run_store.acquire_lock()
     try:
@@ -218,7 +242,7 @@ def run_campaign(
             _check_manifest(manifest, expected_manifest, path=manifest_path)
         _refuse_without_smoke_pass(config, readings)
         return _run_locked(
-            config, accounts, accounts_by_repo, readings, run_store, runner_environ, launch,
+            config, accounts, accounts_by_repo, readings, run_store, runner_environ, launch, runner_provenance,
             expected_manifest=None if is_resume else expected_manifest,
         )
     finally:
@@ -228,7 +252,7 @@ def run_campaign(
 def _run_locked(
     config: CampaignConfig, accounts: Mapping[str, Account], accounts_by_repo: Mapping[str, Account],
     readings: Mapping[str, review_runner.EnvironmentRecord], run_store: RunStore, runner_environ: Mapping[str, str],
-    launch: Launch, *, expected_manifest: dict | None,
+    launch: Launch, runner_provenance: RunnerProvenance, *, expected_manifest: dict | None,
 ) -> int:
     is_resume = expected_manifest is None
     campaign_dir = config.campaign_dir
@@ -288,6 +312,7 @@ def _run_locked(
         campaign_id=config.campaign_id, attempts_root=attempts_root, local_dir=config.local_dir, model_id=config.model_id,
         budget_cap_usd=config.budget_cap_usd, timeout_s=config.timeout_s, fixture_git_timeout_s=config.fixture_git_timeout_s,
         run_store=run_store, spend=spend, runner_environ=runner_environ, launch=launch,
+        runner=runner_provenance,
     )
     dropped = dict.fromkeys(config.arm_names, 0)
     failed_blocks: list[tuple[str, Mapping[str, list]]] = []

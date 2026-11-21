@@ -203,7 +203,6 @@ def cmd_run(args: argparse.Namespace, local_dir: Path) -> int:
         account_stop_usd=args.account_stop_usd or args.cumulative_stop_usd, allow_early_stop=args.allow_early_stop,
         fixture_git_timeout_s=args.fixture_git_timeout_s, local_dir=local_dir,
     )
-    print(f"campaign {campaign_id}", flush=True)
     return campaign.run_campaign(
         config, accounts_by_repo, runner_environ=os.environ, launch=msmr._run_claude_to_completion,
     )

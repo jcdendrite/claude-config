@@ -33,12 +33,16 @@ def metrics(
     return synthetic.to_dict()
 
 
-def record(task_id, arm, *, run_index=0, ok=True, reason=None, run_metrics=None, denials=0, cli="2.1.322", ignored=0):
+def record(
+    task_id, arm, *, run_index=0, ok=True, reason=None, run_metrics=None, denials=0, cli="2.1.322", ignored=0,
+    empty_final_text=False, runner_commit=None, runner_dirty=None,
+):
     return records.ReplayRunRecord(
         campaign_id="c1", task_id=task_id, arm=arm, run_index=run_index, status="ok" if ok else "missing",
         missing_reason=None if ok else reason, missing_detail=None, attempts=1, account_key=ACCOUNT, session_id="s",
         cli_version=cli, ambient_config_commit="commit", wall_clock_s=1.0, total_cost_usd=1.0,
         metrics=(run_metrics or metrics()) if ok else None, permission_denials=denials, ignored_paths_count=ignored,
+        empty_final_text=empty_final_text, runner_commit=runner_commit, runner_dirty=runner_dirty,
     )
 
 
@@ -584,16 +588,16 @@ class TestSecondaryAndDiagnostics:
         lines = campaign.summarize()
         text = "\n".join(lines)
 
-        assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(20.0)
-        assert number_after(lines, "  bare docstring lines per 100 code lines:") == pytest.approx(5.0)
+        assert number_after(lines, "  toolkit, paired tasks pooled:") == pytest.approx(20.0)
+        assert number_after(lines, "  bare, paired tasks pooled:") == pytest.approx(5.0)
         assert "runs with a permission-rule denial 1" in text
         assert "python files ast.parse rejected 2" in text
         assert "toolkit: unclassified-line share 0.0769," in text, "5 of 65 lines"
         assert "bare: unclassified-line share 0.0278," in text, "3 of 108 lines"
         assert "non_file_entries 1" in text and "undecodable_files 4" in text and "ignored_paths 7" in text
 
-    def test_an_arms_docstring_rate_pools_each_complete_tasks_mean_counts_over_its_valid_runs(self, campaign):
-        """Kills: summing runs across tasks, a mean of task rates, counting the missing run, and dropping the unpaired task."""
+    def test_an_arms_docstring_rate_pools_each_paired_tasks_mean_counts_over_its_valid_runs(self, campaign):
+        """Kills: summing runs across tasks and a mean of task rates."""
         campaign.add_block(
             "varied-runs",
             record("varied-runs", "toolkit", run_metrics=metrics(code=10, docstring=2)),
@@ -602,16 +606,15 @@ class TestSecondaryAndDiagnostics:
             record("varied-runs", "bare"),
         )
         campaign.add_block(
-            "unpaired-with-a-missing-run",
-            record("unpaired-with-a-missing-run", "toolkit", run_metrics=metrics(code=60, docstring=6)),
-            record("unpaired-with-a-missing-run", "toolkit", run_index=1, ok=False, reason="timeout"),
-            record("unpaired-with-a-missing-run", "bare", ok=False, reason="timeout"),
+            "one-run",
+            record("one-run", "toolkit", run_metrics=metrics(code=60, docstring=6)),
+            record("one-run", "bare"),
         )
 
         lines = campaign.summarize()
 
-        assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(100 * (20 + 6) / (40 + 60))
-        assert "  bare docstring lines per 100 code lines: 0.0000" in lines
+        assert number_after(lines, "  toolkit, paired tasks pooled:") == pytest.approx(100 * (20 + 6) / (40 + 60))
+        assert "  bare, paired tasks pooled: 0.0000" in lines
 
     def test_test_scope_counts_stay_out_of_an_arms_docstring_rate(self, campaign):
         """Kills: reading a run's docstring or code lines as the sum of its test and non-test scopes."""
@@ -624,20 +627,34 @@ class TestSecondaryAndDiagnostics:
 
         lines = campaign.summarize()
 
-        assert number_after(lines, "  toolkit docstring lines per 100 code lines:") == pytest.approx(100 * (2 + 18) / (10 + 30))
-        assert number_after(lines, "  bare docstring lines per 100 code lines:") == pytest.approx(100 * 5 / 100)
+        assert number_after(lines, "  toolkit, paired tasks pooled:") == pytest.approx(100 * (2 + 18) / (10 + 30))
+        assert number_after(lines, "  bare, paired tasks pooled:") == pytest.approx(100 * 5 / 100)
 
-    def test_an_arm_with_no_code_line_or_no_valid_run_has_no_docstring_rate(self, campaign):
+    def test_a_run_with_an_empty_final_text_is_counted_per_arm_and_still_measured(self, campaign):
         campaign.add_block(
             "t1",
-            record("t1", "toolkit", run_metrics=metrics(code=0, docstring=0)),
-            record("t1", "bare", ok=False, reason="timeout"),
+            record("t1", "toolkit", run_metrics=metrics(words=10, code=10), empty_final_text=True),
+            record("t1", "bare", run_metrics=metrics(words=0, code=10)),
         )
 
         lines = campaign.summarize()
 
-        assert "  toolkit docstring lines per 100 code lines: n/a" in lines
-        assert "  bare docstring lines per 100 code lines: n/a" in lines
+        assert any(line.startswith("  toolkit: ") and "runs with an empty final text 1," in line for line in lines)
+        assert any(line.startswith("  bare: ") and "runs with an empty final text 0," in line for line in lines)
+        assert number_after(lines, "paired difference toolkit - bare:") == pytest.approx(1.0)
+
+    def test_a_missing_run_with_an_empty_final_text_stays_out_of_the_empty_final_text_count(self, campaign):
+        """The count covers the valid runs, as the neighbouring `runs with no non-test code line` does."""
+        campaign.add_block(
+            "t1",
+            record("t1", "toolkit"),
+            record("t1", "bare"),
+            record("t1", "bare", run_index=1, ok=False, reason="out-of-fixture-write", empty_final_text=True),
+        )
+
+        lines = campaign.summarize()
+
+        assert any(line.startswith("  bare: ") and "runs with an empty final text 0," in line for line in lines)
 
     def test_a_missing_run_still_counts_its_denials_and_ignored_paths(self, campaign):
         """The two counts are diagnostics of a run that went wrong, which a missing run is the likeliest to be."""
@@ -666,6 +683,218 @@ class TestSecondaryAndDiagnostics:
 
         assert number_after(lines, "paired difference toolkit - bare:") == pytest.approx(15 / 10)
         assert "runs with no non-test code line 1" in "\n".join(lines)
+
+
+def reference_task(
+    *, code, docstring, words=10, commit_digit="a", test_words=0, test_code=0, test_docstring=0,
+) -> tasks.ReplayTask:
+    source_repo, commit = "/synthetic/source-repo", commit_digit * 40
+    return tasks.ReplayTask(
+        id=tasks.make_task_id(Path(source_repo), commit), source_repo=source_repo, base_commit="b" * 40, commit=commit,
+        brief="synthetic brief", changed_paths=("src/app.py",), author_email="author@example.invalid",
+        committer_email="committer@example.invalid",
+        reference_metrics=CommentMetrics.from_dict(
+            metrics(
+                words=words, code=code, docstring=docstring,
+                test_words=test_words, test_code=test_code, test_docstring=test_docstring,
+            ),
+        ),
+        base_density=None, base_tree_bytes=0, base_tree_entries=0,
+    )
+
+
+class TestThePairedSecondaryOutcome:
+    def add_paired_and_unpaired_tasks(self, campaign) -> None:
+        """`paired` has a valid run in each arm. `toolkit-only` has none in the bare arm."""
+        campaign.add_block(
+            "paired",
+            record("paired", "toolkit", run_metrics=metrics(code=100, docstring=10)),
+            record("paired", "bare", run_metrics=metrics(code=100, docstring=20)),
+        )
+        campaign.add_block(
+            "toolkit-only",
+            record("toolkit-only", "toolkit", run_metrics=metrics(code=100, docstring=50)),
+            record("toolkit-only", "bare", ok=False, reason="timeout"),
+        )
+
+    def test_a_task_with_no_valid_run_in_one_arm_does_not_enter_either_arms_rate(self, campaign):
+        """Kills: pooling every valid run, which would put the toolkit rate at 30 against the bare rate of 20."""
+        self.add_paired_and_unpaired_tasks(campaign)
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  toolkit, paired tasks pooled:") == pytest.approx(10.0)
+        assert number_after(lines, "  bare, paired tasks pooled:") == pytest.approx(20.0)
+
+    def test_each_paired_task_prints_both_arms_rates_and_an_unpaired_task_prints_none(self, campaign):
+        self.add_paired_and_unpaired_tasks(campaign)
+
+        lines = campaign.summarize()
+
+        assert "  paired task 'paired': toolkit 10.0000, bare 20.0000" in lines
+        assert not any(line.startswith("  paired task 'toolkit-only'") for line in lines)
+
+    def test_a_tasks_rate_is_a_ratio_of_its_mean_counts_and_the_pool_weights_tasks_by_mean_code_lines(self, campaign):
+        campaign.add_block(
+            "small",
+            record("small", "toolkit", run_metrics=metrics(code=10, docstring=5)),
+            record("small", "toolkit", run_index=1, run_metrics=metrics(code=30, docstring=5)),
+            record("small", "bare", run_metrics=metrics(code=10, docstring=0)),
+        )
+        campaign.add_block(
+            "large",
+            record("large", "toolkit", run_metrics=metrics(code=160, docstring=0)),
+            record("large", "bare", run_metrics=metrics(code=90, docstring=9)),
+        )
+
+        lines = campaign.summarize()
+
+        assert "  paired task 'small': toolkit 25.0000, bare 0.0000" in lines, "(5+5) / (10+30), not the mean of 50 and 16.7"
+        assert number_after(lines, "  toolkit, paired tasks pooled:") == pytest.approx(100 * (5 + 0) / (20 + 160), abs=1e-4)
+        assert number_after(lines, "  bare, paired tasks pooled:") == pytest.approx(100 * 9 / 100)
+
+    def test_a_task_with_no_non_test_code_line_in_one_arm_is_excluded_from_every_secondary_line(self, campaign):
+        """Both arms have a valid run on `no-code`, but the toolkit arm wrote no code line, so the primary outcome
+        drops the task and the secondary outcome must drop it from the pools, the per-task lines and the reference."""
+        paired_task = reference_task(code=40, docstring=10)
+        no_code_task = reference_task(code=40, docstring=30, commit_digit="c")
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", [paired_task, no_code_task])
+        (campaign.dir / "manifest.json").write_text(json.dumps({
+            "tasks_name": "readable", "task_set_hash": task_set_hash((paired_task, no_code_task)),
+        }))
+        campaign.add_block(
+            paired_task.id,
+            record(paired_task.id, "toolkit", run_metrics=metrics(code=100, docstring=10)),
+            record(paired_task.id, "bare", run_metrics=metrics(code=100, docstring=20)),
+        )
+        campaign.add_block(
+            no_code_task.id,
+            record(no_code_task.id, "toolkit", run_metrics=metrics(code=0, docstring=50)),
+            record(no_code_task.id, "bare", run_metrics=metrics(code=100, docstring=90)),
+        )
+
+        lines = campaign.summarize()
+
+        assert "  excluded, no non-test code line in an arm: 1" in lines
+        assert "paired 1 of 2 complete tasks" in lines
+        assert number_after(lines, "  toolkit, paired tasks pooled:") == pytest.approx(10.0)
+        assert number_after(lines, "  bare, paired tasks pooled:") == pytest.approx(20.0)
+        assert number_after(lines, "  reference (the merged commits), paired tasks pooled:") == pytest.approx(25.0)
+        assert [line for line in lines if line.startswith("  paired task ")] == [
+            f"  paired task {paired_task.id!r}: toolkit 10.0000, bare 20.0000",
+        ]
+
+    def test_a_campaign_with_no_paired_task_prints_n_a_for_each_arm(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare", ok=False, reason="timeout"))
+
+        lines = campaign.summarize()
+
+        assert "  toolkit, paired tasks pooled: n/a" in lines and "  bare, paired tasks pooled: n/a" in lines
+        assert not any(line.startswith("  paired task ") for line in lines)
+
+    def test_the_reference_rate_covers_the_paired_tasks_only(self, campaign):
+        paired_task = reference_task(code=40, docstring=10)
+        unpaired_task = reference_task(code=40, docstring=30, commit_digit="c")
+        tasks.write_task_set(campaign.local_dir / "tasks", "readable", [paired_task, unpaired_task])
+        (campaign.dir / "manifest.json").write_text(json.dumps({
+            "tasks_name": "readable", "task_set_hash": task_set_hash((paired_task, unpaired_task)),
+        }))
+        campaign.add_block(paired_task.id, record(paired_task.id, "toolkit"), record(paired_task.id, "bare"))
+        campaign.add_block(
+            unpaired_task.id, record(unpaired_task.id, "toolkit"), record(unpaired_task.id, "bare", ok=False, reason="timeout"),
+        )
+
+        lines = campaign.summarize()
+
+        assert number_after(lines, "  reference (the merged commits), paired tasks pooled:") == pytest.approx(25.0)
+
+
+class TestTheCampaignLineNamesTheRunner:
+    def test_it_prints_the_commit_the_manifest_recorded(self, campaign):
+        campaign.add_block(
+            "t1", record("t1", "toolkit", runner_commit="a" * 40, runner_dirty=True),
+            record("t1", "bare", runner_commit="a" * 40, runner_dirty=True),
+        )
+        (campaign.dir / "manifest.json").write_text(json.dumps({"runner_commit": "a" * 40, "runner_dirty": True}))
+
+        first_line = campaign.summarize()[0]
+
+        assert first_line == (
+            f"campaign 'c1': 1 complete blocks, 0 incomplete blocks; runner commit {'a' * 40}, "
+            "with uncommitted changes under evals/"
+        )
+
+    def test_records_with_no_reading_beside_the_manifests_reading_are_counted(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        (campaign.dir / "manifest.json").write_text(json.dumps({"runner_commit": "a" * 40, "runner_dirty": False}))
+
+        first_line = campaign.summarize()[0]
+
+        assert first_line == (
+            "campaign 'c1': 1 complete blocks, 0 incomplete blocks; runner readings differ across the campaign: "
+            f"no runner reading (records: 2); runner commit {'a' * 40} (manifest)"
+        )
+
+    def test_a_campaign_resumed_at_another_commit_names_both_commits_and_their_record_counts(self, campaign):
+        first_start, resumed = "a" * 40, "b" * 40
+        campaign.add_block(
+            "t1", record("t1", "toolkit", runner_commit=first_start, runner_dirty=False),
+            record("t1", "bare", runner_commit=first_start, runner_dirty=False),
+        )
+        campaign.add_block(
+            "t2", record("t2", "toolkit", runner_commit=resumed, runner_dirty=True),
+            record("t2", "bare", runner_commit=resumed, runner_dirty=True),
+        )
+        (campaign.dir / "manifest.json").write_text(json.dumps({"runner_commit": first_start, "runner_dirty": False}))
+
+        first_line = campaign.summarize()[0]
+
+        assert first_line == (
+            "campaign 'c1': 2 complete blocks, 0 incomplete blocks; runner readings differ across the campaign: "
+            f"runner commit {first_start} (manifest, records: 2); "
+            f"runner commit {resumed}, with uncommitted changes under evals/ (records: 2)"
+        )
+
+    def test_records_that_all_match_the_manifest_leave_the_clause_unchanged(self, campaign):
+        campaign.add_block(
+            "t1", record("t1", "toolkit", runner_commit="a" * 40, runner_dirty=False),
+            record("t1", "bare", runner_commit="a" * 40, runner_dirty=False),
+        )
+        (campaign.dir / "manifest.json").write_text(json.dumps({"runner_commit": "a" * 40, "runner_dirty": False}))
+
+        assert campaign.summarize()[0].endswith(f"; runner commit {'a' * 40}")
+
+    def test_a_manifest_commit_that_is_no_object_name_reads_as_unreadable_and_is_not_printed(self, campaign):
+        campaign.add_block(
+            "t1", record("t1", "toolkit", runner_dirty=False), record("t1", "bare", runner_dirty=False),
+        )
+        forged_commit = "a" * 40 + "\nforged report line"
+        (campaign.dir / "manifest.json").write_text(json.dumps({"runner_commit": forged_commit, "runner_dirty": False}))
+
+        first_line = campaign.summarize()[0]
+
+        assert first_line == (
+            "campaign 'c1': 1 complete blocks, 0 incomplete blocks; "
+            "runner commit unreadable, without uncommitted changes under evals/"
+        )
+
+    def test_the_manifest_is_read_once_for_the_whole_summary(self, campaign, monkeypatch):
+        """Kills: a second read, which can answer from another manifest state than the runner clause's."""
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        (campaign.dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": CAP}))
+        reads = []
+        real_read_manifest = summary._read_manifest
+        monkeypatch.setattr(summary, "_read_manifest", lambda path: reads.append(path) or real_read_manifest(path))
+
+        campaign.summarize()
+
+        assert len(reads) == 1
+
+    def test_a_manifest_that_predates_the_fields_says_the_commit_is_not_recorded(self, campaign):
+        campaign.add_block("t1", record("t1", "toolkit"), record("t1", "bare"))
+        (campaign.dir / "manifest.json").write_text(json.dumps({"budget_cap_usd": CAP}))
+
+        assert campaign.summarize()[0].endswith("; runner commit not recorded")
 
 
 class TestAnUnavailableReferenceNamesItsCause:
@@ -706,25 +935,8 @@ class TestAnUnavailableReferenceNamesItsCause:
 
 
 class TestAReadableReferenceIsReportedWithoutAWarning:
-    def reference_task(
-        self, *, code, docstring, words=10, commit="a" * 40, test_words=0, test_code=0, test_docstring=0,
-    ) -> tasks.ReplayTask:
-        source_repo = "/synthetic/source-repo"
-        return tasks.ReplayTask(
-            id=tasks.make_task_id(Path(source_repo), commit), source_repo=source_repo, base_commit="b" * 40, commit=commit,
-            brief="synthetic brief", changed_paths=("src/app.py",), author_email="author@example.invalid",
-            committer_email="committer@example.invalid",
-            reference_metrics=CommentMetrics.from_dict(
-                metrics(
-                    words=words, code=code, docstring=docstring,
-                    test_words=test_words, test_code=test_code, test_docstring=test_docstring,
-                ),
-            ),
-            base_density=None, base_tree_bytes=0, base_tree_entries=0,
-        )
-
     def test_the_reference_rate_is_the_task_sets_docstring_lines_per_100_code_lines(self, campaign):
-        task = self.reference_task(code=40, docstring=10)
+        task = reference_task(code=40, docstring=10)
         tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
         (campaign.dir / "manifest.json").write_text(
             json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
@@ -736,16 +948,16 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
         counts = task.reference_metrics.line_counts["non_test"]
         expected_rate = 100 * counts["docstring"] / counts["code"]
         assert expected_rate == pytest.approx(25.0), "the fixture's metrics reach the task as written"
-        assert number_after(lines, "  reference (the merged commits) docstring lines per 100 code lines:") == pytest.approx(
+        assert number_after(lines, "  reference (the merged commits), paired tasks pooled:") == pytest.approx(
             expected_rate,
         )
         assert not any("reference unavailable" in line for line in lines)
 
     def test_the_primary_outcome_prints_the_merged_commits_pooled_ratio_over_the_paired_tasks(self, campaign):
         """Kills: a docstring-line numerator, a mean of per-task ratios, and counting an unpaired task's commit."""
-        small = self.reference_task(code=40, docstring=3, words=10)
-        large = self.reference_task(code=160, docstring=5, words=90, commit="c" * 40)
-        unpaired = self.reference_task(code=10, docstring=1, words=500, commit="d" * 40)
+        small = reference_task(code=40, docstring=3, words=10)
+        large = reference_task(code=160, docstring=5, words=90, commit_digit="c")
+        unpaired = reference_task(code=10, docstring=1, words=500, commit_digit="d")
         task_set = (small, large, unpaired)
         tasks.write_task_set(campaign.local_dir / "tasks", "readable", list(task_set))
         (campaign.dir / "manifest.json").write_text(
@@ -765,7 +977,7 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
 
     def test_a_merged_commits_test_scope_counts_stay_out_of_both_reference_figures(self, campaign):
         """Kills: reading the reference's words, code lines or docstring lines as the sum of its test and non-test scopes."""
-        task = self.reference_task(code=40, docstring=10, words=10, test_words=300, test_code=200, test_docstring=60)
+        task = reference_task(code=40, docstring=10, words=10, test_words=300, test_code=200, test_docstring=60)
         tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
         (campaign.dir / "manifest.json").write_text(
             json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
@@ -775,12 +987,10 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
         lines = campaign.summarize()
 
         assert number_after(lines, "  reference (the merged commits) words per code line:") == pytest.approx(10 / 40)
-        assert number_after(lines, "  reference (the merged commits) docstring lines per 100 code lines:") == pytest.approx(
-            100 * 10 / 40,
-        )
+        assert number_after(lines, "  reference (the merged commits), paired tasks pooled:") == pytest.approx(100 * 10 / 40)
 
     def test_an_unpaired_tasks_merged_commit_stays_out_of_the_pooled_reference(self, campaign):
-        task = self.reference_task(code=40, docstring=10)
+        task = reference_task(code=40, docstring=10)
         tasks.write_task_set(campaign.local_dir / "tasks", "readable", [task])
         (campaign.dir / "manifest.json").write_text(
             json.dumps({"tasks_name": "readable", "task_set_hash": task_set_hash((task,))}),
@@ -800,7 +1010,7 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
     def test_a_task_set_that_is_not_the_one_the_campaign_pinned_leaves_the_reference_unavailable(
         self, campaign, pinned_hash, reason,
     ):
-        task = self.reference_task(code=40, docstring=10)
+        task = reference_task(code=40, docstring=10)
         tasks.write_task_set(campaign.local_dir / "tasks", "rewritten", [task])
         manifest = {"tasks_name": "rewritten"}
         if pinned_hash is not None:
@@ -811,7 +1021,7 @@ class TestAReadableReferenceIsReportedWithoutAWarning:
         lines = campaign.summarize()
 
         assert f"  reference unavailable: {reason}" in lines
-        assert "  reference (the merged commits) docstring lines per 100 code lines: n/a" in lines
+        assert "  reference (the merged commits), paired tasks pooled: n/a" in lines
         assert "  reference (the merged commits) words per code line: n/a" in lines
         assert any(line.startswith("paired difference toolkit - bare:") for line in lines)
         assert "paired 1 of 1 complete tasks" in lines

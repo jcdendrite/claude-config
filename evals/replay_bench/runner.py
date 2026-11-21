@@ -70,6 +70,8 @@ def _build_record(
         out_of_session_paths=list(final.out_of_session_paths),
         ignored_paths_count=final.capture.ignored_path_count if final.capture is not None else 0,
         ignored_paths=list(final.capture.ignored_paths) if final.capture is not None else [],
+        empty_final_text=final.empty_final_text, runner_commit=settings.runner.commit,
+        runner_dirty=settings.runner.has_uncommitted_changes,
     )
 
 
@@ -125,11 +127,15 @@ def _without_child_output[ResultT](call: Callable[[], ResultT], description: str
         raise HarnessInvalidatedError(f"{description} ({cause})") from None
 
 
-def live_checkout_roots_for(task: tasks.ReplayTask) -> tuple[Path, ...]:
-    """Called through `review_runner`'s module attributes, so a test's stub reaches them."""
+def live_checkout_roots_for(task: tasks.ReplayTask, account: Account) -> tuple[Path, ...]:
+    """The roots the leak checks guard: the defaults plus the worktree top levels of the task's source repository
+    and of the account's config checkout. The config dir's links resolve into that checkout whether or not the
+    defaults cover it. Called through `review_runner`'s module attributes, so a test's stub reaches them."""
     def roots() -> tuple[Path, ...]:
         return tuple(dict.fromkeys((
-            *review_runner.default_live_checkout_roots(), *review_runner._worktree_top_levels(Path(task.source_repo)),
+            *review_runner.default_live_checkout_roots(),
+            *review_runner._worktree_top_levels(Path(task.source_repo)),
+            *review_runner._worktree_top_levels(checkout_root_for(account)),
         )))
 
     return _without_child_output(roots, "live checkout roots: could not list the worktrees")
@@ -184,7 +190,7 @@ def run_block(
     checkout_root = checkout_root_for(account)
     environment = read_environment(checkout_root)
     environment_reference.require_match(environment, where=f"{task.id}'s block start")
-    block = BlockContext(task, account, environment, live_checkout_roots_for(task))
+    block = BlockContext(task, account, environment, live_checkout_roots_for(task, account))
     plan = review_runner.build_block_plan(task.id, arm_names, k, seed)
 
     def run_one(arm_and_index: tuple[str, int]) -> RunOutcome:

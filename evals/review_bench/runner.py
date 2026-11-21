@@ -968,12 +968,15 @@ def evaluate_run_validity(
     live_checkout_roots: tuple[Path, ...],
     changed_relpaths: tuple[str, ...],
     fix_commit_relpaths: tuple[str, ...] = (),
+    allow_empty_final_text: bool = False,
 ) -> RunValidity:
     """Runs every validity check below in the order a cheap check can
     short-circuit an expensive one. Returns the first failure found, or an ok
     RunValidity carrying every observable stat. The live-checkout leak check
     covers changed_relpaths and fix_commit_relpaths together; the read stats
-    cover changed_relpaths alone."""
+    cover changed_relpaths alone. `allow_empty_final_text` is for a caller
+    whose deliverable is not the final text: a run whose final text is blank
+    is then ok, with a blank findings_text, instead of `empty-findings`."""
     if timed_out:
         return _fail(MISSING_REASON_TIMEOUT)
 
@@ -1037,6 +1040,7 @@ def evaluate_run_validity(
         expected_model_id=expected_model_id, fixture_dir=fixture_dir, own_dirs=own_dirs, projects_root=projects_root,
         own_session_paths=own_session_paths, live_checkout_roots=live_checkout_roots,
         changed_relpaths=changed_relpaths, fix_commit_relpaths=fix_commit_relpaths,
+        allow_empty_final_text=allow_empty_final_text,
     )
 
 
@@ -1195,6 +1199,7 @@ def _classify_agent_reads(
     observed_tools: frozenset[str], expected_model_id: str, fixture_dir: Path, own_dirs: tuple[Path, ...],
     projects_root: Path, own_session_paths: tuple[Path, ...], live_checkout_roots: tuple[Path, ...],
     changed_relpaths: tuple[str, ...], fix_commit_relpaths: tuple[str, ...],
+    allow_empty_final_text: bool = False,
 ) -> RunValidity:
     """The checks shared by reviewer and judge runs once an agent's model and
     tools are confirmed: leaks, out-of-session reads, read statistics, and
@@ -1235,7 +1240,7 @@ def _classify_agent_reads(
             VALIDITY_FAIL_API_ERROR_FINAL_RECORD, observed_model=expected_model_id,
             observed_tools=sorted_observed_tools, prompt_verbatim=True,
         )
-    if not findings_text.strip():
+    if not findings_text.strip() and not allow_empty_final_text:
         return _fail(
             VALIDITY_FAIL_EMPTY_FINDINGS, observed_model=expected_model_id,
             observed_tools=sorted_observed_tools, prompt_verbatim=True,
@@ -1304,13 +1309,16 @@ def default_live_checkout_roots() -> tuple[Path, ...]:
 _ENVIRONMENT_READ_TIMEOUT_S = 10.0
 
 
-def _read_environment_field(command: list[str], *, field: str, cwd: Path | None = None) -> str:
+def _read_environment_field(
+    command: list[str], *, field: str, cwd: Path | None = None, env: Mapping[str, str] | None = None,
+) -> str:
     """Stdout of one environment probe. A probe that fails or times out raises
     rather than yielding an empty value, since an empty reading would make
     every later drift comparison match trivially."""
     try:
         proc = subprocess.run(
-            command, cwd=cwd, capture_output=True, text=True, check=False, timeout=_ENVIRONMENT_READ_TIMEOUT_S,
+            command, cwd=cwd, env=env, capture_output=True, text=True, check=False,
+            timeout=_ENVIRONMENT_READ_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
         raise HarnessInvalidatedError(f"environment record: could not read {field} ({' '.join(command)}): {exc}") from exc

@@ -20,6 +20,7 @@ from replay_bench import tasks as tasks_mod
 from replay_bench.account import Account
 from replay_bench.attempt import Launch, RunSettings
 from replay_bench.campaign import ATTEMPTS_DIR_NAME, CAMPAIGNS_DIR_NAME, SPEND_NAME, STORE_DIR_NAME
+from replay_bench.provenance import NO_READING
 from replay_bench.runner import BlockOutcome, RunOutcome, run_block
 from replay_bench.spend import SpendAppendError, SpendFile
 
@@ -48,6 +49,8 @@ def format_run_report(arm_name: str, outcome: RunOutcome) -> list[str]:
     lines = [f"[{arm_name}] status: {status}"]
     if record.missing_detail:
         lines.append(f"  detail: {record.missing_detail}")
+    if record.empty_final_text:
+        lines.append("  empty final text: the run ended with no text")
     loads = {load_class: sorted(paths) for load_class, paths in record.subagent_loads.items()}
     lines.append(f"  subagent instruction loads: {loads!r}")
     lines.append(f"  first-turn prompt size: {record.first_turn_prompt_size}")
@@ -155,11 +158,12 @@ def run_smoke(
     try:
         smoke_pass.smoke_pass_path(config.local_dir, account.key).unlink(missing_ok=True)
         spend = SpendFile(campaign_dir / SPEND_NAME, budget_cap_usd=config.budget_cap_usd)
+        # Smoke persists no run records, so it carries no runner reading.
         settings = RunSettings(
             campaign_id=campaign_id, attempts_root=campaign_dir / ATTEMPTS_DIR_NAME, local_dir=config.local_dir,
             model_id=config.model_id, budget_cap_usd=config.budget_cap_usd, timeout_s=config.timeout_s,
             fixture_git_timeout_s=config.fixture_git_timeout_s, run_store=run_store, spend=spend,
-            runner_environ=runner_environ, launch=launch,
+            runner_environ=runner_environ, launch=launch, runner=NO_READING,
         )
         try:
             block = run_block(settings, task, account, SMOKE_ARM_NAMES, 1, config.seed, EnvironmentReference())

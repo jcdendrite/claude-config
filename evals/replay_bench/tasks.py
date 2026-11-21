@@ -43,6 +43,8 @@ _RESERVED_BRIEF_LINES = frozenset({
 # Names matched case-insensitively at any depth.
 _INSTRUCTION_FILE_NAMES = frozenset({"claude.md", "claude.local.md", "agents.md"})
 _ROOT_MCP_CONFIG_NAME = ".mcp.json"
+# The one entry a `.claude` directory below the root keeps, matched case-insensitively.
+_KEPT_CONFIG_SUBDIR_NAME = "scripts"
 
 _WORKTREE_OPTOUT_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "worktree-optout"
 BARE_WRITER_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "agents" / "bare-writer.md"
@@ -288,45 +290,103 @@ def read_task_set(tasks_dir: Path, name: str) -> list[ReplayTask]:
 # --- prune and fixture -------------------------------------------------------
 
 
+class _Scope(StrEnum):
+    """Where a directory's entries sit relative to a kept `.claude/scripts` subtree."""
+
+    ORDINARY = "ordinary"
+    CONFIG_DIR = "config-dir"  # directly inside a `.claude` directory below the root
+    KEPT_SCRIPTS = "kept-scripts"  # at or under the `scripts` directory of such a `.claude`
+
+
 def is_pruned_path(path: str, *, is_directory_or_link: bool = False) -> bool:
     """Whether the fixture prune removes `path`, a repository-relative POSIX path, either itself or
     through a parent directory it removes. `is_directory_or_link` says whether the last component
-    is a directory or a symlink, since the prune keeps a regular file named `.claude`."""
+    is a directory or a symlink, since the prune keeps a regular file named `.claude`. A last
+    component that is a `.claude` link or directory below the root is removed, because the path
+    names no `scripts` entry under it to keep."""
     components = path.split("/")
     last_index = len(components) - 1
-    return any(
-        _is_pruned_entry(component, at_root=index == 0, is_directory_or_link=index < last_index or is_directory_or_link)
-        for index, component in enumerate(components)
-    )
+    scope = _Scope.ORDINARY
+    for index, component in enumerate(components):
+        is_last = index == last_index
+        if _is_pruned_entry(
+            component, at_root=index == 0, is_directory_or_link=not is_last or is_directory_or_link,
+            scope=scope, holds_scripts_directory=not is_last,
+        ):
+            return True
+        scope = _scope_inside(component, at_root=index == 0, scope=scope)
+    return False
 
 
 def _raise_walk_error(error: OSError) -> None:
     raise error
 
 
-def _is_pruned_entry(name: str, *, at_root: bool, is_directory_or_link: bool) -> bool:
+def _is_pruned_entry(
+    name: str, *, at_root: bool, is_directory_or_link: bool, scope: _Scope, holds_scripts_directory: bool,
+) -> bool:
+    """`holds_scripts_directory` matters only for a directory named `.claude`: a nested one with no
+    `scripts` directory has nothing left to keep."""
     folded = name.casefold()
-    return (
-        folded in _INSTRUCTION_FILE_NAMES
-        or (folded == fixture_repo._PROJECT_CONFIG_DIR_NAME and is_directory_or_link)
-        or (at_root and folded == _ROOT_MCP_CONFIG_NAME)
-    )
+    if folded in _INSTRUCTION_FILE_NAMES or (at_root and folded == _ROOT_MCP_CONFIG_NAME):
+        return True
+    if scope is _Scope.CONFIG_DIR:
+        return not (folded == _KEPT_CONFIG_SUBDIR_NAME and is_directory_or_link)
+    if folded == fixture_repo._PROJECT_CONFIG_DIR_NAME and is_directory_or_link:
+        return at_root or scope is _Scope.KEPT_SCRIPTS or not holds_scripts_directory
+    return False
+
+
+def _scope_inside(directory_name: str, *, at_root: bool, scope: _Scope) -> _Scope:
+    """The scope of the entries inside a directory the prune keeps."""
+    if scope is _Scope.KEPT_SCRIPTS:
+        return scope
+    folded = directory_name.casefold()
+    if scope is _Scope.CONFIG_DIR:
+        return _Scope.KEPT_SCRIPTS if folded == _KEPT_CONFIG_SUBDIR_NAME else _Scope.ORDINARY
+    if folded == fixture_repo._PROJECT_CONFIG_DIR_NAME and not at_root:
+        return _Scope.CONFIG_DIR
+    return _Scope.ORDINARY
+
+
+def _holds_scripts_directory(config_dir: str) -> bool:
+    with os.scandir(config_dir) as entries:
+        return any(
+            entry.name.casefold() == _KEPT_CONFIG_SUBDIR_NAME and (entry.is_dir(follow_symlinks=False) or entry.is_symlink())
+            for entry in entries
+        )
 
 
 def prune_instruction_files(dest_dir: Path) -> None:
     """Removes the entries that would load a checkout's own instructions into a session:
-    every `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`, every `.claude` directory, and the
-    root `.mcp.json`, each matched case-insensitively. The walk never follows a link, and a
-    matching symlink is unlinked, never its target. Raises UnsafeFixtureConfigError when a
-    remaining symlink resolves outside `dest_dir`."""
+    - Every `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`.
+    - The root `.claude` directory, and the root `.mcp.json`.
+    - Every other `.claude` directory except its `scripts` subdirectory, and a `.claude` nested
+      under that subdirectory in full.
+
+    Each is matched case-insensitively. The walk never follows a link, and a matching symlink is
+    unlinked, never its target. Raises UnsafeFixtureConfigError when a remaining symlink resolves
+    outside `dest_dir`."""
+    scope_by_directory = {os.fspath(dest_dir): _Scope.ORDINARY}
     for current_dir, dirnames, filenames in os.walk(dest_dir, onerror=_raise_walk_error):
         at_root = Path(current_dir) == dest_dir
+        scope = scope_by_directory.pop(current_dir, _Scope.ORDINARY)
         if at_root and ".git" in dirnames:
             dirnames.remove(".git")
         for name in [*dirnames, *filenames]:
             entry_path = os.path.join(current_dir, name)
             is_link = os.path.islink(entry_path)
-            if not _is_pruned_entry(name, at_root=at_root, is_directory_or_link=is_link or name in dirnames):
+            is_directory_or_link = is_link or name in dirnames
+            holds_scripts_directory = (
+                is_directory_or_link and not is_link
+                and name.casefold() == fixture_repo._PROJECT_CONFIG_DIR_NAME and _holds_scripts_directory(entry_path)
+            )
+            if not _is_pruned_entry(
+                name, at_root=at_root, is_directory_or_link=is_directory_or_link, scope=scope,
+                holds_scripts_directory=holds_scripts_directory,
+            ):
+                if name in dirnames and not is_link:
+                    scope_by_directory[entry_path] = _scope_inside(name, at_root=at_root, scope=scope)
                 continue
             if is_link or name in filenames:
                 os.unlink(entry_path)
