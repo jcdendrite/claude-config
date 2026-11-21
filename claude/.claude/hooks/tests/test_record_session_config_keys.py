@@ -599,6 +599,19 @@ class TestHookWrittenStateStaysOutOfGit:
 
         assert_ignored_by_repo_gitignore(result)
 
+    @pytest.mark.parametrize(
+        "legacy_filename",
+        [
+            pytest.param(row["legacy_filename"], id=row["key"])
+            for row in schema_rows(SHIPPED_SCHEMA_TEXT)
+            if row["legacy_filename"]
+        ],
+    )
+    def test_a_legacy_sentinel_file_written_into_the_checkout_is_gitignored(self, git_work_tree_env, legacy_filename):
+        result = check_ignore(git_work_tree_env, f"claude/.claude/{legacy_filename}")
+
+        assert_ignored_by_repo_gitignore(result)
+
 
 # --------------------------------------------------------------------------- #
 # Row-writing cases                                                           #
