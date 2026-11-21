@@ -10,7 +10,8 @@ enforcement. For the high-level three-tier overview, see the
 ## The three scans
 
 The hook runs in claude-config and its forks (origin URL contains
-`claude-config` or `workflow-gates`), and in any other repo that
+`claude-config` or `workflow-gates`, or the working tree holds
+`claude/.claude/hooks/deny-private-project-refs.sh`), and in any other repo that
 commits `.claude/private-projects-optin`; see
 [Opting in another repository](#opting-in-another-repository). Its content
 scans are silent everywhere else.
@@ -413,7 +414,8 @@ silently skippable.
 # matching):
 cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md" <<'EOF'
 # Project names blocked from commits / PR titles / PR bodies in
-# claude-config and its forks (origin URL contains `claude-config` or `workflow-gates`), and
+# claude-config and its forks (origin URL contains `claude-config` or `workflow-gates`,
+# or its working tree holds claude/.claude/hooks/deny-private-project-refs.sh), and
 # repos opted in via .claude/private-projects-optin. Match semantics +
 # what to put in this file: see docs/private-project-redaction.md in the
 # claude-config repo.
@@ -557,10 +559,12 @@ GH-1371).
 
 ## Opting in another repository
 
-In a repo whose origin URL contains neither `claude-config` nor `workflow-gates`, the content scans
+In a repo whose origin URL contains neither `claude-config` nor `workflow-gates`
+and whose working tree does not hold `claude/.claude/hooks/deny-private-project-refs.sh`, the content scans
 are silent by default.
 Committing `.claude/private-projects-optin` at the repo's toplevel runs the
 whole hook there: all three scans, with no per-scan switch.
+A repo that commits the marker keeps the marker's whole-tree scan even when its working tree holds the layout file, unless its origin URL names `claude-config` or `workflow-gates`.
 
 **What denies there.**
 
@@ -580,9 +584,12 @@ whole hook there: all three scans, with no per-scan switch.
   [The five structural detectors](#the-five-structural-detectors).
 - Every entry in `<config-dir>/private-projects.md`.
 
-The hook has no per-repo or per-path exclusion and no bypass. For content that
+The hook has no configurable per-repo or per-path exclusion and no bypass. For content that
 cannot be reworded, such as a lockfile, removing the marker is the only
-in-hook remedy, and it disarms every scan.
+in-hook remedy.
+In a repo armed by the marker alone, removing it ends every scan.
+A repo armed by the layout file or a matching origin URL stays armed.
+Where the layout arm or a matching origin URL applies, the staged-diff scan leaves out `claude/.claude/hooks/tests/`, which the marker arm scans.
 
 **Suitability.** Opt in only a repo whose commits and PRs don't cite its own
 tracker IDs or carry hex digests, unless you accept rewording them. The tracker
@@ -675,10 +682,12 @@ exposes blocklist entries through the deny echo, and the hook header's
 Known-gaps bullet on the blocklist echo states its scope.
 
 **Opt out.** `git rm` the marker and commit. The change reaches each checkout
-when it pulls or rebases. A local-only delete disarms that checkout too.
+when it pulls or rebases.
+A local-only delete disarms that checkout's marker arm too.
 It is an unsupported shape, not a per-user disable.
 The hook header's Known-gaps bullet on the marker needing to be present at that
 exact path covers it.
+A repo armed by the layout file or a matching origin URL stays armed either way.
 
 **Deny pointer.** The deny messages cite the repo's CLAUDE.md section
 "Redact private-project-identifying content". Add a section with exactly that
@@ -687,13 +696,20 @@ marker.
 
 ## For fork contributors
 
-Forks of `claude-config` inherit the same hook (the scoping check passes for
-any `claude-config` or `workflow-gates` substring in the origin URL), so a fork whose origin URL
-contains either needs no marker. A fork renamed so its URL lacks both
-substrings gets silent content scans. The marker is no substitute, because the
-marker arm also scans `claude/.claude/hooks/tests/`, so a commit adding those
-tests' synthetic tokens (tracker IDs, a private-range IPv4 literal, other
-structural fixtures) denies. Keep `claude-config` or `workflow-gates` in a fork's origin URL.
+Forks of `claude-config` inherit the same hook, and the scoping check arms a
+fork by layout: it passes when the file
+`claude/.claude/hooks/deny-private-project-refs.sh` exists in the fork's working tree, whatever the fork's name or origin URL. A fork needs no marker. A
+commit older than that path, such as a checkout of a historical commit, is not
+armed by layout. The marker is no substitute, because the marker arm also
+scans `claude/.claude/hooks/tests/`, so a commit adding those tests' synthetic
+tokens (tracker IDs, a private-range IPv4 literal, other structural fixtures)
+denies. In any checkout other than the one `./install.sh` stowed from, such as a second clone or a linked worktree, deleting or renaming that file ends arming by layout in that working tree alone, as soon as the file leaves it.
+An origin URL that contains `claude-config` or `workflow-gates` arms the gate in every case the working-tree test misses, such as a sparse checkout without the file or a `--no-checkout` clone.
+A private downstream whose working tree holds that file is armed. It has no marker-style switch.
+In the checkout `./install.sh` stowed from, the file is the registered hook itself.
+Deleting or renaming it there leaves the hook unable to start, so on Claude Code 2.1.295 or later every Bash call in every repository on that machine blocks until the user restores the file from a separate terminal; see `docs/hooks.md` § "Gate deadlock recovery".
+A content deny in a repo armed by layout alone carries a note that names the file as the reason, forbids deleting, moving or renaming it, and carries the same remedies and blocklist prohibitions as the marker note, described in the **Remedies** and **Blocklist** paragraphs of § "Opting in another repository".
+A layout-armed repo runs the same scans at the same cost on a large staged file; the hook header's Known gaps lists the limits.
 A fork user can drop their own `<config-dir>/private-projects.md` and
 contribute back without their project names ever ending up in a PR they open
 against the upstream. `install-dev.sh` requires that file to exist before it

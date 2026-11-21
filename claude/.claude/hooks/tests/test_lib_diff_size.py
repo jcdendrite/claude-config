@@ -28,7 +28,7 @@ from helpers import (
     reviewer_round_state_key,
 )
 
-from ._lib_sh_helpers import _forge_state_marker, _gh_shim_dir, _run_lib_call
+from ._lib_sh_helpers import _forge_state_marker, _gh_shim_dir, _run_lib_call, corrupt_git_index
 
 # The seed commit's file on `trunk`, from bare_remote_with_default_branch's default.
 SEED_FILE = "f"
@@ -382,7 +382,7 @@ class TestLibDiffSizeMeasureRefusals:
         _stage_file(clone, "work.txt", _lines("work", 5))
         untoggled = _measure(clone)
         assert untoggled.stdout == "5 trunk\n", untoggled.stderr
-        (absolute_git_dir(clone) / "index").write_bytes(b"not a git index")
+        corrupt_git_index(clone)
 
         result = _measure(clone)
 

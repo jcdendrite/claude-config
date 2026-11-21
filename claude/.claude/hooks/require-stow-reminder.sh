@@ -22,9 +22,10 @@
 # surfaces when extending coverage.
 #
 # Scope:
-# - Fires only when `_lib_origin_names_claude_config` in _lib.sh accepts the
-#   origin, the same test deny-private-project-refs.sh applies without its
+# - Fires only when `_lib_repo_is_claude_config` in _lib.sh accepts the repo.
+# - That is the same test deny-private-project-refs.sh applies, without its
 #   .claude/private-projects-optin marker arm.
+# - That test matches the origin URL or the layout path in the working tree.
 # - Detects a path added under `claude/.claude/` between `main` and `HEAD`
 #   (`git diff --diff-filter=A`) whose first path component does not exist
 #   on `main` (`git cat-file -e`).
@@ -85,9 +86,11 @@
 #   and `claude/.claude/scripts/relocate-claude-config.sh`.
 #   A PR making such an edit gets no reminder.
 #   The only modified path the gate checks is `install.sh`.
-# - A status other than 0 or 1 from `_lib_origin_names_claude_config` fails open: the hook exits 0.
-# - The origin test's own gaps are listed in _lib_origin_names_claude_config's
-#   header in _lib.sh.
+# - A status other than 0 or 1 from `_lib_repo_is_claude_config` fails open: the hook exits 0.
+#   Status 127 comes from a `_lib.sh` that lacks `_lib_repo_is_claude_config` or one of the two helpers it calls.
+# - The scope test's own gaps are listed in the headers of
+#   `_lib_origin_names_claude_config` and `_lib_repo_has_claude_config_layout`
+#   in _lib.sh.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
@@ -133,7 +136,7 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # Scope: claude-config only. Other repos don't use stow this way.
-if ! _lib_origin_names_claude_config "$REPO_ROOT"; then
+if ! _lib_repo_is_claude_config "$REPO_ROOT"; then
   exit 0
 fi
 
