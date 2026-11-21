@@ -865,7 +865,7 @@ _LIB_CLAUDE_CONFIG_LAYOUT_PATH='claude/.claude/hooks/deny-private-project-refs.s
 # An empty REPO_ROOT tests the path under the filesystem root, not the caller's working directory.
 # Known gaps:
 # - A path absent from the working tree answers 1:
-#   a sparse checkout with the path outside the cone, a skip-worktree file, a `--no-checkout` clone or worktree, or an unstaged deletion.
+#   a sparse checkout with the path outside the cone, a `--no-checkout` clone or worktree, or an unstaged deletion.
 # - An untracked copy at the path answers 0.
 # - Any directory that holds the path matches, repository or not.
 # - A checkout of a commit that predates the path answers 1.
